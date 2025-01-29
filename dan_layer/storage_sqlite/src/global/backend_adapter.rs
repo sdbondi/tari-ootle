@@ -718,6 +718,31 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
         Ok(committees)
     }
 
+    fn validator_nodes_get_random_committee_member_from_shard_group(
+        &self,
+        tx: &mut Self::DbTransaction<'_>,
+        epoch: Epoch,
+        shard_group: ShardGroup,
+    ) -> Result<ValidatorNode<Self::Addr>, Self::Error> {
+        use crate::global::schema::{committees, validator_nodes};
+
+        let vn = validator_nodes::table
+            .inner_join(committees::table.on(validator_nodes::id.eq(committees::validator_node_id)))
+            .select(validator_nodes::all_columns)
+            .filter(committees::epoch.eq(epoch.as_u64() as i64))
+            .filter(committees::shard_start.eq(shard_group.start().as_u32() as i32))
+            .filter(committees::shard_end.eq(shard_group.end().as_u32() as i32))
+            .order_by(sql_random())
+            .first::<DbValidatorNode>(tx.connection())
+            .map_err(|source| SqliteStorageError::DieselError {
+                source,
+                operation: "get::validator_node".to_string(),
+            })?;
+
+        let vn = vn.try_into()?;
+        Ok(vn)
+    }
+
     fn get_validator_nodes_within_start_epoch(
         &self,
         tx: &mut Self::DbTransaction<'_>,

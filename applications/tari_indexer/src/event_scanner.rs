@@ -145,6 +145,7 @@ impl EventScanner {
     }
 
     async fn scan_events_of_epoch(&self, epoch: Epoch) -> Result<usize, anyhow::Error> {
+        // TODO(perf): This call can become expensive. Lazily load a committee member from all shard groups
         let committees = self.epoch_manager.get_committees(epoch).await?;
 
         let mut event_count = 0;

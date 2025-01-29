@@ -32,5 +32,6 @@ mod service;
 mod cmap_semaphore;
 mod sync_worker;
 mod template_config;
+mod template_sync_task;
 
 pub use template_config::TemplateConfig;

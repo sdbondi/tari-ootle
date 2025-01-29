@@ -169,6 +169,13 @@ pub trait GlobalDbAdapter: AtomicDb + Send + Sync + Clone {
         shard_group: ShardGroup,
     ) -> Result<HashMap<ShardGroup, Committee<Self::Addr>>, Self::Error>;
 
+    fn validator_nodes_get_random_committee_member_from_shard_group(
+        &self,
+        tx: &mut Self::DbTransaction<'_>,
+        epoch: Epoch,
+        shard_group: ShardGroup,
+    ) -> Result<ValidatorNode<Self::Addr>, Self::Error>;
+
     fn validator_nodes_get_committees_for_epoch(
         &self,
         tx: &mut Self::DbTransaction<'_>,

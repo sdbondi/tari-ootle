@@ -60,7 +60,10 @@ use super::{
     TemplateManager,
 };
 use crate::template_manager::{
-    implementation::sync_worker::TemplateSyncRequest,
+    implementation::{
+        sync_worker::TemplateSyncRequest,
+        template_sync_task::{template_sync_task, TemplateSyncClientTask},
+    },
     interface::{
         SyncTemplatesResult,
         Template,
@@ -407,156 +410,23 @@ impl<TAddr: NodeAddressable + 'static> TemplateManagerService<TAddr> {
         info!(target: LOG_TARGET, "New templates sync request for {} templates.", addresses.len());
 
         // check for existing templates
-        let mut existing_templates = vec![];
-        for (i, address) in addresses.iter().enumerate() {
-            if self.manager.template_exists(address, Some(TemplateStatus::Active))? {
-                existing_templates.push(i);
+        let mut templates_to_sync = vec![];
+        for address in addresses {
+            // TODO: there are other status which may warrant not syncing
+            if !self.manager.template_exists(&address, Some(TemplateStatus::Active))? {
+                templates_to_sync.push(address);
             }
         }
-        existing_templates.iter().for_each(|i| {
-            addresses.remove(*i);
-        });
 
         // sync
         let client_factory = self.client_factory.clone();
-        let template_manager = Arc::new(self.manager.clone());
+        let template_manager = self.manager.clone();
         let epoch_manager = self.epoch_manager.clone();
-        let current_epoch = self.epoch_manager.current_epoch().await?;
 
         // start a task to not block other calls in service
-        Ok(tokio::spawn(async move {
-            let address_batches = addresses.chunks(100);
-            for addresses in address_batches {
-                // collect and map all template addresses to committees in the current batch
-                let mut committees = HashMap::<Committee<PeerAddress>, Vec<TemplateAddress>>::new();
-                for address in addresses {
-                    let substate_id = SubstateId::from(PublishedTemplateAddress::from_hash(*address));
-                    let owner_committee = epoch_manager
-                        .get_committee_for_substate(
-                            current_epoch,
-                            SubstateAddress::from_substate_id(&substate_id, 0), /* at the moment we do not support a
-                                                                                 * template update directly on the
-                                                                                 * same substate */
-                        )
-                        .await?;
-
-                    if let Some(committee_template_addresses) = committees.get_mut(&owner_committee) {
-                        committee_template_addresses.push(*address);
-                    } else {
-                        committees.insert(owner_committee, vec![*address]);
-                    }
-                }
-
-                // do syncing
-                for (committee, addresses) in &mut committees {
-                    let mut sync_successful = false;
-                    for (addr, _) in &committee.members {
-                        // syncing current part of batch
-                        match Self::vn_client(client_factory.clone(), addr).await {
-                            Ok(mut client) => {
-                                match client
-                                    .sync_templates(SyncTemplatesRequest {
-                                        addresses: addresses.iter().map(|address| address.to_vec()).collect(),
-                                    })
-                                    .await
-                                {
-                                    Ok(mut stream) => {
-                                        while let Some(result) = stream.next().await {
-                                            match result {
-                                                Ok(resp) => {
-                                                    // code
-                                                    let mut compiled_code = None;
-                                                    let mut flow_json = None;
-                                                    let mut manifest = None;
-                                                    let template_type: DbTemplateType;
-                                                    let bin_hash = FixedHash::from(
-                                                        template_hasher32()
-                                                            .chain(resp.binary.as_slice())
-                                                            .result()
-                                                            .into_array(),
-                                                    );
-                                                    match resp.template_type() {
-                                                        TemplateType::Wasm => {
-                                                            compiled_code = Some(resp.binary);
-                                                            template_type = DbTemplateType::Wasm;
-                                                        },
-                                                        TemplateType::Manifest => {
-                                                            manifest = Some(String::from_utf8(resp.binary)?);
-                                                            template_type = DbTemplateType::Manifest;
-                                                        },
-                                                        TemplateType::Flow => {
-                                                            flow_json = Some(String::from_utf8(resp.binary)?);
-                                                            template_type = DbTemplateType::Flow;
-                                                        },
-                                                    }
-
-                                                    // get template address
-                                                    let template_address_result =
-                                                        TemplateAddress::try_from_vec(resp.address);
-                                                    if let Err(error) = template_address_result {
-                                                        error!(target: LOG_TARGET, "Invalid template address: {error:?}");
-                                                        continue;
-                                                    }
-                                                    let template_address = template_address_result.unwrap();
-
-                                                    if let Err(error) = template_manager.update_template(
-                                                        template_address,
-                                                        DbTemplateUpdate::template(
-                                                            FixedHash::try_from(resp.author_public_key.to_vec())?,
-                                                            Some(bin_hash),
-                                                            resp.template_name,
-                                                            template_type,
-                                                            compiled_code,
-                                                            flow_json,
-                                                            manifest,
-                                                        ),
-                                                    ) {
-                                                        error!(target: LOG_TARGET, "Failed to add new template: {error:?}");
-                                                        continue;
-                                                    }
-
-                                                    // remove from addresses to be able to send back a list of not
-                                                    // synced templates (if any)
-                                                    for (i, addr) in addresses.iter().enumerate() {
-                                                        if *addr == template_address {
-                                                            addresses.remove(i);
-                                                            break;
-                                                        }
-                                                    }
-
-                                                    sync_successful = true;
-                                                    info!(target: LOG_TARGET, "✅ Template synced successfully: {}", template_address);
-                                                    break;
-                                                },
-                                                Err(error) => {
-                                                    warn!(target: LOG_TARGET, "Can't get stream of templates from VN({addr}): {error:?}");
-                                                },
-                                            }
-                                        }
-                                    },
-                                    Err(error) => {
-                                        warn!(target: LOG_TARGET, "Can't get stream of templates from VN({addr}): {error:?}");
-                                    },
-                                }
-                            },
-                            Err(error) => {
-                                warn!(target: LOG_TARGET, "Failed to connect to VN at {addr}: {error:?}");
-                            },
-                        }
-
-                        if sync_successful {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if addresses.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(addresses))
-            }
-        }))
+        Ok(tokio::spawn(
+            TemplateSyncClientTask::new(client_factory, template_manager, epoch_manager, templates_to_sync).run(),
+        ))
     }
 
     /// Creates a new validator node client.

@@ -1,7 +1,7 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::cmp;
+use std::{cmp, mem};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -281,33 +281,35 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
     /// If any of the templates were not synced, keep retries to sync those again until everything is synced.
     async fn sync_templates(
         &self,
-        templates: Vec<TemplateAddress>,
+        mut templates: Vec<TemplateAddress>,
         max_sync_tries: Option<u64>,
     ) -> Result<(), CommsRpcConsensusSyncError> {
-        let mut sync_tries = 0;
-        let handle = self.template_manager.sync_templates(templates).await?;
-        if let Some(mut missing_templates) = handle
-            .await
-            .map_err(|error| CommsRpcConsensusSyncError::TaskJoin(error.to_string()))??
-        {
-            sync_tries += 1;
-            warn!(target: LOG_TARGET, "⚠️ Some templates were not synchronized ({} of them), retry the rest (tried to sync {} times already)!", missing_templates.len(), sync_tries);
-            while let Some(current_missing_templates) = self
-                .template_manager
-                .sync_templates(missing_templates.clone())
+        if templates.is_empty() {
+            return Ok(());
+        }
+
+        let mut sync_attempts = 0;
+        loop {
+            let current_missing_templates = self
+                .template_manager_service
+                .sync_templates(mem::take(&mut templates))
                 .await?
                 .await
-                .map_err(|error| CommsRpcConsensusSyncError::TaskJoin(error.to_string()))??
-            {
-                if let Some(max_sync_tries) = max_sync_tries {
-                    if sync_tries >= max_sync_tries {
-                        return Err(CommsRpcConsensusSyncError::TemplateSyncFailure);
-                    }
-                }
-                missing_templates = current_missing_templates;
-                sync_tries += 1;
-                warn!(target: LOG_TARGET, "⚠️ Some templates were not synchronized ({} of them), retry the rest (tried to sync {} times already)!", missing_templates.len(), sync_tries);
+                .map_err(|error| CommsRpcConsensusSyncError::TaskJoin(error.to_string()))??;
+
+            if current_missing_templates.is_empty() {
+                info!(target: LOG_TARGET, "♻️ All templates were synchronized after {} attempt(s)", sync_attempts);
+                break;
             }
+
+            if let Some(max_sync_tries) = max_sync_tries {
+                if sync_attempts >= max_sync_tries {
+                    return Err(CommsRpcConsensusSyncError::TemplateSyncFailure);
+                }
+            }
+            templates = current_missing_templates;
+            sync_attempts += 1;
+            warn!(target: LOG_TARGET, "⚠️ {} template(s) are not synchronized, retrying... tried to sync {} times already!", templates.len(), sync_attempts);
         }
         Ok(())
     }

@@ -85,7 +85,7 @@ impl TemplateManagerHandle {
     pub async fn sync_templates(
         &self,
         addresses: Vec<TemplateAddress>,
-    ) -> Result<JoinHandle<Result<Option<Vec<TemplateAddress>>, TemplateManagerError>>, TemplateManagerError> {
+    ) -> Result<JoinHandle<Result<Vec<TemplateAddress>, TemplateManagerError>>, TemplateManagerError> {
         let (tx, rx) = oneshot::channel();
         self.request_tx
             .send(TemplateManagerRequest::SyncTemplates { addresses, reply: tx })

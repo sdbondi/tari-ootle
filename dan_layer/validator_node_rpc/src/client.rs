@@ -86,6 +86,7 @@ impl SubstateResult {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct TariValidatorNodeRpcClient<TMsg: MessageSpec> {
     address: PeerAddress,
     pool: RpcPool<TMsg>,

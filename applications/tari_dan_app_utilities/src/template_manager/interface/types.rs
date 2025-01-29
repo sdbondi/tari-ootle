@@ -100,7 +100,7 @@ impl From<DbTemplate> for Template {
     }
 }
 
-pub type SyncTemplatesResult = JoinHandle<Result<Option<Vec<TemplateAddress>>, TemplateManagerError>>;
+pub type SyncTemplatesResult = JoinHandle<Result<Vec<TemplateAddress>, TemplateManagerError>>;
 
 pub type Reply<T> = oneshot::Sender<Result<T, TemplateManagerError>>;
 

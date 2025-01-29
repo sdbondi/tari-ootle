@@ -148,6 +148,16 @@ impl<'a, 'tx, TGlobalDbAdapter: GlobalDbAdapter> ValidatorNodeDb<'a, 'tx, TGloba
             .map_err(TGlobalDbAdapter::Error::into)
     }
 
+    pub fn get_random_committee_member_from_shard_group(
+        &mut self,
+        epoch: Epoch,
+        shard_group: ShardGroup,
+    ) -> Result<ValidatorNode<TGlobalDbAdapter::Addr>, TGlobalDbAdapter::Error> {
+        self.backend
+            .validator_nodes_get_random_committee_member_from_shard_group(self.tx, epoch, shard_group)
+            .map_err(TGlobalDbAdapter::Error::into)
+    }
+
     pub fn get_committees(
         &mut self,
         epoch: Epoch,

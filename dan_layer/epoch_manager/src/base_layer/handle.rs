@@ -19,7 +19,7 @@ use tari_sidechain::EvictionProof;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::{
-    base_layer::types::EpochManagerRequest,
+    base_layer::{types::EpochManagerRequest, NetworkCommitteeInfo},
     error::EpochManagerError,
     traits::EpochManagerReader,
     EpochManagerEvent,
@@ -176,6 +176,34 @@ impl<TAddr: NodeAddressable> EpochManagerHandle<TAddr> {
         let (tx, rx) = oneshot::channel();
         self.tx_request
             .send(EpochManagerRequest::GetCommittees { epoch, reply: tx })
+            .await
+            .map_err(|_| EpochManagerError::SendError)?;
+
+        rx.await.map_err(|_| EpochManagerError::ReceiveError)?
+    }
+
+    pub async fn get_random_committee_member_from_shard_group(
+        &self,
+        epoch: Epoch,
+        shard_group: ShardGroup,
+    ) -> Result<ValidatorNode<Self::Addr>, EpochManagerError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx_request
+            .send(EpochManagerRequest::GetRandomCommitteeMemberFromShardGroup {
+                epoch,
+                shard_group,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| EpochManagerError::SendError)?;
+
+        rx.await.map_err(|_| EpochManagerError::ReceiveError)?
+    }
+
+    pub async fn get_network_committee_info(&self, epoch: Epoch) -> Result<NetworkCommitteeInfo, EpochManagerError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx_request
+            .send(EpochManagerRequest::GetNetworkCommitteeInfo { epoch, reply: tx })
             .await
             .map_err(|_| EpochManagerError::SendError)?;
 
