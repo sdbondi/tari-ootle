@@ -378,6 +378,10 @@ impl SubstateData {
     pub fn into_substate(self) -> Substate {
         Substate::new(self.version, self.substate_value)
     }
+
+    pub fn to_value_hash(&self) -> FixedHash {
+        hash_substate(&self.substate_value, self.version)
+    }
 }
 
 impl TryFrom<SubstateRecord> for SubstateData {

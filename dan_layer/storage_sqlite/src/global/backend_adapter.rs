@@ -67,7 +67,7 @@ use tari_dan_storage::{
     AtomicDb,
 };
 use tari_engine_types::TemplateAddress;
-use tari_utilities::ByteArray;
+use tari_utilities::{hex, ByteArray};
 
 use super::{models, models::DbValidatorNode};
 use crate::{
@@ -82,7 +82,6 @@ use crate::{
             TemplateModel,
             TemplateUpdateModel,
         },
-        schema::templates,
         serialization::serialize_json,
     },
     SqliteTransaction,
@@ -189,9 +188,9 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
         tx: &mut Self::DbTransaction<'_>,
         key: &MetadataKey,
     ) -> Result<Option<T>, Self::Error> {
-        use crate::global::schema::metadata::dsl;
+        use crate::global::schema::metadata;
 
-        let row: Option<MetadataModel> = dsl::metadata
+        let row: Option<MetadataModel> = metadata::table
             .find(key.as_key_bytes())
             .first(tx.connection())
             .optional()
@@ -205,8 +204,8 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
     }
 
     fn get_template(&self, tx: &mut Self::DbTransaction<'_>, key: &[u8]) -> Result<Option<DbTemplate>, Self::Error> {
-        use crate::global::schema::templates::dsl;
-        let template: Option<TemplateModel> = dsl::templates
+        use crate::global::schema::templates;
+        let template: Option<TemplateModel> = templates::table
             .filter(templates::template_address.eq(key))
             .first(tx.connection())
             .optional()
@@ -235,8 +234,9 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
     }
 
     fn get_templates(&self, tx: &mut Self::DbTransaction<'_>, limit: usize) -> Result<Vec<DbTemplate>, Self::Error> {
-        use crate::global::schema::templates::dsl;
-        let mut templates = dsl::templates
+        use crate::global::schema::templates;
+
+        let mut templates = templates::table
             .filter(templates::status.eq(TemplateStatus::Active.as_str()))
             .into_boxed();
 
@@ -262,9 +262,9 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
         tx: &mut Self::DbTransaction<'_>,
         addresses: Vec<&[u8]>,
     ) -> Result<Vec<DbTemplate>, Self::Error> {
-        use crate::global::schema::templates::dsl;
+        use crate::global::schema::templates;
 
-        dsl::templates
+        templates::table
             .filter(templates::status.eq(TemplateStatus::Active.as_str()))
             .filter(templates::template_address.eq_any(addresses))
             .get_results::<TemplateModel>(tx.connection())
@@ -282,8 +282,8 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
         tx: &mut Self::DbTransaction<'_>,
         limit: usize,
     ) -> Result<Vec<DbTemplate>, Self::Error> {
-        use crate::global::schema::templates::dsl;
-        let templates = dsl::templates
+        use crate::global::schema::templates;
+        let templates = templates::table
             .filter(templates::status.eq(TemplateStatus::Pending.as_str()))
             .limit(i64::try_from(limit).unwrap_or(i64::MAX))
             .get_results::<TemplateModel>(tx.connection())
@@ -314,6 +314,7 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
     }
 
     fn insert_template(&self, tx: &mut Self::DbTransaction<'_>, item: DbTemplate) -> Result<(), Self::Error> {
+        use crate::global::schema::templates;
         let new_template = NewTemplateModel {
             author_public_key: item.author_public_key.to_vec(),
             template_name: item.template_name,
@@ -343,6 +344,8 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
         key: &[u8],
         template: DbTemplateUpdate,
     ) -> Result<(), Self::Error> {
+        use crate::global::schema::templates;
+
         let model = TemplateUpdateModel {
             author_public_key: template.author_public_key.map(|hash| hash.to_vec()),
             expected_hash: template.expected_hash.map(|hash| hash.to_vec()),
@@ -371,9 +374,11 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
         key: &[u8],
         status: Option<TemplateStatus>,
     ) -> Result<bool, Self::Error> {
-        use crate::global::schema::templates::dsl;
+        use crate::global::schema::templates;
 
-        let mut query = dsl::templates.into_boxed().filter(templates::template_address.eq(key));
+        let mut query = templates::table
+            .filter(templates::template_address.eq(key))
+            .into_boxed();
         if let Some(status) = status {
             query = query.filter(templates::status.eq(status.as_str()));
         }
@@ -389,14 +394,27 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
         Ok(result > 0)
     }
 
-    fn delete_template(&self, tx: &mut Self::DbTransaction<'_>, key: &[u8]) -> Result<(), Self::Error> {
-        use crate::global::schema::templates::dsl;
-        delete(dsl::templates.filter(templates::template_address.eq(key)))
+    fn set_status(
+        &self,
+        tx: &mut Self::DbTransaction<'_>,
+        key: &TemplateAddress,
+        status: TemplateStatus,
+    ) -> Result<(), Self::Error> {
+        use crate::global::schema::templates;
+        let num_affected = diesel::update(templates::table)
+            .filter(templates::template_address.eq(key.as_ref()))
+            .set(templates::status.eq(status.as_str()))
             .execute(tx.connection())
             .map_err(|source| SqliteStorageError::DieselError {
                 source,
-                operation: "delete::template".to_string(),
+                operation: "set_status".to_string(),
             })?;
+        if num_affected == 0 {
+            return Err(SqliteStorageError::NotFound {
+                item: "template",
+                key: hex::to_hex(&key),
+            });
+        }
         Ok(())
     }
 

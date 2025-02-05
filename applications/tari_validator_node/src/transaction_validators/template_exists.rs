@@ -28,27 +28,34 @@ impl<TAddr: NodeAddressable> Validator<Transaction> for TemplateExistsValidator<
     type Error = TransactionValidationError;
 
     fn validate(&self, _context: &(), transaction: &Transaction) -> Result<(), TransactionValidationError> {
-        let instructions = transaction.instructions();
+        let instructions = transaction.instructions().iter().chain(transaction.fee_instructions());
         for instruction in instructions {
             match instruction {
                 Instruction::CallFunction { template_address, .. } => {
-                    let template_exists = self
+                    // Template may be Pending sync. In this case, we can process the transaction at the consensus
+                    // level, but not execute.
+                    let template_exists = self.template_manager.template_exists(template_address, None)?;
+                    if !template_exists {
+                        warn!(target: LOG_TARGET, "TemplateExistsValidator - FAIL: Template not found");
+                        return Err(TransactionValidationError::InvalidTemplateAddress(
+                            TemplateManagerError::TemplateNotFound {
+                                address: *template_address,
+                            },
+                        ));
+                    }
+
+                    let template_is_invalid = self
                         .template_manager
-                        .template_exists(template_address, Some(TemplateStatus::Active));
-                    match template_exists {
-                        Err(e) => return Err(TransactionValidationError::InvalidTemplateAddress(e)),
-                        Ok(false) => {
-                            warn!(target: LOG_TARGET, "TemplateExistsValidator - FAIL: Template not found");
-                            return Err(TransactionValidationError::InvalidTemplateAddress(
-                                TemplateManagerError::TemplateNotFound {
-                                    address: *template_address,
-                                },
-                            ));
-                        },
-                        _ => continue,
+                        .template_exists(template_address, Some(TemplateStatus::Invalid))?;
+                    if template_is_invalid {
+                        // This should only be possible when templates come from L1
+                        warn!(target: LOG_TARGET, "TemplateExistsValidator - FAIL: Template {template_address} is invalid");
+                        return Err(TransactionValidationError::InvalidTemplateAddress(
+                            TemplateManagerError::InvalidBaseLayerTemplate,
+                        ));
                     }
                 },
-                _ => continue,
+                _ => {},
             }
         }
 

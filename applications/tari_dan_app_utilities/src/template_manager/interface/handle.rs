@@ -31,6 +31,7 @@ use tokio::{
 };
 
 use super::{types::TemplateManagerRequest, Template, TemplateExecutable, TemplateManagerError, TemplateMetadata};
+use crate::template_manager::interface::types::TemplateChange;
 
 #[derive(Debug, Clone)]
 pub struct TemplateManagerHandle {
@@ -88,6 +89,25 @@ impl TemplateManagerHandle {
         let (tx, rx) = oneshot::channel();
         self.request_tx
             .send(TemplateManagerRequest::SyncTemplates { addresses, reply: tx })
+            .await
+            .map_err(|_| TemplateManagerError::ChannelClosed)?;
+        rx.await.map_err(|_| TemplateManagerError::ChannelClosed)?
+    }
+
+    pub async fn enqueue_template_changes(
+        &self,
+        template_changes: Vec<TemplateChange>,
+    ) -> Result<(), TemplateManagerError> {
+        if template_changes.is_empty() {
+            return Ok(());
+        }
+
+        let (tx, rx) = oneshot::channel();
+        self.request_tx
+            .send(TemplateManagerRequest::EnqueueTemplateChanges {
+                template_changes,
+                reply: tx,
+            })
             .await
             .map_err(|_| TemplateManagerError::ChannelClosed)?;
         rx.await.map_err(|_| TemplateManagerError::ChannelClosed)?

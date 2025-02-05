@@ -51,7 +51,7 @@ use tari_validator_node_rpc::{
     rpc_service::ValidatorNodeRpcClient,
 };
 use tokio::{
-    sync::{mpsc, mpsc::Receiver, oneshot},
+    sync::{mpsc, oneshot},
     task::JoinHandle,
 };
 
@@ -59,18 +59,22 @@ use super::{
     downloader::{DownloadRequest, DownloadResult},
     TemplateManager,
 };
-use crate::template_manager::interface::{
-    SyncTemplatesResult,
-    Template,
-    TemplateExecutable,
-    TemplateManagerError,
-    TemplateManagerRequest,
+use crate::template_manager::{
+    implementation::sync_worker::TemplateSyncRequest,
+    interface::{
+        SyncTemplatesResult,
+        Template,
+        TemplateChange,
+        TemplateExecutable,
+        TemplateManagerError,
+        TemplateManagerRequest,
+    },
 };
 
 const LOG_TARGET: &str = "tari::dan::template_manager";
 
 pub struct TemplateManagerService<TAddr> {
-    rx_request: Receiver<TemplateManagerRequest>,
+    rx_request: mpsc::Receiver<TemplateManagerRequest>,
     manager: TemplateManager<TAddr>,
     epoch_manager: EpochManagerHandle<PeerAddress>,
     completed_downloads: mpsc::Receiver<DownloadResult>,
@@ -81,7 +85,7 @@ pub struct TemplateManagerService<TAddr> {
 
 impl<TAddr: NodeAddressable + 'static> TemplateManagerService<TAddr> {
     pub fn spawn(
-        rx_request: Receiver<TemplateManagerRequest>,
+        rx_request: mpsc::Receiver<TemplateManagerRequest>,
         manager: TemplateManager<TAddr>,
         epoch_manager: EpochManagerHandle<PeerAddress>,
         download_queue: mpsc::Sender<DownloadRequest>,
@@ -197,6 +201,13 @@ impl<TAddr: NodeAddressable + 'static> TemplateManagerService<TAddr> {
                 handle(reply, self.handle_get_templates_by_addresses(addresses))
             },
             SyncTemplates { addresses, reply } => handle(reply, self.handle_templates_sync_request(addresses).await),
+            EnqueueTemplateChanges {
+                template_changes,
+                reply,
+            } => handle(
+                reply,
+                self.handle_enqueue_template_changes_request(template_changes).await,
+            ),
         }
     }
 
@@ -359,12 +370,40 @@ impl<TAddr: NodeAddressable + 'static> TemplateManagerService<TAddr> {
         Ok(())
     }
 
+    async fn handle_enqueue_template_changes_request(
+        &mut self,
+        changes: Vec<TemplateChange>,
+    ) -> Result<(), TemplateManagerError> {
+        let mut sync_requests = vec![];
+        for change in changes {
+            match change {
+                TemplateChange::Add {
+                    template_address,
+                    binary_hash,
+                } => {
+                    sync_requests.push(TemplateSyncRequest {
+                        address: template_address.as_hash(),
+                        expected_binary_hash: binary_hash,
+                    });
+                },
+                TemplateChange::Deprecate { template_address } => {
+                    self.manager.deprecate_template(&template_address.as_hash())?;
+                },
+            }
+        }
+        self.sync_worker.enqueue_all(sync_requests).await?;
+        Ok(())
+    }
+
     /// Starts an async task to synchronize templates from the right committees.
     /// This method returns a [`JoinHandle`] which can be .await-ed to get the results, or it can be ignored,
     /// the process will be running anyway async.
     #[allow(clippy::mutable_key_type)]
     #[allow(clippy::too_many_lines)]
-    async fn handle_templates_sync_request(&self, mut addresses: Vec<TemplateAddress>) -> SyncTemplatesResult {
+    async fn handle_templates_sync_request(
+        &self,
+        mut addresses: Vec<TemplateAddress>,
+    ) -> Result<SyncTemplatesResult, TemplateManagerError> {
         info!(target: LOG_TARGET, "New templates sync request for {} templates.", addresses.len());
 
         // check for existing templates

@@ -10,7 +10,7 @@ use tari_dan_app_utilities::{
 };
 use tari_dan_common_types::PeerAddress;
 use tari_epoch_manager::base_layer::EpochManagerHandle;
-use tari_rpc_state_sync::RpcStateSyncManager;
+use tari_rpc_state_sync::RpcStateSyncClientProtocol;
 use tari_state_store_sqlite::SqliteStateStore;
 
 #[cfg(feature = "metrics")]
@@ -43,7 +43,7 @@ impl ConsensusSpec for TariConsensusSpec {
     type OutboundMessaging = ConsensusOutboundMessaging<NopLogger>;
     type SignatureService = TariSignatureService;
     type StateStore = SqliteStateStore<Self::Addr>;
-    type SyncManager = RpcStateSyncManager<Self, Self::Addr>;
+    type SyncManager = RpcStateSyncClientProtocol<Self, Self::Addr>;
     type TransactionExecutor = TariDanBlockTransactionExecutor<
         TariDanTransactionProcessor<TemplateManager<PeerAddress>>,
         ConsensusTransactionValidator,

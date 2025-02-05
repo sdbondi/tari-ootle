@@ -140,23 +140,17 @@ impl<TAddr: NodeAddressable> TemplateManager<TAddr> {
             return Ok(true);
         }
         let mut tx = self.global_db.create_transaction()?;
-        self.global_db
-            .templates(&mut tx)
-            .template_exists(address, status)
-            .map_err(|_| TemplateManagerError::TemplateNotFound { address: *address })
+        let exists = self.global_db.templates(&mut tx).template_exists(address, status)?;
+        Ok(exists)
     }
 
     /// Deletes a template if exists.
-    pub fn delete_template(&self, address: &TemplateAddress) -> Result<(), TemplateManagerError> {
-        if !self.template_exists(address, None)? {
-            return Ok(());
-        }
-
+    pub fn deprecate_template(&self, address: &TemplateAddress) -> Result<(), TemplateManagerError> {
         let mut tx = self.global_db.create_transaction()?;
         self.global_db
             .templates(&mut tx)
-            .delete_template(address)
-            .map_err(|_| TemplateManagerError::TemplateDeleteFailed { address: *address })
+            .set_status(address, TemplateStatus::Deprecated)?;
+        Ok(())
     }
 
     /// Fetching all templates by addresses.

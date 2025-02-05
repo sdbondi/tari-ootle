@@ -30,6 +30,7 @@ pub use manager::TemplateManager;
 mod service;
 
 mod cmap_semaphore;
+mod sync_worker;
 mod template_config;
 
 pub use template_config::TemplateConfig;

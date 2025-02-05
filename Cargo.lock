@@ -9465,7 +9465,6 @@ name = "tari_consensus"
 version = "0.8.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "indexmap 2.6.0",
  "log",
  "serde",
@@ -10302,7 +10301,6 @@ dependencies = [
  "async-trait",
  "futures 0.3.31",
  "log",
- "tari_common",
  "tari_consensus",
  "tari_dan_app_utilities",
  "tari_dan_common_types",
@@ -10312,7 +10310,6 @@ dependencies = [
  "tari_epoch_manager",
  "tari_rpc_framework",
  "tari_state_tree",
- "tari_transaction",
  "tari_validator_node_rpc",
  "thiserror 1.0.68",
 ]

@@ -24,11 +24,23 @@ use reqwest::Url;
 use tari_common_types::types::{FixedHash, PublicKey};
 use tari_dan_common_types::Epoch;
 use tari_dan_storage::global::{DbTemplate, DbTemplateType, TemplateStatus};
-use tari_template_lib::models::TemplateAddress;
+use tari_engine_types::published_template::PublishedTemplateAddress;
+use tari_template_lib::{models::TemplateAddress, Hash};
 use tari_validator_node_client::types::TemplateAbi;
 use tokio::{sync::oneshot, task::JoinHandle};
 
 use super::TemplateManagerError;
+
+#[derive(Debug, Clone)]
+pub enum TemplateChange {
+    Add {
+        template_address: PublishedTemplateAddress,
+        binary_hash: FixedHash,
+    },
+    Deprecate {
+        template_address: PublishedTemplateAddress,
+    },
+}
 
 #[derive(Debug, Clone)]
 pub struct TemplateMetadata {
@@ -88,8 +100,9 @@ impl From<DbTemplate> for Template {
     }
 }
 
-pub type SyncTemplatesResult =
-    Result<JoinHandle<Result<Option<Vec<TemplateAddress>>, TemplateManagerError>>, TemplateManagerError>;
+pub type SyncTemplatesResult = JoinHandle<Result<Option<Vec<TemplateAddress>>, TemplateManagerError>>;
+
+pub type Reply<T> = oneshot::Sender<Result<T, TemplateManagerError>>;
 
 #[derive(Debug)]
 pub enum TemplateManagerRequest {
@@ -99,31 +112,35 @@ pub enum TemplateManagerRequest {
         template: TemplateExecutable,
         template_name: Option<String>,
         epoch: Epoch,
-        reply: oneshot::Sender<Result<(), TemplateManagerError>>,
+        reply: Reply<()>,
     },
     GetTemplate {
         address: TemplateAddress,
-        reply: oneshot::Sender<Result<Template, TemplateManagerError>>,
+        reply: Reply<Template>,
     },
     GetTemplates {
         limit: usize,
-        reply: oneshot::Sender<Result<Vec<TemplateMetadata>, TemplateManagerError>>,
+        reply: Reply<Vec<TemplateMetadata>>,
     },
     GetTemplatesByAddresses {
         addresses: Vec<TemplateAddress>,
-        reply: oneshot::Sender<Result<Vec<Template>, TemplateManagerError>>,
+        reply: Reply<Vec<Template>>,
     },
     LoadTemplateAbi {
         address: TemplateAddress,
-        reply: oneshot::Sender<Result<TemplateAbi, TemplateManagerError>>,
+        reply: Reply<TemplateAbi>,
     },
     TemplateExists {
         address: TemplateAddress,
         status: Option<TemplateStatus>,
-        reply: oneshot::Sender<Result<bool, TemplateManagerError>>,
+        reply: Reply<bool>,
     },
     SyncTemplates {
         addresses: Vec<TemplateAddress>,
-        reply: oneshot::Sender<SyncTemplatesResult>,
+        reply: Reply<SyncTemplatesResult>,
+    },
+    EnqueueTemplateChanges {
+        template_changes: Vec<TemplateChange>,
+        reply: Reply<()>,
     },
 }

@@ -47,8 +47,6 @@ pub enum TemplateManagerError {
     TemplateNotFound { address: TemplateAddress },
     #[error("Templates not found: {addresses:?}")]
     TemplatesNotFound { addresses: Vec<TemplateAddress> },
-    #[error("Template failed to delete: {address}")]
-    TemplateDeleteFailed { address: TemplateAddress },
     #[error("The template is unavailable for use")]
     TemplateUnavailable,
     #[error(transparent)]
@@ -71,6 +69,11 @@ pub enum TemplateManagerError {
 
 impl IsNotFoundError for TemplateManagerError {
     fn is_not_found_error(&self) -> bool {
-        matches!(self, Self::TemplateNotFound { .. })
+        match self {
+            TemplateManagerError::TemplateNotFound { .. } => true,
+            TemplateManagerError::SqliteStorageError(e) => e.is_not_found_error(),
+            TemplateManagerError::StorageError(e) => e.is_not_found_error(),
+            _ => false,
+        }
     }
 }

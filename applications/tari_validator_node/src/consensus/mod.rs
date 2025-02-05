@@ -14,7 +14,7 @@ use tari_dan_app_utilities::{
 use tari_dan_common_types::PeerAddress;
 use tari_dan_storage::consensus_models::TransactionPool;
 use tari_epoch_manager::base_layer::EpochManagerHandle;
-use tari_rpc_state_sync::RpcStateSyncManager;
+use tari_rpc_state_sync::RpcStateSyncClientProtocol;
 use tari_shutdown::ShutdownSignal;
 use tari_state_store_sqlite::SqliteStateStore;
 use tari_transaction::Transaction;
@@ -104,7 +104,7 @@ pub async fn spawn(
     let context = ConsensusWorkerContext {
         epoch_manager: epoch_manager.clone(),
         hotstuff: hotstuff_worker,
-        state_sync: RpcStateSyncManager::new(
+        state_sync: RpcStateSyncClientProtocol::new(
             epoch_manager,
             store,
             client_factory,

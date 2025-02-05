@@ -74,8 +74,8 @@ impl<'a, 'tx, TGlobalDbAdapter: GlobalDbAdapter> TemplateDb<'a, 'tx, TGlobalDbAd
         self.backend.template_exists(self.tx, key, status)
     }
 
-    pub fn delete_template(&mut self, key: &[u8]) -> Result<(), TGlobalDbAdapter::Error> {
-        self.backend.delete_template(self.tx, key)
+    pub fn set_status(&mut self, key: &TemplateAddress, status: TemplateStatus) -> Result<(), TGlobalDbAdapter::Error> {
+        self.backend.set_status(self.tx, key, status)
     }
 }
 

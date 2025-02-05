@@ -31,7 +31,7 @@ use std::{
 /// assert_eq!(format!("answer: {}", none_value.display()), "answer: None");
 /// assert_eq!(
 ///     format!("list: {:.2}", vec![1.01f32, 2f32, 3f32].display()),
-///     "list: 1.01, 2.00, 3.00"
+///     "list: [1.01, 2.00, 3.00]"
 /// );
 /// ```
 pub trait Displayable {

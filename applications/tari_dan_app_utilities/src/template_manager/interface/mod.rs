@@ -24,6 +24,6 @@ mod error;
 mod handle;
 mod types;
 
-pub use error::TemplateManagerError;
-pub use handle::TemplateManagerHandle;
-pub use types::{SyncTemplatesResult, Template, TemplateExecutable, TemplateManagerRequest, TemplateMetadata};
+pub use error::*;
+pub use handle::*;
+pub use types::*;
