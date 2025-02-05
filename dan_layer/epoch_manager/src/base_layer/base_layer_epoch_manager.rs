@@ -641,11 +641,12 @@ where
     pub(crate) fn get_random_committee_member_from_shard_group(
         &self,
         epoch: Epoch,
-        shard_group: ShardGroup,
+        shard_group: Option<ShardGroup>,
+        excluding: Vec<TAddr>,
     ) -> Result<ValidatorNode<TAddr>, EpochManagerError> {
         let mut tx = self.global_db.create_transaction()?;
         let mut validator_node_db = self.global_db.validator_nodes(&mut tx);
-        let vn = validator_node_db.get_random_committee_member_from_shard_group(epoch, shard_group)?;
+        let vn = validator_node_db.get_random_committee_member_from_shard_group(epoch, shard_group, excluding)?;
         Ok(vn)
     }
 

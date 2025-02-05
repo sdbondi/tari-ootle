@@ -9,7 +9,6 @@ use tari_core::transactions::{tari_amount::MicroMinotari, transaction_components
 use tari_dan_common_types::{
     committee::{Committee, CommitteeInfo},
     Epoch,
-    NumPreshards,
     ShardGroup,
     SubstateAddress,
 };
@@ -154,18 +153,8 @@ pub enum EpochManagerRequest<TAddr> {
     },
     GetRandomCommitteeMemberFromShardGroup {
         epoch: Epoch,
-        shard_group: ShardGroup,
+        shard_group: Option<ShardGroup>,
+        excluding: Vec<TAddr>,
         reply: Reply<ValidatorNode<TAddr>>,
     },
-    GetNetworkCommitteeInfo {
-        epoch: Epoch,
-        reply: Reply<NetworkCommitteeInfo>,
-    },
-}
-
-#[derive(Debug)]
-pub struct NetworkCommitteeInfo {
-    pub num_committees: u32,
-    pub committee_sizes: HashMap<ShardGroup, u32>,
-    pub num_preshards: NumPreshards,
 }

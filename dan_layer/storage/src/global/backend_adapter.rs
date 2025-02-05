@@ -173,7 +173,8 @@ pub trait GlobalDbAdapter: AtomicDb + Send + Sync + Clone {
         &self,
         tx: &mut Self::DbTransaction<'_>,
         epoch: Epoch,
-        shard_group: ShardGroup,
+        shard_group: Option<ShardGroup>,
+        excluding: Vec<Self::Addr>,
     ) -> Result<ValidatorNode<Self::Addr>, Self::Error>;
 
     fn validator_nodes_get_committees_for_epoch(

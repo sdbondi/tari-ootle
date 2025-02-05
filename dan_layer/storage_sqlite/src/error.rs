@@ -108,10 +108,13 @@ impl From<FixedHashSizeError> for SqliteStorageError {
 
 impl IsNotFoundError for SqliteStorageError {
     fn is_not_found_error(&self) -> bool {
-        match self {
-            SqliteStorageError::NotFound { .. } => true,
-            SqliteStorageError::DieselError { source, .. } if matches!(source, diesel::result::Error::NotFound) => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            SqliteStorageError::NotFound { .. } |
+                SqliteStorageError::DieselError {
+                    source: diesel::result::Error::NotFound,
+                    ..
+                }
+        )
     }
 }

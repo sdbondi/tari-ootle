@@ -29,7 +29,6 @@ use std::{
 };
 
 use diesel::{
-    dsl::delete,
     sql_query,
     sql_types::{BigInt, Bigint},
     BoolExpressionMethods,
@@ -216,15 +215,14 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
 
         match template {
             Some(t) => Ok(Some(DbTemplate {
-                author_public_key: FixedHash::try_from(t.author_public_key.as_slice())?,
+                author_public_key: PublicKey::from_canonical_bytes(&t.author_public_key)
+                    .map_err(|e| SqliteStorageError::MalformedDbData(format!("Failed to decode public key:{e}")))?,
                 template_name: t.template_name,
                 expected_hash: t.expected_hash.try_into()?,
                 template_address: t.template_address.try_into()?,
                 template_type: t.template_type.parse().expect("DB template type corrupted"),
                 epoch: Epoch(t.epoch as u64),
-                compiled_code: t.compiled_code,
-                flow_json: t.flow_json,
-                manifest: t.manifest,
+                code: t.code,
                 url: t.url,
                 status: t.status.parse().expect("DB status corrupted"),
                 added_at: t.added_at,
@@ -296,14 +294,14 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
             .into_iter()
             .map(|t| {
                 Ok(DbTemplate {
-                    author_public_key: t.author_public_key.try_into()?,
+                    author_public_key: PublicKey::from_canonical_bytes(&t.author_public_key).map_err(|e| {
+                        SqliteStorageError::MalformedDbData(format!("Failed to decode public key: {e}"))
+                    })?,
                     template_name: t.template_name,
                     expected_hash: t.expected_hash.try_into()?,
                     template_address: TemplateAddress::try_from_vec(t.template_address)?,
                     template_type: t.template_type.parse().expect("DB template type corrupted"),
-                    compiled_code: t.compiled_code,
-                    flow_json: t.flow_json,
-                    manifest: t.manifest,
+                    code: t.code,
                     url: t.url,
                     status: t.status.parse().expect("DB status corrupted"),
                     added_at: t.added_at,
@@ -321,11 +319,9 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
             expected_hash: item.expected_hash.to_vec(),
             template_address: item.template_address.to_vec(),
             template_type: item.template_type.as_str().to_string(),
-            compiled_code: item.compiled_code,
+            code: item.code,
             epoch: item.epoch.as_u64() as i64,
-            flow_json: item.flow_json,
             status: item.status.as_str().to_string(),
-            manifest: item.manifest,
         };
         diesel::insert_into(templates::table)
             .values(new_template)
@@ -347,13 +343,12 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
         use crate::global::schema::templates;
 
         let model = TemplateUpdateModel {
-            author_public_key: template.author_public_key.map(|hash| hash.to_vec()),
+            author_public_key: template.author_public_key.map(|pk| pk.to_vec()),
             expected_hash: template.expected_hash.map(|hash| hash.to_vec()),
             template_type: template.template_type.map(|tmpl_type| tmpl_type.as_str().to_string()),
             template_name: template.template_name,
-            compiled_code: template.compiled_code,
-            flow_json: template.flow_json,
-            manifest: template.manifest,
+            epoch: template.epoch.map(|epoch| epoch.as_u64() as i64),
+            code: template.code.map(Some),
             status: template.status.map(|s| s.as_str().to_string()),
         };
         diesel::update(templates::table)
@@ -412,7 +407,7 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
         if num_affected == 0 {
             return Err(SqliteStorageError::NotFound {
                 item: "template",
-                key: hex::to_hex(&key),
+                key: hex::to_hex(key),
             });
         }
         Ok(())
@@ -722,17 +717,26 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
         &self,
         tx: &mut Self::DbTransaction<'_>,
         epoch: Epoch,
-        shard_group: ShardGroup,
+        shard_group: Option<ShardGroup>,
+        excluding: Vec<Self::Addr>,
     ) -> Result<ValidatorNode<Self::Addr>, Self::Error> {
         use crate::global::schema::{committees, validator_nodes};
 
-        let vn = validator_nodes::table
+        let mut query = validator_nodes::table
             .inner_join(committees::table.on(validator_nodes::id.eq(committees::validator_node_id)))
             .select(validator_nodes::all_columns)
             .filter(committees::epoch.eq(epoch.as_u64() as i64))
-            .filter(committees::shard_start.eq(shard_group.start().as_u32() as i32))
-            .filter(committees::shard_end.eq(shard_group.end().as_u32() as i32))
+            .filter(validator_nodes::address.ne_all(excluding.into_iter().map(|a| a.to_string())))
             .order_by(sql_random())
+            .into_boxed();
+
+        if let Some(shard_group) = shard_group {
+            query = query
+                .filter(committees::shard_start.eq(shard_group.start().as_u32() as i32))
+                .filter(committees::shard_end.eq(shard_group.end().as_u32() as i32));
+        }
+
+        let vn = query
             .first::<DbValidatorNode>(tx.connection())
             .map_err(|source| SqliteStorageError::DieselError {
                 source,

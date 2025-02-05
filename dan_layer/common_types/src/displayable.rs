@@ -12,7 +12,7 @@ use std::{
 ///
 /// # Example
 /// ```rust
-/// use tari_dan_common_types::option::Displayable;
+/// use tari_dan_common_types::displayable::Displayable;
 ///
 /// let some_value = Some(42);
 /// let none_value: Option<i32> = None;

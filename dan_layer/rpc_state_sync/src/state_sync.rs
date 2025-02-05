@@ -1,26 +1,20 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::{cmp, mem};
+use std::cmp;
 
 use anyhow::anyhow;
-use async_trait::async_trait;
 use futures::StreamExt;
 use log::*;
 use tari_consensus::{
     hotstuff::substate_store::{ShardScopedTreeStoreReader, ShardScopedTreeStoreWriter},
     traits::{ConsensusSpec, SyncManager, SyncStatus},
 };
-use tari_dan_app_utilities::template_manager::{
-    implementation::TemplateManager,
-    interface::{TemplateChange, TemplateManagerHandle},
-};
 use tari_dan_common_types::{
     committee::Committee,
     optional::Optional,
     shard::Shard,
     Epoch,
-    NodeAddressable,
     NodeHeight,
     PeerAddress,
     ShardGroup,
@@ -39,25 +33,21 @@ use tari_dan_storage::{
         SubstateRecord,
         SubstateUpdate,
     },
-    global::models::ValidatorNode,
     StateStore,
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
     StorageError,
 };
-use tari_engine_types::{
-    substate::{hash_substate, SubstateId},
-    TemplateAddress,
-};
 use tari_epoch_manager::EpochManagerReader;
 use tari_rpc_framework::RpcError;
 use tari_state_tree::{SpreadPrefixStateTree, SubstateTreeChange, TreeHash, Version, SPARSE_MERKLE_PLACEHOLDER_HASH};
+use tari_template_manager::interface::{TemplateChange, TemplateManagerHandle};
 use tari_validator_node_rpc::{
     client::{TariValidatorNodeRpcClientFactory, ValidatorNodeClientFactory},
     rpc_service::ValidatorNodeRpcClient,
 };
 
-use crate::{error::CommsRpcConsensusSyncError, try_sync, types::SyncResult};
+use crate::error::CommsRpcConsensusSyncError;
 
 const BATCH_SIZE: usize = 100;
 const LOG_TARGET: &str = "tari::dan::comms_rpc_state_sync";
@@ -127,6 +117,12 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
         checkpoint: &EpochCheckpoint,
         template_changes_mut: &mut Vec<TemplateChange>,
     ) -> Result<Option<Version>, CommsRpcConsensusSyncError> {
+        let checkpoint_state_root = checkpoint.get_shard_root(shard);
+        if checkpoint_state_root == SPARSE_MERKLE_PLACEHOLDER_HASH {
+            info!(target: LOG_TARGET, "Checkpoint state root indicates no state changes. Nothing to sync for {shard}");
+            return Ok(None);
+        }
+
         let current_epoch = self.epoch_manager.current_epoch().await?;
 
         let last_state_transition_id = self
@@ -148,7 +144,7 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
 
         info!(
             target: LOG_TARGET,
-            "🛜Syncing from v{} to state transition {last_state_transition_id:?}",
+            "🛜Syncing from v{} to state transition {last_state_transition_id}",
             current_version.unwrap_or(0),
         );
 
@@ -220,30 +216,49 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
 
                     let change = match &transition.update {
                         SubstateUpdate::Create(create) => {
-                            let id =  create.substate.to_versioned_substate_id();
-                            if let Some(template) = create.substate.substate_value.as_template() {
-                                info!(target: LOG_TARGET, "🛜 Add template {id}");
-                                template_changes_mut.push(TemplateChange::Add {
-                                    template_address: id.substate_id().as_template().expect("Template substate has non-template address")
-                                    binary_hash: template.binary_hash.into_array().into(),
-                                });
+                            let id = create.substate.as_versioned_substate_id_ref();
+                            if let Some(template_address) = create.substate.substate_id.as_template() {
+                                match create
+                                    .substate
+                                    .value
+                                    .value() {
+                                    Some(value) => {
+                                        let template = value.as_template()
+                                            .ok_or_else(|| CommsRpcConsensusSyncError::InvalidResponse(
+                                                anyhow!("Validator returned a template address {} but substate value was not a template", id.substate_id())
+                                            ))?;
+
+                                        info!(target: LOG_TARGET, "🛜 Add template {id}");
+                                        template_changes_mut.push(TemplateChange::Add {
+                                            template_address,
+                                            author_public_key: template.author.clone(),
+                                            binary_hash: template.binary_hash.into_array().into(),
+                                            epoch: transition.id.epoch(),
+                                        });
+                                    }
+                                    None => {
+                                        // TODO: currently you cannot DOWN a template. If we were to allow deprecations, it would likely be marking the template as deprecated rather than DOWNing it, and not permitting any template (non-component) calls to the template.
+                                        // We could still handle this case by requesting the template by address and verifying the template address hash i.e. peers send author and binary.
+                                        warn!(target: LOG_TARGET, "❗️ NEVER HAPPEN: Validator sent us a template {} that has no value, indicating it will be DOWNed later. We are not able to sync it", id);
+                                    }
+                                };
                             }
 
                             SubstateTreeChange::Up {
-                                id,
-                                value_hash: create.substate.to_value_hash()
+                                id: id.to_owned(),
+                                value_hash: create.substate.to_value_hash(),
                             }
-                        },
+                        }
                         SubstateUpdate::Destroy(destroy) => {
                             if let Some(template_address) = destroy.substate_id.as_template() {
                                 info!(target: LOG_TARGET, "🛜 Deprecate template {}", template_address);
-                                template_changes_mut.push(TemplateChange::Deprecate {template_address});
+                                template_changes_mut.push(TemplateChange::Deprecate { template_address });
                             }
 
                             SubstateTreeChange::Down {
                                 id: destroy.to_versioned_substate_id()
                             }
-                        },
+                        }
                     };
 
                     if tree_changes.len() + 1 == BATCH_SIZE {
@@ -252,9 +267,10 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
                         let next_version = current_version.unwrap_or(0) + 1;
                         state_tree.put_substate_changes(current_version, next_version, tree_changes.drain(..))?;
                         current_version = Some(next_version);
+                        store.set_version(next_version)?;
                     }
 
-                    info!(target: LOG_TARGET, "🛜 Applying state update {transition} v{}", current_version.unwrap_or(0));
+                    info!(target: LOG_TARGET, "🛜 Applying state update (v{}) {}", current_version.unwrap_or(0), transition);
 
                     self.commit_update(store.transaction(), checkpoint, transition)?;
 
@@ -270,6 +286,25 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
                     store.set_version(next_version)?;
                 }
 
+
+                let local_state_root = self.get_state_root_for_shard(&**tx, shard, current_version)?;
+                if local_state_root != checkpoint_state_root {
+                    error!(
+                        target: LOG_TARGET,
+                        "❌State root mismatch for {shard}. Checkpoint {expected} but got {actual}. Rolling back.",
+                        expected = checkpoint_state_root,
+                        actual = local_state_root,
+                    );
+
+                    // Rollback
+                    return Err(CommsRpcConsensusSyncError::StateRootMismatch {
+                        expected: checkpoint_state_root,
+                        actual: local_state_root,
+                    });
+                }
+
+                info!(target: LOG_TARGET, "🛜 Synced state for {shard} to v{} with root {local_state_root}", current_version.unwrap_or(0));
+
                 Ok::<_, CommsRpcConsensusSyncError>(())
             })?;
         }
@@ -277,45 +312,9 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
         Ok(current_version)
     }
 
-    /// Triggers syncing of the passed templates (by address) and wait for the result.
-    /// If any of the templates were not synced, keep retries to sync those again until everything is synced.
-    async fn sync_templates(
-        &self,
-        mut templates: Vec<TemplateAddress>,
-        max_sync_tries: Option<u64>,
-    ) -> Result<(), CommsRpcConsensusSyncError> {
-        if templates.is_empty() {
-            return Ok(());
-        }
-
-        let mut sync_attempts = 0;
-        loop {
-            let current_missing_templates = self
-                .template_manager_service
-                .sync_templates(mem::take(&mut templates))
-                .await?
-                .await
-                .map_err(|error| CommsRpcConsensusSyncError::TaskJoin(error.to_string()))??;
-
-            if current_missing_templates.is_empty() {
-                info!(target: LOG_TARGET, "♻️ All templates were synchronized after {} attempt(s)", sync_attempts);
-                break;
-            }
-
-            if let Some(max_sync_tries) = max_sync_tries {
-                if sync_attempts >= max_sync_tries {
-                    return Err(CommsRpcConsensusSyncError::TemplateSyncFailure);
-                }
-            }
-            templates = current_missing_templates;
-            sync_attempts += 1;
-            warn!(target: LOG_TARGET, "⚠️ {} template(s) are not synchronized, retrying... tried to sync {} times already!", templates.len(), sync_attempts);
-        }
-        Ok(())
-    }
-
     fn get_state_root_for_shard(
         &self,
+        tx: &<TConsensusSpec::StateStore as StateStore>::ReadTransaction<'_>,
         shard: Shard,
         version: Option<Version>,
     ) -> Result<TreeHash, CommsRpcConsensusSyncError> {
@@ -323,12 +322,10 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
             return Ok(SPARSE_MERKLE_PLACEHOLDER_HASH);
         };
 
-        self.state_store.with_read_tx(|tx| {
-            let mut store = ShardScopedTreeStoreReader::new(tx, shard);
-            let state_tree = SpreadPrefixStateTree::new(&mut store);
-            let root_hash = state_tree.get_root_hash(version)?;
-            Ok(root_hash)
-        })
+        let mut store = ShardScopedTreeStoreReader::new(tx, shard);
+        let state_tree = SpreadPrefixStateTree::new(&mut store);
+        let root_hash = state_tree.get_root_hash(version)?;
+        Ok(root_hash)
     }
 
     pub fn commit_update<TTx: StateStoreWriteTransaction>(
@@ -342,7 +339,7 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
                 SubstateRecord::new(
                     substate.substate_id,
                     substate.version,
-                    substate.substate_value,
+                    substate.value,
                     transition.id.shard(),
                     transition.id.epoch(),
                     NodeHeight(0),
@@ -398,7 +395,7 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
         // not strictly necessary to sort by shard but easier on the eyes in logs
         let mut committees = committees.into_iter().collect::<Vec<_>>();
         committees.sort_by_key(|(k, _)| *k);
-        info!(target: LOG_TARGET, "🛜 Querying {} shard group(s) from epoch {}", committees.len(), prev_epoch);
+        info!(target: LOG_TARGET, "🛜 Querying {} committee(s) from epoch {}", committees.len(), prev_epoch);
         Ok(committees)
     }
 
@@ -491,29 +488,7 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
                 .start_state_sync(&mut client, shard, &checkpoint, &mut template_changes)
                 .await
             {
-                Ok(current_version) => {
-                    let state_root = self.get_state_root_for_shard(shard, current_version)?;
-
-                    if state_root != checkpoint.get_shard_root(shard) {
-                        error!(
-                            target: LOG_TARGET,
-                            "❌State root mismatch for {shard}. Expected {expected} but got {actual}",
-                            expected = checkpoint.get_shard_root(shard),
-                            actual = state_root,
-                        );
-
-                        // TODO: rollback state
-                        if remaining_members == 0 {
-                            return Err(CommsRpcConsensusSyncError::StateRootMismatch {
-                                expected: TreeHash::from(checkpoint.block().state_merkle_root().into_array()),
-                                actual: state_root,
-                            });
-                        }
-
-                        continue;
-                    }
-
-                    info!(target: LOG_TARGET, "🛜 Synced state for {shard} to v{} with root {state_root}", current_version.unwrap_or(0));
+                Ok(_) => {
                     // We only enqueue these if state sync succeeds and the state root matches
                     self.template_manager.enqueue_template_changes(template_changes).await?;
                 },
@@ -542,17 +517,22 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
         committees: &[(ShardGroup, Committee<PeerAddress>)],
         our_vn_address: &PeerAddress,
     ) -> Result<(), CommsRpcConsensusSyncError> {
-        let mut template_changes = vec![];
         let mut last_error = None;
 
-        for (_, committee) in committees {
+        for (sg, committee) in committees {
             if let Err(err) = self
                 .sync_shard(Shard::global(), current_epoch, committee, our_vn_address)
                 .await
             {
+                warn!(target: LOG_TARGET, "⚠️ Failed to sync global shard from {sg}: {err}. Attempting another committee if available");
                 last_error = Some(err);
+                continue;
             }
             break;
+        }
+
+        if let Some(err) = last_error {
+            return Err(err);
         }
 
         Ok(())

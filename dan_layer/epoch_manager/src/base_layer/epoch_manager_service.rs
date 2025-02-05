@@ -291,11 +291,12 @@ where
             EpochManagerRequest::GetRandomCommitteeMemberFromShardGroup {
                 epoch,
                 shard_group,
+                excluding,
                 reply,
             } => handle(
                 reply,
                 self.inner
-                    .get_random_committee_member_from_shard_group(epoch, shard_group),
+                    .get_random_committee_member_from_shard_group(epoch, shard_group, excluding),
                 context,
             ),
         }

@@ -37,7 +37,7 @@ impl NumPreshards {
     }
 
     pub fn all_shards_iter(&self) -> impl Iterator<Item = Shard> {
-        (0..self.as_u32()).map(Shard::from)
+        (1..=self.as_u32()).map(Shard::from)
     }
 
     pub fn all_shard_groups_iter(&self, num_committees: u32) -> impl Iterator<Item = ShardGroup> {

@@ -20,36 +20,18 @@
 //  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
-
-use futures::StreamExt;
 use log::*;
-use tari_common_types::types::{FixedHash, PublicKey};
-use tari_dan_common_types::{
-    committee::Committee,
-    services::template_provider::TemplateProvider,
-    Epoch,
-    NodeAddressable,
-    PeerAddress,
-    SubstateAddress,
-};
-use tari_dan_engine::function_definitions::FlowFunctionDefinition;
-use tari_dan_p2p::proto::rpc::{SyncTemplatesRequest, TemplateType};
+use tari_common_types::types::PublicKey;
+use tari_dan_common_types::{services::template_provider::TemplateProvider, Epoch, NodeAddressable, ToPeerId};
+use tari_dan_engine::{function_definitions::FlowFunctionDefinition, wasm::WasmModule};
+use tari_dan_p2p::proto::rpc::TemplateType;
 use tari_dan_storage::global::{DbTemplateType, DbTemplateUpdate, TemplateStatus};
-use tari_engine_types::{
-    calculate_template_binary_hash,
-    hashing::template_hasher32,
-    published_template::PublishedTemplateAddress,
-    substate::SubstateId,
-};
-use tari_epoch_manager::{base_layer::EpochManagerHandle, EpochManagerReader};
+use tari_engine_types::calculate_template_binary_hash;
+use tari_epoch_manager::base_layer::EpochManagerHandle;
 use tari_shutdown::ShutdownSignal;
 use tari_template_lib::{models::TemplateAddress, Hash};
 use tari_validator_node_client::types::{ArgDef, FunctionDef, TemplateAbi};
-use tari_validator_node_rpc::{
-    client::{TariValidatorNodeRpcClientFactory, ValidatorNodeClientFactory},
-    rpc_service::ValidatorNodeRpcClient,
-};
+use tari_validator_node_rpc::client::TariValidatorNodeRpcClientFactory;
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
@@ -59,18 +41,14 @@ use super::{
     downloader::{DownloadRequest, DownloadResult},
     TemplateManager,
 };
-use crate::template_manager::{
-    implementation::{
-        sync_worker::TemplateSyncRequest,
-        template_sync_task::{template_sync_task, TemplateSyncClientTask},
-    },
+use crate::{
+    implementation::sync_worker::{SyncWorkerEvent, TemplateSyncRequest, TemplateSyncWorker},
     interface::{
-        SyncTemplatesResult,
-        Template,
         TemplateChange,
         TemplateExecutable,
         TemplateManagerError,
         TemplateManagerRequest,
+        TemplateQueryResult,
     },
 };
 
@@ -79,33 +57,28 @@ const LOG_TARGET: &str = "tari::dan::template_manager";
 pub struct TemplateManagerService<TAddr> {
     rx_request: mpsc::Receiver<TemplateManagerRequest>,
     manager: TemplateManager<TAddr>,
-    epoch_manager: EpochManagerHandle<PeerAddress>,
     completed_downloads: mpsc::Receiver<DownloadResult>,
     download_queue: mpsc::Sender<DownloadRequest>,
-    client_factory: Arc<TariValidatorNodeRpcClientFactory>,
-    periodic_template_sync_interval: Duration,
+    sync_worker: TemplateSyncWorker<TAddr>,
 }
 
-impl<TAddr: NodeAddressable + 'static> TemplateManagerService<TAddr> {
+impl<TAddr: NodeAddressable + ToPeerId + 'static> TemplateManagerService<TAddr> {
     pub fn spawn(
         rx_request: mpsc::Receiver<TemplateManagerRequest>,
         manager: TemplateManager<TAddr>,
-        epoch_manager: EpochManagerHandle<PeerAddress>,
+        epoch_manager: EpochManagerHandle<TAddr>,
         download_queue: mpsc::Sender<DownloadRequest>,
         completed_downloads: mpsc::Receiver<DownloadResult>,
         client_factory: TariValidatorNodeRpcClientFactory,
-        periodic_template_sync_interval: Duration,
         shutdown: ShutdownSignal,
     ) -> JoinHandle<anyhow::Result<()>> {
         tokio::spawn(async move {
             Self {
                 rx_request,
                 manager,
-                epoch_manager,
                 download_queue,
                 completed_downloads,
-                client_factory: Arc::new(client_factory),
-                periodic_template_sync_interval,
+                sync_worker: TemplateSyncWorker::new(epoch_manager, client_factory),
             }
             .run(shutdown)
             .await?;
@@ -115,7 +88,6 @@ impl<TAddr: NodeAddressable + 'static> TemplateManagerService<TAddr> {
 
     pub async fn run(mut self, mut shutdown: ShutdownSignal) -> Result<(), TemplateManagerError> {
         self.on_startup().await?;
-        let mut auto_template_sync_interval = tokio::time::interval(self.periodic_template_sync_interval);
         loop {
             tokio::select! {
                 Some(req) = self.rx_request.recv() => self.handle_request(req).await,
@@ -124,13 +96,12 @@ impl<TAddr: NodeAddressable + 'static> TemplateManagerService<TAddr> {
                         error!(target: LOG_TARGET, "Error handling completed download: {}", err);
                     }
                 },
-                _ = auto_template_sync_interval.tick() => {
-                    if let Err(error) = self.sync_pending_templates().await {
-                        error!(target: LOG_TARGET, "Error syncing pending templates: {}", error);
-                    }
-                }
+
+                event = self.sync_worker.next() => {
+                    self.handle_sync_worker_event(event);
+                },
                 _ = shutdown.wait() => {
-                    dbg!("Shutting down epoch manager");
+                    info!(target: LOG_TARGET, "💤 Shutting down template manager");
                     break;
                 }
             }
@@ -138,26 +109,68 @@ impl<TAddr: NodeAddressable + 'static> TemplateManagerService<TAddr> {
         Ok(())
     }
 
-    /// Triggers syncing of pending templates.
-    /// Please note that this is a non-blocking call, after trigger it returns immediately.
-    async fn sync_pending_templates(&mut self) -> Result<(), TemplateManagerError> {
-        let templates = self.manager.fetch_pending_templates()?;
-        let template_addresses: Vec<TemplateAddress> =
-            templates.iter().map(|template| template.template_address).collect();
-        if !template_addresses.is_empty() {
-            self.handle_templates_sync_request(template_addresses).await?;
-            info!(target: LOG_TARGET, "⏳️️ {} templates are triggered to sync from network", templates.len());
-        }
+    fn handle_sync_worker_event(&mut self, event: SyncWorkerEvent) {
+        info!(target: LOG_TARGET, "♻️ Template sync worker event: {}", event);
+        match event {
+            SyncWorkerEvent::SyncRoundCompleted { result } => {
+                for (address, template) in result.synced {
+                    let update = match WasmModule::load_template_from_code(template.binary.as_slice()) {
+                        Ok(module) => DbTemplateUpdate {
+                            template_name: Some(module.template_name().to_string()),
+                            template_type: Some(template.template_type),
+                            code: Some(template.binary),
+                            status: Some(TemplateStatus::Active),
+                            ..Default::default()
+                        },
+                        Err(err) => {
+                            // Sounds the alarm bells if this ever happens (probably cause, backward compatibility for
+                            // old wasms)
+                            error!(target: LOG_TARGET, "❌❗️ Template {} was committed in consensus and verified to have the correct binary hash but could not load: {}", address, err);
+                            DbTemplateUpdate {
+                                template_name: None,
+                                code: Some(template.binary),
+                                status: Some(TemplateStatus::Invalid),
+                                ..Default::default()
+                            }
+                        },
+                    };
 
-        Ok(())
+                    self.manager.update_template(address, update).unwrap()
+                }
+
+                if let Some(err) = result.sync_aborted {
+                    warn!(target: LOG_TARGET, "⚠️ Sync was aborted due to an error: {}", err);
+                }
+
+                if !result.unfulfilled.is_empty() {
+                    info!(target: LOG_TARGET, "❓️ {} template(s) not synced. These will be requeued", result.unfulfilled.len());
+                    self.sync_worker.enqueue_all(result.unfulfilled);
+                }
+
+                for (request, err) in &result.failed {
+                    warn!(target: LOG_TARGET, "⚠️ Sync errored for template {}: {}. Requeing...", request.address, err);
+                }
+
+                self.sync_worker
+                    .enqueue_all(result.failed.into_iter().map(|(request, _)| request));
+            },
+            SyncWorkerEvent::SyncError { error, batch } => {
+                error!(target: LOG_TARGET, "Sync worker error {} sync requests aborted: {}.", batch.len(), error);
+                self.sync_worker.enqueue_all(batch);
+            },
+        }
     }
 
     async fn on_startup(&mut self) -> Result<(), TemplateManagerError> {
         let templates = self.manager.fetch_pending_templates()?;
 
+        let mut batch = vec![];
         // trigger syncing templates the old way too
         for template in templates {
-            if template.status == TemplateStatus::Pending {
+            if template.status != TemplateStatus::Pending {
+                continue;
+            }
+            if template.url.is_some() {
                 let _ignore = self
                     .download_queue
                     .send(DownloadRequest {
@@ -171,8 +184,18 @@ impl<TAddr: NodeAddressable + 'static> TemplateManagerService<TAddr> {
                     target: LOG_TARGET,
                     "⏳️️ Template {} queued for download", template.template_address
                 );
+            } else {
+                info!(
+                    target: LOG_TARGET,
+                    "⏳️️ Template {} queued for sync", template.template_address
+                );
+                batch.push(TemplateSyncRequest {
+                    address: template.template_address,
+                    expected_binary_hash: template.expected_hash,
+                });
             }
         }
+        self.sync_worker.enqueue_all(batch);
         Ok(())
     }
 
@@ -200,10 +223,10 @@ impl<TAddr: NodeAddressable + 'static> TemplateManagerService<TAddr> {
             GetTemplates { limit, reply } => handle(reply, self.manager.fetch_template_metadata(limit)),
             LoadTemplateAbi { address, reply } => handle(reply, self.handle_load_template_abi(address)),
             TemplateExists { address, status, reply } => handle(reply, self.handle_template_exists(&address, status)),
-            GetTemplatesByAddresses { addresses, reply } => {
-                handle(reply, self.handle_get_templates_by_addresses(addresses))
-            },
-            SyncTemplates { addresses, reply } => handle(reply, self.handle_templates_sync_request(addresses).await),
+            GetTemplatesByAddresses { addresses, reply } => handle(
+                reply,
+                self.handle_get_templates_by_addresses(addresses.into_iter().collect()),
+            ),
             EnqueueTemplateChanges {
                 template_changes,
                 reply,
@@ -272,7 +295,7 @@ impl<TAddr: NodeAddressable + 'static> TemplateManagerService<TAddr> {
 
                 let update = match download.template_type {
                     DbTemplateType::Wasm => DbTemplateUpdate {
-                        compiled_code: Some(bytes.to_vec()),
+                        code: Some(bytes.to_vec()),
                         status: Some(template_status),
                         ..Default::default()
                     },
@@ -290,7 +313,7 @@ impl<TAddr: NodeAddressable + 'static> TemplateManagerService<TAddr> {
                         };
 
                         DbTemplateUpdate {
-                            flow_json: Some(String::from_utf8(bytes.to_vec())?),
+                            code: Some(bytes.to_vec()),
                             status: Some(status),
                             ..Default::default()
                         }
@@ -324,7 +347,7 @@ impl<TAddr: NodeAddressable + 'static> TemplateManagerService<TAddr> {
     fn handle_get_templates_by_addresses(
         &mut self,
         addresses: Vec<TemplateAddress>,
-    ) -> Result<Vec<Template>, TemplateManagerError> {
+    ) -> Result<Vec<TemplateQueryResult>, TemplateManagerError> {
         self.manager.fetch_templates_by_addresses(addresses)
     }
 
@@ -382,8 +405,36 @@ impl<TAddr: NodeAddressable + 'static> TemplateManagerService<TAddr> {
             match change {
                 TemplateChange::Add {
                     template_address,
+                    author_public_key,
                     binary_hash,
+                    epoch,
                 } => {
+                    if self
+                        .manager
+                        .template_exists(&template_address.as_hash(), Some(TemplateStatus::Active))?
+                    {
+                        info!(target: LOG_TARGET, "❓️ Template {} already exists and is active. Not enqueuing for sync", template_address);
+                        continue;
+                    }
+                    if self
+                        .manager
+                        .template_exists(&template_address.as_hash(), Some(TemplateStatus::Deprecated))?
+                    {
+                        info!(target: LOG_TARGET, "❓️ Template {} already exists and is active(deprecated). Not enqueuing for sync", template_address);
+                        continue;
+                    }
+
+                    self.manager.add_pending_template(
+                        // Once we download the template we'll extract the name. This saves us from having to store the
+                        // name in the substate
+                        "<unknown>".to_string(),
+                        template_address.as_hash(),
+                        author_public_key,
+                        binary_hash,
+                        epoch,
+                        TemplateType::Wasm,
+                    )?;
+
                     sync_requests.push(TemplateSyncRequest {
                         address: template_address.as_hash(),
                         expected_binary_hash: binary_hash,
@@ -394,49 +445,8 @@ impl<TAddr: NodeAddressable + 'static> TemplateManagerService<TAddr> {
                 },
             }
         }
-        self.sync_worker.enqueue_all(sync_requests).await?;
+        self.sync_worker.enqueue_all(sync_requests);
         Ok(())
-    }
-
-    /// Starts an async task to synchronize templates from the right committees.
-    /// This method returns a [`JoinHandle`] which can be .await-ed to get the results, or it can be ignored,
-    /// the process will be running anyway async.
-    #[allow(clippy::mutable_key_type)]
-    #[allow(clippy::too_many_lines)]
-    async fn handle_templates_sync_request(
-        &self,
-        mut addresses: Vec<TemplateAddress>,
-    ) -> Result<SyncTemplatesResult, TemplateManagerError> {
-        info!(target: LOG_TARGET, "New templates sync request for {} templates.", addresses.len());
-
-        // check for existing templates
-        let mut templates_to_sync = vec![];
-        for address in addresses {
-            // TODO: there are other status which may warrant not syncing
-            if !self.manager.template_exists(&address, Some(TemplateStatus::Active))? {
-                templates_to_sync.push(address);
-            }
-        }
-
-        // sync
-        let client_factory = self.client_factory.clone();
-        let template_manager = self.manager.clone();
-        let epoch_manager = self.epoch_manager.clone();
-
-        // start a task to not block other calls in service
-        Ok(tokio::spawn(
-            TemplateSyncClientTask::new(client_factory, template_manager, epoch_manager, templates_to_sync).run(),
-        ))
-    }
-
-    /// Creates a new validator node client.
-    async fn vn_client(
-        client_factory: Arc<TariValidatorNodeRpcClientFactory>,
-        addr: &PeerAddress,
-    ) -> Result<ValidatorNodeRpcClient, TemplateManagerError> {
-        let mut rpc_client = client_factory.create_client(addr);
-        let client = rpc_client.client_connection().await?;
-        Ok(client)
     }
 }
 

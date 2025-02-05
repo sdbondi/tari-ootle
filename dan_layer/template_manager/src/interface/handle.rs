@@ -25,13 +25,17 @@ use tari_dan_common_types::Epoch;
 use tari_dan_storage::global::TemplateStatus;
 use tari_template_lib::models::TemplateAddress;
 use tari_validator_node_client::types::TemplateAbi;
-use tokio::{
-    sync::{mpsc, oneshot},
-    task::JoinHandle,
-};
+use tokio::sync::{mpsc, oneshot};
 
-use super::{types::TemplateManagerRequest, Template, TemplateExecutable, TemplateManagerError, TemplateMetadata};
-use crate::template_manager::interface::types::TemplateChange;
+use super::{
+    types::TemplateManagerRequest,
+    Template,
+    TemplateExecutable,
+    TemplateManagerError,
+    TemplateMetadata,
+    TemplateQueryResult,
+};
+use crate::interface::types::TemplateChange;
 
 #[derive(Debug, Clone)]
 pub struct TemplateManagerHandle {
@@ -73,22 +77,10 @@ impl TemplateManagerHandle {
     pub async fn get_templates_by_addresses(
         &self,
         addresses: Vec<TemplateAddress>,
-    ) -> Result<Vec<Template>, TemplateManagerError> {
+    ) -> Result<Vec<TemplateQueryResult>, TemplateManagerError> {
         let (tx, rx) = oneshot::channel();
         self.request_tx
             .send(TemplateManagerRequest::GetTemplatesByAddresses { addresses, reply: tx })
-            .await
-            .map_err(|_| TemplateManagerError::ChannelClosed)?;
-        rx.await.map_err(|_| TemplateManagerError::ChannelClosed)?
-    }
-
-    pub async fn sync_templates(
-        &self,
-        addresses: Vec<TemplateAddress>,
-    ) -> Result<JoinHandle<Result<Vec<TemplateAddress>, TemplateManagerError>>, TemplateManagerError> {
-        let (tx, rx) = oneshot::channel();
-        self.request_tx
-            .send(TemplateManagerRequest::SyncTemplates { addresses, reply: tx })
             .await
             .map_err(|_| TemplateManagerError::ChannelClosed)?;
         rx.await.map_err(|_| TemplateManagerError::ChannelClosed)?

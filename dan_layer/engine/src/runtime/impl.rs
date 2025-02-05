@@ -33,7 +33,7 @@ use tari_engine_types::{
     confidential::{get_commitment_factory, get_range_proof_service, ConfidentialClaim, ConfidentialOutput},
     entity_id_provider::EntityIdProvider,
     events::Event,
-    hashing::{hash_template_code, template_hasher32},
+    hashing::hash_template_code,
     indexed_value::IndexedValue,
     instruction_result::InstructionResult,
     lock::LockFlag,
@@ -2331,6 +2331,7 @@ impl<TTemplateProvider: TemplateProvider<Template = LoadedTemplate>> RuntimeInte
     }
 
     fn publish_template(&self, template: Vec<u8>) -> Result<(), RuntimeError> {
+        self.invoke_modules_on_runtime_call("publish_template")?;
         self.tracker.write_with(|state| {
             let binary_hash = hash_template_code(&template);
             let template_address = PublishedTemplateAddress::from_author_and_binary_hash(
