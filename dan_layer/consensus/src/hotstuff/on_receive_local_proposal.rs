@@ -41,6 +41,7 @@ use crate::{
         error::HotStuffError,
         generate_epoch_checkpoint,
         get_next_block_height_and_leader,
+        on_next_sync_view::generate_new_view,
         on_ready_to_vote_on_local_block::OnReadyToVoteOnLocalBlock,
         on_receive_foreign_proposal::OnReceiveForeignProposalHandler,
         pacemaker_handle::PaceMakerHandle,
@@ -49,7 +50,7 @@ use crate::{
         HotstuffEvent,
         ProposalValidationError,
     },
-    messages::{ForeignProposalNotificationMessage, HotstuffMessage, NewViewMessage, ProposalMessage, VoteMessage},
+    messages::{ForeignProposalNotificationMessage, HotstuffMessage, ProposalMessage, VoteMessage},
     tracing::TraceTimer,
     traits::{
         hooks::ConsensusHooks,
@@ -387,6 +388,7 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
                 } else {
                     self.send_new_view_and_vote_to_leader(
                         next_height,
+                        local_committee,
                         next_leader_addr,
                         valid_block.block(),
                         block_decision.high_qc.clone(),
@@ -551,6 +553,7 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
     async fn send_new_view_and_vote_to_leader(
         &mut self,
         new_height: NodeHeight,
+        local_committee: &Committee<TConsensusSpec::Addr>,
         leader: &TConsensusSpec::Addr,
         block: &Block,
         high_qc: HighQc,
@@ -583,14 +586,18 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
             self.store.with_read_tx(|tx| high_qc.get_quorum_certificate(tx))?
         };
 
-        let message = NewViewMessage {
-            high_qc,
+        let new_view = generate_new_view::<TConsensusSpec>(
+            &self.leader_strategy,
+            &self.vote_signing_service,
+            local_committee,
             new_height,
-            last_vote: Some(vote),
-        };
+            block,
+            &high_qc,
+            Some(vote),
+        )?;
 
         self.outbound_messaging
-            .send(leader.clone(), HotstuffMessage::NewView(message))
+            .send(leader.clone(), HotstuffMessage::NewView(new_view))
             .await?;
 
         self.store.with_write_tx(|tx| last_sent_vote.set(tx))?;
@@ -622,7 +629,7 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
     }
 
     fn generate_vote_message(&self, block: &Block, decision: QuorumDecision) -> Result<VoteMessage, HotStuffError> {
-        let signature = self.vote_signing_service.sign_vote(block.id(), &decision);
+        let signature = self.vote_signing_service.sign_vote(block.id(), decision);
 
         Ok(VoteMessage {
             epoch: block.epoch(),

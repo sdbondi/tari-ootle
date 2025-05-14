@@ -264,9 +264,8 @@ pub fn check_quorum_certificate_signatures<TConsensusSpec: ConsensusSpec>(
             return Err(ProposalValidationError::ValidatorNotInCommittee {
                 validator: signature.public_key().to_string(),
                 details: format!(
-                    "QC signed with validator {} that is not in committee {}",
+                    "QC signed with validator {} that is not in committee",
                     signature.public_key(),
-                    qc.shard_group(),
                 ),
             });
         }

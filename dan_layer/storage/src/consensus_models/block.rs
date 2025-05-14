@@ -227,7 +227,7 @@ impl Block {
         Self::create(
             network,
             BlockId::zero(),
-            QuorumCertificate::genesis(epoch, shard_group),
+            QuorumCertificate::genesis(epoch),
             NodeHeight::zero(),
             epoch,
             shard_group,
@@ -245,7 +245,7 @@ impl Block {
 
     /// This is the parent block for all genesis blocks. Its block ID is always zero.
     pub fn zero_block(network: Network, num_preshards: NumPreshards) -> Self {
-        let qc = QuorumCertificate::genesis(Epoch::zero(), ShardGroup::all_shards(num_preshards));
+        let qc = QuorumCertificate::genesis(Epoch::zero());
         Self {
             header: BlockHeader::zero_block(network, num_preshards),
             commit_qc_id: Some(*qc.id()),

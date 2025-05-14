@@ -7,27 +7,11 @@ use borsh::BorshSerialize;
 use log::*;
 use serde::{Deserialize, Serialize};
 use tari_common_types::types::{FixedHash, FixedHashSizeError};
-use tari_dan_common_types::{
-    hashing::quorum_certificate_hasher,
-    optional::Optional,
-    serde_with,
-    Epoch,
-    NodeHeight,
-    ShardGroup,
-};
+use tari_dan_common_types::{hashing::quorum_certificate_hasher, optional::Optional, serde_with, Epoch, NodeHeight};
 use tari_sidechain::QuorumDecision;
 
 use crate::{
-    consensus_models::{
-        Block,
-        BlockHeader,
-        BlockId,
-        HighQc,
-        LastVoted,
-        LeafBlock,
-        ValidatorSignature,
-        ValidatorStatsUpdate,
-    },
+    consensus_models::{Block, BlockHeader, BlockId, HighQc, LeafBlock, ValidatorSignature, ValidatorStatsUpdate},
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
     StorageError,
@@ -53,7 +37,6 @@ pub struct QuorumCertificate {
     parent_id: BlockId,
     block_height: NodeHeight,
     epoch: Epoch,
-    shard_group: ShardGroup,
     signatures: Vec<ValidatorSignature>,
     #[cfg_attr(feature = "ts", ts(type = "string"))]
     decision: QuorumDecision,
@@ -67,7 +50,6 @@ impl QuorumCertificate {
         parent_id: BlockId,
         block_height: NodeHeight,
         epoch: Epoch,
-        shard_group: ShardGroup,
         signatures: Vec<ValidatorSignature>,
         decision: QuorumDecision,
     ) -> Self {
@@ -78,7 +60,6 @@ impl QuorumCertificate {
             parent_id,
             block_height,
             epoch,
-            shard_group,
             signatures,
             decision,
             is_shares_processed: false,
@@ -87,7 +68,7 @@ impl QuorumCertificate {
         qc
     }
 
-    pub fn genesis(epoch: Epoch, shard_group: ShardGroup) -> Self {
+    pub fn genesis(epoch: Epoch) -> Self {
         let mut qc = Self {
             qc_id: QcId::zero(),
             block_id: BlockId::zero(),
@@ -95,7 +76,6 @@ impl QuorumCertificate {
             parent_id: BlockId::zero(),
             block_height: NodeHeight::zero(),
             epoch,
-            shard_group,
             signatures: vec![],
             decision: QuorumDecision::Accept,
             is_shares_processed: false,
@@ -127,10 +107,6 @@ impl QuorumCertificate {
 
     pub fn epoch(&self) -> Epoch {
         self.epoch
-    }
-
-    pub fn shard_group(&self) -> ShardGroup {
-        self.shard_group
     }
 
     pub fn signatures(&self) -> &[ValidatorSignature] {
@@ -168,14 +144,6 @@ impl QuorumCertificate {
 
     pub fn as_leaf_block(&self) -> LeafBlock {
         LeafBlock {
-            block_id: self.block_id,
-            height: self.block_height,
-            epoch: self.epoch,
-        }
-    }
-
-    pub fn as_last_voted(&self) -> LastVoted {
-        LastVoted {
             block_id: self.block_id,
             height: self.block_height,
             epoch: self.epoch,

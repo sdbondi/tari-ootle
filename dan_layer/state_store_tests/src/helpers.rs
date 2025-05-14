@@ -274,7 +274,6 @@ pub fn create_qc(block: &LeafBlock) -> QuorumCertificate {
         *block.block_id(),
         block.height(),
         block.epoch(),
-        ShardGroup::all_shards(num_preshards()),
         vec![],
         QuorumDecision::Accept,
     )
@@ -324,7 +323,6 @@ pub fn create_foreign_proposal(parent_id: BlockId, epoch: Epoch) -> ForeignPropo
         parent_id,
         NodeHeight(1),
         epoch,
-        shard_group,
         vec![],
         QuorumDecision::Accept,
     );

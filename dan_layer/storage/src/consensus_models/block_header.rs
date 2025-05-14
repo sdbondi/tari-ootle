@@ -197,7 +197,7 @@ impl BlockHeader {
             network,
             id: BlockId::zero(),
             parent: BlockId::zero(),
-            justify_id: *QuorumCertificate::genesis(Epoch::zero(), ShardGroup::all_shards(num_preshards)).id(),
+            justify_id: *QuorumCertificate::genesis(Epoch::zero()).id(),
             height: NodeHeight::zero(),
             epoch: Epoch::zero(),
             shard_group: ShardGroup::all_shards(num_preshards),

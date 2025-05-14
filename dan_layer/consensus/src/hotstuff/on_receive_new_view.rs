@@ -13,6 +13,7 @@ use tari_dan_storage::{
 use super::vote_collector::VoteCollector;
 use crate::{
     hotstuff::{
+        calculate_last_dummy_block,
         epoch_state::EpochState,
         error::HotStuffError,
         pacemaker_handle::PaceMakerHandle,
@@ -92,6 +93,7 @@ where TConsensusSpec: ConsensusSpec
             high_qc,
             new_height,
             last_vote,
+            dummy_signature,
             ..
         } = message;
         info!(
@@ -133,6 +135,33 @@ where TConsensusSpec: ConsensusSpec
         if !is_qc_valid {
             return Ok(());
         }
+
+        // let (leaf_block, high_qc) = self.store.with_read_tx(|tx| {
+        //     let leaf_block = LeafBlock::get(tx, epoch_state.epoch())?.get_block(tx)?;
+        //     let high_qc = HighQc::get(tx, epoch_state.epoch())?.get_quorum_certificate(tx)?;
+        //
+        //     Ok::<_, HotStuffError>((leaf_block, high_qc))
+        // })?;
+        //
+        // let dummy = calculate_last_dummy_block(
+        //     leaf_block.height(),
+        //     new_height,
+        //     leaf_block.network(),
+        //     leaf_block.epoch(),
+        //     leaf_block.shard_group(),
+        //     *leaf_block.id(),
+        //     &high_qc,
+        //     *leaf_block.state_merkle_root(),
+        //     &self.leader_strategy,
+        //     epoch_state.local_committee(),
+        //     leaf_block.timestamp(),
+        //     *leaf_block.epoch_hash(),
+        // )
+        // .ok_or_else(|| {
+        //     HotStuffError::InvariantError(format!(
+        //         "No dummy block for new height {new_height} with leaf block {leaf_block}"
+        //     ))
+        // })?;
 
         // Check if we are the leader for the view after new_height. We'll set our local view height to the new_height
         // if quorum is reached and propose a block at new_height + 1.

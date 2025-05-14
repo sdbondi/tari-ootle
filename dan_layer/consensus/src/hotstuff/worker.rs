@@ -151,6 +151,7 @@ impl<TConsensusSpec: ConsensusSpec> HotstuffWorker<TConsensusSpec> {
                 state_store.clone(),
                 outbound_messaging.clone(),
                 leader_strategy.clone(),
+                signing_service.clone(),
                 pacemaker.clone_handle(),
             ),
             on_receive_local_proposal: OnReceiveLocalProposalHandler::new(
@@ -632,9 +633,7 @@ impl<TConsensusSpec: ConsensusSpec> HotstuffWorker<TConsensusSpec> {
     ) -> Result<(), HotStuffError> {
         self.hooks.on_leader_timeout(current_height);
         info!(target: LOG_TARGET, "⚠️ {} Leader failure: NEXTSYNCVIEW for epoch {} and current height {}", self.local_validator_addr, epoch_state.epoch(), current_height);
-        self.on_next_sync_view
-            .handle(epoch_state.epoch(), current_height, epoch_state.local_committee())
-            .await?;
+        self.on_next_sync_view.handle(epoch_state, current_height).await?;
         self.publish_event(HotstuffEvent::LeaderTimeout { height: current_height });
         Ok(())
     }
@@ -690,7 +689,7 @@ impl<TConsensusSpec: ConsensusSpec> HotstuffWorker<TConsensusSpec> {
             }
         }
 
-        self.propose_now(epoch_state, next_height, *local_claim_public_key)
+        self.propose_now(epoch_state, next_height, *local_claim_public_key, leaf_block)
             .await?;
 
         Ok(())
@@ -704,17 +703,15 @@ impl<TConsensusSpec: ConsensusSpec> HotstuffWorker<TConsensusSpec> {
         forced_height: Option<NodeHeight>,
         local_claim_public_key: &RistrettoPublicKeyBytes,
     ) -> Result<(), HotStuffError> {
+        let leaf_block = self
+            .state_store
+            .with_read_tx(|tx| LeafBlock::get(tx, epoch_state.epoch()))?;
         let next_height = match forced_height {
             Some(height) => {
                 debug!(target: LOG_TARGET, "🔥 [force_beat] {} forced {height}", self.local_validator_addr);
                 height + NodeHeight(1)
             },
-            None => {
-                let leaf_block = self
-                    .state_store
-                    .with_read_tx(|tx| LeafBlock::get(tx, epoch_state.epoch()))?;
-                leaf_block.height() + NodeHeight(1)
-            },
+            None => leaf_block.height() + NodeHeight(1),
         };
         let is_leader =
             self.leader_strategy
@@ -742,7 +739,7 @@ impl<TConsensusSpec: ConsensusSpec> HotstuffWorker<TConsensusSpec> {
                 .len(),
         );
 
-        self.propose_now(epoch_state, next_height, *local_claim_public_key)
+        self.propose_now(epoch_state, next_height, *local_claim_public_key, leaf_block)
             .await?;
 
         Ok(())
@@ -753,10 +750,8 @@ impl<TConsensusSpec: ConsensusSpec> HotstuffWorker<TConsensusSpec> {
         epoch_state: &EpochState<TConsensusSpec::Addr>,
         next_height: NodeHeight,
         local_claim_public_key: RistrettoPublicKeyBytes,
+        mut leaf_block: LeafBlock,
     ) -> Result<(), HotStuffError> {
-        let mut leaf_block = self
-            .state_store
-            .with_read_tx(|tx| LeafBlock::get(tx, epoch_state.epoch()))?;
         if next_height > leaf_block.height + NodeHeight(1) {
             let (high_qc, block) = self.state_store.with_read_tx(|tx| {
                 let high_qc = HighQc::get(tx, epoch_state.epoch())?.get_quorum_certificate(tx)?;

@@ -22,8 +22,7 @@ fn quorum_certificates_operations(db: impl StateStore) {
     let mut tx = db.create_write_tx().unwrap();
 
     let epoch = Epoch::zero();
-    let shard_group = ShardGroup::all_shards(NumPreshards::P4);
-    let genesis_qc = QuorumCertificate::genesis(epoch, shard_group);
+    let genesis_qc = QuorumCertificate::genesis(epoch);
 
     let block_id_1 = create_random_block_id();
     let qc1 = QuorumCertificate::new(
@@ -31,7 +30,6 @@ fn quorum_certificates_operations(db: impl StateStore) {
         block_id_1,
         genesis_qc.block_height() + NodeHeight(1),
         epoch,
-        shard_group,
         vec![],
         QuorumDecision::Accept,
     );

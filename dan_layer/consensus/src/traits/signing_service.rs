@@ -23,8 +23,8 @@ pub trait VoteSignatureService: ValidatorSignatureService {
             .into()
     }
 
-    fn sign_vote(&self, block_id: &BlockId, decision: &QuorumDecision) -> ValidatorSignature {
-        let message = self.create_message(block_id, decision);
+    fn sign_vote(&self, block_id: &BlockId, decision: QuorumDecision) -> ValidatorSignature {
+        let message = self.create_message(block_id, &decision);
         let signature = self.sign(message);
         ValidatorSignature::new(self.public_key().to_byte_type(), signature.to_byte_type())
     }

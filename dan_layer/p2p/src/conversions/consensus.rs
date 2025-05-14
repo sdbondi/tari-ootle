@@ -148,6 +148,7 @@ impl From<&NewViewMessage> for proto::consensus::NewViewMessage {
             high_qc: Some((&value.high_qc).into()),
             new_height: value.new_height.as_u64(),
             last_vote: value.last_vote.as_ref().map(|a| a.into()),
+            dummy_signature: Some((&value.dummy_signature).into()),
         }
     }
 }
@@ -163,6 +164,10 @@ impl TryFrom<proto::consensus::NewViewMessage> for NewViewMessage {
                 .last_vote
                 .map(|a: proto::consensus::VoteMessage| a.try_into())
                 .transpose()?,
+            dummy_signature: value
+                .dummy_signature
+                .ok_or_else(|| anyhow!("Dummy signature is missing"))?
+                .try_into()?,
         })
     }
 }
@@ -808,7 +813,6 @@ impl From<&QuorumCertificate> for proto::consensus::QuorumCertificate {
             parent_id: source.parent_id().as_bytes().to_vec(),
             block_height: source.block_height().as_u64(),
             epoch: source.epoch().as_u64(),
-            shard_group: source.shard_group().encode_as_u32(),
             signatures: source.signatures().iter().map(Into::into).collect(),
             decision: i32::from(source.decision().as_u8()),
         }
@@ -819,14 +823,11 @@ impl TryFrom<proto::consensus::QuorumCertificate> for QuorumCertificate {
     type Error = anyhow::Error;
 
     fn try_from(value: proto::consensus::QuorumCertificate) -> Result<Self, Self::Error> {
-        let shard_group = ShardGroup::decode_from_u32(value.shard_group)
-            .ok_or_else(|| anyhow!("QC shard_group ({}) is not a valid", value.shard_group))?;
         Ok(Self::new(
             value.header_hash.try_into().context("header_hash")?,
             value.parent_id.try_into().context("parent_id")?,
             NodeHeight(value.block_height),
             Epoch(value.epoch),
-            shard_group,
             value
                 .signatures
                 .into_iter()

@@ -26,12 +26,12 @@ use crate::{
     traits::{ConsensusSpec, VoteSignatureService},
 };
 
-const LOG_TARGET: &str = "tari::dan::consensus::hotstuff::on_receive_vote";
+const LOG_TARGET: &str = "tari::dan::consensus::hotstuff::vote_collector";
 
 #[derive(Clone)]
 pub struct VoteCollector<TConsensusSpec: ConsensusSpec> {
     network: Network,
-    vote_store: VoteStore,
+    vote_store: Store,
     store: TConsensusSpec::StateStore,
     epoch_manager: TConsensusSpec::EpochManager,
     vote_signature_service: TConsensusSpec::SignatureService,
@@ -49,7 +49,7 @@ where TConsensusSpec: ConsensusSpec
         Self {
             network,
             store,
-            vote_store: VoteStore::new(),
+            vote_store: Store::new(),
             epoch_manager,
             vote_signature_service,
         }
@@ -76,7 +76,7 @@ where TConsensusSpec: ConsensusSpec
 
         {
             let mut store_mut = self.vote_store.get_mut().await;
-            store_mut.clear_votes_before(current_epoch, current_height)?;
+            store_mut.clear_votes_before(current_epoch, current_height)
         }
 
         let sender_vn = self.check_eligibility(from, &message, local_committee_info).await?;
@@ -354,40 +354,40 @@ fn create_qc(signatures: Vec<ValidatorSignature>, quorum_decision: QuorumDecisio
 }
 
 #[derive(Debug, Clone)]
-struct VoteStore {
-    store: Arc<RwLock<VoteStoreInner>>,
+struct Store<V> {
+    store: Arc<RwLock<StoreInner<V>>>,
 }
 
-impl VoteStore {
+impl<V> Store<V> {
     pub fn new() -> Self {
         Self {
-            store: Arc::new(RwLock::new(VoteStoreInner::new())),
+            store: Arc::new(RwLock::new(StoreInner::new())),
         }
     }
 
-    pub async fn get_ref(&self) -> RwLockReadGuard<'_, VoteStoreInner> {
+    pub async fn get_ref(&self) -> RwLockReadGuard<'_, StoreInner<V>> {
         self.store.read().await
     }
 
-    pub async fn get_mut(&self) -> RwLockWriteGuard<'_, VoteStoreInner> {
+    pub async fn get_mut(&self) -> RwLockWriteGuard<'_, StoreInner<V>> {
         self.store.write().await
     }
 
     pub async fn with_mut<F, R>(&self, f: F) -> R
-    where F: FnOnce(&mut VoteStoreInner) -> R {
+    where F: FnOnce(&mut StoreInner<V>) -> R {
         let mut writer = self.get_mut().await;
         f(&mut writer)
     }
 }
 
 #[derive(Debug, Default)]
-struct VoteStoreInner {
+struct StoreInner<V> {
     /// Maps block IDs -> map (sender leaf hash -> vote)
-    store: HashMap<BlockId, HashMap<FixedHash, Vote>>,
+    store: HashMap<BlockId, HashMap<FixedHash, V>>,
     blocks: BTreeMap<(Epoch, NodeHeight), BlockId>,
 }
 
-impl VoteStoreInner {
+impl<V> StoreInner<V> {
     pub fn new() -> Self {
         Self {
             store: HashMap::new(),
@@ -395,22 +395,24 @@ impl VoteStoreInner {
         }
     }
 
-    pub fn clear_votes_before(&mut self, epoch: Epoch, height: NodeHeight) -> Result<(), HotStuffError> {
-        let new_blocks = self.blocks.split_off(&(epoch, height.saturating_sub(NodeHeight(1))));
+    pub fn clear_votes_before(&mut self, epoch: Epoch, height: NodeHeight) {
+        let Some(height_minus_one) = height.checked_sub(NodeHeight(1)) else {
+            return ;
+        };
+        let new_blocks = self.blocks.split_off(&(epoch, height_minus_one));
         self.log_buffer_size();
         for block_id in self.blocks.values() {
             self.store.remove(block_id);
         }
         self.blocks = new_blocks;
         self.shrink_map();
-        Ok(())
     }
 
     /// Save a vote to the store. Returns true if a previous vote for the block by the sender was already present.
     /// Even if the vote is different, it is not considered a duplicate/invalid and does not overwrite the previous
     /// vote.
-    pub fn save_vote(&mut self, vote: Vote) -> bool {
-        // We use the sender leaf hash as the key to avoid collisions with other votes
+    pub fn save_vote(&mut self, vote: V) -> bool {
+        // We use the sender leaf hash as the key to avoid collisions with other votes for the block
         let key = &vote.sender_leaf_hash;
         match self.store.entry(vote.block_id) {
             Entry::Occupied(mut entry) => {

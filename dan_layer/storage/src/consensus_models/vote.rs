@@ -3,21 +3,18 @@
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use serde::{Deserialize, Serialize};
 use tari_common_types::types::FixedHash;
 use tari_dan_common_types::{Epoch, NodeHeight};
-use tari_engine_types::serde_with;
 use tari_sidechain::QuorumDecision;
 
 use crate::consensus_models::{BlockId, ValidatorSignature};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Vote {
     pub epoch: Epoch,
     pub block_id: BlockId,
     pub block_height: NodeHeight,
     pub decision: QuorumDecision,
-    #[serde(with = "serde_with::hex")]
     pub sender_leaf_hash: FixedHash,
     pub signature: ValidatorSignature,
 }

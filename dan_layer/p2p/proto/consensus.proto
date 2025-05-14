@@ -27,6 +27,7 @@ message NewViewMessage {
   QuorumCertificate high_qc = 1;
   uint64 new_height = 2;
   VoteMessage last_vote = 3;
+  tari.dan.common.SignatureAndPublicKey dummy_signature = 4;
 }
 
 message ProposalMessage {
@@ -167,7 +168,6 @@ message QuorumCertificate {
   uint64 epoch = 4;
   repeated tari.dan.common.SignatureAndPublicKey signatures = 5;
   QuorumDecision decision = 7;
-  uint32 shard_group = 8;
 }
 
 message ValidatorMetadata {
