@@ -11,8 +11,8 @@ use tari_common_types::types::FixedHash;
 use tari_dan_common_types::{optional::Optional, Epoch, NodeHeight, ShardGroup};
 use tari_dan_storage::{
     consensus_models::{
-        Block,
         BlockDiff,
+        BlockModel,
         BurntUtxo,
         EpochStateRoot,
         ForeignProposalRecord,
@@ -913,7 +913,8 @@ impl<TConsensusSpec: ConsensusSpec> HotstuffWorker<TConsensusSpec> {
     ) -> Result<(), HotStuffError> {
         self.state_store.with_write_tx(|tx| {
             // The parent for genesis blocks refer to this zero block
-            let mut zero_block = Block::zero_block(self.config.network, self.config.consensus_constants.num_preshards);
+            let mut zero_block =
+                BlockModel::zero_block(self.config.network, self.config.consensus_constants.num_preshards);
             if !zero_block.exists(&**tx)? {
                 debug!(target: LOG_TARGET, "Creating zero block");
                 zero_block.justify().insert(tx)?;
@@ -926,7 +927,7 @@ impl<TConsensusSpec: ConsensusSpec> HotstuffWorker<TConsensusSpec> {
             let state_merkle_root = checkpoint
                 .map(|cp| cp.state_root)
                 .unwrap_or_else(|| SPARSE_MERKLE_PLACEHOLDER_HASH);
-            let mut genesis = Block::genesis(
+            let mut genesis = BlockModel::genesis(
                 self.config.network,
                 epoch,
                 epoch_hash,

@@ -21,7 +21,7 @@
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use serde::{Deserialize, Serialize};
-use tari_dan_storage::consensus_models::{Block, BlockId, ForeignProposal};
+use tari_dan_storage::consensus_models::{BlockId, BlockModel, ForeignProposal};
 
 use crate::{
     codecs::{BlockIdCodec, DefaultCodec, DefaultCodecRef},
@@ -30,7 +30,7 @@ use crate::{
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParkedBlockData {
-    pub block: Block,
+    pub block: BlockModel,
     pub foreign_proposals: Vec<ForeignProposal>,
 }
 
@@ -49,7 +49,7 @@ impl Cf for ParkedBlockModel {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ParkedBlockDataRef<'a> {
-    pub block: &'a Block,
+    pub block: &'a BlockModel,
     pub foreign_proposals: &'a [ForeignProposal],
 }
 

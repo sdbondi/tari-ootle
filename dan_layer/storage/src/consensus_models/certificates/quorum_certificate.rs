@@ -1,21 +1,14 @@
 //   Copyright 2025 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::fmt::Display;
-
 use borsh::BorshSerialize;
 use serde::{Deserialize, Serialize};
 use tari_common_types::types::FixedHash;
-use tari_dan_common_types::{optional::Optional, Epoch, NodeHeight};
-use tari_hashing::layer2::quorum_certificate_hasher;
+use tari_dan_common_types::{hashing::quorum_certificate_id_hasher, Epoch, NodeHeight};
 use tari_sidechain::QuorumDecision;
 use tari_template_lib::prelude::RistrettoPublicKeyBytes;
 
-use crate::{
-    certificates::v1::{ProposalCertificate, QuorumCertificateV1, TimeoutCertificate},
-    ids::{BlockId, QcId},
-    validator_signature::ValidatorSignature,
-};
+use super::v1::{ProposalCertificateV1, QuorumCertificateV1, TimeoutCertificateV1};
 
 #[derive(Debug, Clone, Deserialize, Serialize, BorshSerialize)]
 #[cfg_attr(
@@ -36,7 +29,7 @@ impl QuorumCertificate {
         signatures: Vec<ValidatorSignature>,
         decision: QuorumDecision,
     ) -> Self {
-        QuorumCertificateV1::ProposalCertificate(ProposalCertificate::new(
+        QuorumCertificateV1::ProposalCertificate(ProposalCertificateV1::new(
             header_hash,
             parent_id,
             block_height,
@@ -53,10 +46,11 @@ impl QuorumCertificate {
         sidechain_id: Option<RistrettoPublicKeyBytes>,
         signatures: Vec<ValidatorSignature>,
     ) -> Self {
-        QuorumCertificateV1::TimeoutCertificate(TimeoutCertificate::new(epoch, height, sidechain_id, signatures)).into()
+        QuorumCertificateV1::TimeoutCertificate(TimeoutCertificateV1::new(epoch, height, sidechain_id, signatures))
+            .into()
     }
 
-    pub fn as_proposal_certificate(&self) -> Option<&ProposalCertificate> {
+    pub fn as_proposal_certificate(&self) -> Option<&ProposalCertificateV1> {
         match self {
             Self::V1(qc) => match qc {
                 QuorumCertificateV1::ProposalCertificate(pc) => Some(pc),
@@ -65,7 +59,7 @@ impl QuorumCertificate {
         }
     }
 
-    pub fn as_timeout_certificate(&self) -> Option<&TimeoutCertificate> {
+    pub fn as_timeout_certificate(&self) -> Option<&TimeoutCertificateV1> {
         match self {
             Self::V1(qc) => match qc {
                 QuorumCertificateV1::ProposalCertificate(_) => None,
@@ -92,8 +86,11 @@ impl QuorumCertificate {
         }
     }
 
+    /// Returns the hash of the QC. This is used to identify the QC and not for any security-sensitive purposes.
+    /// However, we implement a secure hash (as opposed to a cheaper, non-collision-resistant hash e.g. siphash) to
+    /// avoid any unintended security issues.
     pub fn calculate_id(&self) -> QcId {
-        quorum_certificate_hasher().chain(self).finalize_into_array().into()
+        quorum_certificate_id_hasher().chain(self).finalize_into_array().into()
     }
 }
 

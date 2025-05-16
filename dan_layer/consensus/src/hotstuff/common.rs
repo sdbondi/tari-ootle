@@ -1,7 +1,10 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::{collections::HashMap, ops::ControlFlow};
+use std::{
+    collections::{BTreeSet, HashMap},
+    ops::ControlFlow,
+};
 
 use indexmap::IndexMap;
 use log::*;
@@ -20,13 +23,15 @@ use tari_dan_common_types::{
 };
 use tari_dan_storage::{
     consensus_models::{
-        Block,
+        BlockError,
         BlockHeader,
         BlockId,
+        BlockModel,
+        Command,
         EpochCheckpoint,
         LeafBlock,
         PendingShardStateTreeDiff,
-        QuorumCertificate,
+        QuorumCertificateModel,
         SubstateChange,
         ValidatorConsensusStats,
     },
@@ -34,7 +39,13 @@ use tari_dan_storage::{
     StateStoreReadTransaction,
 };
 use tari_engine_types::{substate::SubstateDiff, template_lib_models::Amount, ValidatorFeePool};
-use tari_state_tree::{JellyfishMerkleTree, StateTreeError, SPARSE_MERKLE_PLACEHOLDER_HASH};
+use tari_state_tree::{
+    compute_merkle_root_for_hashes,
+    JellyfishMerkleTree,
+    StateTreeError,
+    TreeHash,
+    SPARSE_MERKLE_PLACEHOLDER_HASH,
+};
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 
 use crate::{
@@ -57,7 +68,7 @@ pub fn calculate_last_dummy_block<TAddr: NodeAddressable, TLeaderStrategy: Leade
     epoch: Epoch,
     shard_group: ShardGroup,
     parent_block_id: BlockId,
-    qc: &QuorumCertificate,
+    qc: &QuorumCertificateModel,
     parent_merkle_root: FixedHash,
     leader_strategy: &TLeaderStrategy,
     local_committee: &Committee<TAddr>,
@@ -94,14 +105,14 @@ pub fn calculate_dummy_blocks<TAddr: NodeAddressable, TLeaderStrategy: LeaderStr
     epoch: Epoch,
     shard_group: ShardGroup,
     parent_block_id: BlockId,
-    qc: &QuorumCertificate,
+    qc: &QuorumCertificateModel,
     expected_parent_block_id: &BlockId,
     parent_merkle_root: FixedHash,
     leader_strategy: &TLeaderStrategy,
     local_committee: &Committee<TAddr>,
     parent_timestamp: u64,
     parent_epoch_hash: FixedHash,
-) -> Vec<Block> {
+) -> Vec<BlockModel> {
     let mut dummies = Vec::with_capacity(new_height.saturating_sub(from_height).as_u64() as usize);
     with_dummy_blocks(
         from_height,
@@ -132,11 +143,11 @@ pub fn calculate_dummy_blocks<TAddr: NodeAddressable, TLeaderStrategy: LeaderStr
 
 /// Calculates the dummy block required to reach the new height
 pub fn calculate_dummy_blocks_from_justify<TAddr: NodeAddressable, TLeaderStrategy: LeaderStrategy<TAddr>>(
-    candidate_block: &Block,
-    justify_block: &Block,
+    candidate_block: &BlockModel,
+    justify_block: &BlockModel,
     leader_strategy: &TLeaderStrategy,
     local_committee: &Committee<TAddr>,
-) -> Vec<Block> {
+) -> Vec<BlockModel> {
     calculate_dummy_blocks(
         justify_block.height(),
         candidate_block.height(),
@@ -161,7 +172,7 @@ fn with_dummy_blocks<TAddr, TLeaderStrategy, F>(
     epoch: Epoch,
     shard_group: ShardGroup,
     mut parent_block_id: BlockId,
-    qc: &QuorumCertificate,
+    qc: &QuorumCertificateModel,
     parent_merkle_root: FixedHash,
     leader_strategy: &TLeaderStrategy,
     local_committee: &Committee<TAddr>,
@@ -171,7 +182,7 @@ fn with_dummy_blocks<TAddr, TLeaderStrategy, F>(
 ) where
     TAddr: NodeAddressable,
     TLeaderStrategy: LeaderStrategy<TAddr>,
-    F: FnMut(Block) -> ControlFlow<()>,
+    F: FnMut(BlockModel) -> ControlFlow<()>,
 {
     if current_height >= new_height {
         error!(
@@ -208,7 +219,7 @@ fn with_dummy_blocks<TAddr, TLeaderStrategy, F>(
             parent_timestamp,
             parent_epoch_hash,
         );
-        let dummy_block = Block::new(dummy_header, qc.clone(), Default::default());
+        let dummy_block = BlockModel::new(dummy_header, qc.clone(), Default::default());
         debug!(
             target: LOG_TARGET,
             "🍼 new dummy block: {}",
@@ -245,8 +256,8 @@ pub fn calculate_state_merkle_root<'a, TTx: StateStoreReadTransaction, I: IntoIt
 
 pub(crate) fn generate_epoch_checkpoint<TTx>(
     tx: &TTx,
-    eoe_block: &Block,
-    tip_qc: &QuorumCertificate,
+    eoe_block: &BlockModel,
+    tip_qc: &QuorumCertificateModel,
 ) -> Result<EpochCheckpoint, HotStuffError>
 where
     TTx: StateStoreReadTransaction,
@@ -383,4 +394,10 @@ pub fn apply_leader_fee_to_substate_store<TStore: StateStore>(
     )?;
 
     Ok(())
+}
+
+pub fn compute_command_merkle_root(commands: &BTreeSet<Command>) -> Result<FixedHash, BlockError> {
+    let hashes = commands.iter().map(|cmd| TreeHash::from(cmd.hash().into_array()));
+    let hash = compute_merkle_root_for_hashes(hashes).map_err(BlockError::StateTreeError)?;
+    Ok(FixedHash::from(hash.into_array()))
 }

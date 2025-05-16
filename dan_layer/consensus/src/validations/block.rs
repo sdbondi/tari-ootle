@@ -9,7 +9,7 @@ use tari_dan_common_types::{
     committee::{Committee, CommitteeInfo},
     Epoch,
 };
-use tari_dan_storage::consensus_models::{Block, BlockHeader};
+use tari_dan_storage::consensus_models::{BlockHeader, BlockModel};
 
 use super::common::{
     check_block_signature,
@@ -30,7 +30,7 @@ use crate::{
 
 pub fn check_local_proposal<TConsensusSpec: ConsensusSpec>(
     current_epoch: Epoch,
-    block: &Block,
+    block: &BlockModel,
     committee_for_block: &Committee<TConsensusSpec::Addr>,
     local_committee_info: &CommitteeInfo,
     vote_signing_service: &TConsensusSpec::SignatureService,
@@ -52,7 +52,7 @@ pub fn check_local_proposal<TConsensusSpec: ConsensusSpec>(
     Ok(())
 }
 fn check_proposal<TConsensusSpec: ConsensusSpec>(
-    block: &Block,
+    block: &BlockModel,
     committee_for_block: &Committee<TConsensusSpec::Addr>,
     vote_signing_service: &TConsensusSpec::SignatureService,
     leader_strategy: &TConsensusSpec::LeaderStrategy,

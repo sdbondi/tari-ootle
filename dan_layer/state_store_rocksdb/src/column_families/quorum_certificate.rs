@@ -20,7 +20,7 @@
 //  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use tari_dan_storage::consensus_models::{BlockId, QcId, QuorumCertificate};
+use tari_dan_storage::consensus_models::{BlockId, QcId, QuorumCertificateModel};
 
 use crate::{
     codecs::{BlockIdCodec, DefaultCodec, FixedBytesCodec32, UnitCodec},
@@ -32,7 +32,7 @@ pub struct QuorumCertificateModel;
 impl Cf for QuorumCertificateModel {
     type Key = QcId;
     type KeyCodec = FixedBytesCodec32;
-    type Value = QuorumCertificate;
+    type Value = QuorumCertificateModel;
     type ValueCodec = DefaultCodec<Self::Value>;
 
     fn name() -> &'static str {

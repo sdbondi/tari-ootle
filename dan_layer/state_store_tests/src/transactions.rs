@@ -7,7 +7,7 @@ use tari_common_types::types::{FixedHash, PrivateKey};
 use tari_dan_common_types::{Epoch, ExtraData, NodeHeight, NumPreshards, ShardGroup, SubstateRequirement};
 use tari_dan_storage::{
     consensus_models::{
-        Block,
+        BlockModel,
         BlockTransactionExecution,
         Command,
         Evidence,
@@ -50,13 +50,13 @@ mod confirm_all_transitions {
         let atom3 = create_tx_atom();
 
         let network = Default::default();
-        let zero_block = Block::zero_block(network, NumPreshards::P64);
+        let zero_block = BlockModel::zero_block(network, NumPreshards::P64);
         zero_block.insert(&mut tx).unwrap();
         zero_block.justify().save(&mut tx).unwrap();
         tx.blocks_set_qcs(zero_block.id(), Some(&QcId::zero()), Some(&QcId::zero()))
             .unwrap();
 
-        let block1 = Block::create(
+        let block1 = BlockModel::create(
             network,
             *zero_block.id(),
             zero_block.justify().clone(),

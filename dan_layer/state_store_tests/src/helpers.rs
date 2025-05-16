@@ -28,8 +28,8 @@ use tari_common_types::types::FixedHash;
 use tari_dan_common_types::{shard::Shard, Epoch, ExtraData, NodeHeight, NumPreshards, ShardGroup};
 use tari_dan_storage::{
     consensus_models::{
-        Block,
         BlockId,
+        BlockModel,
         BlockPledge,
         Command,
         CommandsCommitProof,
@@ -38,7 +38,7 @@ use tari_dan_storage::{
         ForeignProposalRecord,
         LeafBlock,
         QcId,
-        QuorumCertificate,
+        QuorumCertificateModel,
         SubstateRecord,
         TransactionAtom,
     },
@@ -205,11 +205,11 @@ pub fn create_random_hash() -> FixedHash {
     FixedHash::new(rand_bytes)
 }
 
-pub fn create_block(parent: Option<&Block>) -> Block {
+pub fn create_block(parent: Option<&BlockModel>) -> BlockModel {
     let network = Default::default();
 
     let Some(parent) = parent else {
-        return Block::zero_block(network, num_preshards());
+        return BlockModel::zero_block(network, num_preshards());
     };
 
     let atom1 = create_tx_atom();
@@ -217,7 +217,7 @@ pub fn create_block(parent: Option<&Block>) -> Block {
     // This prevents all blocks to have the same hash/id
     let random_merkle_root = create_random_hash();
 
-    Block::create(
+    BlockModel::create(
         network,
         *parent.id(),
         parent.justify().clone(),
@@ -238,7 +238,7 @@ pub fn create_block(parent: Option<&Block>) -> Block {
     .unwrap()
 }
 
-pub fn create_block_with_qc(parent: &LeafBlock) -> Block {
+pub fn create_block_with_qc(parent: &LeafBlock) -> BlockModel {
     let network = Default::default();
 
     let atom1 = create_tx_atom();
@@ -248,7 +248,7 @@ pub fn create_block_with_qc(parent: &LeafBlock) -> Block {
 
     let qc = create_qc(parent);
 
-    Block::create(
+    BlockModel::create(
         network,
         *parent.block_id(),
         qc,
@@ -268,8 +268,8 @@ pub fn create_block_with_qc(parent: &LeafBlock) -> Block {
     )
     .unwrap()
 }
-pub fn create_qc(block: &LeafBlock) -> QuorumCertificate {
-    QuorumCertificate::new(
+pub fn create_qc(block: &LeafBlock) -> QuorumCertificateModel {
+    QuorumCertificateModel::new(
         *block.block_id().as_hash(),
         *block.block_id(),
         block.height(),
@@ -279,7 +279,7 @@ pub fn create_qc(block: &LeafBlock) -> QuorumCertificate {
     )
 }
 
-pub fn create_chain(num_blocks: usize) -> Vec<Block> {
+pub fn create_chain(num_blocks: usize) -> Vec<BlockModel> {
     let mut blocks = Vec::with_capacity(num_blocks);
     let block = create_block(None);
     let mut parent = block.as_leaf_block();
@@ -292,7 +292,7 @@ pub fn create_chain(num_blocks: usize) -> Vec<Block> {
     blocks
 }
 
-pub fn commit_chain<TTx>(tx: &mut TTx, chain: &[Block])
+pub fn commit_chain<TTx>(tx: &mut TTx, chain: &[BlockModel])
 where
     TTx: StateStoreWriteTransaction + Deref,
     TTx::Target: StateStoreReadTransaction,
@@ -318,7 +318,7 @@ where
 
 pub fn create_foreign_proposal(parent_id: BlockId, epoch: Epoch) -> ForeignProposalRecord {
     let shard_group = ShardGroup::all_shards(TEST_NUM_PRESHARDS);
-    let qc1 = QuorumCertificate::new(
+    let qc1 = QuorumCertificateModel::new(
         *parent_id.as_hash(),
         parent_id,
         NodeHeight(1),
@@ -327,7 +327,7 @@ pub fn create_foreign_proposal(parent_id: BlockId, epoch: Epoch) -> ForeignPropo
         QuorumDecision::Accept,
     );
 
-    let foreign_block = Block::create(
+    let foreign_block = BlockModel::create(
         Default::default(),
         parent_id,
         qc1.clone(),

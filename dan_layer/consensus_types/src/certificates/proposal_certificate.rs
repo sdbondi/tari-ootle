@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tari_common_types::types::FixedHash;
 use tari_crypto::tari_utilities::ByteArray;
 use tari_dan_common_types::{Epoch, NodeHeight};
+use tari_engine_types::serde_with;
 use tari_hashing::layer2::quorum_certificate_hasher;
 use tari_sidechain::QuorumDecision;
 

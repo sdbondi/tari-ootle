@@ -12,7 +12,7 @@ use tari_dan_common_types::{
 };
 use tari_dan_storage::{
     consensus_models::{
-        Block,
+        BlockModel,
         EpochStateRoot,
         ForeignProposalRecord,
         ForeignProposalStatus,
@@ -149,7 +149,7 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
         } = msg;
 
         let maybe_valid_block = self.store.with_read_tx(|tx| {
-            if Block::record_exists(tx, block.id())? {
+            if BlockModel::record_exists(tx, block.id())? {
                 info!(target: LOG_TARGET, "🧊 Block {} has already been processed", block);
                 return Ok(None);
             }
@@ -422,7 +422,7 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
 
     async fn process_end_of_epoch(
         &mut self,
-        eoe_block: Block,
+        eoe_block: BlockModel,
         valid_tip_block: ValidBlock,
     ) -> Result<(), HotStuffError> {
         let _timer = TraceTimer::debug(LOG_TARGET, "process-end-of-epoch");
@@ -464,7 +464,7 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
 
                 if let Some(next_shard_group) = next_shard_group {
                     // Create the next genesis
-                    let mut genesis = Block::genesis(
+                    let mut genesis = BlockModel::genesis(
                         network,
                         next_epoch,
                         epoch_hash,
@@ -517,7 +517,7 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
     async fn send_vote_to_leader(
         &mut self,
         leader: &TConsensusSpec::Addr,
-        block: &Block,
+        block: &BlockModel,
         decision: QuorumDecision,
     ) -> Result<(), HotStuffError> {
         let _timer =
@@ -555,7 +555,7 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
         new_height: NodeHeight,
         local_committee: &Committee<TConsensusSpec::Addr>,
         leader: &TConsensusSpec::Addr,
-        block: &Block,
+        block: &BlockModel,
         high_qc: HighQc,
         decision: QuorumDecision,
     ) -> Result<(), HotStuffError> {
@@ -605,7 +605,7 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
         Ok(())
     }
 
-    fn propose_foreign_proposals(&mut self, local_committee_info: CommitteeInfo, blocks: Vec<Block>) {
+    fn propose_foreign_proposals(&mut self, local_committee_info: CommitteeInfo, blocks: Vec<BlockModel>) {
         if blocks.is_empty() || blocks.iter().all(|b| b.commands().is_empty()) {
             return;
         }
@@ -628,7 +628,11 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
         });
     }
 
-    fn generate_vote_message(&self, block: &Block, decision: QuorumDecision) -> Result<VoteMessage, HotStuffError> {
+    fn generate_vote_message(
+        &self,
+        block: &BlockModel,
+        decision: QuorumDecision,
+    ) -> Result<VoteMessage, HotStuffError> {
         let signature = self.vote_signing_service.sign_vote(block.id(), decision);
 
         Ok(VoteMessage {
@@ -673,7 +677,7 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
         &self,
         tx: &<TConsensusSpec::StateStore as StateStore>::ReadTransaction<'_>,
         current_epoch: Epoch,
-        block: Block,
+        block: BlockModel,
         local_committee: &Committee<TConsensusSpec::Addr>,
         local_committee_info: &CommitteeInfo,
     ) -> Result<Option<ValidBlock>, HotStuffError> {
@@ -704,7 +708,7 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
         &self,
         tx: &<TConsensusSpec::StateStore as StateStore>::ReadTransaction<'_>,
         current_epoch: Epoch,
-        candidate_block: Block,
+        candidate_block: BlockModel,
         local_committee: &Committee<TConsensusSpec::Addr>,
         _local_committee_info: &CommitteeInfo,
     ) -> Result<ValidBlock, HotStuffError> {
@@ -764,7 +768,7 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
         let justify_block = if candidate_block.justify().justifies_zero_block() {
             // The justified block is the zero block (epoch 0). However, we instead need the genesis block for the
             // epoch.
-            Block::get_genesis_for_epoch(tx, candidate_block.epoch())?
+            BlockModel::get_genesis_for_epoch(tx, candidate_block.epoch())?
         } else {
             // Load our local version of the justified block. Check that details included in the justify match
             // previously added blocks
@@ -864,7 +868,7 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
 async fn broadcast_foreign_proposal_if_required<TConsensusSpec: ConsensusSpec>(
     outbound_messaging: &mut TConsensusSpec::OutboundMessaging,
     local_committee_info: &CommitteeInfo,
-    block: Block,
+    block: BlockModel,
 ) -> Result<(), HotStuffError> {
     let non_local_shard_groups = block
         .commands()

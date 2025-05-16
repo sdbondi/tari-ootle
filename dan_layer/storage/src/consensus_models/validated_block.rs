@@ -7,7 +7,7 @@ use tari_dan_common_types::{Epoch, NodeHeight};
 use tari_template_lib::types::crypto::RistrettoPublicKeyBytes;
 
 use crate::{
-    consensus_models::{Block, BlockId, QuorumCertificate},
+    consensus_models::{BlockId, BlockModel, QuorumCertificateModel},
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
     StorageError,
@@ -15,23 +15,23 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct ValidBlock {
-    block: Block,
-    dummy_blocks: Vec<Block>,
+    block: BlockModel,
+    dummy_blocks: Vec<BlockModel>,
 }
 
 impl ValidBlock {
-    pub fn new(block: Block) -> Self {
+    pub fn new(block: BlockModel) -> Self {
         Self {
             block,
             dummy_blocks: vec![],
         }
     }
 
-    pub fn with_dummy_blocks(block: Block, dummy_blocks: Vec<Block>) -> Self {
+    pub fn with_dummy_blocks(block: BlockModel, dummy_blocks: Vec<BlockModel>) -> Self {
         Self { block, dummy_blocks }
     }
 
-    pub fn block(&self) -> &Block {
+    pub fn block(&self) -> &BlockModel {
         &self.block
     }
 
@@ -51,11 +51,11 @@ impl ValidBlock {
         self.block.proposed_by()
     }
 
-    pub fn justify(&self) -> &QuorumCertificate {
+    pub fn justify(&self) -> &QuorumCertificateModel {
         self.block.justify()
     }
 
-    pub fn dummy_blocks(&self) -> &[Block] {
+    pub fn dummy_blocks(&self) -> &[BlockModel] {
         &self.dummy_blocks
     }
 }

@@ -6,6 +6,7 @@ use std::fmt::Display;
 use borsh::BorshSerialize;
 use serde::{Deserialize, Serialize};
 use tari_common_types::types::{FixedHash, FixedHashSizeError};
+use tari_engine_types::serde_with;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, BorshSerialize)]
 #[serde(transparent)]

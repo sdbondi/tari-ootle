@@ -40,9 +40,9 @@ use tari_dan_common_types::{
 };
 use tari_dan_storage::{
     consensus_models::{
-        Block,
         BlockDiff,
         BlockId,
+        BlockModel,
         BlockTransactionExecution,
         EpochCheckpoint,
         EpochStateRoot,
@@ -57,7 +57,7 @@ use tari_dan_storage::{
         LockedSubstateValue,
         PendingShardStateTreeDiff,
         QcId,
-        QuorumCertificate,
+        QuorumCertificateModel,
         StateTransition,
         StateTransitionId,
         SubstateChange,
@@ -308,7 +308,11 @@ impl<'a, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'a> RocksDbStat
         Ok(transactions)
     }
 
-    pub fn blocks_get_parent_chain(&self, start_block_id: &BlockId, limit: usize) -> Result<Vec<Block>, StorageError> {
+    pub fn blocks_get_parent_chain(
+        &self,
+        start_block_id: &BlockId,
+        limit: usize,
+    ) -> Result<Vec<BlockModel>, StorageError> {
         // Only used for JSON-RPC - not optimised
         const OPERATION: &str = "blocks_get_parent_chain";
 
@@ -637,7 +641,7 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx> StateStor
         })
     }
 
-    fn blocks_get(&self, block_id: &BlockId) -> Result<Block, StorageError> {
+    fn blocks_get(&self, block_id: &BlockId) -> Result<BlockModel, StorageError> {
         const OPERATION: &str = "blocks_get";
 
         let block = self.db().cf(BlockModel)?.get(block_id, OPERATION)?;
@@ -657,7 +661,7 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx> StateStor
         Ok(block_ids)
     }
 
-    fn blocks_get_genesis_for_epoch(&self, epoch: Epoch) -> Result<Block, StorageError> {
+    fn blocks_get_genesis_for_epoch(&self, epoch: Epoch) -> Result<BlockModel, StorageError> {
         // const OPERATION: &str = "blocks_get_genesis_for_epoch";
 
         let query = self.db().cf(block::ByEpochHeightQuery)?;
@@ -680,7 +684,7 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx> StateStor
         end_block_height: NodeHeight,
         include_dummy_blocks: bool,
         limit: usize,
-    ) -> Result<Vec<Block>, StorageError> {
+    ) -> Result<Vec<BlockModel>, StorageError> {
         const OPERATION: &str = "blocks_get_all_between";
 
         // Prevent possibility of memory exhaustion (defensive, not in response to an observed bug)
@@ -771,7 +775,7 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx> StateStor
         Ok(false)
     }
 
-    fn blocks_get_committed_by_parent(&self, parent_id: &BlockId) -> Result<Block, StorageError> {
+    fn blocks_get_committed_by_parent(&self, parent_id: &BlockId) -> Result<BlockModel, StorageError> {
         const OPERATION: &str = "blocks_get_all_by_parent";
         // TODO: this is the only use of the chain index- change block sync to not need this
         let chain_cf = self.db().cf(chain::CommittedParentChildChainIndex)?;
@@ -802,12 +806,12 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx> StateStor
         filter: Option<String>,
         ordering_index: Option<usize>,
         ordering: Option<Ordering>,
-    ) -> Result<Vec<Block>, StorageError> {
+    ) -> Result<Vec<BlockModel>, StorageError> {
         const OPERATION: &str = "blocks_get_paginated";
         // This operation is implemented in a naive way, by manually looping all blocks in the database.
         // This is only used for JSON-RPC get_blocks. This does not scale well.
 
-        let block_filter = |block: &Block| {
+        let block_filter = |block: &BlockModel| {
             let Some(filter) = &filter else {
                 return true;
             };
@@ -917,7 +921,7 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx> StateStor
     ) -> Result<u64, StorageError> {
         const OPERATION: &str = "filtered_blocks_get_count";
 
-        let block_filter = |block: &Block| {
+        let block_filter = |block: &BlockModel| {
             let mut res = true;
             if let Some(filter) = &filter {
                 if !filter.is_empty() {
@@ -1054,7 +1058,7 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx> StateStor
         })
     }
 
-    fn quorum_certificates_get(&self, qc_id: &QcId) -> Result<QuorumCertificate, StorageError> {
+    fn quorum_certificates_get(&self, qc_id: &QcId) -> Result<QuorumCertificateModel, StorageError> {
         const OPERATION: &str = "quorum_certificates_get";
         let qc = self.db().cf(QuorumCertificateModel)?.get(qc_id, OPERATION)?;
         Ok(qc)
@@ -1063,13 +1067,13 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx> StateStor
     fn quorum_certificates_get_all<'a, I: IntoIterator<Item = &'a QcId>>(
         &self,
         qc_ids: I,
-    ) -> Result<Vec<QuorumCertificate>, StorageError> {
+    ) -> Result<Vec<QuorumCertificateModel>, StorageError> {
         const OPERATION: &str = "quorum_certificates_get_all";
         let qcs = self.db().cf(QuorumCertificateModel)?.multi_get(qc_ids, OPERATION)?;
         Ok(qcs)
     }
 
-    fn quorum_certificates_get_by_block_id(&self, block_id: &BlockId) -> Result<QuorumCertificate, StorageError> {
+    fn quorum_certificates_get_by_block_id(&self, block_id: &BlockId) -> Result<QuorumCertificateModel, StorageError> {
         const OPERATION: &str = "quorum_certificates_get_by_block_id";
         let cf = self.db().cf(QuorumCertificateModel)?;
         let query = self.db().cf(quorum_certificate::ByBlockIdQuery)?;

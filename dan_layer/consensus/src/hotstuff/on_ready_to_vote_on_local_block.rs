@@ -8,8 +8,8 @@ use tari_crypto::ristretto::RistrettoPublicKey;
 use tari_dan_common_types::{committee::CommitteeInfo, optional::Optional, Epoch, ShardGroup, SubstateAddress};
 use tari_dan_storage::{
     consensus_models::{
-        Block,
         BlockDiff,
+        BlockModel,
         BlockTransactionExecution,
         Command,
         Decision,
@@ -215,7 +215,7 @@ where TConsensusSpec: ConsensusSpec
     fn process_newly_justified_block(
         &self,
         tx: &<TConsensusSpec::StateStore as StateStore>::ReadTransaction<'_>,
-        new_leaf_block: &Block,
+        new_leaf_block: &BlockModel,
         justify_id: QcId,
         local_committee_info: &CommitteeInfo,
         change_set: &mut ProposedBlockChangeSet,
@@ -304,7 +304,7 @@ where TConsensusSpec: ConsensusSpec
     fn should_vote(
         &self,
         tx: &<TConsensusSpec::StateStore as StateStore>::ReadTransaction<'_>,
-        block: &Block,
+        block: &BlockModel,
     ) -> Result<bool, ProposalValidationError> {
         let Some(last_voted) = LastVoted::get(tx).optional()? else {
             // Never voted, then validated.block.height() > last_voted.height (0)
@@ -329,7 +329,7 @@ where TConsensusSpec: ConsensusSpec
     fn decide_what_to_vote(
         &self,
         tx: &<TConsensusSpec::StateStore as StateStore>::ReadTransaction<'_>,
-        block: &Block,
+        block: &BlockModel,
         local_committee_info: &CommitteeInfo,
         proposer_claim_public_key_bytes: &RistrettoPublicKeyBytes,
         can_propose_epoch_end: bool,
@@ -570,7 +570,7 @@ where TConsensusSpec: ConsensusSpec
     fn evaluate_local_only_command(
         &self,
         tx: &<TConsensusSpec::StateStore as StateStore>::ReadTransaction<'_>,
-        block: &Block,
+        block: &BlockModel,
         atom: &TransactionAtom,
         local_committee_info: &CommitteeInfo,
         substate_store: &mut PendingSubstateStore<TConsensusSpec::StateStore>,
@@ -748,7 +748,7 @@ where TConsensusSpec: ConsensusSpec
     fn initial_prepare_multishard(
         &self,
         tx_rec: &mut TransactionPoolRecord,
-        block: &Block,
+        block: &BlockModel,
         atom: &TransactionAtom,
         local_committee_info: &CommitteeInfo,
         substate_store: &mut PendingSubstateStore<TConsensusSpec::StateStore>,
@@ -886,7 +886,7 @@ where TConsensusSpec: ConsensusSpec
     fn evaluate_local_prepare_command(
         &self,
         tx: &<TConsensusSpec::StateStore as StateStore>::ReadTransaction<'_>,
-        block: &Block,
+        block: &BlockModel,
         atom: &TransactionAtom,
         local_committee_info: &CommitteeInfo,
         substate_store: &mut PendingSubstateStore<TConsensusSpec::StateStore>,
@@ -969,7 +969,7 @@ where TConsensusSpec: ConsensusSpec
     fn evaluate_local_accept_command(
         &self,
         tx: &<TConsensusSpec::StateStore as StateStore>::ReadTransaction<'_>,
-        block: &Block,
+        block: &BlockModel,
         atom: &TransactionAtom,
         local_committee_info: &CommitteeInfo,
         substate_store: &mut PendingSubstateStore<TConsensusSpec::StateStore>,
@@ -1202,7 +1202,7 @@ where TConsensusSpec: ConsensusSpec
     fn evaluate_all_accept_command(
         &self,
         tx: &<TConsensusSpec::StateStore as StateStore>::ReadTransaction<'_>,
-        block: &Block,
+        block: &BlockModel,
         atom: &TransactionAtom,
         local_committee_info: &CommitteeInfo,
         substate_store: &mut PendingSubstateStore<TConsensusSpec::StateStore>,
@@ -1379,7 +1379,7 @@ where TConsensusSpec: ConsensusSpec
     fn evaluate_some_accept_command(
         &self,
         tx: &<TConsensusSpec::StateStore as StateStore>::ReadTransaction<'_>,
-        block: &Block,
+        block: &BlockModel,
         atom: &TransactionAtom,
         proposed_block_change_set: &mut ProposedBlockChangeSet,
     ) -> Result<Option<NoVoteReason>, HotStuffError> {
@@ -1459,7 +1459,7 @@ where TConsensusSpec: ConsensusSpec
     fn evaluate_foreign_proposal_command(
         &self,
         tx: &<TConsensusSpec::StateStore as StateStore>::ReadTransaction<'_>,
-        local_block: &Block,
+        local_block: &BlockModel,
         fp_atom: &ForeignProposalAtom,
         local_committee_info: &CommitteeInfo,
         foreign_shard_group: ShardGroup,
@@ -1602,7 +1602,7 @@ where TConsensusSpec: ConsensusSpec
         tx: &mut <TConsensusSpec::StateStore as StateStore>::WriteTransaction<'_>,
         commit_qc_id: &QcId,
         last_executed: &LastExecuted,
-        block: &Block,
+        block: &BlockModel,
         local_committee_info: &CommitteeInfo,
     ) -> Result<Vec<TransactionPoolRecord>, HotStuffError> {
         let committed_transactions = self.finalize_block(tx, commit_qc_id, block, local_committee_info)?;
@@ -1623,7 +1623,7 @@ where TConsensusSpec: ConsensusSpec
     fn on_lock_block(
         &self,
         tx: &mut <TConsensusSpec::StateStore as StateStore>::WriteTransaction<'_>,
-        new_locked_block: &Block,
+        new_locked_block: &BlockModel,
     ) -> Result<(), HotStuffError> {
         info!(
             target: LOG_TARGET,
@@ -1656,7 +1656,7 @@ where TConsensusSpec: ConsensusSpec
         &self,
         tx: &mut <TConsensusSpec::StateStore as StateStore>::WriteTransaction<'_>,
         commit_qc_id: &QcId,
-        block: &Block,
+        block: &BlockModel,
         local_committee_info: &CommitteeInfo,
     ) -> Result<Vec<TransactionPoolRecord>, HotStuffError> {
         if block.is_dummy() {

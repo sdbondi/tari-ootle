@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use tari_dan_common_types::{shard::Shard, Epoch, NodeHeight, VersionedSubstateId, VersionedSubstateIdRef};
 use tari_dan_storage::{
-    consensus_models::{Block, QcId},
+    consensus_models::{BlockModel, QcId},
     StateStore,
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
@@ -32,7 +32,7 @@ fn rocksdb() {
 fn operations(db: impl StateStore) {
     let mut tx = db.create_write_tx().unwrap();
 
-    let zero_block = Block::zero_block(Default::default(), TEST_NUM_PRESHARDS);
+    let zero_block = BlockModel::zero_block(Default::default(), TEST_NUM_PRESHARDS);
     zero_block.insert(&mut tx).unwrap();
 
     // substate 1

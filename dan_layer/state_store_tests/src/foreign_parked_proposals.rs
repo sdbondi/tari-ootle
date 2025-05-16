@@ -3,7 +3,7 @@
 
 use tari_dan_common_types::Epoch;
 use tari_dan_storage::{
-    consensus_models::{Block, ForeignParkedProposal},
+    consensus_models::{BlockModel, ForeignParkedProposal},
     StateStore,
     StateStoreWriteTransaction,
 };
@@ -22,7 +22,7 @@ fn rocksdb() {
 fn run_test(db: impl StateStore) {
     let mut tx = db.create_write_tx().unwrap();
 
-    let zero_block = Block::zero_block(Default::default(), TEST_NUM_PRESHARDS);
+    let zero_block = BlockModel::zero_block(Default::default(), TEST_NUM_PRESHARDS);
     tx.blocks_insert(&zero_block).unwrap();
     zero_block.as_locked_block().set(&mut tx).unwrap();
 

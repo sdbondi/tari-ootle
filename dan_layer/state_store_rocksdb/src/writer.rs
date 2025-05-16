@@ -38,8 +38,8 @@ use tari_dan_common_types::{
 };
 use tari_dan_storage::{
     consensus_models::{
-        Block,
         BlockId,
+        BlockModel,
         BlockTransactionExecution,
         BurntUtxo,
         Decision,
@@ -61,7 +61,7 @@ use tari_dan_storage::{
         NoVoteReason,
         PendingShardStateTreeDiff,
         QcId,
-        QuorumCertificate,
+        QuorumCertificateModel,
         StateTransitionId,
         SubstateChange,
         SubstateDestroyed,
@@ -181,7 +181,7 @@ impl<'a, TAddr: NodeAddressable> RocksDbStateStoreWriteTransaction<'a, TAddr> {
 
     fn parked_blocks_insert(
         &mut self,
-        block: &Block,
+        block: &BlockModel,
         foreign_proposals: &[ForeignProposal],
     ) -> Result<(), StorageError> {
         const OPERATION: &str = "parked_blocks_insert";
@@ -210,7 +210,7 @@ impl<'a, TAddr: NodeAddressable> RocksDbStateStoreWriteTransaction<'a, TAddr> {
         Ok(())
     }
 
-    fn parked_blocks_remove(&mut self, block_id: &BlockId) -> Result<(Block, Vec<ForeignProposal>), StorageError> {
+    fn parked_blocks_remove(&mut self, block_id: &BlockId) -> Result<(BlockModel, Vec<ForeignProposal>), StorageError> {
         const OPERATION: &str = "parked_blocks_remove";
         let cf = self.db().cf(ParkedBlockModel)?;
         let data = cf.get(block_id, OPERATION)?;
@@ -238,7 +238,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         Ok(())
     }
 
-    fn blocks_insert(&mut self, block: &Block) -> Result<(), StorageError> {
+    fn blocks_insert(&mut self, block: &BlockModel) -> Result<(), StorageError> {
         const OPERATION: &str = "blocks_insert";
         let cf = self.db().cf(BlockModel)?;
         if cf.exists(block.id(), OPERATION)? {
@@ -388,7 +388,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         Ok(())
     }
 
-    fn quorum_certificates_insert(&mut self, qc: &QuorumCertificate) -> Result<(), StorageError> {
+    fn quorum_certificates_insert(&mut self, qc: &QuorumCertificateModel) -> Result<(), StorageError> {
         const OPERATION: &str = "quorum_certificates_insert";
         self.db().cf(QuorumCertificateModel)?.put(qc.id(), qc, OPERATION)?;
         self.db().cf(quorum_certificate::QuorumCertificateBlockIndex)?.put(
@@ -922,7 +922,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
 
     fn parked_block_insert<'a, IMissing: IntoIterator<Item = &'a TransactionId>>(
         &mut self,
-        block: &Block,
+        block: &BlockModel,
         foreign_proposals: &[ForeignProposal],
         missing_transaction_ids: IMissing,
     ) -> Result<(), StorageError> {
@@ -953,7 +953,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         &mut self,
         _current_height: NodeHeight,
         transaction_id: &TransactionId,
-    ) -> Result<Option<(Block, Vec<ForeignProposal>)>, StorageError> {
+    ) -> Result<Option<(BlockModel, Vec<ForeignProposal>)>, StorageError> {
         const OPERATION: &str = "missing_transactions_insert";
 
         let query_cf = self.db().cf(missing_transactions::ByTransactionIdQuery)?;

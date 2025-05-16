@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tari_dan_common_types::{Epoch, NodeHeight};
 
 use crate::{
-    consensus_models::{Block, BlockId},
+    consensus_models::{BlockId, BlockModel},
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
     StorageError,
@@ -39,7 +39,7 @@ impl LockedBlock {
         tx.locked_block_get(epoch)
     }
 
-    pub fn get_block<TTx: StateStoreReadTransaction>(&self, tx: &TTx) -> Result<Block, StorageError> {
+    pub fn get_block<TTx: StateStoreReadTransaction>(&self, tx: &TTx) -> Result<BlockModel, StorageError> {
         tx.blocks_get(&self.block_id)
     }
 

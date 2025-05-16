@@ -35,7 +35,7 @@ use tari_dan_common_types::{
     SubstateAddress,
 };
 use tari_dan_storage::{
-    consensus_models::{Block, BlockId, Decision, TransactionExecution, TransactionPoolRecord},
+    consensus_models::{BlockId, BlockModel, Decision, TransactionExecution, TransactionPoolRecord},
     global::models,
     time::PrimitiveDateTime,
     Ordering,
@@ -397,7 +397,7 @@ pub struct ListBlocksRequest {
     ts(export, export_to = "../../bindings/src/types/validator-node-client/")
 )]
 pub struct ListBlocksResponse {
-    pub blocks: Vec<Block>,
+    pub blocks: Vec<BlockModel>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -417,7 +417,7 @@ pub struct GetTxPoolResponse {
     ts(export, export_to = "../../bindings/src/types/validator-node-client/")
 )]
 pub struct GetBlockResponse {
-    pub block: Block,
+    pub block: BlockModel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -427,7 +427,7 @@ pub struct GetBlockResponse {
     ts(export, export_to = "../../bindings/src/types/validator-node-client/")
 )]
 pub struct GetBlocksResponse {
-    pub blocks: Vec<Block>,
+    pub blocks: Vec<BlockModel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

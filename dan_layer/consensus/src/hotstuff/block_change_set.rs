@@ -12,9 +12,9 @@ use log::*;
 use tari_dan_common_types::{displayable::Displayable, optional::Optional, shard::Shard, ShardGroup};
 use tari_dan_storage::{
     consensus_models::{
-        Block,
         BlockDiff,
         BlockId,
+        BlockModel,
         BlockTransactionExecution,
         BurntUtxo,
         Evidence,
@@ -60,7 +60,7 @@ const MEM_MAX_PROPOSED_UTXO_MINTS_SIZE: usize = 1000;
 pub struct BlockDecision {
     pub quorum_decision: Option<QuorumDecision>,
     /// Contains newly-committed non-dummy blocks
-    pub commit_blocks: Vec<Block>,
+    pub commit_blocks: Vec<BlockModel>,
     pub finalized_transactions: Vec<Vec<TransactionPoolRecord>>,
     pub high_qc: HighQc,
     pub no_vote_reason: Option<NoVoteReason>,
@@ -75,7 +75,7 @@ impl BlockDecision {
         self.commit_blocks.iter().any(|block| block.is_epoch_end())
     }
 
-    pub fn take_end_of_epoch_block(&mut self) -> Option<Block> {
+    pub fn take_end_of_epoch_block(&mut self) -> Option<BlockModel> {
         if let Some(pos) = self.commit_blocks.iter().position(|block| block.is_epoch_end()) {
             let block = self.commit_blocks.remove(pos);
             Some(block)
@@ -84,7 +84,7 @@ impl BlockDecision {
         }
     }
 
-    pub fn commit_blocks_with_evictions_iter(&self) -> impl Iterator<Item = &Block> + Clone + '_ {
+    pub fn commit_blocks_with_evictions_iter(&self) -> impl Iterator<Item = &BlockModel> + Clone + '_ {
         self.commit_blocks
             .iter()
             .filter(|block| block.all_node_evictions().next().is_some())

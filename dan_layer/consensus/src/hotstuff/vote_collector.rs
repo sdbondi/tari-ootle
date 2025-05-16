@@ -11,7 +11,7 @@ use tari_common::configuration::Network;
 use tari_common_types::types::FixedHash;
 use tari_dan_common_types::{committee::CommitteeInfo, optional::Optional, Epoch, NodeHeight};
 use tari_dan_storage::{
-    consensus_models::{Block, BlockId, HighQc, QuorumCertificate, ValidatorSignature, Vote},
+    consensus_models::{BlockId, BlockModel, HighQc, QuorumCertificateModel, ValidatorSignature, Vote},
     global::models::ValidatorNode,
     StateStore,
 };
@@ -67,7 +67,7 @@ where TConsensusSpec: ConsensusSpec
         current_epoch: Epoch,
         message: VoteMessage,
         local_committee_info: &CommitteeInfo,
-    ) -> Result<Option<(QuorumCertificate, HighQc)>, HotStuffError> {
+    ) -> Result<Option<(QuorumCertificateModel, HighQc)>, HotStuffError> {
         let _timer = TraceTimer::debug(LOG_TARGET, "check_and_collect_vote");
         debug!(
             target: LOG_TARGET,
@@ -194,8 +194,8 @@ where TConsensusSpec: ConsensusSpec
         block_id: &BlockId,
         quorum_decision: QuorumDecision,
         local_committee_info: &CommitteeInfo,
-    ) -> Result<QuorumCertificate, HotStuffError> {
-        let Some(block) = self.store.with_read_tx(|tx| Block::get(tx, block_id)).optional()? else {
+    ) -> Result<QuorumCertificateModel, HotStuffError> {
+        let Some(block) = self.store.with_read_tx(|tx| BlockModel::get(tx, block_id)).optional()? else {
             return Err(HotStuffError::InvariantError(format!(
                 "Received votes for unknown block {}",
                 block_id
@@ -289,7 +289,7 @@ where TConsensusSpec: ConsensusSpec
 
         let maybe_known_block = self
             .store
-            .with_read_tx(|tx| Block::get(tx, &message.block_id).optional())?;
+            .with_read_tx(|tx| BlockModel::get(tx, &message.block_id).optional())?;
         let Some(block) = maybe_known_block else {
             // This can happen if:
             // - The block is not yet in the store (race condition: the vote arrived before the block)
@@ -342,8 +342,12 @@ where TConsensusSpec: ConsensusSpec
     }
 }
 
-fn create_qc(signatures: Vec<ValidatorSignature>, quorum_decision: QuorumDecision, block: Block) -> QuorumCertificate {
-    QuorumCertificate::new(
+fn create_qc(
+    signatures: Vec<ValidatorSignature>,
+    quorum_decision: QuorumDecision,
+    block: BlockModel,
+) -> QuorumCertificateModel {
+    QuorumCertificateModel::new(
         block.header().calculate_hash(),
         *block.parent(),
         block.height(),

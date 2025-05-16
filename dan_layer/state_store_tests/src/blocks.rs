@@ -12,7 +12,7 @@ use tari_dan_common_types::{
     ShardGroup,
 };
 use tari_dan_storage::{
-    consensus_models::{Block, Command},
+    consensus_models::{BlockModel, Command},
     Ordering,
     StateStore,
     StateStoreReadTransaction,
@@ -103,10 +103,10 @@ mod block_parent_operations {
         let atom1 = create_tx_atom();
         let atom2 = create_tx_atom();
 
-        let zero_block = Block::zero_block(network, NumPreshards::P64);
+        let zero_block = BlockModel::zero_block(network, NumPreshards::P64);
         zero_block.insert(&mut tx).unwrap();
 
-        let block1 = Block::create(
+        let block1 = BlockModel::create(
             network,
             *zero_block.id(),
             zero_block.justify().clone(),
@@ -127,7 +127,7 @@ mod block_parent_operations {
         .unwrap();
         block1.insert(&mut tx).unwrap();
 
-        let block2 = Block::create(
+        let block2 = BlockModel::create(
             network,
             *block1.id(),
             block1.justify().clone(),
@@ -227,12 +227,12 @@ mod block_query_operations {
         let atom1 = create_tx_atom();
         let atom2 = create_tx_atom();
 
-        let zero_block = Block::zero_block(network, NumPreshards::P64);
+        let zero_block = BlockModel::zero_block(network, NumPreshards::P64);
         zero_block.insert(&mut tx).unwrap();
         tx.blocks_set_qcs(zero_block.id(), Some(&QcId::zero()), Some(&QcId::zero()))
             .unwrap();
 
-        let block1 = Block::create(
+        let block1 = BlockModel::create(
             network,
             *zero_block.id(),
             zero_block.justify().clone(),
@@ -256,7 +256,7 @@ mod block_query_operations {
             .unwrap();
         block1.as_locked_block().set(&mut tx).unwrap();
 
-        let block2 = Block::create(
+        let block2 = BlockModel::create(
             network,
             *block1.id(),
             block1.justify().clone(),
@@ -286,7 +286,7 @@ mod block_query_operations {
             ExtraFieldKey::SidechainId,
             "block3".as_bytes().to_vec().try_into().unwrap(),
         );
-        let block3 = Block::create(
+        let block3 = BlockModel::create(
             network,
             *block1.id(),
             block1.justify().clone(),

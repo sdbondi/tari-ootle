@@ -4,13 +4,13 @@
 use tari_common_types::types::CompressedPublicKey;
 use tari_consensus::hotstuff::commit_proofs::convert_block_to_sidechain_block_header;
 use tari_crypto::tari_utilities::ByteArray;
-use tari_dan_storage::consensus_models::Block;
+use tari_dan_storage::consensus_models::BlockModel;
 
 use crate::support::load_json_fixture;
 
 #[test]
 fn it_produces_a_summarized_header_that_hashes_to_the_original() {
-    let block = load_json_fixture::<Block>("block.json");
+    let block = load_json_fixture::<BlockModel>("block.json");
     let sidechain_block = convert_block_to_sidechain_block_header(block.header()).unwrap();
     assert_eq!(sidechain_block.metadata_hash, block.header().calculate_metadata_hash());
     assert_eq!(

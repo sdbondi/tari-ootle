@@ -4,11 +4,11 @@
 use std::fmt::{Display, Formatter};
 
 use serde::Serialize;
-use tari_dan_storage::consensus_models::{Block, ForeignProposal};
+use tari_dan_storage::consensus_models::{BlockModel, ForeignProposal};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProposalMessage {
-    pub block: Block,
+    pub block: BlockModel,
     pub foreign_proposals: Vec<ForeignProposal>,
 }
 

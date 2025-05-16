@@ -3,7 +3,7 @@
 
 use tari_dan_common_types::{Epoch, NodeHeight, NumPreshards, ShardGroup};
 use tari_dan_storage::{
-    consensus_models::QuorumCertificate,
+    consensus_models::QuorumCertificateModel,
     StateStore,
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
@@ -22,10 +22,10 @@ fn quorum_certificates_operations(db: impl StateStore) {
     let mut tx = db.create_write_tx().unwrap();
 
     let epoch = Epoch::zero();
-    let genesis_qc = QuorumCertificate::genesis(epoch);
+    let genesis_qc = QuorumCertificateModel::genesis(epoch);
 
     let block_id_1 = create_random_block_id();
-    let qc1 = QuorumCertificate::new(
+    let qc1 = QuorumCertificateModel::new(
         *genesis_qc.header_hash(),
         block_id_1,
         genesis_qc.block_height() + NodeHeight(1),

@@ -2,7 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use tari_dan_common_types::{Epoch, NodeHeight};
-use tari_dan_storage::consensus_models::{Block, BlockId};
+use tari_dan_storage::consensus_models::{BlockId, BlockModel};
 
 use crate::{
     codecs::{BlockIdCodec, DefaultCodec, EpochCodec, NodeHeightCodec, UnitCodec},
@@ -14,7 +14,7 @@ pub struct BlockModel;
 impl Cf for BlockModel {
     type Key = BlockId;
     type KeyCodec = BlockIdCodec;
-    type Value = Block;
+    type Value = BlockModel;
     type ValueCodec = DefaultCodec<Self::Value>;
 
     fn name() -> &'static str {

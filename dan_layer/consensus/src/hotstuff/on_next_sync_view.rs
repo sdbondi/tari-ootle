@@ -4,7 +4,7 @@
 use log::*;
 use tari_dan_common_types::{committee::Committee, displayable::Displayable, optional::Optional, NodeHeight};
 use tari_dan_storage::{
-    consensus_models::{Block, HighQc, LastSentVote, LeafBlock, QuorumCertificate},
+    consensus_models::{BlockModel, HighQc, LastSentVote, LeafBlock, QuorumCertificateModel},
     StateStore,
 };
 use tari_sidechain::QuorumDecision;
@@ -112,8 +112,8 @@ pub fn generate_new_view<TConsensusSpec: ConsensusSpec>(
     signature_service: &TConsensusSpec::SignatureService,
     local_committee: &Committee<TConsensusSpec::Addr>,
     new_height: NodeHeight,
-    leaf_block: &Block,
-    high_qc: &QuorumCertificate,
+    leaf_block: &BlockModel,
+    high_qc: &QuorumCertificateModel,
     last_vote: Option<VoteMessage>,
 ) -> Result<NewViewMessage, HotStuffError> {
     let dummy = calculate_last_dummy_block(

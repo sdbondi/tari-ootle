@@ -14,7 +14,7 @@ use tari_dan_common_types::{
     NumPreshards,
     ShardGroup,
 };
-use tari_dan_storage::consensus_models::{Block, BlockHeader, QuorumCertificate, ValidatorSchnorrSignature};
+use tari_dan_storage::consensus_models::{BlockHeader, BlockModel, QuorumCertificateModel, ValidatorSchnorrSignature};
 use tari_engine_types::FromByteType;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 
@@ -26,7 +26,7 @@ use crate::{
 const LOG_TARGET: &str = "tari::dan::consensus::hotstuff::validations";
 
 pub(super) fn check_current_epoch(
-    candidate_block: &Block,
+    candidate_block: &BlockModel,
     current_epoch: Epoch,
 ) -> Result<(), ProposalValidationError> {
     if candidate_block.epoch() > current_epoch {
@@ -41,7 +41,7 @@ pub(super) fn check_current_epoch(
     Ok(())
 }
 
-pub(super) fn check_dummy(candidate_block: &Block) -> Result<(), ProposalValidationError> {
+pub(super) fn check_dummy(candidate_block: &BlockModel) -> Result<(), ProposalValidationError> {
     if candidate_block.signature().is_some() {
         return Err(ProposalValidationError::DummyBlockWithSignature {
             block_id: *candidate_block.id(),
@@ -55,7 +55,7 @@ pub(super) fn check_dummy(candidate_block: &Block) -> Result<(), ProposalValidat
     Ok(())
 }
 
-pub(super) fn check_network(candidate_block: &Block, network: Network) -> Result<(), ProposalValidationError> {
+pub(super) fn check_network(candidate_block: &BlockModel, network: Network) -> Result<(), ProposalValidationError> {
     if candidate_block.network() != network {
         return Err(ProposalValidationError::InvalidNetwork {
             block_network: candidate_block.network().to_string(),
@@ -219,7 +219,7 @@ pub(super) fn check_block_signature(header: &BlockHeader) -> Result<(), Proposal
 }
 
 pub(super) fn check_quorum_certificate<TConsensusSpec: ConsensusSpec>(
-    candidate_block: &Block,
+    candidate_block: &BlockModel,
     committee: &Committee<TConsensusSpec::Addr>,
     signing_service: &TConsensusSpec::SignatureService,
 ) -> Result<(), ProposalValidationError> {
@@ -239,7 +239,7 @@ pub(super) fn check_quorum_certificate<TConsensusSpec: ConsensusSpec>(
 /// Validates the signatures of the quorum certificate.
 // pub because used in on receive NEWVIEW
 pub fn check_quorum_certificate_signatures<TConsensusSpec: ConsensusSpec>(
-    qc: &QuorumCertificate,
+    qc: &QuorumCertificateModel,
     committee: &Committee<TConsensusSpec::Addr>,
     vote_signing_service: &TConsensusSpec::SignatureService,
 ) -> Result<(), ProposalValidationError> {

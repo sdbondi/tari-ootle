@@ -25,9 +25,9 @@ use time::PrimitiveDateTime;
 
 use crate::{
     consensus_models::{
-        Block,
         BlockDiff,
         BlockId,
+        BlockModel,
         BlockTransactionExecution,
         BurntUtxo,
         Decision,
@@ -50,7 +50,7 @@ use crate::{
         NoVoteReason,
         PendingShardStateTreeDiff,
         QcId,
-        QuorumCertificate,
+        QuorumCertificateModel,
         StateTransition,
         StateTransitionId,
         SubstateChange,
@@ -145,9 +145,9 @@ pub trait StateStoreReadTransaction: Sized {
         tx_id: &TransactionId,
         from_block: &LeafBlock,
     ) -> Result<BlockTransactionExecution, StorageError>;
-    fn blocks_get(&self, block_id: &BlockId) -> Result<Block, StorageError>;
+    fn blocks_get(&self, block_id: &BlockId) -> Result<BlockModel, StorageError>;
     fn blocks_get_all_ids_by_height(&self, epoch: Epoch, height: NodeHeight) -> Result<Vec<BlockId>, StorageError>;
-    fn blocks_get_genesis_for_epoch(&self, epoch: Epoch) -> Result<Block, StorageError>;
+    fn blocks_get_genesis_for_epoch(&self, epoch: Epoch) -> Result<BlockModel, StorageError>;
     /// Returns all blocks from and excluding the start block (lower height) to the end block (inclusive)
     fn blocks_get_all_between(
         &self,
@@ -156,10 +156,10 @@ pub trait StateStoreReadTransaction: Sized {
         end_block_height: NodeHeight,
         include_dummy_blocks: bool,
         limit: usize,
-    ) -> Result<Vec<Block>, StorageError>;
+    ) -> Result<Vec<BlockModel>, StorageError>;
     fn blocks_exists(&self, block_id: &BlockId) -> Result<bool, StorageError>;
     fn blocks_is_ancestor(&self, descendant: &BlockId, ancestor: &BlockId) -> Result<bool, StorageError>;
-    fn blocks_get_committed_by_parent(&self, parent: &BlockId) -> Result<Block, StorageError>;
+    fn blocks_get_committed_by_parent(&self, parent: &BlockId) -> Result<BlockModel, StorageError>;
     fn blocks_get_pending_ids_by_parent(&self, parent: &BlockId) -> Result<Vec<BlockId>, StorageError>;
 
     fn blocks_get_paginated(
@@ -170,7 +170,7 @@ pub trait StateStoreReadTransaction: Sized {
         filter: Option<String>,
         ordering_index: Option<usize>,
         ordering: Option<Ordering>,
-    ) -> Result<Vec<Block>, StorageError>;
+    ) -> Result<Vec<BlockModel>, StorageError>;
 
     fn filtered_blocks_get_count(
         &self,
@@ -191,12 +191,12 @@ pub trait StateStoreReadTransaction: Sized {
     ) -> Result<SubstateChange, StorageError>;
 
     // -------------------------------- QuorumCertificate -------------------------------- //
-    fn quorum_certificates_get(&self, qc_id: &QcId) -> Result<QuorumCertificate, StorageError>;
-    fn quorum_certificates_get_all<'a, I>(&self, qc_ids: I) -> Result<Vec<QuorumCertificate>, StorageError>
+    fn quorum_certificates_get(&self, qc_id: &QcId) -> Result<QuorumCertificateModel, StorageError>;
+    fn quorum_certificates_get_all<'a, I>(&self, qc_ids: I) -> Result<Vec<QuorumCertificateModel>, StorageError>
     where
         I: IntoIterator<Item = &'a QcId>,
         I::IntoIter: ExactSizeIterator;
-    fn quorum_certificates_get_by_block_id(&self, block_id: &BlockId) -> Result<QuorumCertificate, StorageError>;
+    fn quorum_certificates_get_by_block_id(&self, block_id: &BlockId) -> Result<QuorumCertificateModel, StorageError>;
 
     // -------------------------------- Transaction Pools -------------------------------- //
     fn transaction_pool_get_for_blocks(
@@ -332,7 +332,7 @@ pub trait StateStoreWriteTransaction {
     fn rollback(&mut self) -> Result<(), StorageError>;
 
     // -------------------------------- Block -------------------------------- //
-    fn blocks_insert(&mut self, block: &Block) -> Result<(), StorageError>;
+    fn blocks_insert(&mut self, block: &BlockModel) -> Result<(), StorageError>;
     fn blocks_delete(&mut self, block_id: &BlockId) -> Result<(), StorageError>;
     fn blocks_set_qcs(
         &mut self,
@@ -346,7 +346,7 @@ pub trait StateStoreWriteTransaction {
     fn block_diffs_remove(&mut self, block_id: &BlockId) -> Result<(), StorageError>;
 
     // -------------------------------- QuorumCertificate -------------------------------- //
-    fn quorum_certificates_insert(&mut self, qc: &QuorumCertificate) -> Result<(), StorageError>;
+    fn quorum_certificates_insert(&mut self, qc: &QuorumCertificateModel) -> Result<(), StorageError>;
     fn quorum_certificates_set_shares_processed(&mut self, qc_id: &QcId) -> Result<(), StorageError>;
 
     // -------------------------------- Bookkeeping -------------------------------- //
@@ -415,7 +415,7 @@ pub trait StateStoreWriteTransaction {
 
     fn parked_block_insert<'a, IMissing: IntoIterator<Item = &'a TransactionId>>(
         &mut self,
-        park_block: &Block,
+        park_block: &BlockModel,
         foreign_proposals: &[ForeignProposal],
         missing_transaction_ids: IMissing,
     ) -> Result<(), StorageError>;
@@ -424,7 +424,7 @@ pub trait StateStoreWriteTransaction {
         &mut self,
         height: NodeHeight,
         transaction_id: &TransactionId,
-    ) -> Result<Option<(Block, Vec<ForeignProposal>)>, StorageError>;
+    ) -> Result<Option<(BlockModel, Vec<ForeignProposal>)>, StorageError>;
 
     // -------------------------------- Foreign parked block -------------------------------- //
     fn foreign_parked_blocks_insert(&mut self, park_block: &ForeignParkedProposal) -> Result<(), StorageError>;

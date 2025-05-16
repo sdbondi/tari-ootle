@@ -17,7 +17,7 @@ use tari_dan_common_types::{
     PeerAddress,
     ShardGroup,
 };
-use tari_dan_storage::consensus_models::Block;
+use tari_dan_storage::consensus_models::BlockModel;
 use tari_engine_types::ToByteType;
 use tari_template_lib::types::crypto::RistrettoPublicKeyBytes;
 
@@ -25,7 +25,7 @@ use crate::support::{load_json_fixture, RoundRobinLeaderStrategy};
 
 #[test]
 fn dummy_blocks() {
-    let genesis = Block::genesis(
+    let genesis = BlockModel::genesis(
         Network::LocalNet,
         Epoch(1),
         FixedHash::zero(),
@@ -78,14 +78,14 @@ fn dummy_blocks() {
 
 #[test]
 fn last_matches_generated_using_real_data() {
-    let candidate = load_json_fixture::<Block>("block_with_dummies.json");
+    let candidate = load_json_fixture::<BlockModel>("block_with_dummies.json");
 
     let committee = load_json_fixture::<serde_json::Value>("committee.json");
     let committee: Vec<(PeerAddress, RistrettoPublicKeyBytes)> =
         serde_json::from_value(committee["members"].clone()).unwrap();
     let committee = Committee::new(committee);
 
-    let justify = Block::genesis(
+    let justify = BlockModel::genesis(
         Network::LocalNet,
         candidate.epoch(),
         FixedHash::zero(),

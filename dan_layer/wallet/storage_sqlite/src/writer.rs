@@ -14,7 +14,7 @@ use log::*;
 use serde::Serialize;
 use tari_bor::json_encoding::CborValueJsonSerializeWrapper;
 use tari_dan_common_types::{SubstateRequirement, VersionedSubstateIdRef};
-use tari_dan_storage::{consensus_models::QuorumCertificate, time::PrimitiveDateTime};
+use tari_dan_storage::{consensus_models::QuorumCertificateModel, time::PrimitiveDateTime};
 use tari_dan_wallet_sdk::{
     models::{
         AuthoredTemplateModel,
@@ -324,7 +324,7 @@ impl WalletStoreWriter for WriteTransaction<'_> {
         transaction_id: TransactionId,
         result: Option<&FinalizeResult>,
         final_fee: Option<Amount>,
-        qcs: Option<&[QuorumCertificate]>,
+        qcs: Option<&[QuorumCertificateModel]>,
         new_status: TransactionStatus,
         execution_time: Option<Duration>,
         finalized_time: Option<PrimitiveDateTime>,

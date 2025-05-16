@@ -4,7 +4,7 @@
 use log::*;
 use tari_dan_common_types::{optional::Optional, Epoch};
 use tari_dan_storage::{
-    consensus_models::{Block, LastProposed, LastSentVote, LeafBlock},
+    consensus_models::{BlockModel, LastProposed, LastSentVote, LeafBlock},
     StateStore,
 };
 use tokio::task;
@@ -94,7 +94,7 @@ impl<TConsensusSpec: ConsensusSpec> OnSyncRequest<TConsensusSpec> {
                 // until eventually the syncing node's pacemaker leader-fails a few times.
                 // TODO: A Block containing a higher QC that justifies the previous non-dummy block should be enough to cause a view change and allow the dummies to be generated locally.
                 // sending dummies is problematic as they are unsigned and generally, you cannot prove their validity.
-                let blocks = Block::get_all_blocks_between(
+                let blocks = BlockModel::get_all_blocks_between(
                     tx,
                     msg.epoch,
                     msg.block_height,

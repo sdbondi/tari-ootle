@@ -8,14 +8,14 @@ use log::*;
 use tari_dan_common_types::{committee::CommitteeInfo, optional::Optional, Epoch, ShardGroup};
 use tari_dan_storage::{
     consensus_models::{
-        Block,
         BlockId,
+        BlockModel,
         CommandOrHash,
         CommandsCommitProof,
         ForeignProposal,
         ForeignProposalRecord,
         ForeignProposalStatus,
-        QuorumCertificate,
+        QuorumCertificateModel,
     },
     StateStore,
     StateStoreReadTransaction,
@@ -243,7 +243,7 @@ where TConsensusSpec: ConsensusSpec
                     block_id,
                 );
                 let Some(proposal) = store.with_read_tx(|tx| {
-                    let Some(block) = Block::get(tx, &block_id).optional()? else {
+                    let Some(block) = BlockModel::get(tx, &block_id).optional()? else {
                         return Ok(None);
                     };
                     let commit_qc = block.get_commit_qc(tx)?;
@@ -466,8 +466,8 @@ fn validate_evidence_and_pledges_match(
 
 fn generate_transaction_commands_commit_proof_for_shard_group<TTx: StateStoreReadTransaction>(
     tx: &TTx,
-    block: &Block,
-    commit_qc: &QuorumCertificate,
+    block: &BlockModel,
+    commit_qc: &QuorumCertificateModel,
     for_shard_group: ShardGroup,
 ) -> Result<CommandsCommitProof, HotStuffError> {
     let applicable_commands = block.commands().iter().map(|cmd| {

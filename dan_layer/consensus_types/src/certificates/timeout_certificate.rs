@@ -1,13 +1,14 @@
 //   Copyright 2025 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
+use borsh::BorshSerialize;
 use serde::{Deserialize, Serialize};
 use tari_dan_common_types::{Epoch, NodeHeight};
 use tari_template_lib::prelude::RistrettoPublicKeyBytes;
 
 use crate::validator_signature::ValidatorSignature;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, BorshSerialize)]
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),

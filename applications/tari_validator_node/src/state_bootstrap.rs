@@ -9,7 +9,7 @@ use tari_common::configuration::Network;
 use tari_common_types::types::FixedHash;
 use tari_dan_common_types::{Epoch, NodeAddressable, NumPreshards, ShardGroup, ToSubstateAddress, VersionedSubstateId};
 use tari_dan_storage::{
-    consensus_models::{Block, BlockId, SubstateRecord},
+    consensus_models::{BlockId, BlockModel, SubstateRecord},
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
     StorageError,
@@ -154,7 +154,7 @@ where
     TId: Into<SubstateId>,
     TVal: Into<SubstateValue>,
 {
-    let genesis_block = Block::genesis(
+    let genesis_block = BlockModel::genesis(
         network,
         Epoch(0),
         FixedHash::zero(),

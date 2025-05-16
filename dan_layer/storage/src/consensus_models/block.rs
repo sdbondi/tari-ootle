@@ -14,6 +14,7 @@ use log::*;
 use serde::{Deserialize, Serialize};
 use tari_common::configuration::Network;
 use tari_common_types::types::{FixedHash, FixedHashSizeError};
+use tari_consensus_types::Block;
 use tari_dan_common_types::{
     committee::CommitteeInfo,
     optional::Optional,
@@ -47,7 +48,7 @@ use super::{
     MintConfidentialOutputAtom,
     PendingShardStateTreeDiff,
     QcId,
-    QuorumCertificate,
+    QuorumCertificateModel,
     SubstateChange,
     SubstateDestroyedProof,
     SubstateRecord,
@@ -84,11 +85,9 @@ pub enum BlockError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export, export_to = "../../bindings/src/types/"))]
-pub struct Block {
-    header: BlockHeader,
-    justify: QuorumCertificate,
-    /// Commands in the block. These are in canonical order to ensure a deterministic block hash.
-    commands: BTreeSet<Command>,
+pub struct BlockModel {
+    id: BlockId,
+    block: Block,
     // Metadata - not included in the block hash
     /// The QC that justified this block
     #[cfg_attr(feature = "ts", ts(type = "string | null"))]
@@ -103,14 +102,14 @@ pub struct Block {
     stored_at: Option<PrimitiveDateTime>,
 }
 
-impl Block {
+impl BlockModel {
     /// Creates a new block from the provided params. Returns an error if the command merkle root fails to construct.
     /// This is infallible for empty commands.
     #[allow(clippy::too_many_arguments)]
     pub fn create(
         network: Network,
         parent: BlockId,
-        justify: QuorumCertificate,
+        justify: QuorumCertificateModel,
         height: NodeHeight,
         epoch: Epoch,
         shard_group: ShardGroup,
@@ -142,7 +141,7 @@ impl Block {
         Ok(Self::new(header, justify, commands))
     }
 
-    pub fn new(header: BlockHeader, justify: QuorumCertificate, commands: BTreeSet<Command>) -> Self {
+    pub fn new(header: BlockHeader, justify: QuorumCertificateModel, commands: BTreeSet<Command>) -> Self {
         Self {
             header,
             justify,
@@ -159,7 +158,7 @@ impl Block {
         id: BlockId,
         network: Network,
         parent: BlockId,
-        justify: QuorumCertificate,
+        justify: QuorumCertificateModel,
         height: NodeHeight,
         epoch: Epoch,
         shard_group: ShardGroup,
@@ -227,7 +226,7 @@ impl Block {
         Self::create(
             network,
             BlockId::zero(),
-            QuorumCertificate::genesis(epoch),
+            QuorumCertificateModel::genesis(epoch),
             NodeHeight::zero(),
             epoch,
             shard_group,
@@ -245,7 +244,7 @@ impl Block {
 
     /// This is the parent block for all genesis blocks. Its block ID is always zero.
     pub fn zero_block(network: Network, num_preshards: NumPreshards) -> Self {
-        let qc = QuorumCertificate::genesis(Epoch::zero());
+        let qc = QuorumCertificateModel::genesis(Epoch::zero());
         Self {
             header: BlockHeader::zero_block(network, num_preshards),
             commit_qc_id: Some(*qc.id()),
@@ -356,11 +355,11 @@ impl Block {
         self.header.parent()
     }
 
-    pub fn justify(&self) -> &QuorumCertificate {
+    pub fn justify(&self) -> &QuorumCertificateModel {
         &self.justify
     }
 
-    pub fn into_justify(self) -> QuorumCertificate {
+    pub fn into_justify(self) -> QuorumCertificateModel {
         self.justify
     }
 
@@ -474,7 +473,7 @@ impl Block {
     }
 }
 
-impl Block {
+impl BlockModel {
     pub fn get<TTx: StateStoreReadTransaction>(tx: &TTx, id: &BlockId) -> Result<Self, StorageError> {
         tx.blocks_get(id)
     }
@@ -672,14 +671,14 @@ impl Block {
             return Ok(true);
         }
         // First check the parent here, if it does not exist, then this block cannot extend anything.
-        if !Block::record_exists(tx, self.parent())? {
+        if !BlockModel::record_exists(tx, self.parent())? {
             return Ok(false);
         }
 
         tx.blocks_is_ancestor(self.parent(), ancestor)
     }
 
-    pub fn get_parent<TTx: StateStoreReadTransaction>(&self, tx: &TTx) -> Result<Block, StorageError> {
+    pub fn get_parent<TTx: StateStoreReadTransaction>(&self, tx: &TTx) -> Result<BlockModel, StorageError> {
         if self.id().is_zero() && self.parent().is_zero() {
             return Err(StorageError::NotFound {
                 item: "Block parent",
@@ -687,7 +686,7 @@ impl Block {
             });
         }
 
-        Block::get(tx, self.parent())
+        BlockModel::get(tx, self.parent())
     }
 
     pub fn get_transactions<TTx: StateStoreReadTransaction>(
@@ -822,18 +821,24 @@ impl Block {
     }
 
     /// Returns the QC that justifies this block
-    pub fn get_justify_qc<TTx: StateStoreReadTransaction>(&self, tx: &TTx) -> Result<QuorumCertificate, StorageError> {
+    pub fn get_justify_qc<TTx: StateStoreReadTransaction>(
+        &self,
+        tx: &TTx,
+    ) -> Result<QuorumCertificateModel, StorageError> {
         let justify_qc_id = self.justify_qc_id.as_ref().ok_or_else(|| StorageError::QueryError {
             reason: format!("get_justify_qc: Block {} has not been justified", self.id()),
         })?;
-        QuorumCertificate::get(tx, justify_qc_id)
+        QuorumCertificateModel::get(tx, justify_qc_id)
     }
 
-    pub fn get_commit_qc<TTx: StateStoreReadTransaction>(&self, tx: &TTx) -> Result<QuorumCertificate, StorageError> {
+    pub fn get_commit_qc<TTx: StateStoreReadTransaction>(
+        &self,
+        tx: &TTx,
+    ) -> Result<QuorumCertificateModel, StorageError> {
         let commit_qc_id = self.commit_qc_id.as_ref().ok_or_else(|| StorageError::QueryError {
             reason: format!("get_commit_qc: Block {} has not been committed", self.as_leaf_block()),
         })?;
-        QuorumCertificate::get(tx, commit_qc_id)
+        QuorumCertificateModel::get(tx, commit_qc_id)
     }
 
     pub fn update_nodes<TTx, TFnOnLock, TFnOnCommit, E>(
@@ -845,8 +850,8 @@ impl Block {
     where
         TTx: StateStoreWriteTransaction + Deref,
         TTx::Target: StateStoreReadTransaction,
-        TFnOnLock: FnMut(&mut TTx, &LockedBlock, &Block, &QuorumCertificate) -> Result<(), E>,
-        TFnOnCommit: FnMut(&mut TTx, &LastExecuted, Block) -> Result<(), E>,
+        TFnOnLock: FnMut(&mut TTx, &LockedBlock, &BlockModel, &QuorumCertificateModel) -> Result<(), E>,
+        TFnOnCommit: FnMut(&mut TTx, &LastExecuted, BlockModel) -> Result<(), E>,
         E: From<StorageError>,
     {
         let high_qc = self.justify().update_high_qc(tx)?;
@@ -890,7 +895,7 @@ impl Block {
             if commit_node.is_zero() {
                 return Ok(high_qc);
             }
-            let prepare_node = Block::get(&**tx, commit_node)?;
+            let prepare_node = BlockModel::get(&**tx, commit_node)?;
             let last_executed = LastExecuted::get(&**tx)?;
             let last_exec = prepare_node.as_last_executed();
             on_commit_block_recurse(tx, &last_executed, prepare_node, &mut on_commit)?;
@@ -1069,7 +1074,7 @@ impl Block {
     }
 }
 
-impl Display for Block {
+impl Display for BlockModel {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if self.is_dummy() {
             write!(f, "Dummy")?;
@@ -1173,15 +1178,15 @@ impl AsRef<BlockId> for BlockId {
 fn on_locked_block_recurse<TTx, F, E>(
     tx: &mut TTx,
     locked: &LockedBlock,
-    block: &Block,
-    justify_qc: &QuorumCertificate,
+    block: &BlockModel,
+    justify_qc: &QuorumCertificateModel,
     callback: &mut F,
 ) -> Result<(), E>
 where
     TTx: StateStoreWriteTransaction + Deref,
     TTx::Target: StateStoreReadTransaction,
     E: From<StorageError>,
-    F: FnMut(&mut TTx, &LockedBlock, &Block, &QuorumCertificate) -> Result<(), E>,
+    F: FnMut(&mut TTx, &LockedBlock, &BlockModel, &QuorumCertificateModel) -> Result<(), E>,
 {
     if locked.height < block.height() {
         let parent = block.get_parent(&**tx)?;
@@ -1194,14 +1199,14 @@ where
 fn on_commit_block_recurse<TTx, F, E>(
     tx: &mut TTx,
     last_executed: &LastExecuted,
-    block: Block,
+    block: BlockModel,
     callback: &mut F,
 ) -> Result<(), E>
 where
     TTx: StateStoreWriteTransaction + Deref,
     TTx::Target: StateStoreReadTransaction,
     E: From<StorageError>,
-    F: FnMut(&mut TTx, &LastExecuted, Block) -> Result<(), E>,
+    F: FnMut(&mut TTx, &LastExecuted, BlockModel) -> Result<(), E>,
 {
     if last_executed.height < block.height() {
         let parent = block.get_parent(&**tx)?;
@@ -1231,7 +1236,7 @@ where
     tx.burnt_utxos_clear_proposed_block(block_id)?;
     tx.lock_conflicts_remove_by_block_id(block_id)?;
 
-    Block::delete_record(tx, block_id)?;
+    BlockModel::delete_record(tx, block_id)?;
 
     Ok(())
 }

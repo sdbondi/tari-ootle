@@ -1,17 +1,12 @@
 //   Copyright 2025 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::fmt::Display;
-
 use borsh::BorshSerialize;
 use serde::{Deserialize, Serialize};
-use tari_dan_common_types::{optional::Optional, Epoch, NodeHeight};
+use tari_dan_common_types::{Epoch, NodeHeight};
 
-use super::{ProposalCertificate, TimeoutCertificate};
-use crate::{
-    ids::{BlockId, QcId},
-    validator_signature::ValidatorSignature,
-};
+use super::{ProposalCertificateV1, TimeoutCertificateV1};
+use crate::validator_signature::ValidatorSignature;
 
 #[derive(Debug, Clone, Deserialize, Serialize, BorshSerialize)]
 #[cfg_attr(
@@ -20,8 +15,8 @@ use crate::{
     ts(export, export_to = "../../bindings/src/types/")
 )]
 pub enum QuorumCertificateV1 {
-    ProposalCertificate(ProposalCertificate),
-    TimeoutCertificate(TimeoutCertificate),
+    ProposalCertificate(ProposalCertificateV1),
+    TimeoutCertificate(TimeoutCertificateV1),
 }
 
 impl QuorumCertificateV1 {
@@ -46,14 +41,14 @@ impl QuorumCertificateV1 {
         }
     }
 
-    pub fn as_proposal_certificate(&self) -> Option<&ProposalCertificate> {
+    pub fn as_proposal_certificate(&self) -> Option<&ProposalCertificateV1> {
         match self {
             Self::ProposalCertificate(pc) => Some(pc),
             Self::TimeoutCertificate(_) => None,
         }
     }
 
-    pub fn as_timeout_certificate(&self) -> Option<&TimeoutCertificate> {
+    pub fn as_timeout_certificate(&self) -> Option<&TimeoutCertificateV1> {
         match self {
             Self::ProposalCertificate(_) => None,
             Self::TimeoutCertificate(tc) => Some(tc),
@@ -61,14 +56,14 @@ impl QuorumCertificateV1 {
     }
 }
 
-impl From<ProposalCertificate> for QuorumCertificateV1 {
-    fn from(pc: ProposalCertificate) -> Self {
+impl From<ProposalCertificateV1> for QuorumCertificateV1 {
+    fn from(pc: ProposalCertificateV1) -> Self {
         Self::ProposalCertificate(pc)
     }
 }
 
-impl From<TimeoutCertificate> for QuorumCertificateV1 {
-    fn from(tc: TimeoutCertificate) -> Self {
+impl From<TimeoutCertificateV1> for QuorumCertificateV1 {
+    fn from(tc: TimeoutCertificateV1) -> Self {
         Self::TimeoutCertificate(tc)
     }
 }

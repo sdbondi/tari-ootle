@@ -5,8 +5,8 @@ use indexmap::IndexMap;
 use tari_dan_common_types::{Epoch, NodeHeight, NumPreshards, ShardGroup};
 use tari_dan_storage::{
     consensus_models::{
-        Block,
         BlockId,
+        BlockModel,
         EndOfEpochCommand,
         EpochCheckpoint,
         HighQc,
@@ -158,7 +158,7 @@ fn miscellaneous_operations(db: impl StateStore) {
 
     // epoch checkpoints
     let shard_group = ShardGroup::all_shards(NumPreshards::P4);
-    let block = Block::zero_block(Default::default(), NumPreshards::P4);
+    let block = BlockModel::zero_block(Default::default(), NumPreshards::P4);
     let mut shard_roots = IndexMap::new();
     shard_roots.insert(shard_group.start(), TreeHash::zero());
     let key = TreeHash::new([1; 32]);

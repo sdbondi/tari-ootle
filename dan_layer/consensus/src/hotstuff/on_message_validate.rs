@@ -10,7 +10,7 @@ use tari_dan_common_types::{
     NodeHeight,
 };
 use tari_dan_storage::{
-    consensus_models::{Block, BlockId, ForeignParkedProposal, ForeignProposal, TransactionRecord},
+    consensus_models::{BlockId, BlockModel, ForeignParkedProposal, ForeignProposal, TransactionRecord},
     StateStore,
     StateStoreWriteTransaction,
 };
@@ -234,7 +234,7 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
 
     fn check_local_proposal(
         &self,
-        block: &Block,
+        block: &BlockModel,
         epoch_state: &EpochState<TConsensusSpec::Addr>,
     ) -> Result<(), HotStuffError> {
         validations::check_local_proposal::<TConsensusSpec>(

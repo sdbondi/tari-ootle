@@ -5,7 +5,7 @@ use log::*;
 use tari_common_types::types::CompressedPublicKey;
 use tari_crypto::{ristretto::RistrettoSecretKey, tari_utilities::ByteArray};
 use tari_dan_storage::{
-    consensus_models::{Block, BlockHeader, EndOfEpochCommand, QuorumCertificate},
+    consensus_models::{BlockError, BlockHeader, BlockModel, EndOfEpochCommand, QuorumCertificateModel},
     StateStoreReadTransaction,
 };
 use tari_sidechain::{
@@ -19,6 +19,7 @@ use tari_sidechain::{
     ValidatorBlockSignature,
     ValidatorQcSignature,
 };
+use tari_state_tree::{compute_proof_for_hashes, SparseMerkleProofExt, TreeHash};
 use tari_template_lib_types::crypto::SchnorrSignatureBytes;
 
 use crate::hotstuff::HotStuffError;
@@ -27,12 +28,12 @@ const LOG_TARGET: &str = "tari::dan::consensus::hotstuff::eviction_proof";
 
 pub fn generate_eviction_proofs<'a, TTx, I>(
     tx: &TTx,
-    tip_qc: &QuorumCertificate,
+    tip_qc: &QuorumCertificateModel,
     committed_blocks_with_evictions: I,
 ) -> Result<Vec<EvictionProof>, HotStuffError>
 where
     TTx: StateStoreReadTransaction,
-    I: IntoIterator<Item = &'a Block>,
+    I: IntoIterator<Item = &'a BlockModel>,
     I::IntoIter: Clone,
 {
     let evictions_iter = committed_blocks_with_evictions.into_iter();
@@ -48,7 +49,7 @@ where
                 continue;
             };
             info!(target: LOG_TARGET, "🦶 Generating eviction proof for validator: {atom}");
-            let inclusion_proof = block.compute_command_inclusion_proof(idx)?;
+            let inclusion_proof = compute_command_inclusion_proof(block, idx)?;
             let atom = EvictNodeAtom::new(
                 CompressedPublicKey::from_canonical_bytes(atom.public_key.as_bytes()).map_err(|_| {
                     HotStuffError::InvariantError(format!(
@@ -67,10 +68,32 @@ where
     Ok(proofs)
 }
 
+pub fn compute_command_inclusion_proof(
+    block: &BlockModel,
+    command_index: usize,
+) -> Result<SparseMerkleProofExt, BlockError> {
+    let hashes = block
+        .commands()
+        .iter()
+        .map(|cmd| TreeHash::from(cmd.hash().into_array()));
+    let hash = hashes
+        .clone()
+        .nth(command_index)
+        .ok_or(BlockError::MerkleProofGenerationCommandIndexOutOfBounds {
+            index: command_index,
+            len: block.commands().len(),
+        })?;
+    let (value, proof) = compute_proof_for_hashes(hashes, hash)?;
+    value.expect(
+        "Value not found in proof. This is a bug because the hash is taken from commands that generate the tree",
+    );
+    Ok(proof)
+}
+
 pub fn generate_end_of_epoch_commit_proof<TTx: StateStoreReadTransaction>(
     tx: &TTx,
-    tip_qc: &QuorumCertificate,
-    commit_block: &Block,
+    tip_qc: &QuorumCertificateModel,
+    commit_block: &BlockModel,
 ) -> Result<CommandCommitProof<EndOfEpochCommand>, HotStuffError> {
     if commit_block.commands().len() != 1 {
         return Err(HotStuffError::InvariantError(format!(
@@ -86,15 +109,15 @@ pub fn generate_end_of_epoch_commit_proof<TTx: StateStoreReadTransaction>(
     }
 
     let proof = generate_block_commit_proof(tx, tip_qc, commit_block)?;
-    let inclusion_proof = commit_block.compute_command_inclusion_proof(0)?;
+    let inclusion_proof = compute_command_inclusion_proof(commit_block, 0)?;
     let command_commit_proof = CommandCommitProof::new(EndOfEpochCommand, proof, inclusion_proof);
     Ok(command_commit_proof)
 }
 
 pub(crate) fn generate_block_commit_proof<TTx: StateStoreReadTransaction>(
     tx: &TTx,
-    commit_qc: &QuorumCertificate,
-    commit_block: &Block,
+    commit_qc: &QuorumCertificateModel,
+    commit_block: &BlockModel,
 ) -> Result<SidechainBlockCommitProof, HotStuffError> {
     let mut proof_elements = Vec::with_capacity(3);
 
@@ -122,7 +145,7 @@ pub(crate) fn generate_block_commit_proof<TTx: StateStoreReadTransaction>(
             debug!(target: LOG_TARGET, "add dummy chain: {block}");
             let parent_id = *block.parent();
             let qc = block.into_justify();
-            block = Block::get(tx, &parent_id)?;
+            block = BlockModel::get(tx, &parent_id)?;
             while block.id() != qc.block_id() {
                 debug!(target: LOG_TARGET, "add dummy chain: {block} QC: {qc}");
                 dummy_chain.push(ChainLink {
@@ -189,7 +212,7 @@ pub fn convert_block_to_sidechain_block_header(header: &BlockHeader) -> Result<S
     })
 }
 
-fn convert_qc_to_proof_element(qc: &QuorumCertificate) -> Result<CommitProofElement, HotStuffError> {
+fn convert_qc_to_proof_element(qc: &QuorumCertificateModel) -> Result<CommitProofElement, HotStuffError> {
     Ok(CommitProofElement::QuorumCertificate(
         tari_sidechain::QuorumCertificate {
             header_hash: *qc.header_hash(),
@@ -255,7 +278,7 @@ mod tests {
     #[test]
     fn it_hashes_the_header_identically_to_sidechain_header() {
         let parent_id = seed_hash(1).into_array().into();
-        let qc1 = QuorumCertificate::new(
+        let qc1 = QuorumCertificateModel::new(
             seed_hash(2),
             parent_id,
             NodeHeight(1),

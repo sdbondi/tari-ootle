@@ -27,7 +27,7 @@ use log::*;
 use tari_crypto::tari_utilities::message_format::MessageFormat;
 use tari_dan_common_types::{committee::Committee, Epoch, PeerAddress, ShardGroup};
 use tari_dan_p2p::{proto, proto::rpc::SyncBlocksRequest};
-use tari_dan_storage::consensus_models::{Block, BlockId, SubstateUpdate};
+use tari_dan_storage::consensus_models::{BlockId, BlockModel, SubstateUpdate};
 use tari_engine_types::{
     events::Event,
     substate::{SubstateId, SubstateValue},
@@ -505,7 +505,7 @@ impl EventScanner {
             let new_block = msg
                 .into_block()
                 .ok_or_else(|| anyhow::anyhow!("Expected peer to return a newblock"))?;
-            let block = Block::try_from(new_block)?;
+            let block = BlockModel::try_from(new_block)?;
 
             let Some(resp) = stream.next().await else {
                 anyhow::bail!("Peer closed session before sending substate update count message")

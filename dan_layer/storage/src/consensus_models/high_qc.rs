@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use tari_dan_common_types::{Epoch, NodeHeight};
 
 use crate::{
-    consensus_models::{Block, BlockId, QcId, QuorumCertificate},
+    consensus_models::{BlockId, BlockModel, QcId, QuorumCertificateModel},
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
     StorageError,
@@ -66,12 +66,12 @@ impl HighQc {
     pub fn get_quorum_certificate<TTx: StateStoreReadTransaction>(
         &self,
         tx: &TTx,
-    ) -> Result<QuorumCertificate, StorageError> {
-        QuorumCertificate::get(tx, &self.qc_id)
+    ) -> Result<QuorumCertificateModel, StorageError> {
+        QuorumCertificateModel::get(tx, &self.qc_id)
     }
 
-    pub fn get_block<TTx: StateStoreReadTransaction>(&self, tx: &TTx) -> Result<Block, StorageError> {
-        Block::get(tx, &self.block_id)
+    pub fn get_block<TTx: StateStoreReadTransaction>(&self, tx: &TTx) -> Result<BlockModel, StorageError> {
+        BlockModel::get(tx, &self.block_id)
     }
 
     pub fn set<TTx: StateStoreWriteTransaction>(&self, tx: &mut TTx) -> Result<(), StorageError> {

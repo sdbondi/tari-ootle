@@ -6,6 +6,7 @@ mod block_diff;
 mod block_header;
 mod block_pledges;
 mod burnt_utxo;
+mod certificates;
 mod command;
 mod commands_commit_proof;
 mod epoch_checkpoint;

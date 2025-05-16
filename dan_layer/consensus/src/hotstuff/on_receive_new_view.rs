@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use log::*;
 use tari_dan_common_types::{optional::Optional, NodeHeight};
 use tari_dan_storage::{
-    consensus_models::{Block, BlockId, HighQc, LeafBlock, QuorumCertificate},
+    consensus_models::{BlockId, BlockModel, HighQc, LeafBlock, QuorumCertificateModel},
     StateStore,
 };
 
@@ -64,7 +64,7 @@ where TConsensusSpec: ConsensusSpec
         &mut self,
         from: TConsensusSpec::Addr,
         new_height: NodeHeight,
-        high_qc: &QuorumCertificate,
+        high_qc: &QuorumCertificateModel,
     ) -> usize {
         self.newview_message_counts
             .retain(|(height, _), _| *height >= new_height);
@@ -117,7 +117,7 @@ where TConsensusSpec: ConsensusSpec
                 return Ok(false);
             }
 
-            if !Block::record_exists(tx, high_qc.block_id())? {
+            if !BlockModel::record_exists(tx, high_qc.block_id())? {
                 // Sync if we do not have the block for this valid QC
                 let local_height = LeafBlock::get(tx, epoch_state.epoch())
                     .optional()?
@@ -244,7 +244,7 @@ where TConsensusSpec: ConsensusSpec
 
     fn validate_qc(
         &self,
-        qc: &QuorumCertificate,
+        qc: &QuorumCertificateModel,
         epoch_state: &EpochState<TConsensusSpec::Addr>,
         vote_signing_service: &TConsensusSpec::SignatureService,
     ) -> Result<(), ProposalValidationError> {

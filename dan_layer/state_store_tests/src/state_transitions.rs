@@ -3,7 +3,7 @@
 
 use tari_dan_common_types::{shard::Shard, Epoch, NodeHeight};
 use tari_dan_storage::{
-    consensus_models::{Block, BlockId, LeafBlock, StateTransitionId, SubstateRecord},
+    consensus_models::{BlockId, BlockModel, LeafBlock, StateTransitionId, SubstateRecord},
     StateStore,
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
@@ -25,7 +25,7 @@ fn operations(db: impl StateStore) {
     const SHARD: Shard = Shard::first();
     let mut tx = db.create_write_tx().unwrap();
 
-    let zero_block = Block::zero_block(Default::default(), TEST_NUM_PRESHARDS);
+    let zero_block = BlockModel::zero_block(Default::default(), TEST_NUM_PRESHARDS);
     zero_block.insert(&mut tx).unwrap();
 
     let substates = gen_substates(0..num_transitions, 0);

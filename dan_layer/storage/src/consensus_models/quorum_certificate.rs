@@ -7,11 +7,12 @@ use borsh::BorshSerialize;
 use log::*;
 use serde::{Deserialize, Serialize};
 use tari_common_types::types::{FixedHash, FixedHashSizeError};
-use tari_dan_common_types::{hashing::quorum_certificate_hasher, optional::Optional, serde_with, Epoch, NodeHeight};
+use tari_consensus_types::ProposalCertificate;
+use tari_dan_common_types::{hashing::quorum_certificate_id_hasher, optional::Optional, serde_with, Epoch, NodeHeight};
 use tari_sidechain::QuorumDecision;
 
 use crate::{
-    consensus_models::{Block, BlockHeader, BlockId, HighQc, LeafBlock, ValidatorSignature, ValidatorStatsUpdate},
+    consensus_models::{BlockHeader, BlockId, BlockModel, HighQc, LeafBlock, ValidatorSignature, ValidatorStatsUpdate},
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
     StorageError,
@@ -19,32 +20,20 @@ use crate::{
 
 const LOG_TARGET: &str = "tari::dan::storage::quorum_certificate";
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
     ts(export, export_to = "../../bindings/src/types/")
 )]
-pub struct QuorumCertificate {
+pub struct QuorumCertificateModel {
     #[cfg_attr(feature = "ts", ts(type = "string"))]
     qc_id: QcId,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
-    block_id: BlockId,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
-    #[serde(with = "serde_with::hex")]
-    header_hash: FixedHash,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
-    parent_id: BlockId,
-    block_height: NodeHeight,
-    epoch: Epoch,
-    signatures: Vec<ValidatorSignature>,
-    #[cfg_attr(feature = "ts", ts(type = "string"))]
-    decision: QuorumDecision,
-    // TODO: extra fields should be in a DB-only struct (e.g QuorumCertificateRecord)
+    certificate: ProposalCertificate,
     is_shares_processed: bool,
 }
 
-impl QuorumCertificate {
+impl QuorumCertificateModel {
     pub fn new(
         header_hash: FixedHash,
         parent_id: BlockId,
@@ -84,8 +73,8 @@ impl QuorumCertificate {
         qc
     }
 
-    pub fn calculate_id(&self) -> QcId {
-        quorum_certificate_hasher()
+    fn calculate_id(&self) -> QcId {
+        quorum_certificate_id_hasher()
             .chain(&self.epoch)
             .chain(&self.header_hash)
             .chain(&self.parent_id)
@@ -96,7 +85,7 @@ impl QuorumCertificate {
     }
 }
 
-impl QuorumCertificate {
+impl QuorumCertificateModel {
     pub fn justifies_zero_block(&self) -> bool {
         self.block_id.is_zero()
     }
@@ -155,7 +144,7 @@ impl QuorumCertificate {
     }
 }
 
-impl QuorumCertificate {
+impl QuorumCertificateModel {
     pub fn get<TTx: StateStoreReadTransaction>(tx: &TTx, qc_id: &QcId) -> Result<Self, StorageError> {
         tx.quorum_certificates_get(qc_id)
     }
@@ -169,8 +158,8 @@ impl QuorumCertificate {
         tx.quorum_certificates_get_all(qc_ids)
     }
 
-    pub fn get_block<TTx: StateStoreReadTransaction>(&self, tx: &TTx) -> Result<Block, StorageError> {
-        Block::get(tx, &self.block_id)
+    pub fn get_block<TTx: StateStoreReadTransaction>(&self, tx: &TTx) -> Result<BlockModel, StorageError> {
+        BlockModel::get(tx, &self.block_id)
     }
 
     pub fn get_by_block_id<TTx: StateStoreReadTransaction>(tx: &TTx, block_id: &BlockId) -> Result<Self, StorageError> {
@@ -263,7 +252,7 @@ impl QuorumCertificate {
     }
 }
 
-impl Display for QuorumCertificate {
+impl Display for QuorumCertificateModel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,

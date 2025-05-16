@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tari_dan_common_types::{Epoch, NodeHeight};
 
 use crate::{
-    consensus_models::{Block, BlockId, LeafBlock},
+    consensus_models::{BlockId, BlockModel, LeafBlock},
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
     StorageError,
@@ -36,8 +36,8 @@ impl LastProposed {
         tx.last_proposed_set(self)
     }
 
-    pub fn get_block<TTx: StateStoreReadTransaction>(&self, tx: &TTx) -> Result<Block, StorageError> {
-        Block::get(tx, &self.block_id)
+    pub fn get_block<TTx: StateStoreReadTransaction>(&self, tx: &TTx) -> Result<BlockModel, StorageError> {
+        BlockModel::get(tx, &self.block_id)
     }
 }
 

@@ -17,7 +17,7 @@ use tari_sidechain::{BlockHeaderHashFields, BlockHeaderHashFieldsV1};
 use tari_state_tree::{compute_merkle_root_for_hashes, TreeHash};
 use tari_template_lib::{prelude::SchnorrSignatureBytes, types::crypto::RistrettoPublicKeyBytes};
 
-use super::{BlockError, BlockId, QcId, QuorumCertificate};
+use super::{BlockError, BlockId, QcId, QuorumCertificateModel};
 use crate::consensus_models::{Command, LastExecuted, LastVoted, LeafBlock, LockedBlock};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,7 +197,7 @@ impl BlockHeader {
             network,
             id: BlockId::zero(),
             parent: BlockId::zero(),
-            justify_id: *QuorumCertificate::genesis(Epoch::zero()).id(),
+            justify_id: *QuorumCertificateModel::genesis(Epoch::zero()).id(),
             height: NodeHeight::zero(),
             epoch: Epoch::zero(),
             shard_group: ShardGroup::all_shards(num_preshards),
@@ -419,7 +419,7 @@ impl BlockHeader {
         &self.extra_data
     }
 
-    pub fn compute_command_merkle_root(commands: &BTreeSet<Command>) -> Result<FixedHash, BlockError> {
+    fn compute_command_merkle_root(commands: &BTreeSet<Command>) -> Result<FixedHash, BlockError> {
         let hashes = commands.iter().map(|cmd| TreeHash::from(cmd.hash().into_array()));
         let hash = compute_merkle_root_for_hashes(hashes).map_err(BlockError::StateTreeError)?;
         Ok(FixedHash::from(hash.into_array()))

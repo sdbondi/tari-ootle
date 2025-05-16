@@ -6,7 +6,7 @@ use std::{fmt::Display, str::FromStr, time::Duration};
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use tari_dan_common_types::SubstateRequirement;
-use tari_dan_storage::{consensus_models::QuorumCertificate, time::PrimitiveDateTime};
+use tari_dan_storage::{consensus_models::QuorumCertificateModel, time::PrimitiveDateTime};
 use tari_engine_types::commit_result::FinalizeResult;
 use tari_template_lib::models::Amount;
 use tari_transaction::Transaction;
@@ -24,7 +24,7 @@ pub struct WalletTransaction {
     pub status: TransactionStatus,
     pub finalize: Option<FinalizeResult>,
     pub final_fee: Option<Amount>,
-    pub qcs: Vec<QuorumCertificate>,
+    pub qcs: Vec<QuorumCertificateModel>,
     #[cfg_attr(feature = "ts", ts(type = "{secs: number, nanos: number} | null"))]
     pub execution_time: Option<Duration>,
     #[cfg_attr(feature = "ts", ts(type = "{secs: number, nanos: number} | null"))]

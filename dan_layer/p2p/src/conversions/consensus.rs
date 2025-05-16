@@ -55,7 +55,7 @@ use tari_dan_storage::{
         LeaderFee,
         MintConfidentialOutputAtom,
         QcId,
-        QuorumCertificate,
+        QuorumCertificateModel,
         SubstateDestroyed,
         SubstateRecord,
         TransactionAtom,
@@ -496,8 +496,8 @@ fn try_convert_proto_block_header(
 
 //---------------------------------- Block --------------------------------------------//
 
-impl From<&consensus_models::Block> for proto::consensus::Block {
-    fn from(value: &consensus_models::Block) -> Self {
+impl From<&consensus_models::BlockModel> for proto::consensus::Block {
+    fn from(value: &consensus_models::BlockModel) -> Self {
         Self {
             header: Some(value.header().into()),
             justify: Some(value.justify().into()),
@@ -506,7 +506,7 @@ impl From<&consensus_models::Block> for proto::consensus::Block {
     }
 }
 
-impl TryFrom<proto::consensus::Block> for consensus_models::Block {
+impl TryFrom<proto::consensus::Block> for consensus_models::BlockModel {
     type Error = anyhow::Error;
 
     fn try_from(value: proto::consensus::Block) -> Result<Self, Self::Error> {
@@ -519,7 +519,7 @@ impl TryFrom<proto::consensus::Block> for consensus_models::Block {
         let justify = value
             .justify
             .ok_or_else(|| anyhow!("Block conversion: QC not provided"))?;
-        let justify = consensus_models::QuorumCertificate::try_from(justify)?;
+        let justify = consensus_models::QuorumCertificateModel::try_from(justify)?;
 
         let header = value.header.ok_or_else(|| anyhow!("BlockHeader not provided"))?;
         let header = try_convert_proto_block_header(header, *justify.id(), &commands)?;
@@ -806,8 +806,8 @@ impl TryFrom<proto::consensus::Evidence> for Evidence {
 
 // -------------------------------- QuorumCertificate -------------------------------- //
 
-impl From<&QuorumCertificate> for proto::consensus::QuorumCertificate {
-    fn from(source: &QuorumCertificate) -> Self {
+impl From<&QuorumCertificateModel> for proto::consensus::QuorumCertificate {
+    fn from(source: &QuorumCertificateModel) -> Self {
         Self {
             header_hash: source.header_hash().as_bytes().to_vec(),
             parent_id: source.parent_id().as_bytes().to_vec(),
@@ -819,7 +819,7 @@ impl From<&QuorumCertificate> for proto::consensus::QuorumCertificate {
     }
 }
 
-impl TryFrom<proto::consensus::QuorumCertificate> for QuorumCertificate {
+impl TryFrom<proto::consensus::QuorumCertificate> for QuorumCertificateModel {
     type Error = anyhow::Error;
 
     fn try_from(value: proto::consensus::QuorumCertificate) -> Result<Self, Self::Error> {

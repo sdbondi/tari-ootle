@@ -9,6 +9,7 @@ use std::{
 
 use log::*;
 use tari_common_types::types::FixedHash;
+use tari_consensus_types::{Block, BlockHeader};
 use tari_crypto::tari_utilities::epoch_time::EpochTime;
 use tari_dan_common_types::{
     committee::CommitteeInfo,
@@ -22,8 +23,7 @@ use tari_dan_common_types::{
 use tari_dan_storage::{
     consensus_models::{
         calculate_leader_fee,
-        Block,
-        BlockHeader,
+        BlockModel,
         BlockTransactionExecution,
         BurntUtxo,
         Command,
@@ -37,7 +37,7 @@ use tari_dan_storage::{
         MintConfidentialOutputAtom,
         PendingShardStateTreeDiff,
         QcId,
-        QuorumCertificate,
+        QuorumCertificateModel,
         SubstateChange,
         TransactionAtom,
         TransactionExecution,
@@ -66,6 +66,7 @@ use crate::{
         apply_leader_fee_to_substate_store,
         block_change_set::ProposedBlockChangeSet,
         calculate_state_merkle_root,
+        compute_command_merkle_root,
         epoch_state::EpochState,
         error::HotStuffError,
         filter_diff_for_committee,
@@ -88,7 +89,7 @@ use crate::{
 const LOG_TARGET: &str = "tari::dan::consensus::hotstuff::on_propose";
 
 struct NextBlock {
-    block: Block,
+    block: BlockModel,
     foreign_proposals: Vec<ForeignProposal>,
     executed_transactions: HashMap<TransactionId, TransactionExecution>,
     lock_conflicts: TransactionLockConflicts,
@@ -235,7 +236,7 @@ where TConsensusSpec: ConsensusSpec
 
     pub async fn broadcast_local_proposal(
         &mut self,
-        next_block: Block,
+        next_block: BlockModel,
         foreign_proposals: Vec<ForeignProposal>,
         local_committee_info: &CommitteeInfo,
     ) -> Result<(), HotStuffError> {
@@ -333,7 +334,7 @@ where TConsensusSpec: ConsensusSpec
     fn process_newly_justified_block(
         &self,
         tx: &<TConsensusSpec::StateStore as StateStore>::ReadTransaction<'_>,
-        new_leaf_block: &Block,
+        new_leaf_block: &BlockModel,
         high_qc_id: QcId,
         local_committee_info: &CommitteeInfo,
         change_set: &mut ProposedBlockChangeSet,
@@ -404,14 +405,14 @@ where TConsensusSpec: ConsensusSpec
         epoch: Epoch,
         next_height: NodeHeight,
         parent_block: LeafBlock,
-        high_qc_certificate: QuorumCertificate,
+        high_qc_certificate: QuorumCertificateModel,
         local_committee_info: &CommitteeInfo,
         local_claim_public_key_bytes: &RistrettoPublicKeyBytes,
         epoch_hash: FixedHash,
         can_propose_epoch_end: bool,
     ) -> Result<NextBlock, HotStuffError> {
         // The parent block will only ever not exist if it is a dummy block
-        let parent_exists = Block::record_exists(tx, parent_block.block_id())?;
+        let parent_exists = BlockModel::record_exists(tx, parent_block.block_id())?;
         let start_of_chain_block = if parent_exists {
             // Parent exists - we can include its state in the MR calc, foreign propose etc
             parent_block
@@ -426,7 +427,7 @@ where TConsensusSpec: ConsensusSpec
             // pending chain, regardless of whether we see the end of epoch or not (race condition).
             // If the last justified/parent block is an epoch end block, we dont propose commands since the block will
             // be rejected
-            let block = Block::get(tx, start_of_chain_block.block_id())?;
+            let block = BlockModel::get(tx, start_of_chain_block.block_id())?;
             block.is_epoch_end()
         };
 
@@ -597,6 +598,8 @@ where TConsensusSpec: ConsensusSpec
         )?;
         timer.done();
 
+        let command_merkle_root = compute_command_merkle_root(&commands)?;
+
         let mut header = BlockHeader::create_unsigned(
             self.config.network,
             *parent_block.block_id(),
@@ -606,7 +609,7 @@ where TConsensusSpec: ConsensusSpec
             local_committee_info.shard_group(),
             self.signing_service.public_key().to_byte_type(),
             state_root,
-            &commands,
+            command_merkle_root,
             total_leader_fee,
             EpochTime::now().as_u64(),
             epoch_hash,
@@ -616,7 +619,7 @@ where TConsensusSpec: ConsensusSpec
         let signature = self.signing_service.sign(header.id());
         header.set_signature(signature.to_byte_type());
 
-        let next_block = Block::new(header, high_qc_certificate, commands);
+        let next_block = Block::new(header, high_qc_certificate, None, commands);
 
         Ok(NextBlock {
             block: next_block,

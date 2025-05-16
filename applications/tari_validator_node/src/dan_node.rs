@@ -22,7 +22,7 @@
 
 use log::*;
 use tari_consensus::hotstuff::HotstuffEvent;
-use tari_dan_storage::{consensus_models::Block, StateStore};
+use tari_dan_storage::{consensus_models::BlockModel, StateStore};
 use tari_epoch_manager::{EpochManagerEvent, EpochManagerReader};
 use tari_networking::NetworkingService;
 use tari_shutdown::Shutdown;
@@ -104,7 +104,7 @@ impl DanNode {
 
     /// Handles template publishes, adds all the committed templates to template manager
     /// from the given block.
-    async fn handle_template_publishes(&self, block: &Block) -> Result<(), anyhow::Error> {
+    async fn handle_template_publishes(&self, block: &BlockModel) -> Result<(), anyhow::Error> {
         // add wasm templates to template manager if available in any of the new block's transactions
         let transactions = self
             .services
@@ -157,7 +157,10 @@ impl DanNode {
             return Ok(());
         };
 
-        let block = self.services.state_store.with_read_tx(|tx| Block::get(tx, &block_id))?;
+        let block = self
+            .services
+            .state_store
+            .with_read_tx(|tx| BlockModel::get(tx, &block_id))?;
 
         info!(target: LOG_TARGET, "🏁 Block {} committed", block);
 

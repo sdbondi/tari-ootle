@@ -156,7 +156,7 @@ pub fn process_foreign_block<TStore: StateStore>(
 
                 let justify_qc_id = proposal
                     .get_justify_qc()
-                    .map(|qc| QcId::new(qc.calculate_id(proposal.epoch().as_u64())))
+                    .map(|qc| QcId::new(qc.calculate_id()))
                     .ok_or_else(|| {
                         HotStuffError::InvariantError(format!(
                             "Foreign proposal {} does not contain a justify QC for shard group {} - this should have \
@@ -420,7 +420,7 @@ pub fn process_foreign_block<TStore: StateStore>(
                 };
                 let justify_qc_id = proposal
                     .get_justify_qc()
-                    .map(|qc| QcId::new(qc.calculate_id(proposal.epoch().as_u64())))
+                    .map(|qc| QcId::new(qc.calculate_id()))
                     .ok_or_else(|| {
                         HotStuffError::InvariantError(format!(
                             "Foreign proposal {} does not contain a justify QC for shard group {} - this should have \

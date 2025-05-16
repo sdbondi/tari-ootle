@@ -49,7 +49,7 @@ use tari_dan_common_types::{
 };
 use tari_dan_p2p::TariMessagingSpec;
 use tari_dan_storage::{
-    consensus_models::{Block, Decision, LeafBlock, SubstateRecord, TransactionExecution, TransactionRecord},
+    consensus_models::{BlockModel, Decision, LeafBlock, SubstateRecord, TransactionExecution, TransactionRecord},
     global::GlobalDb,
     Ordering,
     StateStore,
@@ -323,7 +323,7 @@ impl JsonRpcHandlers {
         let tx = self.state_store.create_read_tx().map_err(internal_error(answer_id))?;
 
         let start_block = match req.from_id {
-            Some(id) => Block::get(&tx, &id)
+            Some(id) => BlockModel::get(&tx, &id)
                 .optional()
                 .map_err(internal_error(answer_id))?
                 .ok_or_else(|| not_found(answer_id, format!("Block {} not found", id)))?,
@@ -430,7 +430,7 @@ impl JsonRpcHandlers {
         let data: GetBlockRequest = value.parse_params()?;
         let block = self
             .state_store
-            .with_read_tx(|tx| Block::get(tx, &data.block_id).optional())
+            .with_read_tx(|tx| BlockModel::get(tx, &data.block_id).optional())
             .map_err(internal_error(answer_id))?
             .ok_or_else(|| not_found(answer_id, format!("Block {} not found", data.block_id)))?;
 

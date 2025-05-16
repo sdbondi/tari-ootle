@@ -47,7 +47,15 @@ use tari_dan_p2p::{
     },
 };
 use tari_dan_storage::{
-    consensus_models::{Block, BlockId, EpochCheckpoint, HighQc, StateTransitionId, SubstateRecord, TransactionRecord},
+    consensus_models::{
+        BlockId,
+        BlockModel,
+        EpochCheckpoint,
+        HighQc,
+        StateTransitionId,
+        SubstateRecord,
+        TransactionRecord,
+    },
     StateStore,
 };
 use tari_epoch_manager::{service::EpochManagerHandle, EpochManagerReader};
@@ -289,7 +297,7 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
 
             match start_block_id {
                 Some(id) => {
-                    if !Block::record_exists(&tx, &id).map_err(RpcStatus::log_internal_error(LOG_TARGET))? {
+                    if !BlockModel::record_exists(&tx, &id).map_err(RpcStatus::log_internal_error(LOG_TARGET))? {
                         return Err(RpcStatus::not_found(format!("start_block_id {id} not found",)));
                     }
                     id
@@ -302,7 +310,7 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
                         .map(|end| end.min(current_epoch))
                         .unwrap_or(current_epoch);
 
-                    let mut block_ids = Block::get_ids_by_epoch_and_height(&tx, epoch, NodeHeight::zero())
+                    let mut block_ids = BlockModel::get_ids_by_epoch_and_height(&tx, epoch, NodeHeight::zero())
                         .map_err(RpcStatus::log_internal_error(LOG_TARGET))?;
 
                     let Some(block_id) = block_ids.pop() else {

@@ -22,7 +22,7 @@ use tari_engine_types::{
 use tari_transaction::TransactionId;
 
 use crate::{
-    consensus_models::{BlockId, QcId, QuorumCertificate, SubstateLock},
+    consensus_models::{BlockId, QcId, QuorumCertificateModel, SubstateLock},
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
     StorageError,
@@ -265,14 +265,14 @@ impl SubstateRecord {
     pub fn get_created_quorum_certificate<TTx: StateStoreReadTransaction>(
         &self,
         tx: &TTx,
-    ) -> Result<QuorumCertificate, StorageError> {
+    ) -> Result<QuorumCertificateModel, StorageError> {
         tx.quorum_certificates_get(self.created_justify())
     }
 
     pub fn get_destroyed_quorum_certificate<TTx: StateStoreReadTransaction>(
         &self,
         tx: &TTx,
-    ) -> Result<Option<QuorumCertificate>, StorageError> {
+    ) -> Result<Option<QuorumCertificateModel>, StorageError> {
         self.destroyed()
             .map(|destroyed| tx.quorum_certificates_get(&destroyed.justify))
             .transpose()

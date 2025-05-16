@@ -8,7 +8,7 @@ use tari_consensus::{
 };
 use tari_dan_common_types::{shard::Shard, NumPreshards, PeerAddress, SubstateLockType, VersionedSubstateId};
 use tari_dan_storage::{
-    consensus_models::{Block, BlockId, QcId, RequireLockIntentRef, SubstateChange, SubstateRecord},
+    consensus_models::{BlockId, BlockModel, QcId, RequireLockIntentRef, SubstateChange, SubstateRecord},
     StateStore,
 };
 use tari_engine_types::{
@@ -223,7 +223,7 @@ fn create_store() -> (TestStore, TempDir) {
     let store = RocksDbStateStore::open(&temp_dir, DatabaseOptions::default()).unwrap();
     store
         .with_write_tx(|tx| {
-            let zero = Block::zero_block(Network::LocalNet, NumPreshards::P256);
+            let zero = BlockModel::zero_block(Network::LocalNet, NumPreshards::P256);
             zero.justify().insert(tx)?;
             zero.insert(tx)
         })
