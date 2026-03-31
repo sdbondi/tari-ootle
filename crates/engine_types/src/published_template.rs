@@ -114,7 +114,7 @@ pub struct PublishedTemplate {
     pub binary: TemplateBlob,
     /// Epoch at which the template was published
     pub at_epoch: u64,
-    /// Optional multihash of off-chain CBOR metadata
+    /// Optional multihash of off-chain metadata
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(type = "string | null"))]
     pub metadata_hash: Option<MetadataHash>,
