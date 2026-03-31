@@ -25,6 +25,8 @@ import urllib.error
 # (crate_name, crate_directory)
 CRATES = [
     ("tari_bor", "crates/tari_bor"),
+    ("tari_ootle_template_metadata", "crates/template_metadata"),
+    ("tari_ootle_template_build", "crates/template_build"),
     ("ootle_serde", "crates/ootle_serde"),
     ("tari_template_abi", "crates/template_abi"),
     ("tari_template_lib_types", "crates/template_lib_types"),

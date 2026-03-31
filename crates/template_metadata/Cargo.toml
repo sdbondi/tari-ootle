@@ -10,7 +10,7 @@ license.workspace = true
 [dependencies]
 borsh = { workspace = true, optional = true }
 cargo_toml = "0.22"
-multihash = { version = "0.19", default-features = false, features = ["alloc"] }
+multihash = { version = "0.19", default-features = false, features = ["alloc", "serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true }

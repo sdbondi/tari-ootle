@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::MetadataHash;
+use crate::{MetadataHash, MetadataHashWriter};
 
 /// Current schema version for template metadata.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -20,21 +20,21 @@ pub struct TemplateMetadata {
     pub schema_version: u32,
     pub name: String,
     pub version: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(default)]
     pub description: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub tags: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub category: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub repository: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub documentation: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub homepage: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub license: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default)]
     pub extra: BTreeMap<String, String>,
 }
 
@@ -90,9 +90,12 @@ impl TemplateMetadata {
     }
 
     /// Compute the SHA-256 multihash of the CBOR-encoded metadata.
+    ///
+    /// CBOR is written directly into the hasher — no intermediate buffer allocation.
     pub fn hash(&self) -> Result<MetadataHash, TemplateMetadataError> {
-        let cbor = self.to_cbor()?;
-        Ok(MetadataHash::hash_sha256(&cbor))
+        let mut writer = MetadataHashWriter::new();
+        self.write_cbor_to(&mut writer)?;
+        Ok(writer.finalize())
     }
 }
 
