@@ -750,10 +750,10 @@ jobs:
             ${{ github.workspace }}${{ env.TS_DIST }}/tari_ootle_walletd-${{ env.TARI_VERSION }}-${{ env.VSHA_SHORT }}-${{ matrix.builds.name }}${{ env.TS_EXT }}.sha256
           token: ${{ secrets.GITHUB_TOKEN }}
           prerelease: true
-          draft: true
           allowUpdates: true
           updateOnlyUnreleased: true
           replacesArtifacts: true
+          omitDraftDuringUpdate: true
           omitBodyDuringUpdate: true
           omitNameDuringUpdate: true
 
@@ -1007,10 +1007,12 @@ jobs:
           artifacts: "${{ env.TS_FILENAME }}*/**/*"
           token: ${{ secrets.GITHUB_TOKEN }}
           prerelease: true
-          draft: true
           allowUpdates: true
           updateOnlyUnreleased: true
           replacesArtifacts: true
+          omitDraftDuringUpdate: true
+          omitBodyDuringUpdate: true
+          omitNameDuringUpdate: true
 
       - name: Sync assets to S3
         continue-on-error: true
