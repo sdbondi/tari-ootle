@@ -11,7 +11,7 @@ use tari_engine_types::{
     ValidatorFeeWithdrawal,
     commit_result::{ExecuteResult, FinalizeResult, RejectReason, TransactionResult},
     component::{Component, ComponentBody, ComponentHeader},
-    fees::{FeeBreakdown, FeeReceiptBuilder},
+    fees::{FeeBreakdown, FeeReceipt, FeeReceiptBuilder, FeeSource},
     published_template::PublishedTemplate,
     substate::{Substate, SubstateDiff, SubstateId},
     transaction_receipt::{FinalizeOutcome, TransactionReceipt},
@@ -31,6 +31,22 @@ pub const TEST_WASM_EXECUTION_POINTS: u64 = 5_000_000;
 
 pub fn build_transaction_from(tx: Transaction) -> TransactionRecord {
     TransactionRecord::new(tx)
+}
+
+/// Fabricates a fully-paid fee receipt for a test execution. `fee` is the pre-surcharge execution fee; a 5%
+/// exhaust burn surcharge is charged on top, mirroring the shape the real executor produces.
+fn create_test_fee_receipt(fee: u64) -> FeeReceipt {
+    let exhaust_burn = fee / 20;
+    let mut cost_breakdown = FeeBreakdown::default();
+    cost_breakdown.add(FeeSource::WasmExecution, fee);
+    cost_breakdown.add(FeeSource::ExhaustBurn, exhaust_burn);
+    FeeReceiptBuilder {
+        total_fee_payment: fee + exhaust_burn,
+        total_fees_paid: fee + exhaust_burn,
+        total_fee_overcharge: 0,
+        cost_breakdown,
+    }
+    .build()
 }
 
 #[allow(clippy::too_many_lines)]
@@ -122,13 +138,7 @@ pub fn create_execution_result_for_transaction(
                 fee_withdrawals: Default::default(),
                 events: Default::default(),
                 logs: Default::default(),
-                fee_receipt: FeeReceiptBuilder {
-                    total_fee_payment: fee,
-                    total_fees_paid: fee,
-                    total_fee_overcharge: 0,
-                    cost_breakdown: FeeBreakdown::default(),
-                }
-                .build(),
+                fee_receipt: create_test_fee_receipt(fee),
                 epoch: Epoch::zero(),
             }),
         );
@@ -148,13 +158,7 @@ pub fn create_execution_result_for_transaction(
             vec![],
             vec![],
             result,
-            FeeReceiptBuilder {
-                total_fee_payment: fee,
-                total_fees_paid: fee,
-                total_fee_overcharge: 0,
-                cost_breakdown: FeeBreakdown::default(),
-            }
-            .build(),
+            create_test_fee_receipt(fee),
         ),
         execution_time: Duration::from_secs(0),
         execute_epoch: None,

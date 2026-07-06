@@ -435,6 +435,12 @@ pub struct TransactionPoolRecord {
     #[cbor(default)]
     #[n(15)]
     transaction_weight: u64,
+    /// The exhaust burn surcharge collected by the executor (`FeeReceipt::exhaust_burn_charged`), set from local
+    /// execution alongside `transaction_fee`.
+    #[serde(default)]
+    #[cbor(default)]
+    #[n(16)]
+    exhaust_burn: u64,
 }
 
 impl TransactionPoolRecord {
@@ -456,6 +462,7 @@ impl TransactionPoolRecord {
             last_updated: time::OffsetDateTime::now_utc(),
             last_updated_in_block: None,
             transaction_weight: transaction.calculate_transaction_weight().as_u64(),
+            exhaust_burn: 0,
         }
     }
 
@@ -476,6 +483,7 @@ impl TransactionPoolRecord {
         last_updated: time::OffsetDateTime,
         last_updated_in_block: Option<BlockId>,
         transaction_weight: u64,
+        exhaust_burn: u64,
     ) -> Self {
         Self {
             transaction_id: id,
@@ -494,6 +502,7 @@ impl TransactionPoolRecord {
             last_updated,
             last_updated_in_block,
             transaction_weight,
+            exhaust_burn,
         }
     }
 
@@ -649,7 +658,7 @@ impl TransactionPoolRecord {
     }
 
     pub fn calculate_leader_fee(&self, num_involved_shards: NonZeroU64) -> LeaderFee {
-        calculate_leader_fee(self.transaction_fee, num_involved_shards)
+        calculate_leader_fee(self.transaction_fee, self.exhaust_burn, num_involved_shards)
     }
 
     pub fn set_remote_decision(&mut self, decision: Decision) -> &mut Self {
@@ -673,6 +682,15 @@ impl TransactionPoolRecord {
 
     pub fn set_transaction_fee(&mut self, transaction_fee: u64) -> &mut Self {
         self.transaction_fee = transaction_fee;
+        self
+    }
+
+    pub fn exhaust_burn(&self) -> u64 {
+        self.exhaust_burn
+    }
+
+    pub fn set_exhaust_burn(&mut self, exhaust_burn: u64) -> &mut Self {
+        self.exhaust_burn = exhaust_burn;
         self
     }
 
@@ -747,6 +765,7 @@ impl TransactionPoolRecord {
         }
 
         self.set_transaction_fee(execution.transaction_fee());
+        self.set_exhaust_burn(execution.exhaust_burn());
         self
     }
 
@@ -1049,6 +1068,7 @@ mod tests {
                 last_updated: time::OffsetDateTime::now_utc(),
                 last_updated_in_block: None,
                 transaction_weight: weight,
+                exhaust_burn: 0,
             }
         }
 
@@ -1095,7 +1115,7 @@ mod tests {
 
         use super::*;
 
-        fn create_record_with_fee(fee: u64) -> TransactionPoolRecord {
+        fn create_record_with_fee(fee: u64, exhaust_burn: u64) -> TransactionPoolRecord {
             TransactionPoolRecord {
                 transaction_id: TransactionId::new([0; 32]),
                 original_decision: Decision::Commit,
@@ -1113,25 +1133,25 @@ mod tests {
                 last_updated: time::OffsetDateTime::now_utc(),
                 last_updated_in_block: None,
                 transaction_weight: 0,
+                exhaust_burn,
             }
         }
 
-        fn check_calculate_leader_fee(total_tx_fee: u64, total_num_involved_shards: u64) -> LeaderFee {
-            let tx = create_record_with_fee(total_tx_fee);
+        fn check_calculate_leader_fee(
+            total_tx_fee: u64,
+            exhaust_burn: u64,
+            total_num_involved_shards: u64,
+        ) -> LeaderFee {
+            let tx = create_record_with_fee(total_tx_fee, exhaust_burn);
             let leader_fee = tx.calculate_leader_fee(total_num_involved_shards.try_into().unwrap());
-            // The leader fee never overpays the transaction fee, and the indivisible remainder is always smaller
-            // than the number of involved shards.
-            assert!(
-                leader_fee.fee * total_num_involved_shards <= total_tx_fee,
-                "Leader fee overpays the transaction fee. total_tx_fee: {}, leader_fee: {}, num_shards: {}",
+            // Every amount withheld from the network is accounted for exactly: the fees paid out to leaders plus
+            // the whole-transaction burn equal the transaction fee plus the executor-collected burn.
+            assert_eq!(
+                leader_fee.fee * total_num_involved_shards + leader_fee.exhaust_burn,
+                total_tx_fee + exhaust_burn,
+                "Fees were created or lost. total_tx_fee: {}, exhaust_burn: {}, leader_fee: {}, num_shards: {}",
                 total_tx_fee,
-                leader_fee.fee,
-                total_num_involved_shards
-            );
-            assert!(
-                total_tx_fee - leader_fee.fee * total_num_involved_shards < total_num_involved_shards,
-                "Leftover remainder exceeds num_involved_shards. total_tx_fee: {}, leader_fee: {}, num_shards: {}",
-                total_tx_fee,
+                exhaust_burn,
                 leader_fee.fee,
                 total_num_involved_shards
             );
@@ -1141,40 +1161,56 @@ mod tests {
 
         #[test]
         fn it_calculates_the_correct_leader_fee() {
-            let fee = check_calculate_leader_fee(100, 1);
+            let fee = check_calculate_leader_fee(100, 5, 1);
             assert_eq!(fee.fee, 100);
+            assert_eq!(fee.exhaust_burn, 5);
 
-            let fee = check_calculate_leader_fee(100, 2);
+            let fee = check_calculate_leader_fee(100, 5, 2);
             assert_eq!(fee.fee, 50);
+            assert_eq!(fee.exhaust_burn, 5);
 
-            let fee = check_calculate_leader_fee(100, 3);
+            let fee = check_calculate_leader_fee(100, 5, 3);
             assert_eq!(fee.fee, 33);
+            assert_eq!(fee.exhaust_burn, 6);
 
-            let fee = check_calculate_leader_fee(98, 3);
+            let fee = check_calculate_leader_fee(98, 0, 3);
             assert_eq!(fee.fee, 32);
+            assert_eq!(fee.exhaust_burn, 2);
 
-            let fee = check_calculate_leader_fee(98, 10);
+            let fee = check_calculate_leader_fee(98, 4, 10);
             assert_eq!(fee.fee, 9);
+            assert_eq!(fee.exhaust_burn, 12);
 
-            let fee = check_calculate_leader_fee(19802, 45);
+            let fee = check_calculate_leader_fee(19802, 990, 45);
             assert_eq!(fee.fee, 440);
+            assert_eq!(fee.exhaust_burn, 992);
 
-            let fee = check_calculate_leader_fee(311, 45);
+            let fee = check_calculate_leader_fee(311, 15, 45);
             assert_eq!(fee.fee, 6);
+            assert_eq!(fee.exhaust_burn, 56);
         }
 
         #[test]
         fn simple_fuzz() {
             let mut total_fees = 0;
+            let mut total_burnt = 0;
             let mut rng = rand::rng();
             for _ in 0..1_000_000 {
                 let fee = rng.random_range(100..100000u64);
+                let burn = fee / 20;
                 let involved = rng.random_range(1..100u64);
-                let leader_fee = check_calculate_leader_fee(fee, involved);
+                let leader_fee = check_calculate_leader_fee(fee, burn, involved);
                 total_fees += leader_fee.fee * involved;
+                total_burnt += leader_fee.exhaust_burn;
             }
 
-            println!("total fees: {}", total_fees);
+            println!(
+                "total fees: {}, total burnt: {}, {}%",
+                total_fees,
+                total_burnt,
+                // Approaches 5% (the burn is 1/20 of the fee plus sub-shard-count dust)
+                (total_burnt as f64 / total_fees as f64) * 100.0
+            );
         }
     }
 }

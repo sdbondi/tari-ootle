@@ -64,12 +64,17 @@ pub struct TransactionPoolStateUpdateData {
     pub locked_epoch: Option<LockedEpoch>,
     #[n(10)]
     pub is_ready: bool,
+    #[cbor(default)]
+    #[serde(default)]
+    #[n(11)]
+    pub exhaust_burn: u64,
 }
 
 impl TransactionPoolStateUpdateData {
     pub fn merge_into(self, other: &mut TransactionPoolRecord) {
         other.set_evidence(self.evidence);
         other.set_transaction_fee(self.transaction_fee);
+        other.set_exhaust_burn(self.exhaust_burn);
         if let Some(leader_fee) = self.leader_fee {
             other.set_leader_fee(leader_fee);
         }

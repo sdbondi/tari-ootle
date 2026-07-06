@@ -68,6 +68,7 @@ impl FeeModule {
 impl<TStore: StateReader> RuntimeModule<TStore> for FeeModule {
     fn on_initialize(&self, track: &mut StateTracker<TStore>) -> Result<(), RuntimeModuleError> {
         track.set_fee_state_dry_run(self.dry_run);
+        track.set_fee_surcharge_rate_bps(self.surcharge_rate_bps);
         track.add_fee_charge(FeeSource::Initial, self.initial_cost);
         let transaction_weight = track.get_transaction_weight();
         let transaction_weight_cost = transaction_weight

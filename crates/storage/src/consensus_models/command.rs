@@ -4,7 +4,6 @@
 use std::{
     cmp::Ordering,
     fmt::{Display, Formatter},
-    num::NonZeroU64,
 };
 
 use borsh::BorshSerialize;
@@ -15,7 +14,7 @@ use tari_ootle_common_types::{Epoch, ShardGroup, hashing::command_hasher};
 use tari_ootle_transaction::TransactionId;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 
-use super::{ForeignProposalAtom, LeaderFee, TransactionRecord, calculate_exhaust_burn};
+use super::{ForeignProposalAtom, LeaderFee, TransactionRecord};
 use crate::{
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
@@ -245,8 +244,7 @@ impl Command {
     /// Returns `local_shard_group`'s portion of the transaction's exhaust burn for accumulation into the block
     /// header's burn total. Returns 0 if this command does not commit a transaction or carries no leader fee.
     ///
-    /// The whole-transaction burn is derived from the atom's transaction fee via [calculate_exhaust_burn] and split
-    /// between the shard groups in the atom's evidence — see [Evidence::exhaust_burn_portion].
+    /// The burn is split between the shard groups in the atom's evidence — see [Evidence::exhaust_burn_portion].
     /// A LocalOnly transaction's evidence contains exactly the local shard group (a strict invariant enforced where
     /// LocalOnly commands are proposed and voted on), so its portion is the entire burn.
     ///
@@ -254,16 +252,15 @@ impl Command {
     /// maintained evidence key order, which wire-decoded commands do not guarantee.
     ///
     /// Returns `None` if this is a committing command whose evidence does not include `local_shard_group`.
-    pub fn exhaust_burn_portion(&self, exhaust_burn_rate_bps: u16, local_shard_group: ShardGroup) -> Option<u64> {
+    pub fn exhaust_burn_portion(&self, local_shard_group: ShardGroup) -> Option<u64> {
         let Some(atom) = self.committing() else {
             return Some(0);
         };
-        if atom.leader_fee.is_none() {
+        let Some(leader_fee) = atom.leader_fee.as_ref() else {
             return Some(0);
-        }
-        let num_involved = NonZeroU64::new(atom.evidence.num_shard_groups() as u64)?;
-        let total_burn = calculate_exhaust_burn(atom.transaction_fee, num_involved, exhaust_burn_rate_bps);
-        atom.evidence.exhaust_burn_portion(total_burn, local_shard_group)
+        };
+        atom.evidence
+            .exhaust_burn_portion(leader_fee.exhaust_burn(), local_shard_group)
     }
 
     /// Returns Some if the command **will** result in aborting the transaction, otherwise None.

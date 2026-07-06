@@ -280,6 +280,12 @@ impl<TStore: StateReader> StateTracker<TStore> {
         })
     }
 
+    pub fn set_fee_surcharge_rate_bps(&mut self, rate_bps: u16) {
+        self.write_with(|state| {
+            state.fee_state_mut().set_surcharge_rate_bps(rate_bps);
+        });
+    }
+
     pub fn set_fee_state_dry_run(&mut self, dry_run: bool) {
         self.write_with(|state| {
             state.fee_state_mut().set_dry_run(dry_run);

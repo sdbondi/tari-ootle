@@ -61,6 +61,10 @@ impl TransactionPoolStatusUpdate {
         self.transaction.transaction_fee()
     }
 
+    pub fn exhaust_burn(&self) -> u64 {
+        self.transaction.exhaust_burn()
+    }
+
     pub fn leader_fee(&self) -> Option<&LeaderFee> {
         self.transaction.leader_fee()
     }

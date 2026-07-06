@@ -718,7 +718,7 @@ impl From<&LeaderFee> for proto::consensus::LeaderFee {
     fn from(value: &LeaderFee) -> Self {
         Self {
             leader_fee: value.fee,
-            exhaust_burn: value.unused_exhaust_burn(),
+            exhaust_burn: value.exhaust_burn,
         }
     }
 }
@@ -727,7 +727,10 @@ impl TryFrom<proto::consensus::LeaderFee> for LeaderFee {
     type Error = anyhow::Error;
 
     fn try_from(value: proto::consensus::LeaderFee) -> Result<Self, Self::Error> {
-        Ok(Self::load(value.leader_fee, value.exhaust_burn))
+        Ok(Self {
+            fee: value.leader_fee,
+            exhaust_burn: value.exhaust_burn,
+        })
     }
 }
 

@@ -69,6 +69,10 @@ pub struct FeeReceipt {
 }
 
 impl FeeReceipt {
+    pub fn builder() -> FeeReceiptBuilder {
+        FeeReceiptBuilder::default()
+    }
+
     pub fn to_cost_breakdown(&self) -> FeeCostBreakdown {
         FeeCostBreakdown {
             total_fees_charged: self.total_fees_charged(),

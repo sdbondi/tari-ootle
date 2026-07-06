@@ -45,7 +45,6 @@ use tari_ootle_storage::{
         TransactionPoolStage,
         TransactionRecord,
         ValidatorConsensusStats,
-        calculate_leader_fee,
     },
 };
 use tari_ootle_transaction::TransactionId;
@@ -542,10 +541,7 @@ where TConsensusSpec: ConsensusSpec
                         HotStuffError::InvariantError("Leader fee overflow when summing for block".to_string())
                     })?;
                 let exhaust_burn_portion = command
-                    .exhaust_burn_portion(
-                        self.config.consensus_constants.effective_rate(epoch),
-                        local_committee_info.shard_group(),
-                    )
+                    .exhaust_burn_portion(local_committee_info.shard_group())
                     .ok_or_else(|| {
                         HotStuffError::InvariantError(format!(
                             "Local shard group {} is not in the evidence of committing command {command}",
@@ -791,6 +787,7 @@ where TConsensusSpec: ConsensusSpec
                     pool_tx
                         .set_local_decision(execution.decision())
                         .set_transaction_fee(execution.transaction_fee())
+                        .set_exhaust_burn(execution.exhaust_burn())
                         .set_evidence(execution.to_evidence(
                             local_committee_info.num_preshards(),
                             local_committee_info.num_committees(),
@@ -814,7 +811,7 @@ where TConsensusSpec: ConsensusSpec
                             )));
                         }
                         let involved = NonZeroU64::new(1).expect("1 > 0");
-                        let leader_fee = calculate_leader_fee(pool_tx.transaction_fee(), involved);
+                        let leader_fee = pool_tx.calculate_leader_fee(involved);
                         pool_tx.set_leader_fee(leader_fee);
                         let diff = execution.result().finalize.any_accept().ok_or_else(|| {
                             HotStuffError::InvariantError(format!(
@@ -852,6 +849,7 @@ where TConsensusSpec: ConsensusSpec
                     pool_tx
                         .set_local_decision(execution.decision())
                         .set_transaction_fee(execution.transaction_fee())
+                        .set_exhaust_burn(execution.exhaust_burn())
                         .no_leader_fee()
                         .merge_evidence(execution.to_evidence(
                             local_committee_info.num_preshards(),
@@ -890,7 +888,7 @@ where TConsensusSpec: ConsensusSpec
                                 let involved = NonZeroU64::new(num_involved_shard_groups as u64).ok_or_else(|| {
                                     HotStuffError::InvariantError("Number of involved shard groups is 0".to_string())
                                 })?;
-                                let leader_fee = calculate_leader_fee(pool_tx.transaction_fee(), involved);
+                                let leader_fee = pool_tx.calculate_leader_fee(involved);
                                 pool_tx.set_leader_fee(leader_fee);
                             }
                         }

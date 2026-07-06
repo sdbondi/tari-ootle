@@ -68,8 +68,18 @@ impl TransactionExecution {
         }
 
         // The atom's transaction fee excludes the exhaust burn surcharge: leaders are paid this amount in full and
-        // consensus derives the burn from it independently.
+        // the surcharge is carried separately (see [Self::exhaust_burn]).
         self.result.finalize.fee_receipt.pre_surcharge_fees_paid()
+    }
+
+    /// The exhaust burn surcharge collected by the executor for this transaction. Deterministic execution output,
+    /// carried into `LeaderFee::exhaust_burn` and validated by recompute-and-compare like the transaction fee.
+    pub fn exhaust_burn(&self) -> u64 {
+        if self.decision().is_abort() {
+            return 0;
+        }
+
+        self.result.finalize.fee_receipt.exhaust_burn_charged()
     }
 
     pub fn resolved_inputs(&self) -> &[VersionedSubstateIdLockIntent] {
@@ -204,6 +214,10 @@ impl BlockTransactionExecution {
 
     pub fn transaction_fee(&self) -> u64 {
         self.execution.transaction_fee()
+    }
+
+    pub fn exhaust_burn(&self) -> u64 {
+        self.execution.exhaust_burn()
     }
 }
 

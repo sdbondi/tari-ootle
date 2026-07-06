@@ -108,8 +108,6 @@ message ExtraData {
 
 message LeaderFee {
   uint64 leader_fee = 1;
-  // Unused legacy value: must be carried so that pre-surcharge command hashes remain reproducible when relaying
-  // historical blocks. 0 for all newly-created fees.
   uint64 exhaust_burn = 2;
 }
 

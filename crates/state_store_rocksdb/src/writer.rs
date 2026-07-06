@@ -835,6 +835,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
             time::OffsetDateTime::now_utc(),
             None,
             transaction_weight,
+            0,
         );
 
         self.db()
@@ -858,6 +859,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
             transaction_id: *update.transaction_id(),
             evidence: update.evidence().clone(),
             transaction_fee: update.transaction_fee(),
+            exhaust_burn: update.exhaust_burn(),
             leader_fee: update.leader_fee().cloned(),
             stage: update.stage(),
             local_decision: update.decision(),
@@ -927,6 +929,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
             pool.set_pending_stage(None);
             pool.set_local_decision(update.local_decision);
             pool.set_transaction_fee(update.transaction_fee);
+            pool.set_exhaust_burn(update.exhaust_burn);
             if let Some(leader_fee) = update.leader_fee {
                 pool.set_leader_fee(leader_fee);
             }
