@@ -15,14 +15,16 @@ pub struct FeeModule {
     initial_cost: u64,
     fee_table: FeeTable,
     dry_run: bool,
+    surcharge_rate_bps: u16,
 }
 
 impl FeeModule {
-    pub const fn new(initial_cost: u64, fee_table: FeeTable, dry_run: bool) -> Self {
+    pub const fn new(initial_cost: u64, fee_table: FeeTable, dry_run: bool, surcharge_rate_bps: u16) -> Self {
         Self {
             initial_cost,
             fee_table,
             dry_run,
+            surcharge_rate_bps,
         }
     }
 
@@ -174,6 +176,11 @@ impl<TStore: StateReader> RuntimeModule<TStore> for FeeModule {
             .ok_or_else(|| RuntimeModuleError::Overflow("Overflow calculating WASM execution cost".to_string()))?;
         track.add_fee_charge(FeeSource::WasmExecution, wasm_cost);
 
+        // Exhaust burn surcharge: charged on top of the execution fee accrued so far, so leaders receive the
+        // execution fee in full and the surcharge is burned separately.
+        let surcharge = calculate_surcharge(track.total_fee_charges(), self.surcharge_rate_bps);
+        track.add_fee_charge(FeeSource::ExhaustBurn, surcharge);
+
         Ok(())
     }
 
@@ -195,9 +202,22 @@ impl<TStore: StateReader> RuntimeModule<TStore> for FeeModule {
     }
 }
 
+fn calculate_surcharge(base_fees: u64, rate_bps: u16) -> u64 {
+    (u128::from(base_fees) * u128::from(rate_bps) / 10_000) as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn surcharge_is_a_floor_divided_percentage_of_base_fees() {
+        assert_eq!(calculate_surcharge(0, 500), 0);
+        assert_eq!(calculate_surcharge(100, 0), 0);
+        assert_eq!(calculate_surcharge(100, 500), 5);
+        assert_eq!(calculate_surcharge(105, 500), 5);
+        assert_eq!(calculate_surcharge(u64::MAX, 10_000), u64::MAX);
+    }
 
     fn fee_table() -> FeeTable {
         FeeTable {
@@ -211,7 +231,7 @@ mod tests {
     }
 
     fn publish_cost(binary_len: usize) -> u64 {
-        FeeModule::new(0, fee_table(), false)
+        FeeModule::new(0, fee_table(), false, 0)
             .template_publish_cost(binary_len)
             .unwrap()
     }

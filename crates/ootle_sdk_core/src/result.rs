@@ -275,6 +275,7 @@ fn fee_source_name(source: FeeSource) -> &'static str {
         FeeSource::SubstateCreate => "SubstateCreate",
         FeeSource::WasmExecution => "WasmExecution",
         FeeSource::TemplatePublish => "TemplatePublish",
+        FeeSource::ExhaustBurn => "ExhaustBurn",
     }
 }
 

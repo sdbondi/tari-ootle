@@ -63,7 +63,7 @@ use tari_ootle_app_utilities::{
     seed_peer::SeedPeer,
     transaction_executor::TariTransactionProcessor,
 };
-use tari_ootle_common_types::services::template_provider::TemplateProvider;
+use tari_ootle_common_types::{Epoch, services::template_provider::TemplateProvider};
 use tari_ootle_p2p::{PeerAddress, TariMessagingSpec};
 use tari_ootle_storage::{StateStore, global::GlobalDb};
 use tari_ootle_storage_sqlite::global::SqliteGlobalDbAdapter;
@@ -307,6 +307,8 @@ pub async fn spawn_services(
 
     // Transaction executor
     let fee_table = get_fee_table_by_network(config.network);
+    // The rate is currently epoch-invariant, so it is resolved once here rather than per-block.
+    let surcharge_rate_bps = consensus_constants.effective_rate(Epoch::zero());
     let transaction_processor = TariTransactionProcessor::new(
         template_provider.clone(),
         fee_table.clone(),
@@ -316,6 +318,7 @@ pub async fn spawn_services(
             config.validator_node.sidechain_id.as_ref().map(|pk| pk.to_byte_type()),
             global_db.clone(),
         )),
+        surcharge_rate_bps,
     );
     let transaction_executor = TariBlockTransactionExecutor::new(transaction_processor);
     let transaction_validator = TariBlockTransactionValidator::new(

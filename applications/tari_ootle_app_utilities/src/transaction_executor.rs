@@ -96,9 +96,11 @@ impl<TStore: StateReader + 'static, TTemplateProvider> TariTransactionProcessor<
         fee_table: FeeTable,
         dry_run: bool,
         claim_burn_proof_verifier: Arc<dyn ClaimProofVerifier + Send + Sync + 'static>,
+        surcharge_rate_bps: u16,
     ) -> Self {
         let wasm_metering_rate = WasmMeteringRate::from_fee_table(&fee_table);
-        let modules = vec![Box::new(FeeModule::new(0, fee_table, dry_run)) as Box<dyn RuntimeModule<TStore>>];
+        let modules =
+            vec![Box::new(FeeModule::new(0, fee_table, dry_run, surcharge_rate_bps)) as Box<dyn RuntimeModule<TStore>>];
         Self {
             template_provider: Arc::new(template_provider),
             modules: Arc::from(modules),

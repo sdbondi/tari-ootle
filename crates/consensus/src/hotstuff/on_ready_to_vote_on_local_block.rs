@@ -35,6 +35,7 @@ use tari_ootle_storage::{
         ValidBlock,
         ValidatorConsensusStats,
         ValidatorStatsUpdate,
+        calculate_exhaust_burn,
     },
 };
 use tari_sidechain::QuorumDecision;
@@ -690,10 +691,8 @@ where TConsensusSpec: ConsensusSpec
                                 return Ok(Some(NoVoteReason::NoLeaderFee));
                             }
 
-                            let calculated_leader_fee = pool_tx.calculate_leader_fee(
-                                NonZeroU64::new(1).expect("1 > 0"),
-                                self.config.consensus_constants.fee_exhaust_divisor,
-                            );
+                            let calculated_leader_fee =
+                                pool_tx.calculate_leader_fee(NonZeroU64::new(1).expect("1 > 0"));
                             if calculated_leader_fee != *atom.leader_fee.as_ref().expect("None already checked") {
                                 warn!(
                                     target: LOG_TARGET,
@@ -719,10 +718,15 @@ where TConsensusSpec: ConsensusSpec
                                 );
                                 return Ok(Some(NoVoteReason::LocalOnlyProposedForMultiShard));
                             }
-                            let Some(exhaust_burn_portion) = pool_tx.evidence().exhaust_burn_portion(
-                                calculated_leader_fee.exhaust_burn(),
-                                local_committee_info.shard_group(),
-                            ) else {
+                            let total_burn = calculate_exhaust_burn(
+                                pool_tx.transaction_fee(),
+                                NonZeroU64::new(1).expect("1 > 0"),
+                                self.config.consensus_constants.effective_rate(block.epoch()),
+                            );
+                            let Some(exhaust_burn_portion) = pool_tx
+                                .evidence()
+                                .exhaust_burn_portion(total_burn, local_committee_info.shard_group())
+                            else {
                                 warn!(
                                     target: LOG_TARGET,
                                     "❌ NO VOTE: local shard group {} is not in the evidence for LocalOnly transaction {} in block {}",
@@ -909,10 +913,7 @@ where TConsensusSpec: ConsensusSpec
                                 let involved = NonZeroU64::new(num_involved_shard_groups as u64).ok_or_else(|| {
                                     HotStuffError::InvariantError("Number of involved shard groups is 0".to_string())
                                 })?;
-                                let leader_fee = tx_rec.calculate_leader_fee(
-                                    involved,
-                                    self.config.consensus_constants.fee_exhaust_divisor,
-                                );
+                                let leader_fee = tx_rec.calculate_leader_fee(involved);
                                 tx_rec.set_leader_fee(leader_fee);
                             }
                         }
@@ -1219,8 +1220,7 @@ where TConsensusSpec: ConsensusSpec
             let num_involved_shard_groups = tx_rec.evidence().num_shard_groups();
             let involved = NonZeroU64::new(num_involved_shard_groups as u64)
                 .ok_or_else(|| HotStuffError::InvariantError("Number of involved shard groups is 0".to_string()))?;
-            let calculated_leader_fee =
-                tx_rec.calculate_leader_fee(involved, self.config.consensus_constants.fee_exhaust_divisor);
+            let calculated_leader_fee = tx_rec.calculate_leader_fee(involved);
             if calculated_leader_fee != *leader_fee {
                 warn!(
                     target: LOG_TARGET,
@@ -1437,11 +1437,23 @@ where TConsensusSpec: ConsensusSpec
         })?;
 
         *total_leader_fee += leader_fee.fee();
+        let num_involved = NonZeroU64::new(tx_rec.evidence().num_shard_groups() as u64).ok_or_else(|| {
+            HotStuffError::InvariantError(format!(
+                "evaluate_all_accept_command: Transaction {} has COMMIT decision and is at LocalAccepted stage but \
+                 evidence is empty",
+                tx_rec.id()
+            ))
+        })?;
+        let total_burn = calculate_exhaust_burn(
+            tx_rec.transaction_fee(),
+            num_involved,
+            self.config.consensus_constants.effective_rate(block.epoch()),
+        );
         // Compute the portion from the local record's evidence: its key order is locally maintained (sorted), whereas
         // the atom's wire-decoded key order is not consensus-checked (evidence equality is order-independent).
         let Some(exhaust_burn_portion) = tx_rec
             .evidence()
-            .exhaust_burn_portion(leader_fee.exhaust_burn(), local_committee_info.shard_group())
+            .exhaust_burn_portion(total_burn, local_committee_info.shard_group())
         else {
             warn!(
                 target: LOG_TARGET,

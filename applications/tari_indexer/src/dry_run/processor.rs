@@ -54,6 +54,7 @@ pub struct DryRunTransactionProcessor {
     template_provider: DryRunTemplateProvider,
     substate_manager: SubstateManager,
     claim_burn_proof_verifier: Arc<dyn ClaimProofVerifier + Send + Sync + 'static>,
+    surcharge_rate_bps: u16,
 }
 
 impl DryRunTransactionProcessor {
@@ -63,6 +64,7 @@ impl DryRunTransactionProcessor {
         substate_manager: SubstateManager,
         wasm_cache_dir: PathBuf,
         claim_burn_proof_verifier: impl ClaimProofVerifier + Send + Sync + 'static,
+        surcharge_rate_bps: u16,
     ) -> Result<Self, std::io::Error> {
         let handle = Handle::try_current().map_err(std::io::Error::other)?;
         let template_provider = build_dry_run_template_provider(handle, substate_manager.clone(), wasm_cache_dir)?;
@@ -72,6 +74,7 @@ impl DryRunTransactionProcessor {
             template_provider,
             substate_manager,
             claim_burn_proof_verifier: Arc::new(claim_burn_proof_verifier),
+            surcharge_rate_bps,
         })
     }
 
@@ -107,6 +110,7 @@ impl DryRunTransactionProcessor {
             self.fee_table.clone(),
             true,
             self.claim_burn_proof_verifier.clone(),
+            self.surcharge_rate_bps,
         );
         let exec_output = task::spawn_blocking(move || {
             processor.execute(&transaction, state_store.into_read_only(), virtual_substates)

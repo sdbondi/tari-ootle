@@ -648,8 +648,8 @@ impl TransactionPoolRecord {
         self.is_global
     }
 
-    pub fn calculate_leader_fee(&self, num_involved_shards: NonZeroU64, exhaust_divisor: u64) -> LeaderFee {
-        calculate_leader_fee(self.transaction_fee, num_involved_shards, exhaust_divisor)
+    pub fn calculate_leader_fee(&self, num_involved_shards: NonZeroU64) -> LeaderFee {
+        calculate_leader_fee(self.transaction_fee, num_involved_shards)
     }
 
     pub fn set_remote_decision(&mut self, decision: Decision) -> &mut Self {
@@ -1116,32 +1116,24 @@ mod tests {
             }
         }
 
-        fn check_calculate_leader_fee(
-            total_tx_fee: u64,
-            total_num_involved_shards: u64,
-            exhaust_divisor: u64,
-        ) -> LeaderFee {
+        fn check_calculate_leader_fee(total_tx_fee: u64, total_num_involved_shards: u64) -> LeaderFee {
             let tx = create_record_with_fee(total_tx_fee);
-            let leader_fee = tx.calculate_leader_fee(total_num_involved_shards.try_into().unwrap(), exhaust_divisor);
-            // Total payable fee + burn is always equal to the total block fee
-            assert_eq!(
-                leader_fee.fee * total_num_involved_shards + leader_fee.exhaust_burn,
-                total_tx_fee,
-                "Fees were created or lost in the calculation. Expected: {}, Actual: {}",
-                total_tx_fee,
-                leader_fee.fee * total_num_involved_shards + leader_fee.exhaust_burn
-            );
-
-            let deviation_from_target_burn =
-                leader_fee.exhaust_burn as f32 - (total_tx_fee.checked_div(exhaust_divisor).unwrap_or(0) as f32);
+            let leader_fee = tx.calculate_leader_fee(total_num_involved_shards.try_into().unwrap());
+            // The leader fee never overpays the transaction fee, and the indivisible remainder is always smaller
+            // than the number of involved shards.
             assert!(
-                deviation_from_target_burn.abs() <= total_num_involved_shards as f32,
-                "Deviation from target burn is too high: {} (target: {}, actual: {}, num_shards: {}, divisor: {})",
-                deviation_from_target_burn,
-                total_tx_fee.checked_div(exhaust_divisor).unwrap_or(0),
-                leader_fee.exhaust_burn,
-                total_num_involved_shards,
-                exhaust_divisor
+                leader_fee.fee * total_num_involved_shards <= total_tx_fee,
+                "Leader fee overpays the transaction fee. total_tx_fee: {}, leader_fee: {}, num_shards: {}",
+                total_tx_fee,
+                leader_fee.fee,
+                total_num_involved_shards
+            );
+            assert!(
+                total_tx_fee - leader_fee.fee * total_num_involved_shards < total_num_involved_shards,
+                "Leftover remainder exceeds num_involved_shards. total_tx_fee: {}, leader_fee: {}, num_shards: {}",
+                total_tx_fee,
+                leader_fee.fee,
+                total_num_involved_shards
             );
 
             leader_fee
@@ -1149,75 +1141,40 @@ mod tests {
 
         #[test]
         fn it_calculates_the_correct_leader_fee() {
-            let fee = check_calculate_leader_fee(100, 1, 20);
-            assert_eq!(fee.fee, 95);
-            assert_eq!(fee.exhaust_burn, 5);
+            let fee = check_calculate_leader_fee(100, 1);
+            assert_eq!(fee.fee, 100);
 
-            let fee = check_calculate_leader_fee(100, 1, 10);
-            assert_eq!(fee.fee, 90);
-            assert_eq!(fee.exhaust_burn, 10);
-
-            let fee = check_calculate_leader_fee(100, 2, 0);
+            let fee = check_calculate_leader_fee(100, 2);
             assert_eq!(fee.fee, 50);
-            assert_eq!(fee.exhaust_burn, 0);
 
-            let fee = check_calculate_leader_fee(100, 2, 10);
-            assert_eq!(fee.fee, 45);
-            assert_eq!(fee.exhaust_burn, 10);
-
-            let fee = check_calculate_leader_fee(100, 3, 0);
+            let fee = check_calculate_leader_fee(100, 3);
             assert_eq!(fee.fee, 33);
-            // Even with no exhaust, we still burn 1 due to integer div floor
-            assert_eq!(fee.exhaust_burn, 1);
 
-            let fee = check_calculate_leader_fee(100, 3, 10);
-            assert_eq!(fee.fee, 30);
-            assert_eq!(fee.exhaust_burn, 10);
-
-            let fee = check_calculate_leader_fee(98, 3, 10);
-            assert_eq!(fee.fee, 30);
-            assert_eq!(fee.exhaust_burn, 8);
-
-            let fee = check_calculate_leader_fee(98, 3, 21);
+            let fee = check_calculate_leader_fee(98, 3);
             assert_eq!(fee.fee, 32);
-            // target burn is 4, but the remainder burn is 5, so we give 1 more to the leaders and burn 2
-            assert_eq!(fee.exhaust_burn, 2);
 
-            // Target burn is 8, and the remainder burn is 8, so we burn 8
-            let fee = check_calculate_leader_fee(98, 10, 10);
+            let fee = check_calculate_leader_fee(98, 10);
             assert_eq!(fee.fee, 9);
-            assert_eq!(fee.exhaust_burn, 8);
 
-            let fee = check_calculate_leader_fee(19802, 45, 20);
-            assert_eq!(fee.fee, 418);
-            assert_eq!(fee.exhaust_burn, 992);
+            let fee = check_calculate_leader_fee(19802, 45);
+            assert_eq!(fee.fee, 440);
 
-            // High burn amount due to not enough fees to pay out all involved shards to compensate
-            let fee = check_calculate_leader_fee(311, 45, 20);
+            let fee = check_calculate_leader_fee(311, 45);
             assert_eq!(fee.fee, 6);
-            assert_eq!(fee.exhaust_burn, 41);
         }
 
         #[test]
         fn simple_fuzz() {
             let mut total_fees = 0;
-            let mut total_burnt = 0;
             let mut rng = rand::rng();
             for _ in 0..1_000_000 {
                 let fee = rng.random_range(100..100000u64);
                 let involved = rng.random_range(1..100u64);
-                let fee = check_calculate_leader_fee(fee, involved, 20);
-                total_fees += fee.fee * involved;
-                total_burnt += fee.exhaust_burn;
+                let leader_fee = check_calculate_leader_fee(fee, involved);
+                total_fees += leader_fee.fee * involved;
             }
 
-            println!(
-                "total fees: {}, total burnt: {}, {}%",
-                total_fees,
-                total_burnt,
-                // Should approach 5%, tends to be ~5.25%
-                (total_burnt as f64 / total_fees as f64) * 100.0
-            );
+            println!("total fees: {}", total_fees);
         }
     }
 }

@@ -67,7 +67,9 @@ impl TransactionExecution {
             return 0;
         }
 
-        self.result.finalize.fee_receipt.total_fees_paid()
+        // The atom's transaction fee excludes the exhaust burn surcharge: leaders are paid this amount in full and
+        // consensus derives the burn from it independently.
+        self.result.finalize.fee_receipt.pre_surcharge_fees_paid()
     }
 
     pub fn resolved_inputs(&self) -> &[VersionedSubstateIdLockIntent] {

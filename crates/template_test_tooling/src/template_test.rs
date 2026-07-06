@@ -691,7 +691,7 @@ impl TemplateTest {
         // When fees are disabled there is no payment-funded compute bound (only the per-transaction
         // hard cap), matching the absence of a fee module.
         let wasm_metering_rate = if self.enable_fees {
-            modules.push(Box::new(FeeModule::new(0, self.fee_table.clone(), false)));
+            modules.push(Box::new(FeeModule::new(0, self.fee_table.clone(), false, 0)));
             WasmMeteringRate::from_fee_table(&self.fee_table)
         } else {
             WasmMeteringRate::unmetered()

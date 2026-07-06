@@ -682,7 +682,7 @@ impl TestBuilder {
                     // lower these explicitly and opt out via `allow_wasm_budget_deferrals`.
                     max_block_wasm_points: 4_500_000_000,
                     max_block_validation_wasm_points: 5_000_000_000,
-                    fee_exhaust_divisor: 20,
+                    exhaust_burn_rate_bps: 500,
                     epoch_end_spread_blocks: 0,
                 },
                 state_tree_cleanup_interval: Duration::from_secs(1000),

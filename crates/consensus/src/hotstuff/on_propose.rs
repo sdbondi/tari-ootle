@@ -542,7 +542,10 @@ where TConsensusSpec: ConsensusSpec
                         HotStuffError::InvariantError("Leader fee overflow when summing for block".to_string())
                     })?;
                 let exhaust_burn_portion = command
-                    .exhaust_burn_portion(local_committee_info.shard_group())
+                    .exhaust_burn_portion(
+                        self.config.consensus_constants.effective_rate(epoch),
+                        local_committee_info.shard_group(),
+                    )
                     .ok_or_else(|| {
                         HotStuffError::InvariantError(format!(
                             "Local shard group {} is not in the evidence of committing command {command}",
@@ -811,11 +814,7 @@ where TConsensusSpec: ConsensusSpec
                             )));
                         }
                         let involved = NonZeroU64::new(1).expect("1 > 0");
-                        let leader_fee = calculate_leader_fee(
-                            pool_tx.transaction_fee(),
-                            involved,
-                            self.config.consensus_constants.fee_exhaust_divisor,
-                        );
+                        let leader_fee = calculate_leader_fee(pool_tx.transaction_fee(), involved);
                         pool_tx.set_leader_fee(leader_fee);
                         let diff = execution.result().finalize.any_accept().ok_or_else(|| {
                             HotStuffError::InvariantError(format!(
@@ -891,11 +890,7 @@ where TConsensusSpec: ConsensusSpec
                                 let involved = NonZeroU64::new(num_involved_shard_groups as u64).ok_or_else(|| {
                                     HotStuffError::InvariantError("Number of involved shard groups is 0".to_string())
                                 })?;
-                                let leader_fee = calculate_leader_fee(
-                                    pool_tx.transaction_fee(),
-                                    involved,
-                                    self.config.consensus_constants.fee_exhaust_divisor,
-                                );
+                                let leader_fee = calculate_leader_fee(pool_tx.transaction_fee(), involved);
                                 pool_tx.set_leader_fee(leader_fee);
                             }
                         }
@@ -1065,7 +1060,7 @@ where TConsensusSpec: ConsensusSpec
                     tx_rec.id(),
                 ))
             })?;
-            let leader_fee = tx_rec.calculate_leader_fee(involved, self.config.consensus_constants.fee_exhaust_divisor);
+            let leader_fee = tx_rec.calculate_leader_fee(involved);
             atom.leader_fee = Some(leader_fee);
         }
         Ok(atom)

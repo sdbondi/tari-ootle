@@ -9,4 +9,5 @@ export type FeeSource =
   | "TemplateLoad"
   | "SubstateCreate"
   | "WasmExecution"
-  | "TemplatePublish";
+  | "TemplatePublish"
+  | "ExhaustBurn";

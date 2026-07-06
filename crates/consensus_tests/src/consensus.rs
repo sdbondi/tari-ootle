@@ -315,11 +315,11 @@ async fn multi_shard_single_transaction() {
     test.assert_all_validators_committed(tx.id());
 
     // Each involved shard group accumulates only its portion of the transaction's exhaust burn, so the network-wide
-    // sum counts the burn exactly once. Fee 105 with divisor 20 and 2 involved shard groups pays each leader 50 and
-    // burns 5 (see calculate_leader_fee); the indivisible burn splits 3/2, with the extra unit going to the first
-    // shard group in ShardGroup order.
+    // sum counts the burn exactly once. Fee 105 with a 500bps rate and 2 involved shard groups pays each leader 52
+    // and burns 6: the 5-unit surcharge plus the 1-unit remainder from dividing the fee between the leaders (see
+    // calculate_exhaust_burn); the burn splits 3/3 across the shard groups.
     let mut network_total_burn = 0u128;
-    for (vn, expected_burn) in [("1", 3u128), ("2", 2)] {
+    for (vn, expected_burn) in [("1", 3u128), ("2", 3)] {
         let accumulated_burn = test
             .get_validator(&TestAddress::new(vn))
             .state_store
@@ -335,7 +335,7 @@ async fn multi_shard_single_transaction() {
         );
         network_total_burn += accumulated_burn;
     }
-    assert_eq!(network_total_burn, 5);
+    assert_eq!(network_total_burn, 6);
 
     log::info!("total messages sent: {}", test.network().total_messages_sent());
     test.assert_clean_shutdown().await;
