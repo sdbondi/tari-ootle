@@ -39,6 +39,19 @@ import { useState, useEffect } from "react";
 import type { FeeReceipt } from "@tari-project/ootle-ts-bindings";
 import { formatXTM } from "../../../utils/helpers";
 
+const FEE_SOURCE_LABELS: Record<string, string> = {
+  Initial: "Initial",
+  RuntimeCall: "Runtime calls",
+  Storage: "Storage",
+  TransactionWeight: "Transaction weight",
+  SignatureVerification: "Signature verification",
+  TemplateLoad: "Template load",
+  SubstateCreate: "Substate creation",
+  WasmExecution: "WASM execution",
+  TemplatePublish: "Template publish",
+  ExhaustBurn: "Exhaust burn",
+};
+
 interface FeeInformationProps extends FeeReceipt {
   expandAllTrigger?: number;
   collapseAllTrigger?: number;
@@ -104,7 +117,7 @@ function FeeInformation({
                       ([key, value]) => (
                         <Chip
                           key={key}
-                          label={`${key}: ${value}`}
+                          label={`${FEE_SOURCE_LABELS[key] ?? key}: ${value}`}
                           variant="filled"
                           color="default"
                         />

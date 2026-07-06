@@ -20,11 +20,25 @@
 //  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import { Box, Chip, Table, TableBody, TableContainer, TableRow, Typography } from "@mui/material";
+import { Box, Chip, Table, TableBody, TableContainer, TableRow, Tooltip, Typography } from "@mui/material";
+import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import type { FeeReceipt as FeeReceiptType } from "@tari-project/ootle-ts-bindings";
 import { DataTableCell } from "../../../Components/StyledComponents";
 import { formatCurrency } from "../../../utils/helpers";
 import { CURRENCY } from "../../../utils/constants";
+
+const FEE_SOURCE_LABELS: Record<string, string> = {
+  Initial: "Initial",
+  RuntimeCall: "Runtime calls",
+  Storage: "Storage",
+  TransactionWeight: "Transaction weight",
+  SignatureVerification: "Signature verification",
+  TemplateLoad: "Template load",
+  SubstateCreate: "Substate creation",
+  WasmExecution: "WASM execution",
+  TemplatePublish: "Template publish",
+  ExhaustBurn: "Exhaust burn",
+};
 
 function unsignedSaturatingSub(a: bigint): bigint {
   return a < BigInt(0) ? BigInt(0) : a;
@@ -49,14 +63,35 @@ export default function FeeReceipt({ data }: { data: FeeReceiptType }) {
     BigInt(data.total_fee_payment) - totalFeesCharged - BigInt(data.total_fee_overcharge),
   );
 
-  const feeItems = [
+  const exhaustBurn = BigInt(data.cost_breakdown?.breakdown?.ExhaustBurn ?? 0);
+  // Rough effective burn rate for display: the burn as a percentage of the non-burn fees, to one decimal place
+  const nonBurnFees = unsignedSaturatingSub(totalFeesCharged - exhaustBurn);
+  const burnPercent =
+    exhaustBurn > BigInt(0) && nonBurnFees > BigInt(0) ? Number((exhaustBurn * BigInt(1000)) / nonBurnFees) / 10 : null;
+
+  const feeItems: { label: string; value: string; help?: string }[] = [
     { label: "Total Fees Paid", value: formatCurrency(data.total_fee_payment, CURRENCY.DECIMALS, CURRENCY.SYMBOL) },
     { label: "Total Fees Charged", value: formatCurrency(totalFeesCharged, CURRENCY.DECIMALS, CURRENCY.SYMBOL) },
+    {
+      label: "Exhaust Burn",
+      value: `${formatCurrency(exhaustBurn, CURRENCY.DECIMALS, CURRENCY.SYMBOL)}${
+        burnPercent !== null ? ` (~${burnPercent}%)` : ""
+      }`,
+      help:
+        "A fixed percentage of the transaction fee that is permanently burned, reducing the total supply. " +
+        "It is not paid to validators.",
+    },
     {
       label: "Fees Refunded",
       value: formatCurrency(totalRefunded, CURRENCY.DECIMALS, CURRENCY.SYMBOL),
     },
-    { label: "Fees Overcharge", value: formatCurrency(data.total_fee_overcharge, CURRENCY.DECIMALS, CURRENCY.SYMBOL) },
+    {
+      label: "Fees Overcharge",
+      value: formatCurrency(data.total_fee_overcharge, CURRENCY.DECIMALS, CURRENCY.SYMBOL),
+      help:
+        "An overcharge occurs when paying more fees than required using stealth transfers. To preserve privacy, " +
+        "there is no vault to refund excess fees, therefore the fees are given to validators in their entirety.",
+    },
   ];
 
   return (
@@ -66,7 +101,14 @@ export default function FeeReceipt({ data }: { data: FeeReceiptType }) {
           {feeItems.map((item, index) => (
             <TableRow key={index}>
               <DataTableCell>
-                <Typography variant="body2">{item.label}</Typography>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                  <Typography variant="body2">{item.label}</Typography>
+                  {item.help && (
+                    <Tooltip title={item.help} arrow>
+                      <HelpOutlineIcon sx={{ fontSize: 16, color: "text.secondary" }} />
+                    </Tooltip>
+                  )}
+                </Box>
               </DataTableCell>
               <DataTableCell>{item.value}</DataTableCell>
             </TableRow>
@@ -79,7 +121,13 @@ export default function FeeReceipt({ data }: { data: FeeReceiptType }) {
               <DataTableCell>
                 <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
                   {Object.entries(data.cost_breakdown.breakdown).map(([key, value]) => (
-                    <Chip key={key} label={`${key}: ${value}`} size="small" color="default" variant="outlined" />
+                    <Chip
+                      key={key}
+                      label={`${FEE_SOURCE_LABELS[key] ?? key}: ${value}`}
+                      size="small"
+                      color="default"
+                      variant="outlined"
+                    />
                   ))}
                 </Box>
               </DataTableCell>
