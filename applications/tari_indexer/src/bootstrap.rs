@@ -56,7 +56,7 @@ use tari_ootle_app_utilities::{
     seed_peer::SeedPeer,
     shared_consts::TXTR_FAUCET_INITIAL_SUPPLY,
 };
-use tari_ootle_common_types::{Epoch, optional::Optional};
+use tari_ootle_common_types::optional::Optional;
 use tari_ootle_p2p::{PeerAddress, TariMessagingSpec};
 use tari_ootle_storage::global::GlobalDb;
 use tari_ootle_storage_sqlite::global::SqliteGlobalDbAdapter;
@@ -265,8 +265,8 @@ pub async fn spawn_services(
             config.network,
             config.indexer.sidechain_id.as_ref().map(|p| p.to_byte_type()),
         ),
-        // The rate is currently epoch-invariant, so it is resolved once here rather than per-estimate.
-        consensus_constants.effective_rate(Epoch::zero()),
+        // The processor resolves the exhaust burn rate for the current epoch on each dry-run estimate.
+        consensus_constants.clone(),
     )?;
 
     let transaction_manager = TransactionManager::new(

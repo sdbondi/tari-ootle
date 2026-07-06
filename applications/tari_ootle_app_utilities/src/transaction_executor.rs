@@ -1,7 +1,7 @@
 //    Copyright 2023 The Tari Project
 //    SPDX-License-Identifier: BSD-3-Clause
 
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 
 use tari_engine::{
     executables::Executable,
@@ -10,7 +10,7 @@ use tari_engine::{
     state_store::{StateReader, StateStoreError},
     template::LoadedTemplate,
     traits::ClaimProofVerifier,
-    transaction::{ModulesCollection, TransactionError, TransactionProcessor},
+    transaction::{TransactionError, TransactionProcessor},
 };
 use tari_engine_types::{commit_result::ExecuteResult, substate::Substate, virtual_substate::VirtualSubstates};
 use tari_ootle_common_types::{
@@ -33,6 +33,7 @@ pub trait TransactionExecutor<TStore> {
         transaction: &Transaction,
         state_store: TStore,
         virtual_substates: VirtualSubstates,
+        burn_rate_bps: u16,
     ) -> Result<ExecutionOutput, Self::Error>;
 }
 
@@ -85,9 +86,11 @@ impl ExecutionOutput {
 #[derive(Clone)]
 pub struct TariTransactionProcessor<TStore, TTemplateProvider> {
     template_provider: Arc<TTemplateProvider>,
-    modules: ModulesCollection<TStore>,
+    fee_table: FeeTable,
+    dry_run: bool,
     claim_burn_proof_verifier: Arc<dyn ClaimProofVerifier + Send + Sync + 'static>,
     wasm_metering_rate: WasmMeteringRate,
+    _store: PhantomData<TStore>,
 }
 
 impl<TStore: StateReader + 'static, TTemplateProvider> TariTransactionProcessor<TStore, TTemplateProvider> {
@@ -96,16 +99,15 @@ impl<TStore: StateReader + 'static, TTemplateProvider> TariTransactionProcessor<
         fee_table: FeeTable,
         dry_run: bool,
         claim_burn_proof_verifier: Arc<dyn ClaimProofVerifier + Send + Sync + 'static>,
-        surcharge_rate_bps: u16,
     ) -> Self {
         let wasm_metering_rate = WasmMeteringRate::from_fee_table(&fee_table);
-        let modules =
-            vec![Box::new(FeeModule::new(0, fee_table, dry_run, surcharge_rate_bps)) as Box<dyn RuntimeModule<TStore>>];
         Self {
             template_provider: Arc::new(template_provider),
-            modules: Arc::from(modules),
+            fee_table,
+            dry_run,
             claim_burn_proof_verifier,
             wasm_metering_rate,
+            _store: PhantomData,
         }
     }
 }
@@ -121,6 +123,7 @@ where TTemplateProvider: TemplateProvider<Template = LoadedTemplate>
         transaction: &Transaction,
         state_store: TStore,
         virtual_substates: VirtualSubstates,
+        burn_rate_bps: u16,
     ) -> Result<ExecutionOutput, Self::Error> {
         // Include signature public key badges for all transaction signers in the initial auth scope
         // NOTE: we assume all signatures have already been validated.
@@ -132,12 +135,19 @@ where TTemplateProvider: TemplateProvider<Template = LoadedTemplate>
             initial_ownership_proofs: Arc::new(initial_ownership_proofs),
         };
 
+        // The burn rate is resolved per-execution for the current epoch, so the fee module is built here rather than
+        // shared across executions.
+        let modules = vec![
+            Box::new(FeeModule::new(0, self.fee_table.clone(), self.dry_run, burn_rate_bps))
+                as Box<dyn RuntimeModule<TStore>>,
+        ];
+
         let processor = TransactionProcessor::new(
             self.template_provider.clone(),
             state_store,
             auth_params,
             virtual_substates,
-            self.modules.clone(),
+            Arc::from(modules),
             self.claim_burn_proof_verifier.clone(),
             self.wasm_metering_rate,
         );

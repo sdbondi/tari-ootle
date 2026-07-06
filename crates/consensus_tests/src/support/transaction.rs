@@ -33,8 +33,8 @@ pub fn build_transaction_from(tx: Transaction) -> TransactionRecord {
     TransactionRecord::new(tx)
 }
 
-/// Fabricates a fully-paid fee receipt for a test execution. `fee` is the pre-surcharge execution fee; a 5%
-/// exhaust burn surcharge is charged on top, mirroring the shape the real executor produces.
+/// Fabricates a fully-paid fee receipt for a test execution. `fee` is the pre-burn execution fee; a 5% exhaust
+/// burn is charged on top, mirroring the shape the real executor produces.
 fn create_test_fee_receipt(fee: u64) -> FeeReceipt {
     let exhaust_burn = fee / 20;
     let mut cost_breakdown = FeeBreakdown::default();

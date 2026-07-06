@@ -88,10 +88,10 @@ pub struct ConsensusConstants {
     /// least `max_block_wasm_points + MAX_WASM_POINTS_PER_TRANSACTION` so honest proposals are never rejected.
     /// CONSENSUS RULE: must be uniform network-wide, otherwise nodes diverge on block validity.
     pub max_block_validation_wasm_points: u64,
-    /// The exhaust burn surcharge rate in basis points, charged to the fee payer on top of the execution fee and
-    /// burned. 0 means no fees are burned. CONSENSUS RULE: must be uniform network-wide, otherwise nodes diverge on
-    /// the burn totals in block headers. Use `effective_rate` to resolve the rate for a given epoch rather than
-    /// reading this field directly.
+    /// The exhaust burn rate in basis points, charged to the fee payer on top of the execution fee and burned. 0
+    /// means no fees are burned. CONSENSUS RULE: must be uniform network-wide, otherwise nodes diverge on the burn
+    /// totals in block headers. Use `exhaust_burn_rate` to resolve the rate for a given epoch rather than reading
+    /// this field directly.
     pub exhaust_burn_rate_bps: u16,
     /// Number of base-layer blocks of leeway a voter is allowed when accepting `EndEpoch` proposals.
     /// If the voter's oracle has not yet crossed the next epoch boundary but its lagged scan height
@@ -258,10 +258,10 @@ impl ConsensusConstants {
         }
     }
 
-    /// Resolves the exhaust burn surcharge rate (in basis points) in effect at the given epoch. The rate is
-    /// currently a network-wide constant; the epoch parameter is the seam through which a future epoch-varying rate
-    /// is introduced without touching call sites.
-    pub fn effective_rate(&self, _epoch: Epoch) -> u16 {
+    /// Resolves the exhaust burn rate (in basis points) in effect at the given epoch. The rate is currently a
+    /// network-wide constant; the epoch parameter is the seam through which a future epoch-varying rate is
+    /// introduced without touching call sites.
+    pub fn exhaust_burn_rate(&self, _epoch: Epoch) -> u16 {
         self.exhaust_burn_rate_bps
     }
 }

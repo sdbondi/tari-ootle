@@ -1584,10 +1584,10 @@ impl<TStore: StateReader> WorkingState<TStore> {
             .to_u64_checked()
             .expect("FeeState guarantees that the total fee payments fit in an u64");
 
-        // The overcharge is kept by the network as if it were a fee payment inclusive of its own surcharge: its
-        // surcharge share moves into the exhaust burn bucket so that the burn consensus derives from the
-        // pre-surcharge fee matches the amount actually withheld from validators.
-        let rate_bps = self.fee_state.surcharge_rate_bps();
+        // The overcharge is kept by the network as if it were a fee payment inclusive of its own burn: its burn
+        // share moves into the exhaust burn bucket so that the burn consensus carries from the pre-burn fee matches
+        // the amount actually withheld from validators.
+        let rate_bps = self.fee_state.burn_rate_bps();
         if total_fee_overcharge > 0 && rate_bps > 0 {
             let (validator_share, burn_share) = fee_state::split_overcharge(total_fee_overcharge, rate_bps);
             self.fee_state.add_charge(FeeSource::ExhaustBurn, burn_share);

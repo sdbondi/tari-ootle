@@ -4,7 +4,10 @@
 use std::collections::HashMap;
 
 use log::info;
-use tari_consensus::traits::{BlockTransactionExecutor, BlockTransactionExecutorError};
+use tari_consensus::{
+    consensus_constants::ConsensusConstants,
+    traits::{BlockTransactionExecutor, BlockTransactionExecutorError},
+};
 use tari_engine::state_store::{
     StateWriter,
     memory::{MemoryStateStore, ReadOnlyMemoryStateStore},
@@ -27,11 +30,15 @@ const LOG_TARGET: &str = "tari::ootle::consensus::hotstuff::block_transaction_ex
 #[derive(Debug, Clone)]
 pub struct TariBlockTransactionExecutor<TExecutor> {
     executor: TExecutor,
+    consensus_constants: ConsensusConstants,
 }
 
 impl<TExecutor: TransactionExecutor<ReadOnlyMemoryStateStore>> TariBlockTransactionExecutor<TExecutor> {
-    pub fn new(executor: TExecutor) -> Self {
-        Self { executor }
+    pub fn new(executor: TExecutor, consensus_constants: ConsensusConstants) -> Self {
+        Self {
+            executor,
+            consensus_constants,
+        }
     }
 
     fn add_substates_to_memory_db<'a, I: IntoIterator<Item = (&'a SubstateRequirement, &'a Substate)>>(
@@ -79,10 +86,14 @@ where
             ),
         ]);
 
+        // Resolve the exhaust burn rate for the epoch this transaction executes in, so the payer is charged the
+        // rate in effect at execution time.
+        let burn_rate_bps = self.consensus_constants.exhaust_burn_rate(execute_epoch);
+
         // Execute the transaction and get the result
         let exec_output = self
             .executor
-            .execute(transaction, state_db.into_read_only(), virtual_substates)
+            .execute(transaction, state_db.into_read_only(), virtual_substates, burn_rate_bps)
             .map_err(|e| BlockTransactionExecutorError::ExecutionThreadFailure(e.to_string()))?;
 
         // Generate the resolved inputs to set the specific version and required lock flag, as we know it after

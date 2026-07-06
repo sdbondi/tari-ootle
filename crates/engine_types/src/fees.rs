@@ -138,14 +138,14 @@ impl FeeReceipt {
         self.total_fee_overcharge
     }
 
-    /// The exhaust burn surcharge charged on top of the execution fee.
+    /// The exhaust burn charged on top of the execution fee.
     pub fn exhaust_burn_charged(&self) -> u64 {
         self.cost_breakdown.get(FeeSource::ExhaustBurn)
     }
 
-    /// The total amount of fees paid after refunds, excluding the exhaust burn surcharge. This is the execution cost
-    /// `F` that flows to leaders in full; the surcharge portion is burned.
-    pub fn pre_surcharge_fees_paid(&self) -> u64 {
+    /// The total amount of fees paid after refunds, excluding the exhaust burn. This is the execution cost `F` that
+    /// flows to leaders in full; the burn portion is destroyed.
+    pub fn pre_burn_fees_paid(&self) -> u64 {
         self.total_fees_paid().saturating_sub(self.exhaust_burn_charged())
     }
 }
@@ -199,8 +199,7 @@ pub enum FeeSource {
     /// templates.
     #[n(8)]
     TemplatePublish = 8,
-    /// Exhaust burn surcharge, charged on top of the execution fee and burned rather than paid to
-    /// leaders.
+    /// Exhaust burn, charged on top of the execution fee and destroyed rather than paid to leaders.
     #[n(9)]
     ExhaustBurn = 9,
 }

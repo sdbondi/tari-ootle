@@ -16,9 +16,9 @@ pub struct LeaderFee {
     /// The fee payable to the leader of each involved shard group.
     #[n(0)]
     pub fee: u64,
-    /// The amount burned for the whole transaction across all involved shard groups: the exhaust burn surcharge
-    /// collected by the executor plus the indivisible remainder from dividing the transaction fee between the
-    /// leaders (`fee * num_involved_shard_groups + exhaust_burn == transaction_fee + executor_exhaust_burn`).
+    /// The amount burned for the whole transaction across all involved shard groups: the exhaust burn collected by
+    /// the executor plus the indivisible remainder from dividing the transaction fee between the leaders
+    /// (`fee * num_involved_shard_groups + exhaust_burn == transaction_fee + executor_exhaust_burn`).
     ///
     /// CONSENSUS RULE: this must equal the amount actually withheld from validators, exactly — the accumulated burn
     /// in block headers determines the total supply, so it must not be re-derived with lossy arithmetic. Each shard
@@ -46,8 +46,8 @@ impl Display for LeaderFee {
 
 /// Calculates the fee payable to the leader of each involved shard group and the whole-transaction burn.
 ///
-/// `transaction_fee` is the pre-surcharge execution fee, divided evenly across the involved shard groups.
-/// `exhaust_burn` is the surcharge the executor collected for this transaction (`FeeReceipt::exhaust_burn_charged`);
+/// `transaction_fee` is the pre-burn execution fee, divided evenly across the involved shard groups.
+/// `exhaust_burn` is the burn the executor collected for this transaction (`FeeReceipt::exhaust_burn_charged`);
 /// the indivisible remainder of the fee division is added to it, so no amount is created or lost:
 /// `fee * num_involved_shards + exhaust_burn == transaction_fee + executor_exhaust_burn`, exactly.
 pub fn calculate_leader_fee(transaction_fee: u64, exhaust_burn: u64, num_involved_shards: NonZeroU64) -> LeaderFee {

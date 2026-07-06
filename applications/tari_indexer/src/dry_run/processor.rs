@@ -23,6 +23,7 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use log::info;
+use tari_consensus::consensus_constants::ConsensusConstants;
 use tari_engine::{fees::FeeTable, state_store::new_memory_store, traits::ClaimProofVerifier};
 use tari_engine_types::{
     commit_result::ExecuteResult,
@@ -54,7 +55,7 @@ pub struct DryRunTransactionProcessor {
     template_provider: DryRunTemplateProvider,
     substate_manager: SubstateManager,
     claim_burn_proof_verifier: Arc<dyn ClaimProofVerifier + Send + Sync + 'static>,
-    surcharge_rate_bps: u16,
+    consensus_constants: ConsensusConstants,
 }
 
 impl DryRunTransactionProcessor {
@@ -64,7 +65,7 @@ impl DryRunTransactionProcessor {
         substate_manager: SubstateManager,
         wasm_cache_dir: PathBuf,
         claim_burn_proof_verifier: impl ClaimProofVerifier + Send + Sync + 'static,
-        surcharge_rate_bps: u16,
+        consensus_constants: ConsensusConstants,
     ) -> Result<Self, std::io::Error> {
         let handle = Handle::try_current().map_err(std::io::Error::other)?;
         let template_provider = build_dry_run_template_provider(handle, substate_manager.clone(), wasm_cache_dir)?;
@@ -74,7 +75,7 @@ impl DryRunTransactionProcessor {
             template_provider,
             substate_manager,
             claim_burn_proof_verifier: Arc::new(claim_burn_proof_verifier),
-            surcharge_rate_bps,
+            consensus_constants,
         })
     }
 
@@ -101,6 +102,10 @@ impl DryRunTransactionProcessor {
 
         let virtual_substates = self.get_virtual_substates().await?;
 
+        // Estimate the burn at the rate in effect for the current epoch.
+        let current_epoch = self.epoch_manager.current_epoch().await?;
+        let burn_rate_bps = self.consensus_constants.exhaust_burn_rate(current_epoch);
+
         let mut state_store = new_memory_store();
         state_store.set_many(found_substates)?;
 
@@ -110,10 +115,14 @@ impl DryRunTransactionProcessor {
             self.fee_table.clone(),
             true,
             self.claim_burn_proof_verifier.clone(),
-            self.surcharge_rate_bps,
         );
         let exec_output = task::spawn_blocking(move || {
-            processor.execute(&transaction, state_store.into_read_only(), virtual_substates)
+            processor.execute(
+                &transaction,
+                state_store.into_read_only(),
+                virtual_substates,
+                burn_rate_bps,
+            )
         })
         .await??;
 
