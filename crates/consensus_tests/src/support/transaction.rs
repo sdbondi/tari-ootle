@@ -11,7 +11,7 @@ use tari_engine_types::{
     ValidatorFeeWithdrawal,
     commit_result::{ExecuteResult, FinalizeResult, RejectReason, TransactionResult},
     component::{Component, ComponentBody, ComponentHeader},
-    fees::{FeeBreakdown, FeeReceipt, FeeReceiptBuilder, FeeSource},
+    fees::{FeeBreakdown, FeeReceipt, FeeSource},
     published_template::PublishedTemplate,
     substate::{Substate, SubstateDiff, SubstateId},
     transaction_receipt::{FinalizeOutcome, TransactionReceipt},
@@ -40,13 +40,12 @@ fn create_test_fee_receipt(fee: u64) -> FeeReceipt {
     let mut cost_breakdown = FeeBreakdown::default();
     cost_breakdown.add(FeeSource::WasmExecution, fee);
     cost_breakdown.add(FeeSource::ExhaustBurn, exhaust_burn);
-    FeeReceiptBuilder {
-        total_fee_payment: fee + exhaust_burn,
-        total_fees_paid: fee + exhaust_burn,
-        total_fee_overcharge: 0,
-        cost_breakdown,
-    }
-    .build()
+    FeeReceipt::builder()
+        .with_total_fee_payment(fee + exhaust_burn)
+        .with_total_fees_paid(fee + exhaust_burn)
+        .with_total_fee_overcharge(0)
+        .with_cost_breakdown(cost_breakdown)
+        .build()
 }
 
 #[allow(clippy::too_many_lines)]
