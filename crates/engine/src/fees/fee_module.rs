@@ -14,19 +14,13 @@ use crate::{
 pub struct FeeModule {
     initial_cost: u64,
     fee_table: FeeTable,
-    dry_run: bool,
-    /// The exhaust burn rate in basis points, resolved for the execution epoch. The engine applies it as an
-    /// additional charge; consensus resolves the epoch-appropriate rate before executing.
-    burn_rate_bps: u16,
 }
 
 impl FeeModule {
-    pub const fn new(initial_cost: u64, fee_table: FeeTable, dry_run: bool, burn_rate_bps: u16) -> Self {
+    pub const fn new(initial_cost: u64, fee_table: FeeTable) -> Self {
         Self {
             initial_cost,
             fee_table,
-            dry_run,
-            burn_rate_bps,
         }
     }
 
@@ -69,8 +63,6 @@ impl FeeModule {
 
 impl<TStore: StateReader> RuntimeModule<TStore> for FeeModule {
     fn on_initialize(&self, track: &mut StateTracker<TStore>) -> Result<(), RuntimeModuleError> {
-        track.set_fee_state_dry_run(self.dry_run);
-        track.set_fee_burn_rate_bps(self.burn_rate_bps);
         track.add_fee_charge(FeeSource::Initial, self.initial_cost);
         let transaction_weight = track.get_transaction_weight();
         let transaction_weight_cost = transaction_weight
@@ -180,8 +172,9 @@ impl<TStore: StateReader> RuntimeModule<TStore> for FeeModule {
         track.add_fee_charge(FeeSource::WasmExecution, wasm_cost);
 
         // Exhaust burn: charged on top of the execution fee accrued so far, so leaders receive the execution fee in
-        // full and the burn amount is destroyed separately.
-        let burn = calculate_burn_amount(track.total_fee_charges(), self.burn_rate_bps)?;
+        // full and the burn amount is destroyed separately. The rate is seeded onto the fee state at execution time
+        // for the execution epoch.
+        let burn = calculate_burn_amount(track.total_fee_charges(), track.fee_burn_rate_bps())?;
         track.add_fee_charge(FeeSource::ExhaustBurn, burn);
 
         Ok(())
@@ -241,7 +234,7 @@ mod tests {
     }
 
     fn publish_cost(binary_len: usize) -> u64 {
-        FeeModule::new(0, fee_table(), false, 0)
+        FeeModule::new(0, fee_table())
             .template_publish_cost(binary_len)
             .unwrap()
     }

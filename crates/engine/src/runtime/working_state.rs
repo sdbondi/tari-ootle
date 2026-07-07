@@ -123,7 +123,12 @@ impl<TStore: StateReader> WorkingState<TStore> {
         virtual_substates: VirtualSubstates,
         initial_call_scope: CallScope,
         transaction_hash: Hash32,
+        burn_rate_bps: u16,
+        dry_run: bool,
     ) -> Self {
+        let mut fee_state = FeeState::new();
+        fee_state.set_burn_rate_bps(burn_rate_bps);
+        fee_state.set_dry_run(dry_run);
         Self {
             transaction_hash,
             events: Vec::new(),
@@ -143,7 +148,7 @@ impl<TStore: StateReader> WorkingState<TStore> {
             validator_fee_withdrawals: Vec::new(),
             call_frames: Vec::new(),
             initial_call_scope,
-            fee_state: FeeState::new(),
+            fee_state,
             loaded_template_charges: HashSet::new(),
             object_ids: ObjectIds::new(limits::ENGINE_LIMITS.max_substate_outputs),
             stealth_totals: StealthTransactionTotals::default(),

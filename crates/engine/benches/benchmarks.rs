@@ -92,6 +92,8 @@ fn setup(shared: &SharedState) -> BenchTxProcessor {
         modules,
         shared.claim_burn_proof_verifier.clone(),
         WasmMeteringRate::unmetered(),
+        0,
+        false,
     )
 }
 

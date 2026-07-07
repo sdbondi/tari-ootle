@@ -72,6 +72,7 @@ pub struct StateTracker<TStore> {
 }
 
 impl<TStore: StateReader> StateTracker<TStore> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         state_store: TStore,
         virtual_substates: VirtualSubstates,
@@ -79,6 +80,8 @@ impl<TStore: StateReader> StateTracker<TStore> {
         transaction_hash: Hash32,
         transaction_weight: TransactionWeight,
         wasm_metering_rate: WasmMeteringRate,
+        burn_rate_bps: u16,
+        dry_run: bool,
     ) -> Self {
         Self {
             working_state: Some(WorkingState::new(
@@ -86,6 +89,8 @@ impl<TStore: StateReader> StateTracker<TStore> {
                 virtual_substates,
                 initial_call_scope,
                 transaction_hash,
+                burn_rate_bps,
+                dry_run,
             )),
             fee_checkpoint: None,
             transaction_weight,
@@ -280,16 +285,8 @@ impl<TStore: StateReader> StateTracker<TStore> {
         })
     }
 
-    pub fn set_fee_burn_rate_bps(&mut self, rate_bps: u16) {
-        self.write_with(|state| {
-            state.fee_state_mut().set_burn_rate_bps(rate_bps);
-        });
-    }
-
-    pub fn set_fee_state_dry_run(&mut self, dry_run: bool) {
-        self.write_with(|state| {
-            state.fee_state_mut().set_dry_run(dry_run);
-        })
+    pub fn fee_burn_rate_bps(&self) -> u16 {
+        self.read_with(|state| state.fee_state().burn_rate_bps())
     }
 
     pub fn accumulate_wasm_points(&mut self, points: u64) {

@@ -102,6 +102,9 @@ pub struct TransactionProcessor<TStore, TTemplateProvider> {
     modules: ModulesCollection<TStore>,
     claim_burn_proof_verifier: Arc<dyn ClaimProofVerifier + Send + Sync + 'static>,
     wasm_metering_rate: WasmMeteringRate,
+    /// The exhaust burn rate in basis points, resolved for the execution epoch and seeded onto the fee state.
+    burn_rate_bps: u16,
+    dry_run: bool,
 }
 
 impl<TStore, TTemplateProvider> TransactionProcessor<TStore, TTemplateProvider>
@@ -109,6 +112,7 @@ where
     TStore: StateReader + Clone + 'static,
     TTemplateProvider: TemplateProvider<Template = LoadedTemplate>,
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         template_provider: Arc<TTemplateProvider>,
         state_db: TStore,
@@ -117,6 +121,8 @@ where
         modules: ModulesCollection<TStore>,
         claim_burn_proof_verifier: Arc<dyn ClaimProofVerifier + Send + Sync + 'static>,
         wasm_metering_rate: WasmMeteringRate,
+        burn_rate_bps: u16,
+        dry_run: bool,
     ) -> Self {
         Self {
             template_provider,
@@ -126,6 +132,8 @@ where
             modules,
             claim_burn_proof_verifier,
             wasm_metering_rate,
+            burn_rate_bps,
+            dry_run,
         }
     }
 
@@ -142,6 +150,8 @@ where
             modules,
             claim_burn_proof_verifier,
             wasm_metering_rate,
+            burn_rate_bps,
+            dry_run,
         } = self;
 
         let execute_epoch = virtual_substates.current_epoch();
@@ -169,6 +179,8 @@ where
             id.as_hash(),
             transaction_weight,
             wasm_metering_rate,
+            burn_rate_bps,
+            dry_run,
         );
 
         let transaction_signer_public_key =
