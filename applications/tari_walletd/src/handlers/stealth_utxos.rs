@@ -1,15 +1,11 @@
 // Copyright 2025 The Tari Project
 // SPDX-License-Identifier: BSD-3-Clause
 
-use std::fs;
-
-use anyhow::anyhow;
 use axum_extra::headers::authorization::Bearer;
 use indexmap::IndexMap;
-use log::{info, warn};
-use tari_engine_types::crypto::ValueLookupTable;
+use log::info;
 use tari_ootle_address::{Network, OotleAddress, PayRef};
-use tari_ootle_wallet_crypto::{GenerateValueLookup, MMapValueLookup, memo::Memo};
+use tari_ootle_wallet_crypto::memo::Memo;
 use tari_ootle_walletd_client::{
     permissions::{Crud, Permission},
     types::{
@@ -127,71 +123,16 @@ pub async fn handle_decrypt_value(
     let timer = Instant::now();
     let elgamal_proofs = proofs.values().copied().cloned().collect::<Vec<_>>();
     let sdk = sdk.clone();
-    let handle = match context.config().value_lookup_table_file.clone() {
-        Some(path) => spawn_blocking(move || {
-            let file = fs::File::open(&path)
-                .map_err(|e| anyhow!("Unable to load value lookup file '{}': {e}", path.display()))?;
-            // SAFETY: We assume the file will not be modified while mapped. Although not enforced (e.g. locks,
-            // permissions and other platform specific mechanisms), this is a reasonable assumption for most scenarios.
-            let lookup = unsafe { MMapValueLookup::load(&file) }?;
-
-            info!(
-                target: LOG_TARGET,
-                "Using value lookup table from file '{}' ({}-{}) for brute force balance lookup",
-                path.display(),
-                lookup.range().start(),
-                lookup.range().end()
-            );
-
-            let start = value_range.start();
-            let end = value_range.end();
-            if start < lookup.range().start() || end > lookup.range().end() {
-                warn!(
-                    target: LOG_TARGET,
-                    "The requested value range ({}-{}) is outside the loaded value lookup table range ({}-{}). \
-                     This query may take excessive amount of time.",
-                    start,
-                    end,
-                    lookup.range().start(),
-                    lookup.range().end()
-                );
-            }
-
-            let mut is_logged = false;
-            let mut lookup = lookup.with_fallback(move |v| {
-                if !is_logged {
-                    is_logged = true;
-                    warn!(target: LOG_TARGET, "Using value lookup fallback. This will likely result in very slow lookups.");
-                }
-                GenerateValueLookup.lookup(v)
-            });
-
-            let balance = sdk.viewable_balance_api().try_brute_force_commitment_balances(
-                view_key.secret(),
-                elgamal_proofs.iter(),
-                value_range,
-                &mut lookup,
-            )?;
-
-            anyhow::Ok(balance)
-        }),
-        None => {
-            warn!(
-                target: LOG_TARGET,
-                "No value lookup table file configured. Using a generated value lookup fallback. \
-                 Brute-force may still be slow for very high-value outputs."
-            );
-            spawn_blocking(move || {
-                let balances = sdk.viewable_balance_api().try_brute_force_commitment_balances(
-                    view_key.secret(),
-                    elgamal_proofs.iter(),
-                    value_range,
-                    &mut GenerateValueLookup,
-                )?;
-                anyhow::Ok(balances)
-            })
-        },
-    };
+    let lookup_file = context.config().value_lookup_table_file.clone();
+    let handle = spawn_blocking(move || {
+        crate::handlers::value_lookup::brute_force_viewable_balances(
+            &sdk.viewable_balance_api(),
+            lookup_file.as_deref(),
+            view_key.secret(),
+            &elgamal_proofs,
+            value_range,
+        )
+    });
     struct AbortOnDropGuard {
         handle: AbortHandle,
     }
