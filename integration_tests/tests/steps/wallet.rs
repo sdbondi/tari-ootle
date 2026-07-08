@@ -281,6 +281,7 @@ async fn when_i_wait_for_proof_to_confirm_on_wallet(
                 .map_err(|e| anyhow!("sender_offset_public_key parse error for complete proof: {e}"))?,
         },
         encrypted_data: proof_resp.encrypted_data.clone(),
+        mined_in_epoch: proof_resp.mined_in_epoch,
     };
 
     let proof = ClaimBurnProofContents {

@@ -184,6 +184,7 @@ impl MinoTariWalletProcess {
                     sender_offset_public_key,
                 },
                 encrypted_data: resp.encrypted_data,
+                mined_in_epoch: resp.mined_in_epoch,
             };
 
             let mut file = File::create(&path)?;

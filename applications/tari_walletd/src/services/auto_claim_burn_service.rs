@@ -35,31 +35,57 @@ const EPOCH_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_RETRIES_NETWORK: u32 = 10;
 /// Maximum retries for file read/parse errors (file still being written on macOS).
 const MAX_RETRIES_FILE_READ: u32 = 1;
+/// Maximum times a claim is deferred (dry run reports the burn "not yet claimable") before giving
+/// up. Proofs carry the L1 mined-in epoch, so a claim is only attempted once the network is past
+/// that epoch and normally succeeds; a deferral is a rare edge (older proof with no epoch, or an
+/// epoch-boundary race), so a modest bound suffices. On give-up the file remains for a manual claim.
+const MAX_RETRIES_DEFERRED: u32 = 20;
+/// Marker phrase in the claim-burn verifier's rejection when the burn's L1 block has not yet been
+/// synced by validators into a claimable epoch. Such a claim is valid but must wait, so matching
+/// this phrase lets the service defer rather than drop it. See `TariClaimBurnProofVerifier`.
+const BURN_NOT_YET_CLAIMABLE_MARKER: &str = "not yet claimable";
+
+/// True if a dry-run rejection indicates the burn is valid but its L1 block is not yet synced into a
+/// claimable epoch, as opposed to a genuinely invalid claim.
+fn is_burn_not_yet_claimable(reject_reason: &str) -> bool {
+    reject_reason.contains(BURN_NOT_YET_CLAIMABLE_MARKER)
+}
+
+/// The epoch a claim must be strictly past before it is claimable, given the proof's
+/// `mined_in_epoch`. A proof without the field (older L1 wallet) yields `Epoch(0)` so it is
+/// attempted immediately and the dry-run backstop defers it until claimable (bounded).
+fn claim_after_epoch(mined_in_epoch: Option<u64>) -> Epoch {
+    mined_in_epoch.map(Epoch).unwrap_or(Epoch(0))
+}
 
 /// Watches the burn proof directory for new JSON files and automatically submits claim burn
-/// transactions on behalf of the wallet, deferring each claim until the next epoch as required
-/// by the protocol.
+/// transactions on behalf of the wallet, deferring each claim until the burn's L1 block is
+/// claimable on L2.
 ///
 /// ## Epoch-safety
-/// A claim transaction submitted in the same epoch as the L1 burn will be rejected, because
-/// L2 validators haven't yet committed that epoch's L1 state. This service records the current
-/// epoch when a file is detected and only submits once the indexer reports a strictly later epoch.
+/// A claim is only valid once L2 validators have synced the L1 block containing the burn into a
+/// committed epoch. That sync lags the L1 tip by `base_layer_confirmations` (e.g. 1000 blocks on
+/// mainnet), so submitting too early is rejected. Each proof file records the L1 epoch the burn was
+/// mined in (`mined_in_epoch`); this service reads it and only submits once the network reports a
+/// strictly later epoch. Proofs without that field (older L1 wallets) are attempted eagerly and
+/// held back by the dry-run backstop until claimable, or dropped after `MAX_RETRIES_DEFERRED`
+/// deferrals (the file stays for a manual claim via the wallet API).
 ///
 /// ## Crash safety
 /// Pending state is held in memory only. On restart the service re-scans the directory and
-/// re-queues any unclaimed files with `Epoch(0)`, making them immediately eligible for
-/// submission (the daemon restart itself implies enough time has passed). If a duplicate
-/// submission occurs — because the previous claim was submitted but not yet finalized before
-/// the restart — the second transaction will fail with "already claimed" on-chain. The
-/// existing [`ClaimBurnMonitor`] handles that gracefully.
+/// re-queues any unclaimed files; each has its claim epoch re-derived from the proof file, so a
+/// restart never submits a burn before it is claimable. If a duplicate submission occurs — because
+/// the previous claim was submitted but not yet finalized before the restart — the second
+/// transaction will fail with "already claimed" on-chain. The existing [`ClaimBurnMonitor`] handles
+/// that gracefully.
 ///
 /// [`ClaimBurnMonitor`]: super::claim_burn_monitor::ClaimBurnMonitor
 pub struct AutoClaimBurnService {
     sdk: WalletSdk,
     transaction_service: TransactionServiceHandle,
     burn_proof_dir: PathBuf,
-    /// Maps file name → pending claim state including the epoch at which the file was detected
-    /// and a transient-error retry counter.
+    /// Maps file name → pending claim state: the L1 epoch the burn must be past before claiming
+    /// (resolved from the proof file) plus retry/deferral counters.
     pending_claims: HashMap<String, PendingClaim>,
     shutdown_signal: ShutdownSignal,
 }
@@ -103,8 +129,8 @@ impl AutoClaimBurnService {
         watcher.watch(&self.burn_proof_dir, RecursiveMode::NonRecursive)?;
 
         // Recover any files that were present before this service started (e.g. placed while the
-        // daemon was offline). Using Epoch(0) makes them immediately eligible — the daemon restart
-        // itself implies the required epoch boundary has been crossed.
+        // daemon was offline). Each is re-queued unresolved; its claim epoch is read from the proof
+        // on the next check, so a restart never submits a burn before it is claimable.
         self.scan_proof_dir().await;
 
         // First tick after EPOCH_CHECK_INTERVAL
@@ -129,8 +155,8 @@ impl AutoClaimBurnService {
         // watcher is dropped here, which stops the OS-level file watch.
     }
 
-    /// Scans `burn_proof_dir` for any `.json` files present at startup and queues them with
-    /// `Some(Epoch(0))` so they are submitted on the very next epoch check.
+    /// Scans `burn_proof_dir` for any `.json` files present at startup and queues them unresolved;
+    /// each file's claim epoch is read from the proof itself on the next epoch check.
     async fn scan_proof_dir(&mut self) {
         let mut read_dir = match tokio::fs::read_dir(&self.burn_proof_dir).await {
             Ok(e) => e,
@@ -153,10 +179,7 @@ impl AutoClaimBurnService {
                         let Some(file_name) = path.file_name().and_then(|n| n.to_str())
                     {
                         info!(target: LOG_TARGET, "Found existing unclaimed burn proof: {}", file_name);
-                        // Epoch(0) makes startup files immediately eligible — the daemon restart itself
-                        // implies the required epoch boundary has been crossed.
-                        self.pending_claims
-                            .insert(file_name.to_string(), PendingClaim::with_epoch(Epoch(0)));
+                        self.pending_claims.insert(file_name.to_string(), PendingClaim::new());
                     }
                 },
                 Ok(None) => break,
@@ -214,38 +237,82 @@ impl AutoClaimBurnService {
                 continue;
             }
 
-            match self.query_current_epoch().await {
-                Ok(epoch) => {
-                    info!(
-                        target: LOG_TARGET,
-                        "New burn proof detected: '{}' at epoch {}. Will claim in epoch {}.",
-                        file_name,
-                        epoch,
-                        epoch.as_u64().saturating_add(1),
-                    );
-                    self.pending_claims
-                        .insert(file_name.to_string(), PendingClaim::with_epoch(epoch));
+            // Queue unresolved; the claim epoch is read from the proof file on the next interval
+            // check (the file may still be mid-write at this point).
+            info!(target: LOG_TARGET, "New burn proof detected: '{}'", file_name);
+            self.pending_claims.insert(file_name.to_string(), PendingClaim::new());
+        }
+    }
+
+    /// Resolves the claim epoch for any unresolved queued files by reading each proof file's
+    /// `mined_in_epoch`: the burn is claimable once L2 is strictly past that epoch. Proofs without
+    /// the field (older L1 wallets) become eligible immediately and rely on the dry-run backstop to
+    /// defer until claimable. Files that are not yet readable are left unresolved and retried next
+    /// interval.
+    async fn resolve_claim_epochs(&mut self) {
+        let unresolved: Vec<String> = self
+            .pending_claims
+            .iter()
+            .filter(|&(_, pending)| pending.claim_after_epoch.is_none())
+            .map(|(name, _)| name.clone())
+            .collect();
+        for file_name in unresolved {
+            let after = match self.read_proof_file(&file_name).await {
+                Ok(proof) => {
+                    let after = claim_after_epoch(proof.mined_in_epoch);
+                    match proof.mined_in_epoch {
+                        Some(mined) => info!(
+                            target: LOG_TARGET,
+                            "Burn proof '{}' was mined in L1 epoch {}; will claim once L2 passes it (epoch {}).",
+                            file_name,
+                            mined,
+                            mined.saturating_add(1),
+                        ),
+                        None => info!(
+                            target: LOG_TARGET,
+                            "Burn proof '{}' carries no mined-in epoch (older L1 wallet); attempting now and \
+                             deferring if not yet claimable.",
+                            file_name,
+                        ),
+                    }
+                    after
                 },
                 Err(e) => {
-                    warn!(
-                        target: LOG_TARGET,
-                        "Could not query epoch for newly detected file '{}' ({}). \
-                         Epoch will be resolved on the next interval check.",
-                        file_name,
-                        e
-                    );
-
-                    // Leave the epoch as None; check_and_submit_pending will resolve it
-                    // once the indexer is reachable, then wait one full epoch before submitting.
-                    self.pending_claims.insert(file_name.to_string(), PendingClaim::new());
+                    let pending = self.pending_claims.get_mut(&file_name).expect("just iterated");
+                    pending.retries += 1;
+                    let retries = pending.retries;
+                    if retries >= MAX_RETRIES_FILE_READ {
+                        error!(
+                            target: LOG_TARGET,
+                            "Failed to read burn proof '{}' to resolve its claim epoch after {} attempts: {}. \
+                             Removing from queue; the file remains in the burn proof directory for a manual claim.",
+                            file_name,
+                            retries,
+                            e,
+                        );
+                        self.pending_claims.remove(&file_name);
+                    } else {
+                        debug!(
+                            target: LOG_TARGET,
+                            "Could not read burn proof '{}' (attempt {}/{}): {}; will retry next interval.",
+                            file_name,
+                            retries,
+                            MAX_RETRIES_FILE_READ,
+                            e,
+                        );
+                    }
                     continue;
                 },
+            };
+            if let Some(pending) = self.pending_claims.get_mut(&file_name) {
+                pending.claim_after_epoch = Some(after);
             }
         }
     }
 
-    /// For each queued claim whose detected epoch is strictly less than the current epoch,
-    /// attempts to submit the claim transaction.
+    /// Resolves epochs for newly queued files, then attempts to submit each claim whose target
+    /// epoch is strictly less than the current epoch.
+    #[expect(clippy::too_many_lines)]
     async fn check_and_submit_pending(&mut self) {
         if self.pending_claims.is_empty() {
             return;
@@ -263,24 +330,12 @@ impl AutoClaimBurnService {
             },
         };
 
-        // Resolve any entries where epoch detection previously failed (e.g. indexer was down).
-        // They are stamped with the current epoch now and will be submitted one epoch later.
-        for pending in self.pending_claims.values_mut() {
-            if pending.detected_epoch.is_none() {
-                info!(
-                    target: LOG_TARGET,
-                    "Resolved pending epoch detection to epoch {}. Will claim in epoch {}.",
-                    current_epoch,
-                    current_epoch.0.saturating_add(1),
-                );
-                pending.detected_epoch = Some(current_epoch);
-            }
-        }
+        self.resolve_claim_epochs().await;
 
         let ready: Vec<String> = self
             .pending_claims
             .iter()
-            .filter(|&(_, pending)| pending.detected_epoch.is_some_and(|e| current_epoch > e))
+            .filter(|&(_, pending)| pending.claim_after_epoch.is_some_and(|e| current_epoch > e))
             .map(|(name, _)| name.clone())
             .collect();
 
@@ -329,19 +384,55 @@ impl AutoClaimBurnService {
                         );
                     }
                 },
+                Err(ClaimError::Deferred) => {
+                    let pending = self.pending_claims.get_mut(&file_name).expect("just iterated");
+                    pending.deferrals += 1;
+                    let deferrals = pending.deferrals;
+                    if deferrals >= MAX_RETRIES_DEFERRED {
+                        warn!(
+                            target: LOG_TARGET,
+                            "Giving up auto-claiming '{}' after {} deferrals: the burn is still not claimable. \
+                             The file remains in the burn proof directory; submit the claim manually via the wallet API.",
+                            file_name,
+                            deferrals,
+                        );
+                        self.pending_claims.remove(&file_name);
+                    } else if deferrals == 1 {
+                        info!(
+                            target: LOG_TARGET,
+                            "⏳ Burn claim '{}' is not yet claimable; its L1 burn block has not been synced by \
+                             validators yet. Will retry each interval (up to {} times).",
+                            file_name,
+                            MAX_RETRIES_DEFERRED,
+                        );
+                    } else {
+                        debug!(
+                            target: LOG_TARGET,
+                            "Burn claim '{}' still not claimable (attempt {}/{}), will retry next interval.",
+                            file_name,
+                            deferrals,
+                            MAX_RETRIES_DEFERRED,
+                        );
+                    }
+                },
             }
         }
     }
 
-    async fn try_submit_claim(&self, file_name: &str) -> Result<tari_ootle_transaction::TransactionId, ClaimError> {
-        // Read and parse the proof file.
+    /// Reads and deserializes a burn proof file from `burn_proof_dir`.
+    async fn read_proof_file(&self, file_name: &str) -> anyhow::Result<CompleteClaimBurnProof> {
         let path = self.burn_proof_dir.join(file_name);
         let file = tokio::fs::File::open(&path)
             .await
-            .with_context(|| format!("Failed to open burn proof file: {}", path.display()))
-            .map_err(|e| ClaimError::transient(e, MAX_RETRIES_FILE_READ))?;
-        let complete_proof: CompleteClaimBurnProof = serde_json::from_reader(file.into_std().await)
+            .with_context(|| format!("Failed to open burn proof file: {}", path.display()))?;
+        serde_json::from_reader(file.into_std().await)
             .with_context(|| format!("Failed to parse burn proof file: {}", path.display()))
+    }
+
+    async fn try_submit_claim(&self, file_name: &str) -> Result<tari_ootle_transaction::TransactionId, ClaimError> {
+        let complete_proof = self
+            .read_proof_file(file_name)
+            .await
             .map_err(|e| ClaimError::transient(e, MAX_RETRIES_FILE_READ))?;
 
         let proof_contents = complete_burn_proof_to_contents(complete_proof).map_err(ClaimError::Permanent)?;
@@ -380,6 +471,12 @@ impl AutoClaimBurnService {
             )));
         };
         if let Some(reason) = result.finalize.any_reject() {
+            // A burn whose L1 block validators have not yet synced surfaces here as a generic
+            // execution failure carrying the verifier's marker phrase. Defer these so the claim
+            // lands once the base layer catches up, rather than dropping it as permanent.
+            if is_burn_not_yet_claimable(&reason.to_string()) {
+                return Err(ClaimError::Deferred);
+            }
             return Err(ClaimError::Permanent(anyhow::anyhow!(
                 "Dry run rejected for '{}': {}. Cannot submit claim.",
                 file_name,
@@ -422,26 +519,24 @@ impl AutoClaimBurnService {
 }
 
 struct PendingClaim {
-    /// The epoch when the file was detected, or `None` if the indexer was unreachable at that time.
-    /// `None` entries are resolved to `Some(current_epoch)` on the next successful interval check.
-    detected_epoch: Option<Epoch>,
+    /// The L1 epoch the burn must be strictly past before it is claimable, read from the proof
+    /// file's `mined_in_epoch`. `None` until resolved on an interval check; a proof lacking the
+    /// field resolves to `Epoch(0)` (attempt immediately, deferring via the dry-run backstop).
+    claim_after_epoch: Option<Epoch>,
     /// Number of transient errors encountered so far. The per-error `max_retries` limit determines
     /// when the claim is dropped from the queue (the file remains on disk for manual retry).
     retries: u32,
+    /// Number of times submission was deferred because the burn's L1 block is not yet synced.
+    /// The claim is dropped once this reaches `MAX_RETRIES_DEFERRED`.
+    deferrals: u32,
 }
 
 impl PendingClaim {
     fn new() -> Self {
         Self {
-            detected_epoch: None,
+            claim_after_epoch: None,
             retries: 0,
-        }
-    }
-
-    fn with_epoch(epoch: Epoch) -> Self {
-        Self {
-            detected_epoch: Some(epoch),
-            retries: 0,
+            deferrals: 0,
         }
     }
 }
@@ -454,10 +549,44 @@ enum ClaimError {
     /// A transient error (network unavailable, indexer unreachable, file still being written).
     /// Leave in queue and retry on the next epoch check interval, up to `max_retries` times.
     Transient { error: anyhow::Error, max_retries: u32 },
+    /// The burn is valid but not yet claimable: validators have not synced the L1 block containing
+    /// the burn into an epoch at or before the current L2 epoch. Keep the claim queued and re-check
+    /// each interval, up to `MAX_RETRIES_DEFERRED` times, then give up (the file stays for a manual claim).
+    Deferred,
 }
 
 impl ClaimError {
     fn transient(error: anyhow::Error, max_retries: u32) -> Self {
         Self::Transient { error, max_retries }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defers_burn_not_yet_synced_rejection() {
+        // Mirrors the claim-burn verifier's rejection when the L1 block is not yet synced.
+        let reason = "Execution failure: At instruction #0: Invalid burn claim proof: block header not found for hash \
+                      0a1b2c. The claim may be invalid, or the burn may have occurred after the current epoch, and \
+                      therefore is not yet claimable.";
+        assert!(is_burn_not_yet_claimable(reason));
+    }
+
+    #[test]
+    fn does_not_defer_other_rejections() {
+        assert!(!is_burn_not_yet_claimable(
+            "Execution failure: At instruction #0: Insufficient funds"
+        ));
+        assert!(!is_burn_not_yet_claimable("Failed to lock inputs: input conflict"));
+    }
+
+    #[test]
+    fn claim_after_epoch_uses_mined_epoch_else_zero() {
+        // A known mined epoch gates on `current > mined`, i.e. the claim lands one epoch later.
+        assert_eq!(claim_after_epoch(Some(5)), Epoch(5));
+        // No mined epoch (older L1 proof) => attempt immediately; the dry-run backstop defers it.
+        assert_eq!(claim_after_epoch(None), Epoch(0));
     }
 }
