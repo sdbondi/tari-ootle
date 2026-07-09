@@ -1,13 +1,13 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::{collections::HashMap, ops::RangeInclusive};
+use std::collections::HashMap;
 
 use ootle_byte_type::ConvertFromByteType;
 use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_indexer_client::types::GetSubstatesRequest;
 use tari_ootle_common_types::engine_types::{
-    crypto::{ElgamalVerifiableBalance, ValueLookupTable},
+    crypto::{ElgamalVerifiableBalance, ValueLookup},
     indexed_value::IndexedWellKnownTypes,
     substate::{Substate, SubstateId},
 };
@@ -57,19 +57,16 @@ impl<Wallet> IndexerProvider<Wallet> {
         Ok(balances)
     }
 
-    /// Decrypts the value of one or more stealth UTXOs using the given ElGamal view secret key.
+    /// Decrypts the value of one or more stealth UTXOs using the given ElGamal view secret key and a value
+    /// lookup.
     ///
-    /// Each UTXO must contain a viewable balance proof. The decryption is performed via brute-force
-    /// over the specified `value_range`.
-    ///
-    /// Returns a map from UTXO address to the decrypted value. UTXOs without viewable balance proofs,
-    /// or those whose values fall outside the given range, will not be included in the result.
-    pub fn decrypt_stealth_utxo_values<TLookup: ValueLookupTable>(
+    /// Each UTXO must contain a viewable balance proof. Returns a map from UTXO address to the decrypted value;
+    /// UTXOs without a viewable balance proof, or whose value is not covered by the lookup, are omitted.
+    pub fn decrypt_stealth_utxo_values<L: ValueLookup>(
         &self,
         view_secret_key: &RistrettoSecretKey,
         utxo_substates: &HashMap<SubstateId, Substate>,
-        value_range: RangeInclusive<u64>,
-        lookup: &mut TLookup,
+        lookup: &L,
     ) -> ProviderResult<HashMap<UtxoAddress, u64>> {
         let proofs = utxo_substates
             .iter()
@@ -95,9 +92,8 @@ impl<Wallet> IndexerProvider<Wallet> {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| ProviderError::other(format!("Failed to decompress viewable balance proof: {e}")))?;
 
-        let results =
-            ElgamalVerifiableBalance::batched_brute_force(view_secret_key, value_range, lookup, &elgamal_proofs)
-                .map_err(|e| ProviderError::other(format!("Value lookup table error: {e}")))?;
+        let results = ElgamalVerifiableBalance::decrypt_many(view_secret_key, &elgamal_proofs, lookup)
+            .map_err(|e| ProviderError::other(format!("Value lookup error: {e}")))?;
 
         let values = addresses
             .into_iter()
@@ -111,13 +107,13 @@ impl<Wallet> IndexerProvider<Wallet> {
     /// Fetches a UTXO from the network and decrypts its value using the given ElGamal view secret key.
     ///
     /// This is a convenience method that fetches a single UTXO substate and decrypts its viewable balance.
-    /// Returns `None` if the UTXO does not contain a viewable balance proof or the value is not in the range.
-    pub async fn get_utxo_value<TLookup: ValueLookupTable>(
+    /// Returns `None` if the UTXO does not contain a viewable balance proof or its value is not covered by the
+    /// lookup.
+    pub async fn get_utxo_value<L: ValueLookup>(
         &self,
         view_secret_key: &RistrettoSecretKey,
         utxo_address: UtxoAddress,
-        value_range: RangeInclusive<u64>,
-        lookup: &mut TLookup,
+        lookup: &L,
     ) -> ProviderResult<Option<u64>> {
         let substate = self.fetch_substate(SubstateId::from(utxo_address)).await?;
 
@@ -134,11 +130,9 @@ impl<Wallet> IndexerProvider<Wallet> {
         let balance = ElgamalVerifiableBalance::convert_from_byte_type(proof)
             .map_err(|e| ProviderError::other(format!("Failed to decompress viewable balance proof: {e}")))?;
 
-        let value = balance
-            .brute_force_balance(view_secret_key, value_range, lookup)
-            .map_err(|e| ProviderError::other(format!("Value lookup table error: {e}")))?;
-
-        Ok(value)
+        balance
+            .decrypt(view_secret_key, lookup)
+            .map_err(|e| ProviderError::other(format!("Value lookup error: {e}")))
     }
 
     /// Fetches all vault balances for the given account component.

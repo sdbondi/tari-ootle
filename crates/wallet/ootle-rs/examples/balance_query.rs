@@ -55,8 +55,8 @@ const UTXO_ID: &str = "utxo_0000000000000000000000000000000000000000000000000000
 /// The maximum expected value for brute-force decryption range.
 /// Higher values take longer but cover larger balances.
 /// Note: Using `GenerateValueLookup` generates value commitments on the fly and is slow.
-/// In production, pregenerate a lookup bin file (`cargo install tari_value_lookup_generator`)
-/// and use the `MMapValueLookup` (enable the `mmap-value-lookup` feature).
+/// In production, pregenerate a lookup bin file (`cargo install tari_value_lookup_generator`) and use
+/// `get_utxo_value_with_lookup` with a `SortedValueLookup` (enable the `mmap-value-lookup` feature).
 const MAX_EXPECTED_VALUE: u64 = 20_000_000;
 
 #[tokio::main]
@@ -117,15 +117,14 @@ async fn main() {
     // Use the view secret key to decrypt the value of the stealth output we just created.
     // WARN: Elgamal decryption is a brute-force operation and therefore is slow especially with the GenerateValueLookup
     // which generates value commitments on the fly.
-    // In production, pregenerate a lookup bin file (cargo install tari_value_lookup_generator) and use the
-    // MMapValueLookup (enable the mmap-value-lookup feature).
+    // In production, pregenerate a lookup bin file (cargo install tari_value_lookup_generator) and pass a
+    // SortedPrefixFileLookup to get_utxo_value (enable the mmap-value-lookup feature).
     println!("\nDecrypting stealth UTXO value for {utxo_address}...");
     let decrypted = provider
         .get_utxo_value(
             &view_secret_key,
             utxo_address,
-            0..=MAX_EXPECTED_VALUE,
-            &mut GenerateValueLookup,
+            &GenerateValueLookup::new(0..=MAX_EXPECTED_VALUE),
         )
         .await
         .expect("Failed to decrypt UTXO value");

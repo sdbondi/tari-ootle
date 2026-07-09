@@ -5,7 +5,7 @@ use std::{
     fs,
     fs::File,
     io,
-    io::{BufWriter, Write, stdout},
+    io::{BufWriter, Write},
     path::Path,
     time::{Duration, Instant},
 };
@@ -17,9 +17,9 @@ use tari_crypto::{
     ristretto::{RistrettoPublicKey, RistrettoSecretKey},
     tari_utilities::ByteArray,
 };
-use tari_ootle_wallet_crypto::{LookupHeader, SortedLookupHeader};
+use tari_ootle_wallet_crypto::SortedLookupHeader;
 
-use crate::cli::{Cli, Format};
+use crate::cli::Cli;
 mod cli;
 
 #[tokio::main]
@@ -42,23 +42,7 @@ async fn main() -> io::Result<()> {
         .jobs
         .unwrap_or_else(|| tokio::runtime::Handle::current().metrics().num_workers());
 
-    match cli.format {
-        Format::Dense => {
-            let file_size = (max - cli.min + 1) * 32 + LookupHeader::SIZE as u64;
-            println!(
-                "Generating dense Ristretto value lookup table from {} to {} and writing to {} ({}).\n",
-                cli.min,
-                max,
-                dest_file.display(),
-                human_bytes(file_size as f64),
-            );
-            let writer = fs::File::create(&dest_file)?;
-            write_dense_output(writer, cli.min, max, jobs).await?;
-        },
-        Format::Sorted => {
-            generate_sorted(&dest_file, cli.min, max, cli.prefix_len, jobs).await?;
-        },
-    }
+    generate_sorted(&dest_file, cli.min, max, cli.prefix_len, jobs).await?;
 
     println!();
     let metadata = fs::metadata(&dest_file)?;
@@ -184,106 +168,4 @@ async fn generate_sorted_entries(min: u64, max: u64, num_threads: usize) -> io::
     }
 
     Ok(entries)
-}
-
-async fn write_dense_output<W: io::Write>(mut writer: W, min: u64, max: u64, num_threads: usize) -> io::Result<()> {
-    LookupHeader::new(min, max).encode_into(&mut writer)?;
-
-    println!(
-        "Using {} worker threads to generate Ristretto public keys.",
-        num_threads
-    );
-
-    const CHUNK_SIZE: usize = 10_000; // 320 KB per thread, because of the result ordering, making the chunk size larger actually degrades performance
-
-    let timer = Instant::now();
-
-    let mut chunks = (min..=max)
-        .step_by(CHUNK_SIZE)
-        .map(|chunk_start| {
-            let chunk_end = std::cmp::min(chunk_start + CHUNK_SIZE as u64 - 1, max);
-            (chunk_start, chunk_end)
-        })
-        .enumerate();
-
-    // Pre-allocate scratch pad for each thread
-    let mut scratch_pad = vec![Some(Vec::with_capacity(CHUNK_SIZE)); num_threads];
-
-    let mut handles = FuturesOrdered::new();
-    let mut count = 0;
-    let mut dot_count = 0;
-    let mut line_count = 1;
-
-    loop {
-        while handles.len() < num_threads {
-            if let Some((i, (chunk_start, chunk_end))) = chunks.by_ref().next() {
-                let mut results = scratch_pad[i % num_threads].take().unwrap();
-                // Spawn tasks for each chunk
-                let handle = tokio::task::spawn_blocking(move || {
-                    for v in chunk_start..=chunk_end {
-                        let mut buf = [0u8; 32];
-                        let pk = RistrettoPublicKey::from_secret_key(&RistrettoSecretKey::from(v));
-                        buf.copy_from_slice(pk.as_bytes());
-                        results.push(buf);
-                    }
-                    (i % num_threads, results)
-                });
-
-                handles.push_back(handle);
-            } else {
-                break;
-            }
-        }
-
-        if handles.is_empty() {
-            break;
-        }
-
-        let (i, mut results) = handles.next().await.expect("handles stream end")?;
-        for pk_bytes in &results {
-            count += 1;
-            writer.write_all(pk_bytes)?;
-        }
-        results.clear();
-        scratch_pad[i].replace(results);
-
-        if count % 10000 == 0 {
-            print!(".");
-            dot_count += 1;
-            stdout().flush()?;
-        }
-
-        if dot_count == 80 {
-            dot_count = 0;
-            line_count += 1;
-            println!();
-        }
-
-        if line_count % 5 == 0 {
-            line_count = 1;
-            let completed = count;
-            let elapsed = timer.elapsed();
-            let est_time = Duration::from_secs(
-                ((max - min + 1 - completed) as f64 / completed as f64 * elapsed.as_secs_f64()).round() as u64,
-            );
-            println!(
-                "{:.1}% ETA: {}. {}/{} values generated in {}",
-                (completed as f64 / (max - min + 1) as f64) * 100.0,
-                humantime::format_duration(est_time),
-                completed,
-                max - min,
-                humantime::format_duration(Duration::from_secs(elapsed.as_secs()))
-            );
-        }
-    }
-
-    println!();
-    println!(
-        "Completed generation of Ristretto value lookup table from {} to {} in {}",
-        min,
-        max,
-        humantime::format_duration(Duration::from_secs(timer.elapsed().as_secs()))
-    );
-
-    Ok(())
 }

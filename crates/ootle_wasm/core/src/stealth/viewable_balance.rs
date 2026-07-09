@@ -5,7 +5,7 @@
 
 use ootle_byte_type::ConvertFromByteType;
 use tari_crypto::ristretto::pedersen::PedersenCommitment;
-use tari_engine_types::crypto::{ValueLookupTable, validate_elgamal_verifiable_balance_proof};
+use tari_engine_types::crypto::validate_elgamal_verifiable_balance_proof;
 use tari_ootle_wallet_crypto::{
     GenerateValueLookup,
     viewable_balance_proof::generate_elgamal_viewable_balance_proof as crypto_generate,
@@ -79,10 +79,10 @@ pub fn decrypt_elgamal_viewable_balance(
 
     // GenerateValueLookup computes `v.G` on-the-fly — no precomputed file is required, which means this
     // works in any sandbox (including WASM with no filesystem access).
-    let mut lookup: GenerateValueLookup = GenerateValueLookup;
-    let result: Result<Option<u64>, <GenerateValueLookup as ValueLookupTable>::Error> =
-        verifiable.brute_force_balance(&view_sk, min_value..=max_value, &mut lookup);
-    let value = result.map_err(|e| OotleWasmError::Stealth(format!("Value lookup failed: {e}")))?;
+    let lookup = GenerateValueLookup::new(min_value..=max_value);
+    let value = verifiable
+        .decrypt(&view_sk, &lookup)
+        .map_err(|e| OotleWasmError::Stealth(format!("Value lookup failed: {e}")))?;
     Ok(value)
 }
 

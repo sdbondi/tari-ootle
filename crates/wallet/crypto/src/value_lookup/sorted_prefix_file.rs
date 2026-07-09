@@ -13,13 +13,14 @@
 //! the (≈ `count / 2^{8·prefix_len}`) prefix collisions. Out-of-range targets fail the prefix comparison
 //! without a recompute.
 
-use std::{cmp::Ordering, fs::File, io, io::Write, mem::size_of, ops::RangeInclusive};
+use std::{cmp::Ordering, convert::Infallible, fs::File, io, io::Write, mem::size_of, ops::RangeInclusive};
 
 use ootle_byte_type::ToByteType;
 use tari_crypto::{
     keys::PublicKey,
     ristretto::{RistrettoPublicKey, RistrettoSecretKey},
 };
+use tari_engine_types::crypto::ValueLookup;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 
 /// Magic bytes identifying a Tari value lookup table file in the self-describing family. The byte that
@@ -165,13 +166,13 @@ fn compute_point_bytes(value: u64) -> RistrettoPublicKeyBytes {
 ///
 /// The mapped data is immutable after load and accessed through `&self`, so a single instance can be shared
 /// across threads for concurrent lookups.
-pub struct SortedValueLookup {
+pub struct SortedPrefixFileLookup {
     mmap: memmap2::Mmap,
     header: SortedLookupHeader,
     count: usize,
 }
 
-impl SortedValueLookup {
+impl SortedPrefixFileLookup {
     /// Loads a sorted value lookup table from the specified file.
     ///
     /// # Safety
@@ -301,10 +302,13 @@ impl SortedValueLookup {
         }
         None
     }
+}
 
-    /// Reverse lookup for a batch of targets, returning a result aligned to `targets`.
-    pub fn find_values<I: IntoIterator<Item = RistrettoPublicKeyBytes>>(&self, targets: I) -> Vec<Option<u64>> {
-        targets.into_iter().map(|t| self.find_value(&t)).collect()
+impl ValueLookup for SortedPrefixFileLookup {
+    type Error = Infallible;
+
+    fn lookup(&self, point: &RistrettoPublicKeyBytes) -> Result<Option<u64>, Self::Error> {
+        Ok(self.find_value(point))
     }
 }
 
@@ -344,10 +348,10 @@ mod tests {
         Ok(())
     }
 
-    fn build(min: u64, max: u64) -> SortedValueLookup {
+    fn build(min: u64, max: u64) -> SortedPrefixFileLookup {
         let mut buf = Vec::new();
         write_sorted_lookup_in_memory(&mut buf, min, max, DEFAULT_PREFIX_LEN).unwrap();
-        SortedValueLookup::from_buf(&buf).unwrap()
+        SortedPrefixFileLookup::from_buf(&buf).unwrap()
     }
 
     #[test]
@@ -425,7 +429,7 @@ mod tests {
             buf.extend_from_slice(&offset.to_le_bytes()[..value_len as usize]);
         }
 
-        let lookup = SortedValueLookup::from_buf(&buf).unwrap();
+        let lookup = SortedPrefixFileLookup::from_buf(&buf).unwrap();
         for v in MIN..=MAX {
             assert_eq!(lookup.find_value(&compute_point_bytes(v)), Some(v), "failed at {v}");
         }
@@ -449,6 +453,6 @@ mod tests {
         let mut buf = Vec::new();
         write_sorted_lookup_in_memory(&mut buf, 0, 100, DEFAULT_PREFIX_LEN).unwrap();
         buf.truncate(buf.len() - 1);
-        assert!(SortedValueLookup::from_buf(&buf).is_err());
+        assert!(SortedPrefixFileLookup::from_buf(&buf).is_err());
     }
 }

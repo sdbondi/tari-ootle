@@ -12,7 +12,7 @@ use tari_crypto::{
 use tari_engine::runtime::{ActionIdent, NativeAction};
 use tari_engine_types::{
     UtxoOutput,
-    crypto::{ElgamalVerifiableBalance, ValueLookupTable, get_commitment_factory},
+    crypto::{ElgamalVerifiableBalance, ValueLookup, get_commitment_factory},
     resource_container::ResourceError,
 };
 use tari_ootle_common_types::{crypto::create_key_pair_from_seed, substate_type::SubstateType};
@@ -430,29 +430,23 @@ fn many_outputs_in_one_transfer() {
     assert_eq!(utxos.len(), 8);
 }
 
-pub fn try_brute_force_stealth_balance<I, TValueLookup>(
+pub fn try_brute_force_stealth_balance<L>(
     utxos: &BTreeMap<PedersenCommitmentBytes, UtxoOutput>,
     secret_view_key: &RistrettoSecretKey,
-    value_range: I,
-    value_lookup: &mut TValueLookup,
-) -> Result<Option<u64>, TValueLookup::Error>
+    value_lookup: &L,
+) -> Result<Option<u64>, L::Error>
 where
-    I: IntoIterator<Item = u64> + Clone,
-    TValueLookup: ValueLookupTable,
+    L: ValueLookup,
 {
     let decompressed_viewable_balances = utxos
         .values()
         .filter_map(|utxo| utxo.output.viewable_balance.as_ref().map(|vb| vb.try_into().unwrap()))
         .collect::<Vec<_>>();
 
-    let balances = ElgamalVerifiableBalance::batched_brute_force(
-        secret_view_key,
-        value_range,
-        value_lookup,
-        &decompressed_viewable_balances,
-    )?;
+    let balances =
+        ElgamalVerifiableBalance::decrypt_many(secret_view_key, &decompressed_viewable_balances, value_lookup)?;
 
-    // If any of the commitments cannot be brute forced, then we return None
+    // If any of the commitments cannot be decrypted, then we return None
     Ok(balances.into_iter().sum())
 }
 
@@ -496,7 +490,7 @@ fn mint_with_view_key() {
         .collect();
 
     let total_balance =
-        try_brute_force_stealth_balance(&utxos, &view_key_secret, 0..=200, &mut GenerateValueLookup).unwrap();
+        try_brute_force_stealth_balance(&utxos, &view_key_secret, &GenerateValueLookup::new(0..=200)).unwrap();
     assert_eq!(total_balance, Some(1000));
 }
 

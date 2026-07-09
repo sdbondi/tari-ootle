@@ -77,7 +77,7 @@ fn it_generates_a_valid_proof() {
 
     let timer = Instant::now();
     let balance = proof
-        .brute_force_balance(&view_key_secret, 0..=1000, &mut GenerateValueLookup)
+        .decrypt(&view_key_secret, &GenerateValueLookup::new(0..=1000))
         .unwrap();
     let brute_force_time = timer.elapsed();
     assert_eq!(balance, Some(123));
