@@ -216,7 +216,7 @@ async fn start(cli: &Cli) -> anyhow::Result<()> {
 
     create_paths(&config).await?;
 
-    init_logger(Some(config.base_dir.join("logs/")).filter(|_| config.log_to_file))?;
+    init_logger(config.log_to_file.then_some(config.base_dir.join("logs/")))?;
 
     let mut shutdown = Shutdown::new();
     let signal = shutdown.to_signal().select(exit_signal().context("exit_signal")?);

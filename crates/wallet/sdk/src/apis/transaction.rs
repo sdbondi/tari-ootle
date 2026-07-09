@@ -254,7 +254,6 @@ where
                 execution_result,
                 execution_time,
                 finalized_time,
-                abort_details: _,
                 ..
             } => {
                 let new_status = if final_decision.is_commit() {

@@ -36,7 +36,7 @@ pub fn find_related_substates(substate: &Substate) -> Result<Vec<SubstateId>, In
         SubstateValue::Component(header) => {
             // Look inside the component state for substate references
             let value = IndexedWellKnownTypes::from_value(header.state())?;
-            info!(target: LOG_TARGET, "Found indexed value: {:?}", &value);
+            info!(target: LOG_TARGET, "Found indexed value: {:?}", value);
             info!(
                 target: LOG_TARGET,
                 "Found {} substates in component state",

@@ -17,8 +17,8 @@ impl Executable for Transaction {
     }
 
     fn signers_iter(&self) -> impl Iterator<Item = &RistrettoPublicKeyBytes> {
-        Some(self.seal_signature().public_key())
-            .filter(|_| self.is_seal_signer_authorized())
+        self.is_seal_signer_authorized()
+            .then_some(self.seal_signature().public_key())
             .into_iter()
             .chain(self.signatures().iter().map(|s| s.public_key()))
     }

@@ -318,7 +318,7 @@ mod tests {
         // shared-state regression in the minter.
         let a = mint_raw_api_key();
         let b = mint_raw_api_key();
-        assert!(a.starts_with(API_KEY_PREFIX), "key {} missing prefix", &*a);
+        assert!(a.starts_with(API_KEY_PREFIX), "key {} missing prefix", *a);
         assert!(b.starts_with(API_KEY_PREFIX));
         assert_ne!(a, b, "two consecutive mints must not collide");
         // Prefix (3) + ceil(32 * 4 / 3) without padding = 3 + 43 = 46

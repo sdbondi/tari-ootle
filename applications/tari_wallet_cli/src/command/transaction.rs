@@ -1031,7 +1031,7 @@ fn parse_globals(globals: Vec<String>) -> Result<HashMap<String, ManifestValue>,
             let blob = match url.scheme() {
                 "file" => {
                     let contents = fs::read_to_string(url.path())
-                        .map_err(|err| anyhow!("Failed to read file '{}': {}", &url, err))?;
+                        .map_err(|err| anyhow!("Failed to read file '{}': {}", url, err))?;
 
                     base64_decode(contents.trim())
                         .map_err(|err| anyhow!("Failed to decode base64 file '{}': {}", url, err))?
