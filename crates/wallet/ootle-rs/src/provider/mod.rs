@@ -28,6 +28,7 @@ mod input_resolver;
 mod traits;
 mod tx_stream;
 mod tx_watcher;
+mod utxo_watcher;
 mod want_input;
 
 pub use balance::*;
@@ -37,4 +38,5 @@ pub use event_watcher::*;
 pub use indexer::*;
 pub use traits::*;
 pub use tx_watcher::*;
+pub use utxo_watcher::*;
 pub use want_input::*;

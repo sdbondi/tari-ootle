@@ -7,11 +7,12 @@ use ootle_byte_type::ConvertFromByteType;
 use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_indexer_client::types::GetSubstatesRequest;
 use tari_ootle_common_types::engine_types::{
+    Utxo,
     crypto::{ElgamalVerifiableBalance, ValueLookup},
     indexed_value::IndexedWellKnownTypes,
     substate::{Substate, SubstateId},
 };
-use tari_template_lib_types::{Amount, ComponentAddress, ResourceAddress, UtxoAddress, VaultId};
+use tari_template_lib_types::{Amount, ComponentAddress, ResourceAddress, UtxoAddress, UtxoId, VaultId};
 
 use crate::provider::{ProviderError, ProviderResult, indexer::IndexerProvider};
 
@@ -22,6 +23,20 @@ pub struct VaultBalance {
     pub resource_address: ResourceAddress,
     pub balance: Amount,
     pub locked_balance: Amount,
+}
+
+/// Per-UTXO outcome of decrypting a stealth output's viewable balance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StealthUtxoValue {
+    /// Successfully decrypted plaintext value (microtari).
+    Value(u64),
+    /// The viewable-balance ciphertext is valid but its value is outside the lookup's coverage.
+    /// Retryable with a wider lookup file (assuming the view key is correct for the resource).
+    OutOfRange,
+    /// The output carries no viewable-balance proof, so it cannot be decrypted.
+    NoViewableBalance,
+    /// The viewable-balance proof bytes could not be decompressed to a valid ElGamal ciphertext.
+    MalformedProof,
 }
 
 impl<Wallet> IndexerProvider<Wallet> {
@@ -102,6 +117,59 @@ impl<Wallet> IndexerProvider<Wallet> {
             .collect();
 
         Ok(values)
+    }
+
+    /// Decrypts the viewable balance of each stealth UTXO, preserving a per-UTXO [`StealthUtxoValue`]
+    /// in input order.
+    ///
+    /// Unlike [`Self::decrypt_stealth_utxo_values`], this does not silently drop UTXOs whose value is
+    /// outside the lookup's coverage or that lack a proof — a monitor can therefore record
+    /// `OutOfRange` (retryable with a wider lookup) distinctly from a decrypted value. The expensive
+    /// batch lookup runs only over well-formed ciphertexts.
+    ///
+    /// The view key is not validated against any resource here; a key that does not match the
+    /// resource's view key yields `OutOfRange` for every output, so validate it against
+    /// `resource.view_key()` beforehand to disambiguate `OutOfRange` from a key mismatch.
+    pub fn decrypt_stealth_utxo_values_opt<L: ValueLookup>(
+        &self,
+        view_secret_key: &RistrettoSecretKey,
+        utxos: &[(UtxoId, Utxo)],
+        lookup: &L,
+    ) -> ProviderResult<Vec<(UtxoId, StealthUtxoValue)>> {
+        let mut outcomes: Vec<Option<StealthUtxoValue>> = Vec::with_capacity(utxos.len());
+        let mut proofs = Vec::new();
+        let mut proof_indexes = Vec::new();
+
+        for (i, (_, utxo)) in utxos.iter().enumerate() {
+            match utxo.output().and_then(|o| o.output.viewable_balance.as_ref()) {
+                None => outcomes.push(Some(StealthUtxoValue::NoViewableBalance)),
+                Some(bytes) => match ElgamalVerifiableBalance::convert_from_byte_type(bytes) {
+                    Ok(proof) => {
+                        outcomes.push(None);
+                        proof_indexes.push(i);
+                        proofs.push(proof);
+                    },
+                    Err(_) => outcomes.push(Some(StealthUtxoValue::MalformedProof)),
+                },
+            }
+        }
+
+        if !proofs.is_empty() {
+            let results = ElgamalVerifiableBalance::decrypt_many(view_secret_key, &proofs, lookup)
+                .map_err(|e| ProviderError::other(format!("Value lookup error: {e}")))?;
+            for (index, value) in proof_indexes.into_iter().zip(results) {
+                outcomes[index] = Some(match value {
+                    Some(v) => StealthUtxoValue::Value(v),
+                    None => StealthUtxoValue::OutOfRange,
+                });
+            }
+        }
+
+        Ok(utxos
+            .iter()
+            .zip(outcomes)
+            .map(|((id, _), outcome)| (*id, outcome.expect("outcome assigned for every utxo index")))
+            .collect())
     }
 
     /// Fetches a UTXO from the network and decrypts its value using the given ElGamal view secret key.

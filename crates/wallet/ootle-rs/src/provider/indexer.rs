@@ -9,17 +9,24 @@ use std::{
 
 use tari_indexer_client::{
     rest_api_client::IndexerRestApiClient,
-    types::{GetSubstateRequest, GetSubstatesRequest, SubmitTransactionRequest},
+    types::{GetSubstateRequest, GetSubstatesRequest, GetUtxosRequest, SubmitTransactionRequest},
 };
 use tari_ootle_common_types::{
     Epoch,
     engine_types::{
+        Utxo,
         commit_result::ExecuteResult,
+        resource::Resource,
         substate::{Substate, SubstateId},
     },
     optional::Optional,
 };
 use tari_ootle_transaction::{Transaction, TransactionEnvelope, UnsignedTransaction};
+use tari_template_lib_types::{
+    ResourceAddress,
+    UtxoId,
+    crypto::{RistrettoPublicKeyBytes, UtxoTag},
+};
 use tracing::debug;
 
 use crate::{
@@ -30,6 +37,8 @@ use crate::{
         Provider,
         ProviderError,
         ProviderResult,
+        StealthUtxoStream,
+        StealthUtxoWatchRequest,
         TransactionEventFilter,
         TransactionEventStream,
         TransactionWatcher,
@@ -106,6 +115,53 @@ impl<Wallet> IndexerProvider<Wallet> {
             .await
             .optional()?;
         Ok(resp.map(|r| Substate::new(r.version, r.substate)))
+    }
+
+    /// Fetch a resource by address. The returned [`Resource`] carries its type, optional view key,
+    /// divisibility, and total supply.
+    pub async fn get_resource(&self, resource_address: ResourceAddress) -> ProviderResult<Resource> {
+        let resp = self.client.get_resource(resource_address).await?;
+        Ok(resp.resource)
+    }
+
+    /// Watch stealth UTXO updates for a resource, resuming from a per-shard cursor.
+    ///
+    /// Each drained pass yields typed [`StealthUtxoFrame`](crate::provider::StealthUtxoFrame)s. An
+    /// `Unspent` frame carries only the `(tag, public_nonce)` fetch key — resolve the commitment and
+    /// viewable-balance ciphertext with [`Self::fetch_unspent_utxos`]. Set `unspent_only = false` on
+    /// the request to also receive `Spent`/`Burnt` frames.
+    pub fn watch_stealth_utxos(&self, request: StealthUtxoWatchRequest) -> StealthUtxoStream {
+        StealthUtxoStream::new(Arc::downgrade(&self.client), request)
+    }
+
+    /// Fetch full stealth UTXO outputs by their `(tag, public_nonce)` fetch keys (as delivered by
+    /// `StealthUtxoFrame::Unspent`). Returns `(UtxoId, Utxo)` pairs including the commitment and the
+    /// viewable-balance ciphertext.
+    ///
+    /// Only currently-unspent outputs are returned — the indexer prunes an output's ciphertext once
+    /// it is spent, so a key whose output has since been spent is simply absent from the result.
+    /// Requests are automatically chunked to the indexer's per-request limit.
+    pub async fn fetch_unspent_utxos(
+        &self,
+        resource_address: ResourceAddress,
+        tag_and_nonce_pairs: Vec<(UtxoTag, RistrettoPublicKeyBytes)>,
+    ) -> ProviderResult<Vec<(UtxoId, Utxo)>> {
+        const MAX_PAIRS_PER_REQUEST: usize = 1000;
+        if tag_and_nonce_pairs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut utxos = Vec::with_capacity(tag_and_nonce_pairs.len());
+        for chunk in tag_and_nonce_pairs.chunks(MAX_PAIRS_PER_REQUEST) {
+            let resp = self
+                .client
+                .get_utxos(GetUtxosRequest {
+                    resource_address,
+                    tag_and_nonce_pairs: chunk.to_vec(),
+                })
+                .await?;
+            utxos.extend(resp.utxos);
+        }
+        Ok(utxos)
     }
 }
 
