@@ -146,6 +146,8 @@ use crate::{
         StealthTransferResponse,
         StealthUtxosDecryptValueRequest,
         StealthUtxosDecryptValueResponse,
+        StealthUtxosGetValueLookupInfoRequest,
+        StealthUtxosGetValueLookupInfoResponse,
         StealthUtxosListRequest,
         StealthUtxosListResponse,
         SubstatesGetRequest,
@@ -695,6 +697,16 @@ impl WalletDaemonClient {
         request: T,
     ) -> Result<StealthUtxosDecryptValueResponse, WalletDaemonClientError> {
         self.send_request("stealth_utxos.decrypt_value", request.borrow()).await
+    }
+
+    /// Returns information about the value lookup table configured for confidential/stealth balance
+    /// decryption (coverage range, format and size).
+    pub async fn stealth_utxos_get_value_lookup_info<T: Borrow<StealthUtxosGetValueLookupInfoRequest>>(
+        &mut self,
+        request: T,
+    ) -> Result<StealthUtxosGetValueLookupInfoResponse, WalletDaemonClientError> {
+        self.send_request("stealth_utxos.get_value_lookup_info", request.borrow())
+            .await
     }
 
     /// Returns the wallet daemon's current settings.

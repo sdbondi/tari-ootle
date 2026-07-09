@@ -11,6 +11,8 @@ use tari_ootle_walletd_client::{
     types::{
         StealthUtxosDecryptValueRequest,
         StealthUtxosDecryptValueResponse,
+        StealthUtxosGetValueLookupInfoRequest,
+        StealthUtxosGetValueLookupInfoResponse,
         StealthUtxosListRequest,
         StealthUtxosListResponse,
         UtxoInfo,
@@ -103,7 +105,8 @@ pub async fn handle_decrypt_value(
     // Get view secret key
     let view_key = sdk.key_manager_api().get_key(req.view_key_id)?;
 
-    let value_range = req.minimum_expected_value.unwrap_or(0)..=req.maximum_expected_value;
+    let min_expected = req.minimum_expected_value;
+    let max_expected = req.maximum_expected_value;
 
     // NOTE: we iterate in a random order (HashMap) but collect into a deterministic order (IndexMap) so that the
     // results are always in the same order for the same input
@@ -130,7 +133,8 @@ pub async fn handle_decrypt_value(
             lookup_file.as_deref(),
             view_key.secret(),
             &elgamal_proofs,
-            value_range,
+            min_expected,
+            max_expected,
         )
     });
     struct AbortOnDropGuard {
@@ -157,4 +161,13 @@ pub async fn handle_decrypt_value(
     Ok(StealthUtxosDecryptValueResponse {
         values: proofs.into_keys().zip(balances).collect(),
     })
+}
+
+pub async fn handle_get_value_lookup_info(
+    context: &HandlerContext,
+    token: Option<&Bearer>,
+    _req: StealthUtxosGetValueLookupInfoRequest,
+) -> Result<StealthUtxosGetValueLookupInfoResponse, anyhow::Error> {
+    context.authorize(token, &[Permission::StealthUtxos(Crud::Read, None)])?;
+    crate::handlers::value_lookup::value_lookup_info(context.config().value_lookup_table_file.as_deref())
 }

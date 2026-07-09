@@ -221,6 +221,9 @@ async fn handler(
         Some(("stealth_utxos", method)) => match method {
             "list" => call_handler(context, value, token, stealth_utxos::handle_list).await,
             "decrypt_value" => call_handler(context, value, token, stealth_utxos::handle_decrypt_value).await,
+            "get_value_lookup_info" => {
+                call_handler(context, value, token, stealth_utxos::handle_get_value_lookup_info).await
+            },
             _ => value.method_not_found(&value.method).into_response(),
         },
         Some(("burn_proofs", method)) => match method {

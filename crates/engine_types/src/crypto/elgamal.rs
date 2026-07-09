@@ -194,12 +194,10 @@ pub struct ElgamalVerifiableBalance {
 
 impl ElgamalVerifiableBalance {
     /// The compressed point `V = E - p·R`, which the value lookup table is reverse-searched for to recover the
-    /// balance `v` (the table maps `v -> v·H`).
-    pub fn value_lookup_target(&self, view_private_key: &RistrettoSecretKey) -> [u8; 32] {
+    /// balance `v` (the table maps `v -> v·G`).
+    pub fn value_lookup_target(&self, view_private_key: &RistrettoSecretKey) -> RistrettoPublicKeyBytes {
         let point = &self.encrypted - view_private_key * &self.public_nonce;
-        let mut out = [0u8; 32];
-        out.copy_from_slice(point.to_byte_type().as_bytes());
-        out
+        point.to_byte_type()
     }
 
     pub fn brute_force_balance<I: IntoIterator<Item = u64>, TLookup: ValueLookupTable>(
@@ -237,7 +235,7 @@ impl ElgamalVerifiableBalance {
                 break;
             };
 
-            while let Some(pos) = balances.iter().position(|(_, target)| value == *target) {
+            while let Some(pos) = balances.iter().position(|(_, target)| value == target.as_bytes()) {
                 let (order, _) = balances.swap_remove(pos);
                 info!(target: LOG_TARGET, "Found encrypted balance: {}", v);
                 results

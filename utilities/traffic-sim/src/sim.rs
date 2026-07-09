@@ -641,7 +641,7 @@ impl TrafficSim {
                         index: 0,
                     },
                     minimum_expected_value: Some(min_value),
-                    maximum_expected_value: max_value,
+                    maximum_expected_value: Some(max_value),
                 })
                 .await?;
 
@@ -697,7 +697,7 @@ impl TrafficSim {
                         index: 0,
                     },
                     minimum_expected_value: Some(min_value),
-                    maximum_expected_value: max_value,
+                    maximum_expected_value: Some(max_value),
                 })
                 .await?;
 

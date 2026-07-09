@@ -1497,13 +1497,32 @@ pub struct StealthUtxosDecryptValueRequest {
     pub ids: Vec<UtxoId>,
     pub view_key_id: KeyId,
     pub minimum_expected_value: Option<u64>,
-    pub maximum_expected_value: u64,
+    pub maximum_expected_value: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct StealthUtxosDecryptValueResponse {
     pub values: HashMap<UtxoId, Option<u64>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct StealthUtxosGetValueLookupInfoRequest {}
+
+/// Describes the value lookup table configured for confidential/stealth balance decryption. When no file is
+/// configured, `configured` is `false` and the remaining fields are `None`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct StealthUtxosGetValueLookupInfoResponse {
+    pub configured: bool,
+    pub path: Option<String>,
+    pub format: Option<String>,
+    pub min: Option<u64>,
+    pub max: Option<u64>,
+    pub prefix_len: Option<u8>,
+    pub value_len: Option<u8>,
+    pub num_records: Option<u64>,
 }
 
 // -------------------------------- Templates -------------------------------- //

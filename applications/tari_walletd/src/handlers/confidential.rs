@@ -323,8 +323,6 @@ pub async fn handle_view_vault_balance(
     // Get view secret key
     let view_key = sdk.key_manager_api().get_elgamal_encrypted_view_key(req.view_key_id)?;
 
-    let value_range = req.minimum_expected_value.unwrap_or(0)..=req.maximum_expected_value.unwrap_or(10_000_000_000);
-
     let elgamal_proofs = commitments
         .values()
         .filter_map(|o| o.viewable_balance.clone())
@@ -337,7 +335,8 @@ pub async fn handle_view_vault_balance(
             context.config().value_lookup_table_file.as_deref(),
             &view_key.key,
             &elgamal_proofs,
-            value_range,
+            req.minimum_expected_value,
+            req.maximum_expected_value,
         )
     })?;
 

@@ -9,17 +9,18 @@
 //!
 //! Sorting by point destroys the positional encoding of the value, so the value is stored explicitly — but
 //! only a short *prefix* of the 32-byte point is stored as the search key. Exactness is restored by
-//! recomputing `v·H` for the matched value and comparing the full point against the target, which rejects
+//! recomputing `v·G` for the matched value and comparing the full point against the target, which rejects
 //! the (≈ `count / 2^{8·prefix_len}`) prefix collisions. Out-of-range targets fail the prefix comparison
 //! without a recompute.
 
 use std::{cmp::Ordering, fs::File, io, io::Write, mem::size_of, ops::RangeInclusive};
 
+use ootle_byte_type::ToByteType;
 use tari_crypto::{
     keys::PublicKey,
     ristretto::{RistrettoPublicKey, RistrettoSecretKey},
 };
-use tari_utilities::ByteArray;
+use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 
 /// Magic bytes identifying a Tari value lookup table file in the self-describing family. The byte that
 /// follows names the concrete [`LookupFormat`], so a reader identifies the layout from the header alone.
@@ -107,7 +108,7 @@ impl SortedLookupHeader {
     }
 
     /// Number of bytes per record.
-    pub fn stride(&self) -> usize {
+    pub const fn stride(&self) -> usize {
         self.prefix_len as usize + self.value_len as usize
     }
 
@@ -154,40 +155,10 @@ impl SortedLookupHeader {
     }
 }
 
-/// Computes the 32-byte compressed encoding of `v·H` (the value the lookup table maps `v` to).
-fn compute_point_bytes(value: u64) -> [u8; 32] {
+/// Computes the 32-byte compressed encoding of `v·G` (the value the lookup table maps `v` to).
+fn compute_point_bytes(value: u64) -> RistrettoPublicKeyBytes {
     let pk = RistrettoPublicKey::from_secret_key(&RistrettoSecretKey::from(value));
-    let mut out = [0u8; 32];
-    out.copy_from_slice(pk.as_bytes());
-    out
-}
-
-/// Generates the `(prefix, value_offset)` records for `min..=max`, sorts them by prefix, and writes a
-/// complete `VLK2` buffer.
-///
-/// This holds all records in memory, so it is intended for tests and small tables. The generator utility
-/// produces large tables with a bucketed, parallel variant.
-pub fn write_sorted_lookup_in_memory<W: Write>(writer: &mut W, min: u64, max: u64, prefix_len: u8) -> io::Result<()> {
-    assert!(min <= max, "min must be <= max");
-    assert!((1..=32).contains(&prefix_len), "prefix_len must be in 1..=32");
-
-    let value_len = SortedLookupHeader::required_value_len(min, max);
-    let header = SortedLookupHeader::new(min, max, prefix_len, value_len);
-    header.encode_into(writer)?;
-
-    let prefix_len = prefix_len as usize;
-    let value_len = value_len as usize;
-
-    let mut entries: Vec<([u8; 32], u64)> = (min..=max).map(|v| (compute_point_bytes(v), v - min)).collect();
-    entries.sort_unstable_by(|a, b| a.0[..prefix_len].cmp(&b.0[..prefix_len]));
-
-    let mut record = vec![0u8; prefix_len + value_len];
-    for (point, offset) in entries {
-        record[..prefix_len].copy_from_slice(&point[..prefix_len]);
-        record[prefix_len..].copy_from_slice(&offset.to_le_bytes()[..value_len]);
-        writer.write_all(&record)?;
-    }
-    Ok(())
+    pk.to_byte_type()
 }
 
 /// A memory-mapped, sorted prefix-index value lookup supporting O(log n) reverse lookup.
@@ -285,7 +256,7 @@ impl SortedValueLookup {
         (self.prefix_at(i), self.value_at(i))
     }
 
-    fn record_start(&self, i: usize) -> usize {
+    const fn record_start(&self, i: usize) -> usize {
         SortedLookupHeader::SIZE + i * self.header.stride()
     }
 
@@ -316,8 +287,8 @@ impl SortedValueLookup {
         lo
     }
 
-    /// Reverse lookup: returns the value `v` in `[min, max]` such that `v·H == target`, or `None`.
-    pub fn find_value(&self, target: &[u8; 32]) -> Option<u64> {
+    /// Reverse lookup: returns the value `v` in `[min, max]` such that `v·G == target`, or `None`.
+    pub fn find_value(&self, target: &RistrettoPublicKeyBytes) -> Option<u64> {
         let key = &target[..self.header.prefix_len as usize];
         let mut i = self.lower_bound(key);
         // Scan the (usually singleton) run of records sharing this prefix, verifying the full point.
@@ -332,8 +303,8 @@ impl SortedValueLookup {
     }
 
     /// Reverse lookup for a batch of targets, returning a result aligned to `targets`.
-    pub fn find_values(&self, targets: &[[u8; 32]]) -> Vec<Option<u64>> {
-        targets.iter().map(|t| self.find_value(t)).collect()
+    pub fn find_values<I: IntoIterator<Item = RistrettoPublicKeyBytes>>(&self, targets: I) -> Vec<Option<u64>> {
+        targets.into_iter().map(|t| self.find_value(&t)).collect()
     }
 }
 
@@ -342,6 +313,36 @@ mod tests {
     use rand::RngExt;
 
     use super::*;
+
+    /// Generates the `(prefix, value_offset)` records for `min..=max`, sorts them by prefix, and writes a
+    /// complete `VLK2` buffer.
+    ///
+    /// This holds all records in memory, so it is intended for tests and small tables. The generator utility
+    /// produces large tables with a bucketed, parallel variant.
+    fn write_sorted_lookup_in_memory<W: Write>(writer: &mut W, min: u64, max: u64, prefix_len: u8) -> io::Result<()> {
+        assert!(min <= max, "min must be <= max");
+        assert!((1..=32).contains(&prefix_len), "prefix_len must be in 1..=32");
+
+        let value_len = SortedLookupHeader::required_value_len(min, max);
+        let header = SortedLookupHeader::new(min, max, prefix_len, value_len);
+        header.encode_into(writer)?;
+
+        let prefix_len = prefix_len as usize;
+        let value_len = value_len as usize;
+
+        let mut entries = (min..=max)
+            .map(|v| (compute_point_bytes(v), v - min))
+            .collect::<Vec<_>>();
+        entries.sort_unstable_by(|a, b| a.0[..prefix_len].cmp(&b.0[..prefix_len]));
+
+        let mut record = vec![0u8; prefix_len + value_len];
+        for (point, offset) in entries {
+            record[..prefix_len].copy_from_slice(&point[..prefix_len]);
+            record[prefix_len..].copy_from_slice(&offset.to_le_bytes()[..value_len]);
+            writer.write_all(&record)?;
+        }
+        Ok(())
+    }
 
     fn build(min: u64, max: u64) -> SortedValueLookup {
         let mut buf = Vec::new();
