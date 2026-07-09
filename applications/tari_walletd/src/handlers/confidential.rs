@@ -1,18 +1,17 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::{fs, time::Duration};
+use std::time::Duration;
 
-use anyhow::anyhow;
 use axum_extra::headers::authorization::Bearer;
 use axum_jrpc::error::{JsonRpcError, JsonRpcErrorReason};
 use log::*;
 use ootle_byte_type::ToByteType;
 use serde_json::json;
 use tari_crypto::{commitment::HomomorphicCommitmentFactory, keys::PublicKey as _, ristretto::RistrettoPublicKey};
-use tari_engine_types::crypto::{ValueLookupTable, get_commitment_factory};
+use tari_engine_types::crypto::get_commitment_factory;
 use tari_ootle_common_types::{displayable::Displayable, optional::Optional};
-use tari_ootle_wallet_crypto::{GenerateValueLookup, MMapValueLookup, OutputWitness};
+use tari_ootle_wallet_crypto::OutputWitness;
 use tari_ootle_wallet_sdk::models::{ConfidentialOutputModel, KeyBranch, OutputStatus};
 use tari_ootle_walletd_client::{
     permissions::{Crud, Permission},
@@ -324,48 +323,22 @@ pub async fn handle_view_vault_balance(
     // Get view secret key
     let view_key = sdk.key_manager_api().get_elgamal_encrypted_view_key(req.view_key_id)?;
 
-    let value_range = req.minimum_expected_value.unwrap_or(0)..=req.maximum_expected_value.unwrap_or(10_000_000_000);
+    let elgamal_proofs = commitments
+        .values()
+        .filter_map(|o| o.viewable_balance.clone())
+        .collect::<Vec<_>>();
 
     let timer = Instant::now();
-    let balances = match context.config().value_lookup_table_file.as_ref() {
-        Some(file) => {
-            let file = fs::File::open(file)
-                .map_err(|e| anyhow!("Unable to load value lookup file '{}': {e}", file.display()))?;
-            let mut is_logged = false;
-            // SAFETY: We assume the file will not be modified while mapped. Although not enforced (e.g. locks,
-            // permissions and other platform specific mechanisms), this is a reasonable assumption for most scenarios.
-            let mut lookup = unsafe { MMapValueLookup::load(&file) }?.with_fallback(move |v| {
-                if !is_logged {
-                    is_logged = true;
-                    warn!("Using value lookup fallback. This will likely result in very slow lookups.");
-                }
-                GenerateValueLookup.lookup(v)
-            });
-
-            block_in_place(|| {
-                sdk.viewable_balance_api().try_brute_force_commitment_balances(
-                    &view_key.key,
-                    commitments.values().filter_map(|o| o.viewable_balance.as_ref()),
-                    value_range,
-                    &mut lookup,
-                )
-            })?
-        },
-        None => {
-            warn!(
-                target: LOG_TARGET,
-                "No value lookup table configured. This will likely result in very slow lookups."
-            );
-            block_in_place(|| {
-                sdk.viewable_balance_api().try_brute_force_commitment_balances(
-                    &view_key.key,
-                    commitments.values().filter_map(|o| o.viewable_balance.as_ref()),
-                    value_range,
-                    &mut GenerateValueLookup,
-                )
-            })?
-        },
-    };
+    let balances = block_in_place(|| {
+        crate::handlers::value_lookup::brute_force_viewable_balances(
+            &sdk.viewable_balance_api(),
+            context.config().value_lookup_table_file.as_deref(),
+            &view_key.key,
+            &elgamal_proofs,
+            req.minimum_expected_value,
+            req.maximum_expected_value,
+        )
+    })?;
 
     info!(target: LOG_TARGET, "Brute force balance lookup took {:.2?}", timer.elapsed());
 

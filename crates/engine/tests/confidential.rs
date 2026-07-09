@@ -8,7 +8,7 @@ use tari_crypto::{
     ristretto::{RistrettoPublicKey, RistrettoSecretKey},
 };
 use tari_engine_types::{
-    crypto::{ElgamalVerifiableBalance, OutputBody, ValueLookupTable},
+    crypto::{ElgamalVerifiableBalance, OutputBody, ValueLookup},
     resource_container::ResourceError,
     substate::SubstateId,
 };
@@ -469,29 +469,23 @@ fn mint_revealed_with_invalid_proof() {
     });
 }
 
-pub fn try_brute_force_confidential_balance<I, TValueLookup>(
+pub fn try_brute_force_confidential_balance<L>(
     utxos: &BTreeMap<PedersenCommitmentBytes, OutputBody>,
     secret_view_key: &RistrettoSecretKey,
-    value_range: I,
-    value_lookup: &mut TValueLookup,
-) -> Result<Option<u64>, TValueLookup::Error>
+    value_lookup: &L,
+) -> Result<Option<u64>, L::Error>
 where
-    I: IntoIterator<Item = u64> + Clone,
-    TValueLookup: ValueLookupTable,
+    L: ValueLookup,
 {
     let decompressed_viewable_balances = utxos
         .values()
         .filter_map(|utxo| utxo.viewable_balance.as_ref().map(|vb| vb.try_into().unwrap()))
         .collect::<Vec<_>>();
 
-    let balances = ElgamalVerifiableBalance::batched_brute_force(
-        secret_view_key,
-        value_range,
-        value_lookup,
-        &decompressed_viewable_balances,
-    )?;
+    let balances =
+        ElgamalVerifiableBalance::decrypt_many(secret_view_key, &decompressed_viewable_balances, value_lookup)?;
 
-    // If any of the commitments cannot be brute forced, then we return None
+    // If any of the commitments cannot be decrypted, then we return None
     Ok(balances.into_iter().sum())
 }
 
@@ -527,8 +521,7 @@ fn mint_with_view_key() {
     let total_balance = try_brute_force_confidential_balance(
         faucet_vault.get_confidential_commitments().unwrap(),
         &view_key_secret,
-        0..=200,
-        &mut GenerateValueLookup,
+        &GenerateValueLookup::new(0..=200),
     )
     .unwrap();
     assert_eq!(total_balance, Some(223 - 55));
@@ -544,8 +537,7 @@ fn mint_with_view_key() {
     let total_balance = try_brute_force_confidential_balance(
         user_vault.get_confidential_commitments().unwrap(),
         &view_key_secret,
-        0..=200,
-        &mut GenerateValueLookup,
+        &GenerateValueLookup::new(0..=200),
     )
     .unwrap();
     assert_eq!(total_balance, Some(55));

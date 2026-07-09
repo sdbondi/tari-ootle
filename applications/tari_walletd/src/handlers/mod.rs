@@ -18,6 +18,7 @@ pub mod swap_pools;
 pub mod templates;
 pub mod transaction;
 pub mod validator;
+pub(crate) mod value_lookup;
 pub mod wallet;
 pub mod web_ui;
 pub mod webauthn;

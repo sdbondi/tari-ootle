@@ -37,7 +37,8 @@ use reqwest::{
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json as json;
 use serde_json::json;
-use tari_ootle_wallet_sdk::models::KeyBranch;
+use tari_crypto::ristretto::RistrettoSecretKey;
+use tari_ootle_wallet_sdk::models::{KeyBranch, KeyType};
 use types::{
     AccountsCreateFreeTestCoinsRequest,
     AccountsCreateFreeTestCoinsResponse,
@@ -131,6 +132,8 @@ use crate::{
         GetValidatorFeesResponse,
         KeysCreateRequest,
         KeysCreateResponse,
+        KeysImportRequest,
+        KeysImportResponse,
         KeysListRequest,
         KeysListResponse,
         KeysSetActiveRequest,
@@ -146,6 +149,8 @@ use crate::{
         StealthTransferResponse,
         StealthUtxosDecryptValueRequest,
         StealthUtxosDecryptValueResponse,
+        StealthUtxosGetValueLookupInfoRequest,
+        StealthUtxosGetValueLookupInfoResponse,
         StealthUtxosListRequest,
         StealthUtxosListResponse,
         SubstatesGetRequest,
@@ -250,6 +255,17 @@ impl WalletDaemonClient {
             specific_index: Some(index),
         })
         .await
+    }
+
+    /// Imports an externally-generated secret key into the wallet's keystore, returning the [`KeyId`] it can be
+    /// referenced by.
+    pub async fn import_key(
+        &mut self,
+        secret_key: RistrettoSecretKey,
+        key_type: KeyType,
+    ) -> Result<KeysImportResponse, WalletDaemonClientError> {
+        self.send_request("keys.import", &KeysImportRequest { secret_key, key_type })
+            .await
     }
 
     /// Sets the active key index used for signing transactions.
@@ -695,6 +711,16 @@ impl WalletDaemonClient {
         request: T,
     ) -> Result<StealthUtxosDecryptValueResponse, WalletDaemonClientError> {
         self.send_request("stealth_utxos.decrypt_value", request.borrow()).await
+    }
+
+    /// Returns information about the value lookup table configured for confidential/stealth balance
+    /// decryption (coverage range, format and size).
+    pub async fn stealth_utxos_get_value_lookup_info<T: Borrow<StealthUtxosGetValueLookupInfoRequest>>(
+        &mut self,
+        request: T,
+    ) -> Result<StealthUtxosGetValueLookupInfoResponse, WalletDaemonClientError> {
+        self.send_request("stealth_utxos.get_value_lookup_info", request.borrow())
+            .await
     }
 
     /// Returns the wallet daemon's current settings.

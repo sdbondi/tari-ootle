@@ -7,10 +7,10 @@ mod helpers;
 pub mod messages;
 mod output;
 pub mod range_proof;
-mod value_lookup_table;
+mod value_lookup;
 
 pub use covenant::*;
 pub use elgamal::*;
 pub use helpers::*;
 pub use output::*;
-pub use value_lookup_table::*;
+pub use value_lookup::*;

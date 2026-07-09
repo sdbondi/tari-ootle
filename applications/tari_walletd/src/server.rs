@@ -133,6 +133,7 @@ async fn handler(
         Some(("webrtc", "start")) => webrtc::handle_start(context, value, token.as_ref(), addresses).into_response(),
         Some(("keys", method)) => match method {
             "create" => call_handler(context, value, token, keys::handle_create).await,
+            "import" => call_handler(context, value, token, keys::handle_import).await,
             "list" => call_handler(context, value, token, keys::handle_list).await,
             "set_active" => call_handler(context, value, token, keys::handle_set_active).await,
             _ => value.method_not_found(&value.method).into_response(),
@@ -221,6 +222,9 @@ async fn handler(
         Some(("stealth_utxos", method)) => match method {
             "list" => call_handler(context, value, token, stealth_utxos::handle_list).await,
             "decrypt_value" => call_handler(context, value, token, stealth_utxos::handle_decrypt_value).await,
+            "get_value_lookup_info" => {
+                call_handler(context, value, token, stealth_utxos::handle_get_value_lookup_info).await
+            },
             _ => value.method_not_found(&value.method).into_response(),
         },
         Some(("burn_proofs", method)) => match method {

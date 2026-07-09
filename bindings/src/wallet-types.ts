@@ -179,3 +179,5 @@ export * from "./types/wallet-types/SubstatesListRequest";
 export * from "./types/wallet-types/ComponentAddressOrName";
 export * from "./types/wallet-types/TemplatesListAuthoredResponse";
 export * from "./types/wallet-types/StealthUtxosDecryptValueResponse";
+export * from "./types/wallet-types/StealthUtxosGetValueLookupInfoRequest";
+export * from "./types/wallet-types/StealthUtxosGetValueLookupInfoResponse";

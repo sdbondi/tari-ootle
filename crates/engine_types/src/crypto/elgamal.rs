@@ -2,7 +2,6 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use borsh::BorshSerialize;
-use log::info;
 use ootle_byte_type::{ConvertFromByteType, ToByteType};
 use tari_bor::{Deserialize, Serialize};
 use tari_crypto::{
@@ -15,11 +14,9 @@ use tari_crypto::{
 use tari_template_lib::types::{crypto::RistrettoPublicKeyBytes, stealth::ViewableBalanceProof};
 
 use crate::{
-    crypto::{get_commitment_factory, messages, value_lookup_table::ValueLookupTable},
+    crypto::{get_commitment_factory, messages, value_lookup::ValueLookup},
     resource_container::ResourceError,
 };
-
-const LOG_TARGET: &str = "tari::ootle::engine_types::crypto::elgamal";
 
 pub fn validate_elgamal_verifiable_balance_proof(
     commitment: &PedersenCommitment,
@@ -193,60 +190,37 @@ pub struct ElgamalVerifiableBalance {
 }
 
 impl ElgamalVerifiableBalance {
-    pub fn brute_force_balance<I: IntoIterator<Item = u64>, TLookup: ValueLookupTable>(
-        &self,
-        view_private_key: &RistrettoSecretKey,
-        value_range: I,
-        lookup_table: &mut TLookup,
-    ) -> Result<Option<u64>, TLookup::Error> {
-        let mut result = Self::batched_brute_force(view_private_key, value_range, lookup_table, Some(self))?;
-        Ok(result.pop().flatten())
+    /// The compressed point `V = E - p·R`, which the value lookup table is reverse-searched for to recover the
+    /// balance `v` (the table maps `v -> v·G`).
+    pub fn value_lookup_target(&self, view_private_key: &RistrettoSecretKey) -> RistrettoPublicKeyBytes {
+        let point = &self.encrypted - view_private_key * &self.public_nonce;
+        point.to_byte_type()
     }
 
-    pub fn batched_brute_force<'a, IValueRange, TLookup, IBalances>(
+    /// Decrypts this viewable balance, recovering `v` by reverse-looking-up its value point `V = E - p·R`.
+    pub fn decrypt<L: ValueLookup>(
+        &self,
         view_private_key: &RistrettoSecretKey,
-        value_range: IValueRange,
-        lookup_table: &mut TLookup,
+        lookup: &L,
+    ) -> Result<Option<u64>, L::Error> {
+        lookup.lookup(&self.value_lookup_target(view_private_key))
+    }
+
+    /// Decrypts many viewable balances at once, returning results aligned to `verifiable_balances`.
+    pub fn decrypt_many<'a, L, IBalances>(
+        view_private_key: &RistrettoSecretKey,
         verifiable_balances: IBalances,
-    ) -> Result<Vec<Option<u64>>, TLookup::Error>
+        lookup: &L,
+    ) -> Result<Vec<Option<u64>>, L::Error>
     where
-        IValueRange: IntoIterator<Item = u64>,
-        TLookup: ValueLookupTable,
+        L: ValueLookup,
         IBalances: IntoIterator<Item = &'a Self>,
     {
-        let mut balances = verifiable_balances
+        let targets = verifiable_balances
             .into_iter()
-            .enumerate()
-            .map(|(i, balance)| {
-                // V = E - pR
-                let balance = &balance.encrypted - view_private_key * &balance.public_nonce;
-                (i, balance.to_byte_type())
-            })
+            .map(|balance| balance.value_lookup_target(view_private_key))
             .collect::<Vec<_>>();
-
-        let mut results = vec![None; balances.len()];
-
-        for v in value_range {
-            let Some(value) = lookup_table.lookup(v)? else {
-                log::debug!(target: LOG_TARGET, "Value {} not found in lookup table", v);
-                break;
-            };
-
-            while let Some(pos) = balances.iter().position(|(_, balance)| value == balance.as_bytes()) {
-                let (order, _) = balances.swap_remove(pos);
-                info!(target: LOG_TARGET, "Found encrypted balance: {}", v);
-                results
-                    .get_mut(order)
-                    .expect("batched_brute_force: balances index greater than results")
-                    .replace(v);
-            }
-
-            if balances.is_empty() {
-                break;
-            }
-        }
-
-        Ok(results)
+        lookup.lookup_many(&targets)
     }
 }
 
@@ -276,7 +250,7 @@ impl ToByteType for ElgamalVerifiableBalance {
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
+    use std::{convert::Infallible, ops::RangeInclusive};
 
     use tari_crypto::{
         keys::{PublicKey, SecretKey},
@@ -285,26 +259,26 @@ mod tests {
 
     use super::*;
 
-    fn copy_fixed(src: &[u8]) -> [u8; 32] {
-        let mut buf = [0u8; 32];
-        buf.copy_from_slice(src);
-        buf
+    /// Reverse value lookup that scans a range, computing `v·G` for each candidate — the `GenerateValueLookup`
+    /// behaviour, kept local so `engine_types` does not depend on `tari_ootle_wallet_crypto`.
+    struct TestValueLookup {
+        range: RangeInclusive<u64>,
     }
 
-    #[derive(Default)]
-    pub struct TestLookupTable;
-
-    impl ValueLookupTable for TestLookupTable {
+    impl ValueLookup for TestValueLookup {
         type Error = Infallible;
 
-        fn lookup(&mut self, value: u64) -> Result<Option<[u8; 32]>, Self::Error> {
-            Ok(Some(copy_fixed(
-                RistrettoPublicKey::from_secret_key(&RistrettoSecretKey::from(value)).as_bytes(),
-            )))
+        fn lookup(&self, point: &RistrettoPublicKeyBytes) -> Result<Option<u64>, Self::Error> {
+            for v in self.range.clone() {
+                if RistrettoPublicKey::from_secret_key(&RistrettoSecretKey::from(v)).to_byte_type() == *point {
+                    return Ok(Some(v));
+                }
+            }
+            Ok(None)
         }
     }
 
-    mod brute_force_balance {
+    mod decrypt {
 
         use super::*;
 
@@ -323,9 +297,7 @@ mod tests {
                 public_nonce: nonce_pk,
             };
 
-            let balance = subject
-                .brute_force_balance(view_sk, 0..=10000, &mut TestLookupTable)
-                .unwrap();
+            let balance = subject.decrypt(view_sk, &TestValueLookup { range: 0..=10000 }).unwrap();
             assert_eq!(balance, Some(VALUE));
         }
 
@@ -343,14 +315,10 @@ mod tests {
                 public_nonce: nonce_pk,
             };
 
-            let balance = subject
-                .brute_force_balance(view_sk, 0..=10, &mut TestLookupTable)
-                .unwrap();
+            let balance = subject.decrypt(view_sk, &TestValueLookup { range: 0..=10 }).unwrap();
             assert_eq!(balance, Some(10));
 
-            let balance = subject
-                .brute_force_balance(view_sk, 10..=12, &mut TestLookupTable)
-                .unwrap();
+            let balance = subject.decrypt(view_sk, &TestValueLookup { range: 10..=12 }).unwrap();
             assert_eq!(balance, Some(10));
         }
 
@@ -362,18 +330,18 @@ mod tests {
             };
 
             let balance = subject
-                .brute_force_balance(&RistrettoSecretKey::default(), 0..=100, &mut TestLookupTable)
+                .decrypt(&RistrettoSecretKey::default(), &TestValueLookup { range: 0..=100 })
                 .unwrap();
             assert_eq!(balance, None);
 
             let balance = subject
-                .brute_force_balance(&RistrettoSecretKey::default(), 102..=103, &mut TestLookupTable)
+                .decrypt(&RistrettoSecretKey::default(), &TestValueLookup { range: 102..=103 })
                 .unwrap();
             assert_eq!(balance, None);
         }
 
         #[test]
-        fn it_brute_forces_a_batch() {
+        fn it_decrypts_a_batch() {
             let mut rng = rand::rng();
             let view_sk = &RistrettoSecretKey::random(&mut rng);
 
@@ -390,7 +358,7 @@ mod tests {
                 .collect::<Vec<_>>();
 
             let balances =
-                ElgamalVerifiableBalance::batched_brute_force(view_sk, 0..=10000, &mut TestLookupTable, subject.iter())
+                ElgamalVerifiableBalance::decrypt_many(view_sk, subject.iter(), &TestValueLookup { range: 0..=10000 })
                     .unwrap();
             assert_eq!(balances.len(), 100);
             for (i, balance) in balances.into_iter().enumerate() {

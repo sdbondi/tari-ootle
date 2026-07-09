@@ -24,6 +24,7 @@ use std::{collections::HashMap, fmt::Display, str::FromStr};
 
 use hex::FromHexError;
 use serde::{Deserialize, Serialize};
+use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_engine_types::{
     commit_result::{ExecuteResult, FinalizeResult},
     confidential::MinotariBurnClaimProof,
@@ -54,6 +55,7 @@ use tari_ootle_wallet_sdk::{
         DerivedKeyIndex,
         KeyBranch,
         KeyId,
+        KeyType,
         NonFungibleToken,
         OutputStatus,
         StealthUtxoSpendKeyId,
@@ -386,6 +388,19 @@ pub struct KeysCreateRequest {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct KeysCreateResponse {
     pub id: u64,
+    pub public_key: RistrettoPublicKeyBytes,
+}
+
+/// Imports an externally-generated secret key into the wallet's keystore. The `secret_key` is transmitted as hex.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct KeysImportRequest {
+    pub secret_key: RistrettoSecretKey,
+    pub key_type: KeyType,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct KeysImportResponse {
+    pub key_id: KeyId,
     pub public_key: RistrettoPublicKeyBytes,
 }
 
@@ -1497,13 +1512,32 @@ pub struct StealthUtxosDecryptValueRequest {
     pub ids: Vec<UtxoId>,
     pub view_key_id: KeyId,
     pub minimum_expected_value: Option<u64>,
-    pub maximum_expected_value: u64,
+    pub maximum_expected_value: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct StealthUtxosDecryptValueResponse {
     pub values: HashMap<UtxoId, Option<u64>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct StealthUtxosGetValueLookupInfoRequest {}
+
+/// Describes the value lookup table configured for confidential/stealth balance decryption. When no file is
+/// configured, `configured` is `false` and the remaining fields are `None`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct StealthUtxosGetValueLookupInfoResponse {
+    pub configured: bool,
+    pub path: Option<String>,
+    pub format: Option<String>,
+    pub min: Option<u64>,
+    pub max: Option<u64>,
+    pub prefix_len: Option<u8>,
+    pub value_len: Option<u8>,
+    pub num_records: Option<u64>,
 }
 
 // -------------------------------- Templates -------------------------------- //
