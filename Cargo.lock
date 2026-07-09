@@ -12863,6 +12863,8 @@ dependencies = [
  "humantime",
  "tari_crypto",
  "tari_ootle_wallet_crypto",
+ "tari_template_lib_types",
+ "tempfile",
  "tokio",
 ]
 
