@@ -144,7 +144,7 @@ impl<Wallet> IndexerProvider<Wallet> {
     pub async fn fetch_unspent_utxos(
         &self,
         resource_address: ResourceAddress,
-        tag_and_nonce_pairs: Vec<(UtxoTag, RistrettoPublicKeyBytes)>,
+        tag_and_nonce_pairs: &[(UtxoTag, RistrettoPublicKeyBytes)],
     ) -> ProviderResult<Vec<(UtxoId, Utxo)>> {
         const MAX_PAIRS_PER_REQUEST: usize = 1000;
         if tag_and_nonce_pairs.is_empty() {

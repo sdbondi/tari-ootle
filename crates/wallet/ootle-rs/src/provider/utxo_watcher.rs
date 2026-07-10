@@ -155,7 +155,10 @@ impl StealthUtxoStream {
                             }
                         }
                         if let Some(eos) = eos {
-                            let Some(shard) = current_shard else {
+                            // Take the shard so a following `EndOfShard` (or any frame) that is not
+                            // preceded by a fresh `StartOfShard` errors out rather than being
+                            // misattributed to this shard and corrupting its cursor.
+                            let Some(shard) = current_shard.take() else {
                                 yield Err(UtxoWatcherError::DecodeError(
                                     "EndOfShard received before any StartOfShard".to_string(),
                                 ));
