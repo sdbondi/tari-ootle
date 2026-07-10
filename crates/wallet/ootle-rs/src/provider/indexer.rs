@@ -13,6 +13,7 @@ use tari_indexer_client::{
 };
 use tari_ootle_common_types::{
     Epoch,
+    NumPreshards,
     engine_types::{
         Utxo,
         commit_result::ExecuteResult,
@@ -98,6 +99,14 @@ impl<Wallet> IndexerProvider<Wallet> {
     pub async fn get_epoch(&self) -> ProviderResult<Epoch> {
         let resp = self.client.get_network_info().await?;
         Ok(resp.epoch)
+    }
+
+    /// The number of preshards the network is partitioned into. Needed to enumerate the full shard
+    /// set when resuming a [`ShardCursor`](crate::provider::ShardCursor), since the UTXO update
+    /// stream emits nothing for shards with no updates.
+    pub async fn get_num_preshards(&self) -> ProviderResult<NumPreshards> {
+        let resp = self.client.get_network_sync_state().await?;
+        Ok(resp.network_desc.num_preshards)
     }
 
     /// Subscribe to a filtered stream of template-emitted events via SSE.
