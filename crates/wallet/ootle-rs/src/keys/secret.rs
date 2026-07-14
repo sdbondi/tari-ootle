@@ -10,15 +10,33 @@ use tari_crypto::{
 };
 use tari_ootle_address::{Network, OotleAddress};
 use tari_ootle_common_types::{base_layer_hashing::encrypted_data_hasher, engine_types::crypto::OutputBody};
-use tari_ootle_wallet_crypto::{DecryptedData, StealthCryptoApi, encrypted_data, kdfs};
-use tari_template_lib_types::{EncryptedData, crypto::PedersenCommitmentBytes};
+use tari_ootle_wallet_crypto::{
+    DecryptedData,
+    StealthCryptoApi,
+    balance_proof::generate_stealth_balance_proof_signature,
+    encrypted_data,
+    kdfs,
+};
+use tari_template_lib_types::{
+    Amount,
+    EncryptedData,
+    crypto::PedersenCommitmentBytes,
+    stealth::{StealthInput, StealthInputsStatement, StealthTransferStatement},
+};
 
 use crate::{
     key_provider,
     key_provider::{DiffieHellmanKdfKeyProvider, LocalKeyProvider, OutputMaskProvider},
     signer,
     signer::StealthKeyPrehashSigner,
-    stealth::{BurnClaimKeyProvider, InputDecryptor, StealthProviderError, StealthResult},
+    stealth::{
+        BurnClaimKeyProvider,
+        BurnClaimStatementSpec,
+        InputDecryptor,
+        StealthOutputStatementFactory,
+        StealthProviderError,
+        StealthResult,
+    },
 };
 
 #[derive(Clone)]
@@ -175,6 +193,46 @@ impl BurnClaimKeyProvider for LocalKeyProvider<OotleSecretKey> {
             true,
         )?;
         Ok(decrypted)
+    }
+
+    async fn create_burn_claim_statement(
+        &self,
+        spec: BurnClaimStatementSpec,
+    ) -> StealthResult<StealthTransferStatement> {
+        let BurnClaimStatementSpec {
+            commitment,
+            encrypted_data,
+            sender_offset_public_key,
+            output,
+            revealed_output_amount,
+        } = spec;
+
+        let decrypted = self
+            .decrypt_burn_claim_output(&encrypted_data, &commitment, &sender_offset_public_key)
+            .await?;
+        let agg_input_mask = decrypted.mask().clone();
+
+        let (outputs_statement, agg_output_mask) = self
+            .generate_outputs_statement(vec![output], revealed_output_amount)
+            .await?;
+
+        // The single stealth input is the burn UTXO minted by the `claim_burn` instruction, which the
+        // instruction itself authorises — hence a bare commitment with no witness.
+        let inputs_statement = StealthInputsStatement::new(vec![StealthInput::from(commitment)], Amount::zero());
+
+        let balance_proof = generate_stealth_balance_proof_signature(
+            &agg_input_mask,
+            &agg_output_mask,
+            &inputs_statement,
+            &outputs_statement,
+        );
+
+        Ok(StealthTransferStatement {
+            inputs_statement,
+            outputs_statement,
+            balance_proof: Some(balance_proof),
+            covenant_claims: Vec::new(),
+        })
     }
 }
 

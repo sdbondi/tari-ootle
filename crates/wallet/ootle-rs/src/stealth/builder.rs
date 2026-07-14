@@ -5,23 +5,20 @@ use std::collections::HashMap;
 
 use indexmap::IndexSet;
 use ootle_byte_type::FromByteType;
-use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_ootle_common_types::engine_types::{stealth::validate_transfer, substate::SubstateId};
-use tari_ootle_wallet_crypto::balance_proof::{
-    generate_stealth_balance_proof_signature,
-    validate_balance_proof_signature,
-};
 use tari_template_lib_types::{
     Amount,
     ResourceAddress,
     UtxoAddress,
-    stealth::{StealthInput, StealthInputsStatement, StealthTransferStatement},
+    stealth::{StealthInput, StealthTransferStatement},
 };
 
 use crate::{
     Address,
     provider::{Provider, WalletProvider},
     stealth::{
+        ResolvedStealthInput,
+        ResolvedStealthTransferSpec,
         SignatureRequirements,
         StealthSignerRequirement,
         error::{InvalidStealthInputError, StealthProviderError},
@@ -58,8 +55,40 @@ impl<'a, P: Provider> StealthTransfer<'a, P> {
 
 impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
     /// Build the stealth transfer statement without constructing the transaction
-    #[allow(clippy::too_many_lines)]
-    pub async fn prepare(self) -> WalletResult<(StealthTransferStatement, SignatureRequirements)> {
+    pub async fn prepare(mut self) -> WalletResult<(StealthTransferStatement, SignatureRequirements)> {
+        let total_output_amount = self.spec.total_output_amount();
+        let total_revealed_input = self.spec.revealed_input_amount;
+
+        let (resolved_inputs, signatures) = self.resolve_inputs().await?;
+
+        let spec = ResolvedStealthTransferSpec {
+            inputs: resolved_inputs,
+            revealed_input_amount: total_revealed_input,
+            outputs: self.spec.outputs,
+            revealed_output_amount: self.spec.revealed_output_amount,
+        };
+
+        let transfer = self.provider.wallet().create_transfer_statement(spec).await?;
+
+        if let Err(err) = validate_transfer(&transfer, None) {
+            tracing::warn!("The constructed stealth transfer is unbalanced: {}", err);
+            return Err(StealthProviderError::UnbalancedTransfer {
+                total_revealed_input,
+                output_amount: total_output_amount,
+            }
+            .into());
+        }
+
+        Ok((transfer, signatures))
+    }
+
+    /// Fetch each input's UTXO substate and pair it with the output body its mask is recovered from,
+    /// deriving the transfer's signature requirements along the way.
+    ///
+    /// This is the network-dependent, key-independent half of [`prepare`](Self::prepare): everything
+    /// here is public material, so it stays on this side of the
+    /// [`StealthStatementProvider`](crate::stealth::StealthStatementProvider) boundary.
+    async fn resolve_inputs(&mut self) -> WalletResult<(Vec<ResolvedStealthInput>, SignatureRequirements)> {
         let substate_id_to_addr_map = self
             .spec
             .inputs_to_spend
@@ -67,7 +96,7 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
             .map(|(addr, i)| {
                 (
                     SubstateId::from(UtxoAddress::new(self.spec.resource_address, i.commitment.into())),
-                    addr,
+                    addr.clone(),
                 )
             })
             .collect::<HashMap<_, _>>();
@@ -89,8 +118,8 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
         let mut required_signers = IndexSet::with_capacity(found_substates.len());
         let mut seal_signer = None;
         let must_sign_with_account_key = self.spec.revealed_input_amount.is_positive();
+        let mut resolved_inputs = Vec::with_capacity(found_substates.len());
 
-        let mut agg_input_mask = RistrettoSecretKey::default();
         for (id, substate) in found_substates {
             // TODO: work on the error types
             let Some(address) = id.as_utxo_address() else {
@@ -127,7 +156,7 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
                 }
                 .into());
             };
-            let Some(spender_addr) = substate_id_to_addr_map.get(&id).copied() else {
+            let Some(spender_addr) = substate_id_to_addr_map.get(&id) else {
                 tracing::warn!(
                     "The provider returned a substate that we did not request: {id}. We'll continue but that should \
                      never happen!"
@@ -140,54 +169,14 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
                 required_signers.insert(StealthSignerRequirement::new(spender_addr.clone(), public_nonce));
             }
 
-            let commitment = address.id().into_commitment_bytes();
-
-            let decrypted = self
-                .provider
-                .wallet()
-                .decrypt_input_data(&commitment, input.output(), true)
-                .await?;
-
-            agg_input_mask = &agg_input_mask + decrypted.mask();
-        }
-
-        let total_output_amount = self.spec.total_output_amount();
-        let total_revealed_input = self.spec.revealed_input_amount;
-
-        let (outputs_statement, agg_output_mask) = self
-            .provider
-            .wallet()
-            .generate_outputs_statement(self.spec.outputs, self.spec.revealed_output_amount)
-            .await?;
-
-        let inputs_statement = StealthInputsStatement {
-            inputs: self.spec.inputs_to_spend.into_values().collect(),
-            revealed_amount: total_revealed_input,
-        };
-
-        // If the transfer does not use any stealth inputs or outputs, no balance proof is required.
-        let requires_balance_proof = !inputs_statement.inputs.is_empty() || !outputs_statement.outputs.is_empty();
-
-        let balance_proof = requires_balance_proof.then(|| {
-            generate_stealth_balance_proof_signature(
-                &agg_input_mask,
-                &agg_output_mask,
-                &inputs_statement,
-                &outputs_statement,
-            )
-        });
-
-        if let Some(balance_proof) = &balance_proof {
-            // Check that the provided inputs and outputs balance
-            // We assume that the code has otherwise generated valid proofs, so the only reason this can fail
-            // is if the input values and output values do not balance.
-            if !validate_balance_proof_signature(balance_proof, &inputs_statement, &outputs_statement) {
-                return Err(StealthProviderError::UnbalancedTransfer {
-                    total_revealed_input,
-                    output_amount: total_output_amount,
+            let Some(to_spend) = self.spec.inputs_to_spend.remove(spender_addr) else {
+                return Err(StealthProviderError::UnexpectedError {
+                    details: format!("No stealth input to spend for resolved address {spender_addr}"),
                 }
                 .into());
-            }
+            };
+
+            resolved_inputs.push(ResolvedStealthInput::new(to_spend, input.output().clone()));
         }
 
         let signatures = if must_sign_with_account_key {
@@ -196,23 +185,7 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
             SignatureRequirements::new_opt_with_seal_signer(required_signers, seal_signer)
         };
 
-        let transfer = StealthTransferStatement {
-            inputs_statement,
-            outputs_statement,
-            balance_proof,
-            covenant_claims: Vec::new(),
-        };
-
-        if let Err(err) = validate_transfer(&transfer, None) {
-            tracing::warn!("The constructed stealth transfer is unbalanced: {}", err);
-            return Err(StealthProviderError::UnbalancedTransfer {
-                total_revealed_input,
-                output_amount: total_output_amount,
-            }
-            .into());
-        }
-
-        Ok((transfer, signatures))
+        Ok((resolved_inputs, signatures))
     }
 
     /// When the stealth transfer is executed, it will expect some revealed amount as input from a bucket.

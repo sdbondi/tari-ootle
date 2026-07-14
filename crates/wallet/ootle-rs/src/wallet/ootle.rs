@@ -5,19 +5,17 @@ use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use tari_crypto::ristretto::{RistrettoPublicKey, RistrettoSecretKey};
-use tari_ootle_common_types::engine_types::crypto::OutputBody;
 use tari_ootle_transaction::{IntoSigned, Transaction, TransactionSignature, UnsealedTransaction, UnsignedTransaction};
 use tari_ootle_wallet_crypto::DecryptedData;
 use tari_template_lib_types::{
-    Amount,
     EncryptedData,
     crypto::{PedersenCommitmentBytes, RistrettoPublicKeyBytes},
-    stealth::StealthOutputsStatement,
+    stealth::StealthTransferStatement,
 };
 
 use crate::{
     signer,
-    stealth::{Output, SignatureRequirements},
+    stealth::{BurnClaimStatementSpec, ResolvedStealthTransferSpec, SignatureRequirements},
     transaction::TransactionSealSigner,
     types::Address,
     wallet::{NetworkWallet, WalletStealthAuthorizer, error::WalletError, traits::WalletKeyProvider},
@@ -116,12 +114,12 @@ impl OotleWallet {
         self.key_providers.keys()
     }
 
-    pub async fn decrypt_input_data(
+    /// Build the complete stealth transfer statement for `spec` using the default key provider.
+    /// See [`crate::stealth::StealthStatementProvider::create_transfer_statement`].
+    pub async fn create_transfer_statement(
         &self,
-        commitment: &PedersenCommitmentBytes,
-        input: &OutputBody,
-        skip_memo: bool,
-    ) -> WalletResult<DecryptedData> {
+        spec: ResolvedStealthTransferSpec,
+    ) -> WalletResult<StealthTransferStatement> {
         let address = self.default_address();
         let signer = self
             .key_providers
@@ -129,24 +127,8 @@ impl OotleWallet {
             .ok_or_else(|| WalletError::KeyProviderNotFound {
                 address: address.clone(),
             })?;
-        let decrypted_data = signer.decrypt_input_data(commitment, input, skip_memo).await?;
-        Ok(decrypted_data)
-    }
-
-    pub async fn generate_outputs_statement(
-        &self,
-        specs: Vec<Output>,
-        revealed_output_amount: Amount,
-    ) -> WalletResult<(StealthOutputsStatement, RistrettoSecretKey)> {
-        let address = self.default_address();
-        let signer = self
-            .key_providers
-            .get(address)
-            .ok_or_else(|| WalletError::KeyProviderNotFound {
-                address: address.clone(),
-            })?;
-        let (statement, agg_output_mask) = signer.generate_outputs_statement(specs, revealed_output_amount).await?;
-        Ok((statement, agg_output_mask))
+        let statement = signer.create_transfer_statement(spec).await?;
+        Ok(statement)
     }
 
     /// Derive the L1 burn-claim stealth secret `s = H(p·R) + p` using the default key provider.
@@ -185,6 +167,23 @@ impl OotleWallet {
             .decrypt_burn_claim_output(encrypted_data, commitment, sender_offset_public_key)
             .await?;
         Ok(decrypted)
+    }
+
+    /// Build the statement that spends a minted burn UTXO using the default key provider.
+    /// See [`crate::stealth::BurnClaimKeyProvider::create_burn_claim_statement`].
+    pub async fn create_burn_claim_statement(
+        &self,
+        spec: BurnClaimStatementSpec,
+    ) -> WalletResult<StealthTransferStatement> {
+        let address = self.default_address();
+        let signer = self
+            .key_providers
+            .get(address)
+            .ok_or_else(|| WalletError::KeyProviderNotFound {
+                address: address.clone(),
+            })?;
+        let statement = signer.create_burn_claim_statement(spec).await?;
+        Ok(statement)
     }
 
     pub fn stealth_authorizer(&self, required_signatures: SignatureRequirements) -> WalletStealthAuthorizer<'_, Self> {

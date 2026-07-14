@@ -5,11 +5,14 @@ use std::{num::NonZeroU64, ops::Not};
 
 use indexmap::IndexSet;
 use tari_crypto::ristretto::RistrettoPublicKey;
+use tari_ootle_common_types::engine_types::crypto::OutputBody;
 use tari_ootle_wallet_crypto::{memo::Memo, pay_to::PayTo};
 use tari_template_lib_types::{
+    Amount,
+    EncryptedData,
     ResourceAddress,
-    crypto::UtxoTag,
-    stealth::{SpendCondition, TemplateFunction},
+    crypto::{PedersenCommitmentBytes, UtxoTag},
+    stealth::{SpendCondition, StealthInput, TemplateFunction},
 };
 
 use crate::Address;
@@ -185,6 +188,73 @@ impl Output {
         self.utxo_tag = Some(utxo_tag);
         self
     }
+}
+
+/// A stealth input resolved against the network and ready for statement construction.
+///
+/// Resolving an input — fetching its UTXO substate, rejecting frozen or burnt ones and recovering its
+/// public nonce — needs network access but no keys, so it happens on the caller's side of
+/// [`StealthStatementProvider`](crate::stealth::StealthStatementProvider). What remains is
+/// key-dependent: recovering the input's mask from `output`.
+#[derive(Debug, Clone)]
+pub struct ResolvedStealthInput {
+    /// The input as it appears in the statement: the commitment being spent plus the spend witness
+    /// selecting its authorisation path.
+    pub input: StealthInput,
+    /// The on-chain output body the input's mask is recovered from.
+    pub output: OutputBody,
+}
+
+impl ResolvedStealthInput {
+    pub fn new(input: StealthInput, output: OutputBody) -> Self {
+        Self { input, output }
+    }
+
+    pub fn commitment(&self) -> &PedersenCommitmentBytes {
+        &self.input.commitment
+    }
+}
+
+/// A stealth transfer whose inputs are resolved, ready to be turned into a
+/// [`StealthTransferStatement`](tari_template_lib_types::stealth::StealthTransferStatement) by a
+/// [`StealthStatementProvider`](crate::stealth::StealthStatementProvider).
+#[derive(Debug, Clone)]
+pub struct ResolvedStealthTransferSpec {
+    pub inputs: Vec<ResolvedStealthInput>,
+    /// Revealed amount the transfer consumes from a bucket.
+    pub revealed_input_amount: Amount,
+    pub outputs: Vec<Output>,
+    /// Revealed amount the transfer pays out, e.g. to cover a fee.
+    pub revealed_output_amount: Amount,
+}
+
+impl ResolvedStealthTransferSpec {
+    pub fn total_output_amount(&self) -> Amount {
+        let stealth_output_total: Amount = self.outputs.iter().map(|o| Amount::from(o.amount.get())).sum();
+        stealth_output_total + self.revealed_output_amount
+    }
+
+    /// Whether the transfer needs a balance proof. A transfer with no stealth inputs and no stealth
+    /// outputs moves only revealed value and has nothing to balance.
+    pub fn requires_balance_proof(&self) -> bool {
+        !self.inputs.is_empty() || !self.outputs.is_empty()
+    }
+}
+
+/// The claimed-funds side of an L1 burn claim, ready to be turned into a statement by
+/// [`BurnClaimKeyProvider::create_burn_claim_statement`](crate::stealth::BurnClaimKeyProvider::create_burn_claim_statement).
+#[derive(Debug, Clone)]
+pub struct BurnClaimStatementSpec {
+    /// The burn UTXO's commitment, taken from the L1 burn proof.
+    pub commitment: PedersenCommitmentBytes,
+    /// The L1 output's encrypted data, which the burn UTXO's mask is recovered from.
+    pub encrypted_data: EncryptedData,
+    /// `R`, the public nonce the L1 UTXO was burnt with.
+    pub sender_offset_public_key: RistrettoPublicKey,
+    /// The stealth output the claimed funds are paid into.
+    pub output: Output,
+    /// Revealed amount reserved to pay the claim transaction's fee.
+    pub revealed_output_amount: Amount,
 }
 
 #[cfg(test)]

@@ -22,6 +22,7 @@ use tari_ootle_wallet_crypto::{
     OutputWitness,
     StealthCryptoApi,
     StealthOutputWitness,
+    balance_proof::{generate_stealth_balance_proof_signature, validate_balance_proof_signature},
     bullet_proof::generate_extended_bullet_proof,
     stealth::pay_to_output_authorization,
     viewable_balance_proof::generate_elgamal_viewable_balance_proof,
@@ -30,7 +31,13 @@ use tari_template_lib_types::{
     Amount,
     EncryptedData,
     crypto::RistrettoPublicKeyBytes,
-    stealth::{StealthOutputsStatement, StealthUnspentOutput, UnspentOutput},
+    stealth::{
+        StealthInputsStatement,
+        StealthOutputsStatement,
+        StealthTransferStatement,
+        StealthUnspentOutput,
+        UnspentOutput,
+    },
 };
 use tokio::task;
 
@@ -39,7 +46,15 @@ use crate::{
     key_provider::{LocalKeyProvider, OutputMaskProvider},
     signer,
     signer::StealthKeyPrehashSigner,
-    stealth::{Output, StealthOutputStatementFactory, StealthProviderError, StealthResult},
+    stealth::{
+        InputDecryptor,
+        Output,
+        ResolvedStealthTransferSpec,
+        StealthOutputStatementFactory,
+        StealthProviderError,
+        StealthResult,
+        StealthStatementProvider,
+    },
     transaction::{TransactionSigner, TransactionStealthKeySigner},
     wallet::TransactionAuthorization,
 };
@@ -123,6 +138,72 @@ impl<C: OutputMaskProvider + Send + Sync> StealthOutputStatementFactory for Loca
             },
             agg_output_mask,
         ))
+    }
+}
+
+#[async_trait]
+impl<C> StealthStatementProvider for LocalKeyProvider<C>
+where LocalKeyProvider<C>: StealthOutputStatementFactory + InputDecryptor + Send + Sync
+{
+    async fn create_transfer_statement(
+        &self,
+        spec: ResolvedStealthTransferSpec,
+    ) -> StealthResult<StealthTransferStatement> {
+        let total_output_amount = spec.total_output_amount();
+        let total_revealed_input = spec.revealed_input_amount;
+        let requires_balance_proof = spec.requires_balance_proof();
+
+        let ResolvedStealthTransferSpec {
+            inputs,
+            revealed_input_amount,
+            outputs,
+            revealed_output_amount,
+        } = spec;
+
+        let mut agg_input_mask = RistrettoSecretKey::default();
+        let mut statement_inputs = Vec::with_capacity(inputs.len());
+        for resolved in inputs {
+            let decrypted = self
+                .decrypt_input_data(resolved.commitment(), &resolved.output, true)
+                .await?;
+            agg_input_mask = &agg_input_mask + decrypted.mask();
+            statement_inputs.push(resolved.input);
+        }
+
+        let (outputs_statement, agg_output_mask) =
+            self.generate_outputs_statement(outputs, revealed_output_amount).await?;
+
+        let inputs_statement = StealthInputsStatement {
+            inputs: statement_inputs,
+            revealed_amount: revealed_input_amount,
+        };
+
+        let balance_proof = requires_balance_proof.then(|| {
+            generate_stealth_balance_proof_signature(
+                &agg_input_mask,
+                &agg_output_mask,
+                &inputs_statement,
+                &outputs_statement,
+            )
+        });
+
+        if let Some(balance_proof) = &balance_proof {
+            // Every proof above is generated from our own key material, so a balance proof that does not
+            // verify means the caller's input and output values do not balance.
+            if !validate_balance_proof_signature(balance_proof, &inputs_statement, &outputs_statement) {
+                return Err(StealthProviderError::UnbalancedTransfer {
+                    total_revealed_input,
+                    output_amount: total_output_amount,
+                });
+            }
+        }
+
+        Ok(StealthTransferStatement {
+            inputs_statement,
+            outputs_statement,
+            balance_proof,
+            covenant_claims: Vec::new(),
+        })
     }
 }
 

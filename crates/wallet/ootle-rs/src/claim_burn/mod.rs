@@ -47,19 +47,14 @@ use tari_crypto::{
 pub use tari_ootle_common_types::engine_types::confidential::{ClaimBurnOutputData, MinotariBurnClaimProof};
 use tari_ootle_common_types::engine_types::stealth::validate_transfer;
 use tari_ootle_transaction::{Transaction, UnsealedTransaction, UnsignedTransaction};
-use tari_ootle_wallet_crypto::{StealthCryptoApi, balance_proof::generate_stealth_balance_proof_signature, memo::Memo};
-use tari_template_lib_types::{
-    Amount,
-    EncryptedData,
-    constants::TARI_TOKEN,
-    stealth::{StealthInput, StealthInputsStatement, StealthTransferStatement},
-};
+use tari_ootle_wallet_crypto::{StealthCryptoApi, memo::Memo};
+use tari_template_lib_types::{Amount, EncryptedData, constants::TARI_TOKEN};
 
 use crate::{
     Address,
     provider::{Provider, WalletProvider},
     signer,
-    stealth::{Output, StealthProviderError},
+    stealth::{BurnClaimStatementSpec, Output, StealthProviderError},
     transaction::TransactionSealSigner,
     wallet::{NetworkWallet, OotleWallet, WalletResult},
 };
@@ -197,29 +192,15 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> ClaimBurn<'a, P> {
         let recipient = recipient.unwrap_or_else(|| claimant.clone());
         let memo = memo.unwrap_or_else(|| Memo::new_message(DEFAULT_CLAIM_MEMO).expect("valid memo"));
         let output = Output::new(recipient, TARI_TOKEN, final_amount).with_memo(memo);
-        let (outputs_statement, agg_output_mask) = wallet
-            .generate_outputs_statement(vec![output], Amount::from(max_fee))
+        let transfer = wallet
+            .create_burn_claim_statement(BurnClaimStatementSpec {
+                commitment: claim_proof.commitment,
+                encrypted_data: encrypted_data.clone(),
+                sender_offset_public_key,
+                output,
+                revealed_output_amount: Amount::from(max_fee),
+            })
             .await?;
-
-        // The single stealth input is the burn UTXO minted by the `claim_burn` instruction. Its
-        // commitment comes from the proof and its mask from decrypting the L1 output.
-        let inputs_statement =
-            StealthInputsStatement::new(vec![StealthInput::from(claim_proof.commitment)], Amount::zero());
-        let agg_input_mask = decrypted.mask().clone();
-
-        let balance_proof = generate_stealth_balance_proof_signature(
-            &agg_input_mask,
-            &agg_output_mask,
-            &inputs_statement,
-            &outputs_statement,
-        );
-
-        let transfer = StealthTransferStatement {
-            inputs_statement,
-            outputs_statement,
-            balance_proof: Some(balance_proof),
-            covenant_claims: Vec::new(),
-        };
 
         // Sanity check the constructed transfer balances before paying any fees.
         if let Err(err) = validate_transfer(&transfer, None) {
