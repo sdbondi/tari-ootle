@@ -18,6 +18,7 @@ pub enum StoreKey {
     BaseLayerLastEpochHash,
     ConfiguredIsInitialized,
     ConfiguredCurrentEpoch,
+    ConfiguredValidatorShardKeys,
 }
 
 impl StoreKey {
@@ -29,6 +30,7 @@ impl StoreKey {
             Self::BaseLayerLastEpochHash => b"base_layer.last_epoch_hash",
             Self::ConfiguredIsInitialized => b"configured_oracle.is_initialized",
             Self::ConfiguredCurrentEpoch => b"configured_oracle.current_epoch",
+            Self::ConfiguredValidatorShardKeys => b"configured_oracle.validator_shard_keys",
         }
     }
 }

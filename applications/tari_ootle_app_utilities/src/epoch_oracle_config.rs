@@ -105,7 +105,10 @@ impl ConfiguredOracleConfig {
                 bail!("No configured oracle source set: specify either `config_file` or `config_json`")
             },
             (None, Some(json)) => {
-                return serde_json5::from_str(json).context("Failed to parse inline oracle `config_json`");
+                let config: configured::Config =
+                    serde_json5::from_str(json).context("Failed to parse inline oracle `config_json`")?;
+                config.validate().context("Invalid inline oracle `config_json`")?;
+                return Ok(config);
             },
             (Some(config_file), None) => config_file,
         };
@@ -116,7 +119,7 @@ impl ConfiguredOracleConfig {
         let mut file = File::open(config_file)
             .await
             .with_context(|| format!("Failed to open config file {}", config_file.display()))?;
-        let config = match ext.as_str() {
+        let config: configured::Config = match ext.as_str() {
             "toml" => {
                 let mut s = String::with_capacity(1024);
                 file.read_to_string(&mut s)
@@ -130,6 +133,10 @@ impl ConfiguredOracleConfig {
             },
             ext => bail!("Failed to load oracle config. Unsupported file extension {}", ext),
         };
+
+        config
+            .validate()
+            .with_context(|| format!("Invalid oracle config file {}", config_file.display()))?;
 
         Ok(config)
     }
@@ -186,6 +193,66 @@ mod tests {
         let oracle = configured.load().await.unwrap();
         assert_eq!(oracle.initial_epoch, tari_ootle_common_types::Epoch(7));
         assert_eq!(oracle.epoch_time, Some(Duration::from_secs(120)));
+    }
+
+    #[tokio::test]
+    async fn invalid_config_json_is_rejected_at_load() {
+        // The claim key rotation lands before the validator activates at epoch 6.
+        let configured = ConfiguredOracleConfig {
+            config_file: None,
+            config_json: Some(
+                r#"{
+                    "epoch_time": 120,
+                    "initial_epoch": 0,
+                    "base_time": "2026-02-23T13:08:42+0000",
+                    "validators": [{
+                        "public_key": "d6da35adba3642e7d1343985d5e4f123f5230a74c5480bf2857aabe50bcd6362",
+                        "claim_key": "3c6eebdcb2939ebad646a9d464874005aa979f1e575b72cd2a690289f10e5e50",
+                        "shard_group": {"start": 1, "end_inclusive": 256},
+                        "registration_epoch": 5,
+                        "claim_key_changes": [
+                            {"effective_epoch": 3, "claim_key": "568adadd2744c7bb3ae4c58e26e83a49a5b5af3380edfcd6b5d7af315580552f"}
+                        ]
+                    }]
+                }"#
+                .to_string(),
+            ),
+        };
+
+        let err = configured.load().await.unwrap_err().to_string();
+        assert!(
+            err.contains("Invalid inline oracle `config_json`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_key_changes_round_trip_from_config_json() {
+        let configured = ConfiguredOracleConfig {
+            config_file: None,
+            config_json: Some(
+                r#"{
+                    "epoch_time": 120,
+                    "initial_epoch": 0,
+                    "base_time": "2026-02-23T13:08:42+0000",
+                    "validators": [{
+                        "public_key": "d6da35adba3642e7d1343985d5e4f123f5230a74c5480bf2857aabe50bcd6362",
+                        "claim_key": "3c6eebdcb2939ebad646a9d464874005aa979f1e575b72cd2a690289f10e5e50",
+                        "shard_group": {"start": 1, "end_inclusive": 256},
+                        "registration_epoch": 5,
+                        "claim_key_changes": [
+                            {"effective_epoch": 100, "claim_key": "568adadd2744c7bb3ae4c58e26e83a49a5b5af3380edfcd6b5d7af315580552f"}
+                        ]
+                    }]
+                }"#
+                .to_string(),
+            ),
+        };
+
+        let oracle = configured.load().await.unwrap();
+        let changes = &oracle.validators[0].claim_key_changes;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].effective_epoch, tari_ootle_common_types::Epoch(100));
     }
 
     #[tokio::test]

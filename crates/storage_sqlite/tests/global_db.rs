@@ -69,6 +69,85 @@ fn set_committee_shard_group(
         .unwrap();
 }
 
+/// A claim key rotation is expressed as a second registration row for the same validator: same shard key, a later
+/// start epoch, and the new claim key. The read that resolves it is consensus-critical — a voter looks up the
+/// proposer's claim key to re-derive its fee pool address and recompute the state merkle root — so it must return
+/// the key that was in effect for the epoch being validated, not the latest one.
+#[test]
+fn rotated_claim_key_resolves_per_epoch() {
+    let db = create_db();
+    let mut tx = db.create_transaction().unwrap();
+    let mut validator_nodes = db.validator_nodes(&mut tx);
+
+    let pk = new_public_key();
+    let pk_bytes = pk.to_byte_type();
+    let shard_key = derived_substate_address(&pk);
+    let old_claim_key = new_public_key().to_byte_type();
+    let new_claim_key = new_public_key().to_byte_type();
+
+    // Insert both rows before any committee assignment runs, as happens on a node rebuilding its global DB from
+    // scratch. Assignment must still resolve each epoch to the row that was in effect for it.
+    for (start_epoch, claim_key) in [(Epoch(10), old_claim_key), (Epoch(20), new_claim_key)] {
+        validator_nodes
+            .insert_validator_node(
+                pk.clone().into(),
+                pk_bytes,
+                shard_key,
+                start_epoch,
+                claim_key,
+                VotePower::of(1),
+            )
+            .unwrap();
+    }
+
+    for epoch in 10..=25 {
+        set_committee_shard_group(
+            &mut validator_nodes,
+            &pk,
+            ShardGroup::all_shards(NumPreshards::P256),
+            Epoch(epoch),
+        );
+    }
+
+    for epoch in 10..20 {
+        assert_eq!(
+            validator_nodes
+                .get_by_public_key(Epoch(epoch), &pk_bytes)
+                .unwrap()
+                .fee_claim_public_key,
+            old_claim_key,
+            "epoch {epoch} precedes the rotation and must still resolve to the old claim key"
+        );
+    }
+    for epoch in 20..=25 {
+        assert_eq!(
+            validator_nodes
+                .get_by_public_key(Epoch(epoch), &pk_bytes)
+                .unwrap()
+                .fee_claim_public_key,
+            new_claim_key,
+            "epoch {epoch} follows the rotation"
+        );
+    }
+
+    // The extra row must not make the validator count twice, which would change committee sizing.
+    assert_eq!(validator_nodes.count(Epoch(20)).unwrap(), 1);
+    assert_eq!(
+        validator_nodes
+            .get_all_registered_within_start_epoch(Epoch(20))
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        validator_nodes
+            .get_committee_for_shard_group(Epoch(20), ShardGroup::all_shards(NumPreshards::P256), 100)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
 #[test]
 fn insert_and_get_within_epoch() {
     let db = create_db();
