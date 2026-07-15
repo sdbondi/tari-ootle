@@ -26,83 +26,75 @@ impl StealthTransactionLimitsValidator {
     }
 }
 
+/// A stealth cap that was exceeded, independent of any transaction identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StealthLimitViolation {
+    pub limit: &'static str,
+    pub max: usize,
+    pub actual: usize,
+}
+
+/// Check stealth work against [`STEALTH_LIMITS`].
+///
+/// Depends only on the instructions, never on signatures, so it can run against
+/// a transaction that has not been sealed yet. That matters for anything that
+/// must reject an over-cap transaction *before* asking a person to approve it:
+/// the caps are otherwise only checkable once the transaction is sealed, which
+/// is after approval.
+pub fn check_stealth_limits(
+    fee_instructions: &[Instruction],
+    instructions: &[Instruction],
+) -> Result<(), StealthLimitViolation> {
+    fn check(limit: &'static str, actual: usize, max: usize) -> Result<(), StealthLimitViolation> {
+        if actual > max {
+            return Err(StealthLimitViolation { limit, max, actual });
+        }
+        Ok(())
+    }
+
+    let mut transfers = 0usize;
+    let mut inputs = 0usize;
+    let mut outputs = 0usize;
+
+    for instruction in instructions.iter().chain(fee_instructions) {
+        if let Instruction::StealthTransfer { statement, .. } = instruction {
+            let transfer_inputs = statement.inputs_statement.inputs.len();
+            let transfer_outputs = statement.outputs_statement.outputs.len();
+            // Mirror the engine's per-transfer limits (check_stealth_transfer_limits) so a single oversized
+            // transfer is rejected at ingress rather than aborting during execution.
+            check("per-transfer inputs", transfer_inputs, STEALTH_LIMITS.max_inputs)?;
+            check("per-transfer outputs", transfer_outputs, STEALTH_LIMITS.max_outputs)?;
+            transfers += 1;
+            inputs += transfer_inputs;
+            outputs += transfer_outputs;
+        }
+    }
+
+    check("transfers", transfers, STEALTH_LIMITS.max_transfers_per_transaction)?;
+    check("inputs", inputs, STEALTH_LIMITS.max_total_inputs_per_transaction)?;
+    check("outputs", outputs, STEALTH_LIMITS.max_total_outputs_per_transaction)?;
+    Ok(())
+}
+
 impl Validator<Transaction> for StealthTransactionLimitsValidator {
     type Context = ();
     type Error = TransactionValidationError;
 
     fn validate(&self, _context: &(), transaction: &Transaction) -> Result<(), Self::Error> {
-        let mut transfers = 0usize;
-        let mut inputs = 0usize;
-        let mut outputs = 0usize;
-
-        for instruction in transaction.instructions().iter().chain(transaction.fee_instructions()) {
-            if let Instruction::StealthTransfer { statement, .. } = instruction {
-                let transfer_inputs = statement.inputs_statement.inputs.len();
-                let transfer_outputs = statement.outputs_statement.outputs.len();
-                // Mirror the engine's per-transfer limits (check_stealth_transfer_limits) so a single oversized
-                // transfer is rejected at ingress rather than aborting during execution.
-                self.check(
-                    "per-transfer inputs",
-                    transfer_inputs,
-                    STEALTH_LIMITS.max_inputs,
-                    transaction,
-                )?;
-                self.check(
-                    "per-transfer outputs",
-                    transfer_outputs,
-                    STEALTH_LIMITS.max_outputs,
-                    transaction,
-                )?;
-                transfers += 1;
-                inputs += transfer_inputs;
-                outputs += transfer_outputs;
-            }
-        }
-
-        self.check(
-            "transfers",
-            transfers,
-            STEALTH_LIMITS.max_transfers_per_transaction,
-            transaction,
-        )?;
-        self.check(
-            "inputs",
-            inputs,
-            STEALTH_LIMITS.max_total_inputs_per_transaction,
-            transaction,
-        )?;
-        self.check(
-            "outputs",
-            outputs,
-            STEALTH_LIMITS.max_total_outputs_per_transaction,
-            transaction,
-        )?;
-        Ok(())
-    }
-}
-
-impl StealthTransactionLimitsValidator {
-    fn check(
-        &self,
-        limit: &'static str,
-        actual: usize,
-        max: usize,
-        transaction: &Transaction,
-    ) -> Result<(), TransactionValidationError> {
-        if actual > max {
+        check_stealth_limits(transaction.fee_instructions(), transaction.instructions()).map_err(|v| {
             let transaction_id = transaction.calculate_id();
             warn!(
                 target: LOG_TARGET,
-                "StealthTransactionLimitsValidator - FAIL: {transaction_id} stealth {limit} {actual} exceeds maximum {max}"
+                "StealthTransactionLimitsValidator - FAIL: {transaction_id} stealth {} {} exceeds maximum {}",
+                v.limit, v.actual, v.max
             );
-            return Err(TransactionValidationError::ExceedsStealthTransactionLimit {
+            TransactionValidationError::ExceedsStealthTransactionLimit {
                 transaction_id,
-                limit,
-                max,
-                actual,
-            });
-        }
-        Ok(())
+                limit: v.limit,
+                max: v.max,
+                actual: v.actual,
+            }
+        })
     }
 }
 

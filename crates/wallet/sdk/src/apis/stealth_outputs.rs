@@ -248,6 +248,22 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
         }
     }
 
+    /// Every stealth output held by a lock: both the inputs it locked for
+    /// spending and the change outputs created alongside them. Callers filter
+    /// by [`OutputStatus`] for the half they want.
+    ///
+    /// Returns `NotFound` when the lock holds no stealth outputs at all; use
+    /// `.optional()` where that is not an error.
+    pub fn get_locked_by_lock_id(
+        &self,
+        lock_id: WalletLockId,
+    ) -> Result<Vec<StealthOutputModel>, StealthOutputsApiError> {
+        let outputs = self
+            .store
+            .with_read_tx(|tx| tx.stealth_outputs_get_locked_by_lock_id(lock_id))?;
+        Ok(outputs)
+    }
+
     pub fn add_output(&self, output: &StealthOutputModel) -> Result<(), StealthOutputsApiError> {
         let mut tx = self.store.create_write_tx()?;
         tx.stealth_outputs_insert(output)?;

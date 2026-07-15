@@ -53,6 +53,7 @@ use tari_ootle_wallet_sdk::{
         BalanceChange,
         BalanceChangeSourceType,
         DerivedKeyIndex,
+        EffectiveStatus,
         KeyBranch,
         KeyId,
         KeyType,
@@ -123,6 +124,149 @@ pub struct CallInstructionRequest {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub max_epoch: Option<u64>,
+}
+
+/// Create a transaction request for a separately-permissioned principal to
+/// approve (issue #2343).
+///
+/// The transaction is frozen at creation: inputs are detected now, the seal
+/// flag is normalised now, and the resulting bytes are what an approval commits
+/// to and what submit seals. Nothing may rewrite them afterwards, so
+/// `detect_inputs` is honoured here rather than at submit.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct TransactionRequestCreateRequest {
+    pub transaction: UnsignedTransaction,
+    pub seal_signer: KeyId,
+    #[serde(default)]
+    pub other_signers: Vec<KeyId>,
+    /// Attempt to infer inputs and their dependencies from instructions. If false, the provided transaction must
+    /// contain the required inputs.
+    #[serde(default)]
+    pub detect_inputs: bool,
+    /// If true(default), detected inputs will omit versions allowing consensus to resolve input substates.
+    #[serde(default = "return_true")]
+    pub detect_inputs_use_unversioned: bool,
+    /// Locks holding this request's inputs. Their timeouts are extended to
+    /// outlive the approval window. Stealth spend keys are derived from these
+    /// at submit -- a caller cannot name them.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(type = "Array<number>"))]
+    pub lock_ids: Vec<WalletLockId>,
+    /// How long a human has to approve, in seconds. Defaults to the daemon's
+    /// configured window.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub ttl_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct TransactionRequestCreateResponse {
+    pub request_id: String,
+    /// Hash of the frozen bytes. An approval commits to this.
+    pub transaction_hash: String,
+    /// Unix timestamp (seconds).
+    pub expires_at: i64,
+}
+
+/// Net value movement for a stealth or confidential transfer, computed by the
+/// wallet from the request's locks.
+///
+/// A stealth transfer's instructions are commitments and range proofs, so a
+/// human cannot read the amount out of them. The wallet owns the masks and is
+/// the only party that can state what leaves the account.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct TransactionRequestValueSummary {
+    pub resource_address: ResourceAddress,
+    /// Total value of the inputs this request spends.
+    pub inputs_total: u64,
+    /// Total value returning to this wallet as change.
+    pub change_total: u64,
+    /// `inputs_total - change_total`: what actually leaves, before fees.
+    pub amount_leaving: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct TransactionRequestInfo {
+    pub request_id: String,
+    /// The frozen transaction, decoded for display. These are the exact bytes
+    /// an approval commits to.
+    pub transaction: UnsignedTransaction,
+    pub transaction_hash: String,
+    pub seal_signer: KeyId,
+    pub other_signers: Vec<KeyId>,
+    /// Admin-assigned name of the API key that created this request, or `None`
+    /// for a wallet session. Display only -- nothing authorises on it.
+    pub requested_by: Option<String>,
+    pub status: EffectiveStatus,
+    pub transaction_id: Option<TransactionId>,
+    /// `None` for an ordinary transaction, whose instructions are readable.
+    pub value_summary: Option<TransactionRequestValueSummary>,
+    /// Unix timestamp (seconds).
+    pub expires_at: i64,
+    /// Unix timestamp (seconds). `None` until approved.
+    pub approved_at: Option<i64>,
+    /// Unix timestamp (seconds).
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct TransactionRequestGetRequest {
+    pub request_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct TransactionRequestGetResponse {
+    pub request: TransactionRequestInfo,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct TransactionRequestListRequest {
+    /// Only return requests whose effective status matches.
+    #[serde(default)]
+    pub status: Option<EffectiveStatus>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct TransactionRequestListResponse {
+    pub requests: Vec<TransactionRequestInfo>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct TransactionRequestDecisionRequest {
+    pub request_id: String,
+    /// The hash the approver saw. When set, the request is only acted on if it
+    /// still hashes to this -- so a UI that rendered a stale request cannot
+    /// approve something other than what was displayed.
+    #[serde(default)]
+    pub transaction_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct TransactionRequestDecisionResponse {
+    pub request_id: String,
+    pub status: EffectiveStatus,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct TransactionRequestSubmitRequest {
+    pub request_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct TransactionRequestSubmitResponse {
+    pub transaction_id: TransactionId,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

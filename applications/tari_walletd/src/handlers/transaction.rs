@@ -6,13 +6,14 @@ use anyhow::anyhow;
 use axum_extra::headers::authorization::Bearer;
 use axum_jrpc::error::{JsonRpcError, JsonRpcErrorReason};
 use futures::{future, future::Either};
+use indexmap::IndexSet;
 use log::*;
 use ootle_byte_type::ToByteType;
 use tari_ootle_common_types::{Epoch, optional::Optional, response_status::ResponseErrorStatus};
 use tari_ootle_transaction::args;
 use tari_ootle_wallet_sdk::{
     apis::transaction::TransactionApiError,
-    models::{KeyId, TransactionContext, WalletEvent},
+    models::{KeyId, OutputStatus, StealthUtxoSpendKeyId, TransactionContext, WalletEvent, WalletLockId},
 };
 use tari_ootle_wallet_sdk_services::transaction_service::TransactionServiceError;
 use tari_ootle_walletd_client::{
@@ -116,6 +117,21 @@ pub async fn handle_submit(
     submit_inner(context, req, linked_accounts).await
 }
 
+/// Seal and submit an approved transaction request.
+///
+/// The request's own handler has already checked the approval and that the
+/// bytes still hash to what was approved, and it passes `detect_inputs: false`
+/// so nothing here rewrites them.
+pub(crate) async fn submit_inner_for_request(
+    context: &HandlerContext,
+    req: TransactionSubmitRequest,
+) -> Result<TransactionSubmitResponse, anyhow::Error> {
+    let linked_accounts = get_account_for_key(context.wallet_sdk(), req.seal_signer)
+        .map(|address| vec![address])
+        .unwrap_or_default();
+    submit_inner(context, req, linked_accounts).await
+}
+
 async fn submit_inner(
     context: &HandlerContext,
     req: TransactionSubmitRequest,
@@ -169,12 +185,22 @@ async fn submit_inner(
         .with_inputs(detected_inputs)
         .finish();
 
-    if !req.other_signers.is_empty() {
+    // Stealth inputs are spent with a key derived per-UTXO from the sender's
+    // account key and that UTXO's nonce. Derive the set from the locks rather
+    // than accepting it from the caller: the locked outputs are what this
+    // transaction actually spends, so a caller cannot ask the wallet to sign
+    // with a key of its choosing.
+    let stealth_signers = derive_stealth_signers(sdk, &req.lock_ids)?;
+
+    if !req.other_signers.is_empty() || !stealth_signers.is_empty() {
         let main_signer = sdk.key_manager_api().get_public_key(req.seal_signer)?;
         let main_signer_pk = main_signer.public_key.to_byte_type();
         let local_signer = sdk.signer_api().with_context(&main_signer_pk);
         for key in req.other_signers {
             transaction = local_signer.sign(key, transaction)?;
+        }
+        for key in &stealth_signers {
+            transaction = local_signer.sign_with_stealth_key(key, transaction)?;
         }
     }
 
@@ -203,6 +229,52 @@ async fn submit_inner(
         .map_err(map_transaction_submission_error)?;
 
     Ok(TransactionSubmitResponse { transaction_id })
+}
+
+/// The stealth spend keys needed to spend everything the given locks hold.
+///
+/// Derived from the wallet's own record of what each lock locked, never from
+/// the caller. `create_stealth_transfer_statement` returns an equivalent list
+/// to its caller, but a caller that could hand that list back would be naming
+/// the keys the wallet signs with; re-deriving here means the locked outputs
+/// are the only thing that decides.
+///
+/// A lock holding no stealth outputs (a revealed-only transfer, say) yields an
+/// empty set rather than an error.
+pub(crate) fn derive_stealth_signers(
+    sdk: &WalletSdk,
+    lock_ids: &[WalletLockId],
+) -> Result<Vec<StealthUtxoSpendKeyId>, anyhow::Error> {
+    let mut signers = IndexSet::new();
+
+    for lock_id in lock_ids {
+        let Some(outputs) = sdk.stealth_outputs_api().get_locked_by_lock_id(*lock_id).optional()? else {
+            continue;
+        };
+
+        for output in outputs {
+            // Only inputs being spent need a spend signature. The same lock
+            // also holds the change outputs it created (`LockedUnconfirmed`),
+            // which are not being spent by this transaction.
+            if !matches!(output.status, OutputStatus::LockedForSpend) {
+                continue;
+            }
+            // A view-only output has no spend key: the wallet can see it but
+            // cannot spend it, so a transaction that tries is malformed.
+            let account_key_id = output.owner_key_id.ok_or_else(|| {
+                invalid_request(format!(
+                    "Cannot spend view-only stealth output {} (lock {lock_id}): no owner key",
+                    output.commitment
+                ))
+            })?;
+            signers.insert(StealthUtxoSpendKeyId {
+                account_key_id,
+                public_nonce: output.sender_public_nonce,
+            });
+        }
+    }
+
+    Ok(signers.into_iter().collect())
 }
 
 /// Parses the request's variables, blobs and manifest source into instructions, mapping parse

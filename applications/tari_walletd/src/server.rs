@@ -37,6 +37,7 @@ use crate::handlers::{
     settings,
     swap_pools,
     transaction,
+    transaction_requests,
     validator,
     webrtc,
 };
@@ -148,6 +149,18 @@ async fn handler(
             "get_result" => call_handler(context, value, token, transaction::handle_get_result).await,
             "wait_result" => call_handler(context, value, token, transaction::handle_wait_result).await,
             "list" | "get_all" => call_handler(context, value, token, transaction::handle_get_all).await,
+            _ => value.method_not_found(&value.method).into_response(),
+        },
+        // Create / approve / submit are separately permissioned (issue #2343):
+        // a tool granted only `transaction_requests:create` cannot approve the
+        // requests it creates. Each handler authorises itself.
+        Some(("transaction_requests", method)) => match method {
+            "create" => call_handler(context, value, token, transaction_requests::handle_create).await,
+            "get" => call_handler(context, value, token, transaction_requests::handle_get).await,
+            "list" => call_handler(context, value, token, transaction_requests::handle_list).await,
+            "approve" => call_handler(context, value, token, transaction_requests::handle_approve).await,
+            "reject" => call_handler(context, value, token, transaction_requests::handle_reject).await,
+            "submit" => call_handler(context, value, token, transaction_requests::handle_submit).await,
             _ => value.method_not_found(&value.method).into_response(),
         },
         Some(("accounts", method)) => match method {

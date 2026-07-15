@@ -39,6 +39,8 @@ use crate::{
         OutputStatus,
         StealthOutputModel,
         SubstateModel,
+        TransactionRequestModel,
+        TransactionRequestStatus,
         UtxoUnspent,
         VaultModel,
         WalletEvent,
@@ -192,10 +194,50 @@ pub trait WalletStoreWriter: CommittableStore {
         is_frozen: Option<bool>,
     ) -> Result<(), WalletStorageError>;
 
+    // Transaction requests
+    /// Persist a frozen request. `unsigned_transaction` must already be
+    /// canonical: an approval commits to `transaction_hash`, and submit
+    /// re-checks it, so nothing may rewrite the bytes afterwards. The request
+    /// is born [`TransactionRequestStatus::Pending`] and expires
+    /// `ttl` from now.
+    #[allow(clippy::too_many_arguments)]
+    fn transaction_request_insert(
+        &mut self,
+        request_id: &str,
+        unsigned_transaction: &[u8],
+        transaction_hash: &str,
+        seal_signer: &str,
+        other_signers: &str,
+        lock_ids: &str,
+        requested_by: Option<&str>,
+        ttl: Duration,
+    ) -> Result<TransactionRequestModel, WalletStorageError>;
+
+    /// Move a request from `from` to `to`, returning the updated request.
+    ///
+    /// The `from` check and the write are a single conditional UPDATE, so
+    /// concurrent approvers resolve to one winner rather than both believing
+    /// they approved. A request not in `from` is left untouched and
+    /// [`WalletStorageError::UnexpectedState`] is returned.
+    fn transaction_request_transition(
+        &mut self,
+        request_id: &str,
+        from: TransactionRequestStatus,
+        to: TransactionRequestStatus,
+    ) -> Result<TransactionRequestModel, WalletStorageError>;
+
     // Locks
     fn locks_create(&mut self, timeout: Option<Duration>) -> Result<WalletLockId, WalletStorageError>;
 
     fn locks_delete(&mut self, lock_id: WalletLockId) -> Result<(), WalletStorageError>;
+
+    /// Set the lock's deadline to `timeout` from now, or `None` to make it
+    /// exempt from [`Self::locks_release_stale`] entirely. Used to hold inputs
+    /// across an approval window that outlives the deadline the
+    /// transfer-selection handler chose.
+    fn locks_set_timeout(&mut self, lock_id: WalletLockId, timeout: Option<Duration>)
+    -> Result<(), WalletStorageError>;
+
     fn locks_link_transaction(
         &mut self,
         lock_id: WalletLockId,
