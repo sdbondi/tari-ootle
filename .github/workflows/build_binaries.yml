@@ -18,6 +18,8 @@ name: Build Matrix of Binaries
         default: "development-tag"
 
 env:
+  # Matches the protoc that ubuntu-latest ships, which the ci workflow builds these protos against.
+  PROTOC_VERSION: "21.12"
   TS_FILENAME: "tari_ootle"
   TS_BUNDLE_ID_BASE: "com.tari.ootle.pkg"
   TS_SIG_FN: "sha256-unsigned.txt"
@@ -188,6 +190,26 @@ jobs:
         run: |
           sudo apt-get update
           sudo bash scripts/install_ubuntu_dependencies.sh
+
+      # The upstream grpc protos use proto3 optional fields, which protoc only accepts natively from
+      # 3.15 on. The Linux legs pin an older image for its lower glibc floor, and that image's apt
+      # protoc predates 3.15, so a current protoc must take precedence over the distro one on PATH.
+      - name: Install protoc - Ubuntu
+        if: ${{ startsWith(runner.os,'Linux') && ( ! matrix.builds.cross ) }}
+        run: |
+          set -euo pipefail
+          case "${{ runner.arch }}" in
+            X64) protoc_arch=x86_64 ;;
+            ARM64) protoc_arch=aarch_64 ;;
+            *) echo "Unsupported runner arch: ${{ runner.arch }}" >&2; exit 1 ;;
+          esac
+          curl -fsSL -o /tmp/protoc.zip \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${protoc_arch}.zip"
+          sudo unzip -o -q /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+          sudo chmod +x /usr/local/bin/protoc
+          rm -f /tmp/protoc.zip
+          command -v protoc
+          protoc --version
 
       - name: Install Linux dependencies - Ubuntu - local cross-compiled ${{ env.TARI_BUILD_ISA_CPU }} on x86-64
         # Disabled
@@ -750,6 +772,7 @@ jobs:
             ${{ github.workspace }}${{ env.TS_DIST }}/tari_ootle_walletd-${{ env.TARI_VERSION }}-${{ env.VSHA_SHORT }}-${{ matrix.builds.name }}${{ env.TS_EXT }}.sha256
           token: ${{ secrets.GITHUB_TOKEN }}
           prerelease: true
+          draft: true
           allowUpdates: true
           updateOnlyUnreleased: true
           replacesArtifacts: true
@@ -1007,6 +1030,7 @@ jobs:
           artifacts: "${{ env.TS_FILENAME }}*/**/*"
           token: ${{ secrets.GITHUB_TOKEN }}
           prerelease: true
+          draft: true
           allowUpdates: true
           updateOnlyUnreleased: true
           replacesArtifacts: true

@@ -141,5 +141,6 @@ jobs:
           allowUpdates: true
           updateOnlyUnreleased: true
           replacesArtifacts: true
+          omitDraftDuringUpdate: true
           omitBodyDuringUpdate: true
           omitNameDuringUpdate: true

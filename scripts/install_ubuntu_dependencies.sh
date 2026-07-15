@@ -26,4 +26,5 @@ apt-get install --no-install-recommends --assume-yes \
   libudev-dev \
   libhidapi-dev \
   libdbus-1-dev \
-  zip
+  zip \
+  unzip
