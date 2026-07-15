@@ -2,6 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use std::{
+    collections::HashSet,
     fmt::Display,
     hash::{DefaultHasher, Hasher},
     time::Duration,
@@ -27,7 +28,18 @@ impl Config {
     /// same event stream from the same config, so a config that could be read two ways is rejected outright rather
     /// than resolved by a default.
     pub fn validate(&self) -> anyhow::Result<()> {
+        let mut seen = HashSet::with_capacity(self.validators.len());
         for validator in &self.validators {
+            // A second entry for a validator would activate it twice. Listing it twice at one registration epoch
+            // produces two rows sharing a start_epoch, which `distinct_validators` and `set_committee_shard` resolve
+            // by different tiebreaks; listing it at two registration epochs moves its shard key.
+            if !seen.insert(validator.public_key) {
+                bail!(
+                    "Validator {} is listed more than once. A validator has a single registration; rotate its claim \
+                     key with `claim_key_changes`.",
+                    validator.public_key
+                );
+            }
             validator.validate()?;
         }
         Ok(())
@@ -277,6 +289,45 @@ mod tests {
             },
         ])
         .unwrap();
+    }
+
+    fn mk_config(validators: Vec<Validator>) -> Config {
+        Config {
+            validators,
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn a_validator_listed_twice_is_rejected() {
+        // Identical entries derive an identical shard key, so the shard key pin cannot catch this: it would emit two
+        // Adds at one epoch and land two rows sharing a start_epoch.
+        let err = mk_config(vec![mk_validator(vec![]), mk_validator(vec![])])
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is listed more than once"), "{err}");
+
+        // Differing entries for one validator would additionally move its shard key.
+        let second = Validator {
+            registration_epoch: Epoch(50),
+            claim_key: mk_key(3),
+            ..mk_validator(vec![])
+        };
+        let err = mk_config(vec![mk_validator(vec![]), second])
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is listed more than once"), "{err}");
+    }
+
+    #[test]
+    fn distinct_validators_are_valid() {
+        let second = Validator {
+            public_key: mk_key(9),
+            ..mk_validator(vec![])
+        };
+        mk_config(vec![mk_validator(vec![]), second]).validate().unwrap();
     }
 
     #[test]
