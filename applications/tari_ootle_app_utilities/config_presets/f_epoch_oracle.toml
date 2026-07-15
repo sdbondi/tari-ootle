@@ -29,14 +29,15 @@
 #
 # Set exactly one of `config_file` or `config_json` (setting both is an error). The config has the following shape:
 #{
-# "epoch_time: 120,
-# "initial_epoch": 3,
+#  "epoch_time": 120,
+#  "initial_epoch": 3,
+#  "base_time": "2026-02-23T13:08:42+0000",
 #  "validators": [{
 #    "public_key": "04efea68c9bff8f9c25fe89310abf91955e33344f4b77bb0d31ea80a80128e67",
 #    "claim_key": "04efea68c9bff8f9c25fe89310abf91955e33344f4b77bb0d31ea80a80128e67",
 #    "shard_group": {"start": 1,"end_inclusive": 256},
 #    "registration_epoch": 5,
-#    # Optional. Rotates the validator's claim key from the start of each `effective_epoch`.
+#    // Optional. Rotates the validator's claim key from the start of each `effective_epoch`.
 #    "claim_key_changes": [
 #      {"effective_epoch": 100, "claim_key": "9a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9"}
 #    ]
