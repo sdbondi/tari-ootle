@@ -39,15 +39,21 @@ export const useListTransactionRequests = () => {
   });
 };
 
+/// Returning the invalidate promise keeps the mutation `isPending` until the
+/// refetched list actually reflects the new state. The button's spinner must
+/// not stop while the card still shows the old status — a user reads that gap
+/// as "the click didn't take" and clicks again, racing whatever principal acts
+/// on the request next (this also applies when the RPC *fails* because the
+/// state already moved on: the refetch is what shows them why).
+const refetchList = () => queryClient.invalidateQueries({ queryKey: TRANSACTION_REQUESTS_LIST_QUERY_KEY });
+
 export const useApproveTransactionRequest = () => {
   return useMutation({
     mutationFn: (request: TransactionRequestDecisionRequest) => transactionRequestsApprove(request),
     onError: (error: ApiError) => {
       console.error("transactionRequestsApprove failed", error);
     },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: TRANSACTION_REQUESTS_LIST_QUERY_KEY });
-    },
+    onSettled: refetchList,
   });
 };
 
@@ -57,9 +63,7 @@ export const useRejectTransactionRequest = () => {
     onError: (error: ApiError) => {
       console.error("transactionRequestsReject failed", error);
     },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: TRANSACTION_REQUESTS_LIST_QUERY_KEY });
-    },
+    onSettled: refetchList,
   });
 };
 
@@ -73,8 +77,6 @@ export const useSubmitTransactionRequest = () => {
     onError: (error: ApiError) => {
       console.error("transactionRequestsSubmit failed", error);
     },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: TRANSACTION_REQUESTS_LIST_QUERY_KEY });
-    },
+    onSettled: refetchList,
   });
 };

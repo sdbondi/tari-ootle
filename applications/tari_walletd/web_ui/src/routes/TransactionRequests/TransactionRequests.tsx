@@ -7,23 +7,22 @@ import {
   useRejectTransactionRequest,
   useSubmitTransactionRequest,
 } from "@api/hooks/useTransactionRequests";
+import { Accordion, AccordionDetails, AccordionSummary } from "@components/Accordion";
 import FetchStatusCheck from "@components/FetchStatusCheck";
 import PageHeading from "@components/PageHeading";
 import { StyledPaper } from "@components/StyledComponents";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import Accordion from "@mui/material/Accordion";
-import AccordionDetails from "@mui/material/AccordionDetails";
-import AccordionSummary from "@mui/material/AccordionSummary";
 import Alert from "@mui/material/Alert";
-import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
+import CircularProgress from "@mui/material/CircularProgress";
 import Divider from "@mui/material/Divider";
 import Grid from "@mui/material/Grid";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import type { EffectiveStatus, TransactionRequestInfo } from "@tari-project/ootle-ts-bindings";
 import { useEffect, useState } from "react";
+import Inputs from "../Transactions/Inputs";
+import Instructions from "../Transactions/Instructions";
 
 function statusColor(status: EffectiveStatus): "default" | "warning" | "success" | "error" | "info" {
   switch (status) {
@@ -81,19 +80,28 @@ function RequestCard({ request }: { request: TransactionRequestInfo }) {
   const approve = useApproveTransactionRequest();
   const reject = useRejectTransactionRequest();
   const submit = useSubmitTransactionRequest();
+  const [expanded, setExpanded] = useState<string | null>(null);
   const isActionable = request.status === "Pending";
   // Approving does not broadcast: submit is a separate permission, so an
   // approved request waits here until someone holding it acts.
   const isSubmittable = request.status === "Approved";
   const busy = approve.isPending || reject.isPending || submit.isPending;
-  const error = approve.error ?? reject.error ?? submit.error;
+  // A mutation error is only worth showing while the decision is still open.
+  // Two principals can race (an approve here vs. a tool's submit); the loser's
+  // error describes a state this card no longer displays once the list
+  // refetches, so it would read as the action having failed outright.
+  const error = isActionable || isSubmittable ? (approve.error ?? reject.error ?? submit.error) : null;
 
   const params = { request_id: request.request_id };
 
   const v1 = request.transaction.V1;
   const instructions = v1?.instructions ?? [];
   const feeInstructions = v1?.fee_instructions ?? [];
+  const inputs = v1?.inputs ?? [];
   const isSealSignerAuthorized = v1?.is_seal_signer_authorized ?? false;
+
+  const togglePanel = (panel: string) => (_event: React.SyntheticEvent, isExpanded: boolean) =>
+    setExpanded(isExpanded ? panel : null);
 
   return (
     <StyledPaper sx={{ mb: 2 }}>
@@ -131,21 +139,28 @@ function RequestCard({ request }: { request: TransactionRequestInfo }) {
         </Grid>
       </Grid>
 
-      <Accordion elevation={0} disableGutters>
-        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-          <Typography variant="body2">
-            {instructions.length} instruction{instructions.length === 1 ? "" : "s"}
-            {feeInstructions.length > 0 &&
-              `, ${feeInstructions.length} fee instruction${feeInstructions.length === 1 ? "" : "s"}`}
-          </Typography>
+      <Accordion expanded={expanded === "instructions"} onChange={togglePanel("instructions")}>
+        <AccordionSummary aria-controls="request-instructions-content">
+          <Typography variant="h6">Instructions ({instructions.length})</Typography>
         </AccordionSummary>
         <AccordionDetails>
-          <Box
-            component="pre"
-            sx={{ overflowX: "auto", fontSize: "0.75rem", m: 0, p: 1, borderRadius: 1, bgcolor: "action.hover" }}
-          >
-            {JSON.stringify({ fee_instructions: feeInstructions, instructions }, null, 2)}
-          </Box>
+          <Instructions data={instructions} />
+        </AccordionDetails>
+      </Accordion>
+      <Accordion expanded={expanded === "fees"} onChange={togglePanel("fees")}>
+        <AccordionSummary aria-controls="request-fee-instructions-content">
+          <Typography variant="h6">Fee Instructions ({feeInstructions.length})</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Instructions data={feeInstructions} />
+        </AccordionDetails>
+      </Accordion>
+      <Accordion expanded={expanded === "inputs"} onChange={togglePanel("inputs")}>
+        <AccordionSummary aria-controls="request-inputs-content">
+          <Typography variant="h6">Inputs ({inputs.length})</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Inputs data={inputs} />
         </AccordionDetails>
       </Accordion>
 
@@ -161,10 +176,21 @@ function RequestCard({ request }: { request: TransactionRequestInfo }) {
           <Stack direction="row" spacing={1} justifyContent="flex-end">
             {isActionable && (
               <>
-                <Button variant="outlined" color="error" disabled={busy} onClick={() => reject.mutate(params)}>
+                <Button
+                  variant="outlined"
+                  color="error"
+                  disabled={busy}
+                  startIcon={reject.isPending ? <CircularProgress size={16} color="inherit" /> : undefined}
+                  onClick={() => reject.mutate(params)}
+                >
                   Reject
                 </Button>
-                <Button variant="contained" disabled={busy} onClick={() => approve.mutate(params)}>
+                <Button
+                  variant="contained"
+                  disabled={busy}
+                  startIcon={approve.isPending ? <CircularProgress size={16} color="inherit" /> : undefined}
+                  onClick={() => approve.mutate(params)}
+                >
                   Approve
                 </Button>
               </>
@@ -173,6 +199,7 @@ function RequestCard({ request }: { request: TransactionRequestInfo }) {
               <Button
                 variant="contained"
                 disabled={busy}
+                startIcon={submit.isPending ? <CircularProgress size={16} color="inherit" /> : undefined}
                 onClick={() => submit.mutate({ request_id: request.request_id })}
               >
                 Submit
