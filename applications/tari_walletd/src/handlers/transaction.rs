@@ -22,6 +22,8 @@ use tari_ootle_walletd_client::{
         CallInstructionRequest,
         PublishTemplateRequest,
         PublishTemplateResponse,
+        TransactionDetectInputsRequest,
+        TransactionDetectInputsResponse,
         TransactionGetAllRequest,
         TransactionGetAllResponse,
         TransactionGetRequest,
@@ -92,6 +94,7 @@ pub async fn handle_submit_instruction(
         transaction,
         seal_signer: owner_key_id,
         other_signers: vec![],
+        signatures: vec![],
         detect_inputs: req.override_inputs.unwrap_or_default(),
         detect_inputs_use_unversioned: true,
         lock_ids: vec![],
@@ -119,9 +122,8 @@ pub async fn handle_submit(
 
 /// Seal and submit an approved transaction request.
 ///
-/// The request's own handler has already checked the approval and that the
-/// bytes still hash to what was approved, and it passes `detect_inputs: false`
-/// so nothing here rewrites them.
+/// The request's own handler has already checked the approval and passes
+/// `detect_inputs: false`, so nothing here alters the frozen transaction.
 pub(crate) async fn submit_inner_for_request(
     context: &HandlerContext,
     req: TransactionSubmitRequest,
@@ -179,11 +181,13 @@ async fn submit_inner(
         req.detect_inputs_use_unversioned,
     );
 
+    // Signatures collected out of band are attached first; walletd's own
+    // signatures are added on top and the seal signature commits to all of them.
     let mut transaction = context
         .transaction_builder()
         .with_unsigned_transaction(req.transaction)
         .with_inputs(detected_inputs)
-        .finish();
+        .with_signatures(req.signatures);
 
     // Stealth inputs are spent with a key derived per-UTXO from the sender's
     // account key and that UTXO's nonce. Derive the set from the locks rather
@@ -344,6 +348,45 @@ fn map_transaction_submission_error(e: TransactionServiceError) -> anyhow::Error
     }
 }
 
+/// Resolve a transaction's inputs without submitting anything, so a caller that
+/// cannot detect them itself can build a complete transaction before requesting
+/// or signing. Returns the transaction with the detected inputs merged in.
+pub async fn handle_detect_inputs(
+    context: &HandlerContext,
+    token: Option<&Bearer>,
+    req: TransactionDetectInputsRequest,
+) -> Result<TransactionDetectInputsResponse, anyhow::Error> {
+    context.authorize(token, &[Permission::Transactions(Crud::Read)])?;
+    let sdk = context.wallet_sdk();
+
+    let substates = req.transaction.to_referenced_substates()?;
+    let substates = substates
+        .into_iter()
+        .chain(req.transaction.inputs().iter().map(|r| r.substate_id().clone()))
+        .collect::<Vec<_>>();
+    let detected = sdk
+        .substate_api()
+        .locate_dependent_substates(&substates, req.use_unversioned)
+        .await?
+        .into_iter()
+        .map(|input| {
+            if req.use_unversioned {
+                input.into_unversioned()
+            } else {
+                input
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let transaction = context
+        .transaction_builder()
+        .with_unsigned_transaction(req.transaction)
+        .with_inputs(detected)
+        .build_unsigned();
+
+    Ok(TransactionDetectInputsResponse { transaction })
+}
+
 pub async fn handle_submit_dry_run(
     context: &HandlerContext,
     token: Option<&Bearer>,
@@ -391,7 +434,7 @@ async fn submit_dry_run_inner(
         .with_unsigned_transaction(req.transaction)
         .with_inputs(detected_inputs)
         .with_dry_run(true)
-        .finish();
+        .with_signatures(req.signatures);
 
     // Sign exactly as a real submission would, so the dry run reflects a
     // spendable transaction: stealth inputs are signed with keys derived from
@@ -730,6 +773,7 @@ pub async fn handle_publish_template(
             transaction,
             seal_signer: owner_key_id,
             other_signers: vec![],
+            signatures: vec![],
             detect_inputs: req.detect_inputs,
             detect_inputs_use_unversioned: true,
             lock_ids: vec![],
@@ -752,6 +796,7 @@ pub async fn handle_publish_template(
         transaction,
         seal_signer: owner_key_id,
         other_signers: vec![],
+        signatures: vec![],
         detect_inputs: req.detect_inputs,
         detect_inputs_use_unversioned: true,
         lock_ids: vec![],

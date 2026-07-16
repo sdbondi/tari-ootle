@@ -8,7 +8,7 @@ use tari_engine_types::{
     substate::{SubstateDiff, SubstateId},
 };
 use tari_ootle_common_types::{Epoch, StateVersion, VersionedSubstateIdRef, shard::Shard};
-use tari_ootle_transaction::{Transaction, TransactionId, UnsignedTransaction};
+use tari_ootle_transaction::{Transaction, TransactionId, TransactionSignature, UnsignedTransaction};
 use tari_template_lib::types::{
     Amount,
     ComponentAddress,
@@ -199,11 +199,13 @@ pub trait WalletStoreWriter: CommittableStore {
     /// Persist a frozen request. The stored transaction is immutable: the
     /// approver views it and submit seals exactly it. The request is born
     /// [`TransactionRequestStatus::Pending`] and expires `ttl` from now.
+    #[allow(clippy::too_many_arguments)]
     fn transaction_request_insert(
         &mut self,
         unsigned_transaction: &UnsignedTransaction,
         seal_signer: KeyId,
         other_signers: &[KeyId],
+        signatures: &[TransactionSignature],
         lock_ids: &[WalletLockId],
         requested_by: Option<&str>,
         ttl: Duration,

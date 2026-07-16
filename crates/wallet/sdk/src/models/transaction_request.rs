@@ -3,7 +3,7 @@
 
 use std::str::FromStr;
 
-use tari_ootle_transaction::{TransactionId, UnsignedTransaction};
+use tari_ootle_transaction::{TransactionId, TransactionSignature, UnsignedTransaction};
 use time::{OffsetDateTime, PrimitiveDateTime};
 
 use crate::models::{KeyId, WalletLockId};
@@ -83,6 +83,8 @@ pub struct TransactionRequestModel {
     /// before those exist.
     pub seal_signer: KeyId,
     pub other_signers: Vec<KeyId>,
+    /// Signatures collected out of band, attached verbatim at submit.
+    pub signatures: Vec<TransactionSignature>,
     /// Locks holding this request's inputs. The stealth spend keys are derived
     /// from these at submit rather than named by the caller.
     pub lock_ids: Vec<WalletLockId>,
@@ -147,6 +149,7 @@ mod tests {
                 index: 0u64,
             },
             other_signers: vec![],
+            signatures: vec![],
             lock_ids: vec![],
             requested_by: None,
             status,

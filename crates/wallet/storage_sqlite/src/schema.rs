@@ -248,6 +248,7 @@ diesel::table! {
         unsigned_transaction -> Text,
         seal_signer -> Text,
         other_signers -> Text,
+        signatures -> Text,
         lock_ids -> Text,
         requested_by -> Nullable<Text>,
         status -> Text,

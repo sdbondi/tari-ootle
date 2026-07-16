@@ -39,7 +39,13 @@ use tari_ootle_common_types::{
     substate_type::SubstateType,
 };
 use tari_ootle_template_metadata::{MetadataHash, TemplateMetadata};
-use tari_ootle_transaction::{Instruction, PrunedTransaction, TransactionId, UnsignedTransaction};
+use tari_ootle_transaction::{
+    Instruction,
+    PrunedTransaction,
+    TransactionId,
+    TransactionSignature,
+    UnsignedTransaction,
+};
 use tari_ootle_wallet_sdk::{
     apis::{
         confidential_transfer::UtxoInputSelection,
@@ -130,24 +136,28 @@ pub struct CallInstructionRequest {
 /// Create a transaction request for a separately-permissioned principal to
 /// approve (issue #2343).
 ///
-/// The transaction is frozen at creation: inputs are detected now, the seal
-/// flag is normalised now, and the resulting bytes are what an approval commits
-/// to and what submit seals. Nothing may rewrite them afterwards, so
-/// `detect_inputs` is honoured here rather than at submit.
+/// The transaction is stored verbatim and frozen: what the approver views is
+/// what submit seals. The caller supplies a complete transaction (inputs
+/// resolved, any out-of-band signatures collected); walletd does not alter it.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct TransactionRequestCreateRequest {
+    /// The transaction, stored verbatim. Inputs must already be resolved: the
+    /// request path does not detect them, so that a caller who has already
+    /// collected signatures over these exact bytes is not invalidated. Use
+    /// `transactions.detect_inputs` first if the caller cannot resolve them.
     pub transaction: UnsignedTransaction,
+    /// Who pays and seals last.
     pub seal_signer: KeyId,
+    /// Wallet keys walletd signs with at submit.
     #[serde(default)]
     pub other_signers: Vec<KeyId>,
-    /// Attempt to infer inputs and their dependencies from instructions. If false, the provided transaction must
-    /// contain the required inputs.
+    /// Signatures collected out of band (e.g. from an external co-signer) over
+    /// `transaction` and `seal_signer`'s public key. Attached verbatim at
+    /// submit. Their presence means the transaction is final, so nothing about
+    /// it is altered after creation.
     #[serde(default)]
-    pub detect_inputs: bool,
-    /// If true(default), detected inputs will omit versions allowing consensus to resolve input substates.
-    #[serde(default = "return_true")]
-    pub detect_inputs_use_unversioned: bool,
+    pub signatures: Vec<TransactionSignature>,
     /// Locks holding this request's inputs. Their timeouts are extended to
     /// outlive the approval window. Stealth spend keys are derived from these
     /// at submit -- a caller cannot name them.
@@ -159,6 +169,23 @@ pub struct TransactionRequestCreateRequest {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub ttl_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct TransactionDetectInputsRequest {
+    pub transaction: UnsignedTransaction,
+    /// If true (default), detected inputs omit versions so consensus resolves
+    /// them; if false, walletd pins the versions it currently knows.
+    #[serde(default = "return_true")]
+    pub use_unversioned: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct TransactionDetectInputsResponse {
+    /// The input transaction with the detected inputs merged in.
+    pub transaction: UnsignedTransaction,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -268,6 +295,10 @@ pub struct TransactionSubmitRequest {
     pub transaction: UnsignedTransaction,
     pub seal_signer: KeyId,
     pub other_signers: Vec<KeyId>,
+    /// Signatures collected out of band, attached before walletd adds its own
+    /// and seals.
+    #[serde(default)]
+    pub signatures: Vec<TransactionSignature>,
     /// Attempt to infer inputs and their dependencies from instructions. If false, the provided transaction must
     /// contain the required inputs.
     pub detect_inputs: bool,

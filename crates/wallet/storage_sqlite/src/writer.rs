@@ -34,7 +34,7 @@ use tari_ootle_common_types::{
     optional::Optional,
     shard::Shard,
 };
-use tari_ootle_transaction::{Transaction, TransactionId, UnsignedTransaction};
+use tari_ootle_transaction::{Transaction, TransactionId, TransactionSignature, UnsignedTransaction};
 use tari_ootle_wallet_sdk::{
     models::{
         AccountUpdate,
@@ -2036,11 +2036,13 @@ impl WalletStoreWriter for WriteTransaction<'_> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn transaction_request_insert(
         &mut self,
         unsigned_transaction: &UnsignedTransaction,
         seal_signer: KeyId,
         other_signers: &[KeyId],
+        signatures: &[TransactionSignature],
         lock_ids: &[WalletLockId],
         requested_by: Option<&str>,
         ttl: Duration,
@@ -2058,6 +2060,7 @@ impl WalletStoreWriter for WriteTransaction<'_> {
                 unsigned_transaction: unsigned_transaction.as_str(),
                 seal_signer: &serialize_json(&seal_signer)?,
                 other_signers: &serialize_json(&other_signers)?,
+                signatures: &serialize_json(&signatures)?,
                 lock_ids: &serialize_json(&lock_ids)?,
                 requested_by,
                 status: TransactionRequestStatus::Pending.as_key_str(),
@@ -2742,6 +2745,7 @@ pub(crate) fn transaction_request_from_row(
         unsigned_transaction: deserialize_json(&row.unsigned_transaction)?,
         seal_signer: deserialize_json(&row.seal_signer)?,
         other_signers: deserialize_json(&row.other_signers)?,
+        signatures: deserialize_json(&row.signatures)?,
         lock_ids: deserialize_json(&row.lock_ids)?,
         requested_by: row.requested_by,
         status,

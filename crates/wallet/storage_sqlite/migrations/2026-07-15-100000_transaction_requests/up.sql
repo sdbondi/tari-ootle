@@ -30,6 +30,7 @@ CREATE TABLE transaction_requests (
     unsigned_transaction TEXT     NOT NULL,
     seal_signer          TEXT     NOT NULL,
     other_signers        TEXT     NOT NULL,
+    signatures           TEXT     NOT NULL,
     lock_ids             TEXT     NOT NULL,
     requested_by         TEXT     NULL,
     status               TEXT     NOT NULL,

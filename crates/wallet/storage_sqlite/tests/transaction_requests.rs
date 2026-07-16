@@ -48,6 +48,7 @@ fn insert_request(db: &SqliteWalletStore) -> TransactionRequestId {
             seal_signer(),
             &[],
             &[],
+            &[],
             Some("htlc-swap-tool"),
             Duration::from_secs(30 * 60),
         )

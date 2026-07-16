@@ -8,9 +8,10 @@
 //! separately permissioned, so a tool granted only `:create` cannot approve the
 //! requests it creates.
 //!
-//! The transaction is **frozen at creation**: inputs are detected and the seal
-//! flag is settled, then the transaction is stored immutably. The approver
-//! views exactly what will be sealed, and submit seals it unchanged.
+//! The transaction is **frozen at creation**: stored verbatim (the caller
+//! supplies complete inputs and any out-of-band signatures), with only the seal
+//! flag settled to the value `seal()` will produce. The approver views exactly
+//! what will be sealed, and submit seals it unchanged.
 
 use std::time::Duration;
 
@@ -78,39 +79,19 @@ pub async fn handle_create(
         .validate_blob_references()
         .map_err(|e| invalid_params("transaction.blobs", Some(e.to_string())))?;
 
-    let detected_inputs = if req.detect_inputs {
-        let substates = req.transaction.to_referenced_substates()?;
-        let substates = substates
-            .into_iter()
-            .chain(req.transaction.inputs().iter().map(|r| r.substate_id().clone()))
-            .collect::<Vec<_>>();
-        sdk.substate_api()
-            .locate_dependent_substates(&substates, req.detect_inputs_use_unversioned)
-            .await?
-            .into_iter()
-            .map(|input| {
-                if req.detect_inputs_use_unversioned {
-                    input.into_unversioned()
-                } else {
-                    input
-                }
-            })
-            .collect()
-    } else {
-        vec![]
-    };
+    // The transaction is stored verbatim: the request path does not detect
+    // inputs, so a caller who has already collected signatures over these exact
+    // bytes is not invalidated. Callers that need inputs resolved run
+    // `transactions.detect_inputs` first.
+    let mut unsigned = req.transaction;
 
-    let mut unsigned = context
-        .transaction_builder()
-        .with_unsigned_transaction(req.transaction)
-        .with_inputs(detected_inputs)
-        .build_unsigned();
-
-    // Settle the seal-authorized flag to the value `seal()` will produce, so
-    // the transaction the approver views is the one that gets sealed. `seal()`
-    // forces it true when nothing else signs.
+    // Settle the seal-authorized flag to the value `seal()` will produce, so the
+    // transaction the approver views is the one that gets sealed. This only
+    // changes the transaction when nothing signs it -- once any signature is
+    // present (provided, or one walletd will add), `seal()` leaves the flag
+    // alone, so a caller's collected signatures stay valid.
     let stealth_signers = derive_stealth_signers(sdk, &req.lock_ids)?;
-    let has_signers = !req.other_signers.is_empty() || !stealth_signers.is_empty();
+    let has_signers = !req.other_signers.is_empty() || !stealth_signers.is_empty() || !req.signatures.is_empty();
     normalize_seal_authorization(&mut unsigned, has_signers);
 
     let ttl = req
@@ -131,6 +112,7 @@ pub async fn handle_create(
             &unsigned,
             req.seal_signer,
             &req.other_signers,
+            &req.signatures,
             &req.lock_ids,
             auth.api_key_name.as_deref(),
             ttl,
@@ -292,6 +274,7 @@ pub async fn handle_submit(
         transaction: model.unsigned_transaction,
         seal_signer: model.seal_signer,
         other_signers: model.other_signers,
+        signatures: model.signatures,
         // Everything was resolved at creation. Detecting again here would
         // change the transaction the approver saw.
         detect_inputs: false,

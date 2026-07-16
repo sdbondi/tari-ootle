@@ -197,3 +197,5 @@ export * from "./types/wallet-types/TransactionRequestListResponse";
 export * from "./types/wallet-types/TransactionRequestSubmitRequest";
 export * from "./types/wallet-types/TransactionRequestSubmitResponse";
 export * from "./types/wallet-types/TransactionRequestValueSummary";
+export * from "./types/wallet-types/TransactionDetectInputsRequest";
+export * from "./types/wallet-types/TransactionDetectInputsResponse";
