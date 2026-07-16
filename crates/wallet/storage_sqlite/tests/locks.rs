@@ -12,6 +12,7 @@
 
 use std::time::Duration;
 
+use tari_ootle_common_types::optional::IsNotFoundError;
 use tari_ootle_transaction::TransactionId;
 use tari_ootle_wallet_sdk::storage::{CommittableStore, WalletStoreWriter, WriteableWalletStore};
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
@@ -69,6 +70,18 @@ fn a_lock_linked_to_a_transaction_is_not_swept() {
         "a lock linked to a transaction is not stale even past its deadline"
     );
     tx.commit().unwrap();
+}
+
+#[test]
+fn extending_the_timeout_of_an_unknown_lock_is_not_found() {
+    // `transaction_requests.create` extends caller-named locks. A bad id must
+    // surface here, not silently create a request whose locks were never
+    // extended past the approval window.
+    let db = open_store();
+    let mut tx = db.create_write_tx().unwrap();
+
+    let err = tx.locks_set_timeout(9999, Some(Duration::from_secs(60))).unwrap_err();
+    assert!(err.is_not_found_error(), "expected NotFound, got: {err}");
 }
 
 #[test]

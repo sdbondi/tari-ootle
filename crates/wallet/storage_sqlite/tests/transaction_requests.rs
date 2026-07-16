@@ -199,6 +199,28 @@ fn transitioning_an_unknown_request_is_not_found() {
 }
 
 #[test]
+fn a_ttl_past_the_representable_expiry_is_an_error() {
+    // `ttl_secs` is caller-influenced; an unrepresentable expiry must surface
+    // as a storage error rather than panicking the daemon.
+    let db = open_store();
+    let mut tx = db.create_write_tx().unwrap();
+
+    let err = tx
+        .transaction_request_insert(
+            &UnsignedTransaction::new(0u8),
+            seal_signer(),
+            &[],
+            &[],
+            &[],
+            None,
+            Duration::from_secs(u64::MAX),
+        )
+        .unwrap_err();
+
+    assert!(!err.is_not_found_error(), "expected an operation error, got: {err}");
+}
+
+#[test]
 fn insert_and_get_round_trips_as_pending() {
     let db = open_store();
     let request_id = insert_request(&db);

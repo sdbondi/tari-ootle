@@ -65,6 +65,11 @@ const LOG_TARGET: &str = "tari::ootle::wallet_daemon::handlers::transaction_requ
 /// until the stale sweep takes it.
 const LOCK_GRACE: Duration = Duration::from_secs(5 * 60);
 
+/// Upper bound on a caller-supplied approval window. A request idling input
+/// locks for longer than this is not an approval flow, and the bound keeps the
+/// `ttl + LOCK_GRACE` and expiry-timestamp arithmetic trivially in range.
+const MAX_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
 pub async fn handle_create(
     context: &HandlerContext,
     token: Option<&Bearer>,
@@ -87,6 +92,12 @@ pub async fn handle_create(
         .ttl_secs
         .map(Duration::from_secs)
         .unwrap_or(context.config().transaction_request_ttl);
+    if ttl > MAX_TTL {
+        return Err(invalid_params(
+            "ttl_secs",
+            Some(format!("must be at most {} seconds", MAX_TTL.as_secs())),
+        ));
+    }
     let model = {
         let mut tx = sdk.store().create_write_tx()?;
 

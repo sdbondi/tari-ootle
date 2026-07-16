@@ -71,10 +71,10 @@ function ValueSummary({ request }: { request: TransactionRequestInfo }) {
   return (
     <Alert severity="warning" icon={false} sx={{ mb: 2 }}>
       <Typography variant="h6" sx={{ fontWeight: 600 }}>
-        {Number(amount_leaving).toLocaleString()} µT leaves this wallet
+        {amount_leaving.toLocaleString()} µT leaves this wallet
       </Typography>
       <Typography variant="body2" sx={{ opacity: 0.85 }}>
-        {Number(inputs_total).toLocaleString()} µT spent, {Number(change_total).toLocaleString()} µT returned as change
+        {inputs_total.toLocaleString()} µT spent, {change_total.toLocaleString()} µT returned as change
       </Typography>
       <Typography variant="body2" sx={{ opacity: 0.7, wordBreak: "break-all" }}>
         {resource_address}

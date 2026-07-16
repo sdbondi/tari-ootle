@@ -2051,7 +2051,13 @@ impl WalletStoreWriter for WriteTransaction<'_> {
         use crate::schema::transaction_requests;
 
         let now = OffsetDateTime::now_utc();
-        let expires_at = now + ttl;
+        let expires_at = time::Duration::try_from(ttl)
+            .ok()
+            .and_then(|ttl| now.checked_add(ttl))
+            .ok_or_else(|| WalletStorageError::OperationError {
+                operation: OPERATION,
+                details: format!("ttl of {} seconds overflows the expiry timestamp", ttl.as_secs()),
+            })?;
 
         let unsigned_transaction = serialize_json(unsigned_transaction)?;
 
@@ -2214,7 +2220,7 @@ impl WalletStoreWriter for WriteTransaction<'_> {
         use crate::schema::locks;
 
         let query = diesel::update(locks::table.filter(locks::id.eq(lock_id)));
-        match timeout {
+        let rows_affected = match timeout {
             Some(timeout) => {
                 let timeout_seconds = i32::try_from(timeout.as_secs()).unwrap_or(i32::MAX);
                 query
@@ -2226,6 +2232,14 @@ impl WalletStoreWriter for WriteTransaction<'_> {
                 .execute(self.connection()),
         }
         .map_err(|e| WalletStorageError::general(OPERATION, e))?;
+
+        if rows_affected == 0 {
+            return Err(WalletStorageError::NotFound {
+                operation: OPERATION,
+                entity: "lock".to_string(),
+                key: lock_id.to_string(),
+            });
+        }
 
         Ok(())
     }
