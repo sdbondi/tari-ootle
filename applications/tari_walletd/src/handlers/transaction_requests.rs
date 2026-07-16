@@ -18,7 +18,6 @@ use axum_extra::headers::authorization::Bearer;
 use log::*;
 use tari_ootle_common_types::optional::Optional;
 use tari_ootle_transaction::UnsignedTransaction;
-use tari_ootle_transaction_validation::check_stealth_limits;
 use tari_ootle_wallet_sdk::{
     models::{
         EffectiveStatus,
@@ -79,10 +78,6 @@ pub async fn handle_create(
         .validate_blob_references()
         .map_err(|e| invalid_params("transaction.blobs", Some(e.to_string())))?;
 
-    // Detect inputs NOW, not at submit. The stored transaction is what the
-    // approver sees and what gets sealed, so anything that changes it happens
-    // before it is stored. Safe to freeze early because detected inputs are
-    // unversioned by default and consensus resolves them.
     let detected_inputs = if req.detect_inputs {
         let substates = req.transaction.to_referenced_substates()?;
         let substates = substates
@@ -117,20 +112,6 @@ pub async fn handle_create(
     let stealth_signers = derive_stealth_signers(sdk, &req.lock_ids)?;
     let has_signers = !req.other_signers.is_empty() || !stealth_signers.is_empty();
     normalize_seal_authorization(&mut unsigned, has_signers);
-
-    // Reject work the network would reject anyway, before a human is asked to
-    // look at it. These caps depend only on the instructions, so they can be
-    // checked unsigned; otherwise an over-cap request is only detectable after
-    // sealing -- i.e. after approval.
-    check_stealth_limits(unsigned.fee_instructions(), unsigned.instructions()).map_err(|v| {
-        invalid_params(
-            "transaction",
-            Some(format!(
-                "stealth {} {} exceeds the maximum of {}",
-                v.limit, v.actual, v.max
-            )),
-        )
-    })?;
 
     let ttl = req
         .ttl_secs
