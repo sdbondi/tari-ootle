@@ -9,16 +9,14 @@
 //! requests it creates.
 //!
 //! The transaction is **frozen at creation**: stored verbatim (the caller
-//! supplies complete inputs and any out-of-band signatures), with only the seal
-//! flag settled to the value `seal()` will produce. The approver views exactly
-//! what will be sealed, and submit seals it unchanged.
+//! supplies complete inputs and any out-of-band signatures). The approver views
+//! exactly what will be sealed, and submit seals it unchanged.
 
 use std::time::Duration;
 
 use axum_extra::headers::authorization::Bearer;
 use log::*;
 use tari_ootle_common_types::optional::Optional;
-use tari_ootle_transaction::UnsignedTransaction;
 use tari_ootle_wallet_sdk::{
     models::{
         EffectiveStatus,
@@ -54,7 +52,7 @@ use tari_ootle_walletd_client::{
 use super::context::HandlerContext;
 use crate::handlers::{
     helpers::{invalid_params, invalid_request},
-    transaction::{derive_stealth_signers, submit_inner_for_request},
+    transaction::submit_inner_for_request,
 };
 
 const LOG_TARGET: &str = "tari::ootle::wallet_daemon::handlers::transaction_requests";
@@ -79,20 +77,11 @@ pub async fn handle_create(
         .validate_blob_references()
         .map_err(|e| invalid_params("transaction.blobs", Some(e.to_string())))?;
 
-    // The transaction is stored verbatim: the request path does not detect
-    // inputs, so a caller who has already collected signatures over these exact
-    // bytes is not invalidated. Callers that need inputs resolved run
-    // `transactions.detect_inputs` first.
-    let mut unsigned = req.transaction;
-
-    // Settle the seal-authorized flag to the value `seal()` will produce, so the
-    // transaction the approver views is the one that gets sealed. This only
-    // changes the transaction when nothing signs it -- once any signature is
-    // present (provided, or one walletd will add), `seal()` leaves the flag
-    // alone, so a caller's collected signatures stay valid.
-    let stealth_signers = derive_stealth_signers(sdk, &req.lock_ids)?;
-    let has_signers = !req.other_signers.is_empty() || !stealth_signers.is_empty() || !req.signatures.is_empty();
-    normalize_seal_authorization(&mut unsigned, has_signers);
+    // The transaction is stored verbatim: the request path neither detects
+    // inputs nor touches any field, so a caller who has already collected
+    // signatures over these exact bytes is not invalidated. Callers that need
+    // inputs resolved run `transactions.detect_inputs` first.
+    let unsigned = req.transaction;
 
     let ttl = req
         .ttl_secs
@@ -297,18 +286,6 @@ pub async fn handle_submit(
     Ok(TransactionRequestSubmitResponse {
         transaction_id: response.transaction_id,
     })
-}
-
-/// Settle the seal-authorized flag to the value `seal()` will produce.
-///
-/// `UnsealedTransactionV1::seal` forces `is_seal_signer_authorized = true` when
-/// there are no other signatures. Settling it at creation keeps the transaction
-/// the approver views identical to the one that gets sealed, rather than having
-/// `seal()` flip a flag they never saw.
-fn normalize_seal_authorization(unsigned: &mut UnsignedTransaction, has_signers: bool) {
-    if !has_signers {
-        unsigned.set_seal_signer_authorized(true);
-    }
 }
 
 /// Guarded transition to `to`, refusing an already-expired request.

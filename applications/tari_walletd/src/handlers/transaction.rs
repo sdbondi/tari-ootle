@@ -245,7 +245,7 @@ async fn submit_inner(
 ///
 /// A lock holding no stealth outputs (a revealed-only transfer, say) yields an
 /// empty set rather than an error.
-pub(crate) fn derive_stealth_signers(
+fn derive_stealth_signers(
     sdk: &WalletSdk,
     lock_ids: &[WalletLockId],
 ) -> Result<Vec<StealthUtxoSpendKeyId>, anyhow::Error> {

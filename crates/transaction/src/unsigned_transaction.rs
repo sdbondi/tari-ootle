@@ -65,19 +65,11 @@ impl UnsignedTransaction {
         self
     }
 
-    pub fn disabled_authorized_sealed_signer(mut self) -> Self {
-        match self {
-            Self::V1(ref mut tx) => tx.is_seal_signer_authorized = false,
-        }
-        self
-    }
-
     /// Set whether the seal signature also authorises the transaction.
     ///
-    /// This field is part of the signing domain, and [`UnsealedTransaction::seal`]
-    /// forces it true when no other signature is attached. A caller that needs
-    /// the sealed bytes to be known in advance must settle it here first,
-    /// otherwise sealing rewrites what was agreed.
+    /// The field defaults to `true` and is part of the signing domain; sealing
+    /// never changes it, so the value set here is the one every signature
+    /// commits to and the engine enforces.
     pub fn set_seal_signer_authorized(&mut self, is_authorized: bool) -> &mut Self {
         match self {
             Self::V1(tx) => tx.is_seal_signer_authorized = is_authorized,
