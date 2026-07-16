@@ -12,6 +12,7 @@
 
 use std::time::Duration;
 
+use tari_ootle_transaction::TransactionId;
 use tari_ootle_wallet_sdk::storage::{CommittableStore, WalletStoreWriter, WriteableWalletStore};
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
 
@@ -46,6 +47,26 @@ fn clearing_a_timeout_exempts_a_lock_from_the_sweep() {
         tx.locks_release_stale().unwrap(),
         0,
         "a lock with no deadline is never stale"
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn a_lock_linked_to_a_transaction_is_not_swept() {
+    // A lock tied to an in-flight transaction is released by that
+    // transaction's resolution, never by the stale sweep -- reaping it mid-flight
+    // would unlock the inputs and delete the change outputs of a live
+    // transaction. The link protects it regardless of its timeout.
+    let db = open_store();
+    let mut tx = db.create_write_tx().unwrap();
+
+    let lock = tx.locks_create(Some(Duration::ZERO)).unwrap();
+    tx.locks_link_transaction(lock, TransactionId::new([1u8; 32])).unwrap();
+
+    assert_eq!(
+        tx.locks_release_stale().unwrap(),
+        0,
+        "a lock linked to a transaction is not stale even past its deadline"
     );
     tx.commit().unwrap();
 }

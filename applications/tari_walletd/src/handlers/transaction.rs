@@ -363,9 +363,6 @@ async fn submit_dry_run_inner(
     req.transaction
         .validate_blob_references()
         .map_err(|e| invalid_params("transaction.blobs", Some(e.to_string())))?;
-    let key_api = sdk.key_manager_api();
-    // Fetch the key to sign the transaction
-    let key = key_api.get_public_key(req.seal_signer)?;
 
     let detected_inputs = if req.detect_inputs {
         // If we are not overriding inputs, we will use inputs that we know about in the local substate id db
@@ -389,23 +386,35 @@ async fn submit_dry_run_inner(
         vec![]
     };
 
-    let transaction = context
+    let mut transaction = context
         .transaction_builder()
         .with_unsigned_transaction(req.transaction)
         .with_inputs(detected_inputs)
         .with_dry_run(true)
         .finish();
-    let transaction = sdk.signer_api().sign(key.key_id, transaction)?;
 
-    for lock_id in req.lock_ids {
-        // update the proofs table with the corresponding transaction hash
-        sdk.transaction_api()
-            .locks_set_transaction_id(lock_id, transaction.calculate_id())?;
+    // Sign exactly as a real submission would, so the dry run reflects a
+    // spendable transaction: stealth inputs are signed with keys derived from
+    // the locks, and the seal signature is added last.
+    let stealth_signers = derive_stealth_signers(sdk, &req.lock_ids)?;
+    if !req.other_signers.is_empty() || !stealth_signers.is_empty() {
+        let main_signer = sdk.key_manager_api().get_public_key(req.seal_signer)?;
+        let main_signer_pk = main_signer.public_key.to_byte_type();
+        let local_signer = sdk.signer_api().with_context(&main_signer_pk);
+        for key in req.other_signers {
+            transaction = local_signer.sign(key, transaction)?;
+        }
+        for key in &stealth_signers {
+            transaction = local_signer.sign_with_stealth_key(key, transaction)?;
+        }
     }
+    let transaction = sdk.signer_api().sign(req.seal_signer, transaction)?;
 
+    // A dry run never finalizes, so it must not link the locks: a lock tied to a
+    // transaction that never resolves would never be released.
     info!(
         target: LOG_TARGET,
-        "Submitted transaction with hash {}",
+        "Submitted dry-run transaction {}",
         transaction.calculate_id()
     );
     let exec_result = context

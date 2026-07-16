@@ -2236,10 +2236,7 @@ impl WalletStoreWriter for WriteTransaction<'_> {
         use crate::schema::locks;
 
         diesel::update(locks::table.filter(locks::id.eq(lock_id)))
-            .set((
-                locks::transaction_id.eq(serialize_hex(transaction_id)),
-                locks::timeout_at.eq(None::<PrimitiveDateTime>),
-            ))
+            .set(locks::transaction_id.eq(serialize_hex(transaction_id)))
             .execute(self.connection())
             .map_err(|e| WalletStorageError::general(OPERATION, e))?;
 
@@ -2252,6 +2249,10 @@ impl WalletStoreWriter for WriteTransaction<'_> {
 
         let stale_locks = locks::table
             .select(locks::id)
+            // A lock linked to a transaction is released when that transaction
+            // resolves, never by timeout -- reaping it mid-flight would corrupt
+            // the transaction's inputs and change outputs.
+            .filter(locks::transaction_id.is_null())
             .filter(locks::timeout_at.is_not_null())
             .filter(locks::timeout_at.le(dsl::now))
             .get_results::<i32>(self.connection())
