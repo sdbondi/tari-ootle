@@ -72,12 +72,6 @@ impl UnsignedTransaction {
         self
     }
 
-    pub fn is_seal_signer_authorized(&self) -> bool {
-        match self {
-            Self::V1(tx) => tx.is_seal_signer_authorized,
-        }
-    }
-
     /// Set whether the seal signature also authorises the transaction.
     ///
     /// This field is part of the signing domain, and [`UnsealedTransaction::seal`]
