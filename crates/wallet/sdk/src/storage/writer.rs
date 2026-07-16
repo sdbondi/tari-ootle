@@ -8,7 +8,7 @@ use tari_engine_types::{
     substate::{SubstateDiff, SubstateId},
 };
 use tari_ootle_common_types::{Epoch, StateVersion, VersionedSubstateIdRef, shard::Shard};
-use tari_ootle_transaction::{Transaction, TransactionId};
+use tari_ootle_transaction::{Transaction, TransactionId, UnsignedTransaction};
 use tari_template_lib::types::{
     Amount,
     ComponentAddress,
@@ -39,6 +39,7 @@ use crate::{
         OutputStatus,
         StealthOutputModel,
         SubstateModel,
+        TransactionRequestId,
         TransactionRequestModel,
         TransactionRequestStatus,
         UtxoUnspent,
@@ -195,20 +196,15 @@ pub trait WalletStoreWriter: CommittableStore {
     ) -> Result<(), WalletStorageError>;
 
     // Transaction requests
-    /// Persist a frozen request. `unsigned_transaction` must already be
-    /// canonical: an approval commits to `transaction_hash`, and submit
-    /// re-checks it, so nothing may rewrite the bytes afterwards. The request
-    /// is born [`TransactionRequestStatus::Pending`] and expires
-    /// `ttl` from now.
-    #[allow(clippy::too_many_arguments)]
+    /// Persist a frozen request. The stored transaction is immutable: the
+    /// approver views it and submit seals exactly it. The request is born
+    /// [`TransactionRequestStatus::Pending`] and expires `ttl` from now.
     fn transaction_request_insert(
         &mut self,
-        request_id: &str,
-        unsigned_transaction: &[u8],
-        transaction_hash: &str,
-        seal_signer: &str,
-        other_signers: &str,
-        lock_ids: &str,
+        unsigned_transaction: &UnsignedTransaction,
+        seal_signer: KeyId,
+        other_signers: &[KeyId],
+        lock_ids: &[WalletLockId],
         requested_by: Option<&str>,
         ttl: Duration,
     ) -> Result<TransactionRequestModel, WalletStorageError>;
@@ -221,9 +217,22 @@ pub trait WalletStoreWriter: CommittableStore {
     /// [`WalletStorageError::UnexpectedState`] is returned.
     fn transaction_request_transition(
         &mut self,
-        request_id: &str,
+        id: TransactionRequestId,
         from: TransactionRequestStatus,
         to: TransactionRequestStatus,
+    ) -> Result<TransactionRequestModel, WalletStorageError>;
+
+    /// Move an approved request to `Submitted`, recording the transaction it
+    /// became. Guarded on `Approved` in the same statement as the write.
+    ///
+    /// Separate from [`Self::transaction_request_transition`] because
+    /// `Submitted` is the only state that carries data: a submitted request
+    /// without its transaction id is a dead end, since nothing then links the
+    /// approval to the transaction it authorised.
+    fn transaction_request_mark_submitted(
+        &mut self,
+        id: TransactionRequestId,
+        transaction_id: TransactionId,
     ) -> Result<TransactionRequestModel, WalletStorageError>;
 
     // Locks

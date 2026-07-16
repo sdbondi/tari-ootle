@@ -6,13 +6,12 @@ import type { KeyId } from "./KeyId";
 import type { TransactionRequestValueSummary } from "./TransactionRequestValueSummary";
 
 export type TransactionRequestInfo = {
-  request_id: string;
+  request_id: number;
   /**
    * The frozen transaction, decoded for display. These are the exact bytes
    * an approval commits to.
    */
   transaction: UnsignedTransaction;
-  transaction_hash: string;
   seal_signer: KeyId;
   other_signers: Array<KeyId>;
   /**

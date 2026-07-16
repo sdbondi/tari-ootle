@@ -245,9 +245,7 @@ diesel::table! {
 diesel::table! {
     transaction_requests (id) {
         id -> Integer,
-        request_id -> Text,
-        unsigned_transaction -> Binary,
-        transaction_hash -> Text,
+        unsigned_transaction -> Text,
         seal_signer -> Text,
         other_signers -> Text,
         lock_ids -> Text,

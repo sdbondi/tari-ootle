@@ -17,9 +17,7 @@ use crate::schema::transaction_requests;
 #[diesel(table_name = transaction_requests)]
 pub struct TransactionRequest {
     pub id: i32,
-    pub request_id: String,
-    pub unsigned_transaction: Vec<u8>,
-    pub transaction_hash: String,
+    pub unsigned_transaction: String,
     pub seal_signer: String,
     pub other_signers: String,
     pub lock_ids: String,
@@ -38,9 +36,7 @@ pub struct TransactionRequest {
 #[derive(Debug, Insertable)]
 #[diesel(table_name = transaction_requests)]
 pub struct NewTransactionRequest<'a> {
-    pub request_id: &'a str,
-    pub unsigned_transaction: &'a [u8],
-    pub transaction_hash: &'a str,
+    pub unsigned_transaction: &'a str,
     pub seal_signer: &'a str,
     pub other_signers: &'a str,
     pub lock_ids: &'a str,

@@ -9,12 +9,11 @@
 --     restarts, which rules out the in-memory `RefreshTokenStore` shape.
 --
 -- Invariants:
---   * `unsigned_transaction` holds the canonical CBOR the requester's
---     transaction was frozen to at creation: inputs already detected, inputs
---     sorted, and `is_seal_signer_authorized` already normalised to the value
---     `seal()` would settle on. `transaction_hash` is its hash. An approval
---     commits to that hash, and submit re-checks it, so the bytes a person
---     approved are the bytes that get sealed.
+--   * `unsigned_transaction` is the transaction frozen at creation, stored as
+--     JSON like `transactions.transaction_json`: inputs already detected and
+--     `is_seal_signer_authorized` already settled to the value `seal()` will
+--     produce. It is immutable once written, so the approver views exactly what
+--     submit seals.
 --   * `seal_signer` / `other_signers` are the caller's choice of who pays and
 --     co-signs. Stealth spend keys are deliberately absent: they are derived
 --     at submit from the `lock_ids` below, so a caller cannot ask the wallet
@@ -28,9 +27,7 @@
 --     past this deadline at creation, so the lock always outlives the request.
 CREATE TABLE transaction_requests (
     id                   INTEGER  NOT NULL PRIMARY KEY AUTOINCREMENT,
-    request_id           TEXT     NOT NULL,
-    unsigned_transaction BLOB     NOT NULL,
-    transaction_hash     TEXT     NOT NULL,
+    unsigned_transaction TEXT     NOT NULL,
     seal_signer          TEXT     NOT NULL,
     other_signers        TEXT     NOT NULL,
     lock_ids             TEXT     NOT NULL,
@@ -43,5 +40,4 @@ CREATE TABLE transaction_requests (
     updated_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE UNIQUE INDEX transaction_requests_request_id_idx ON transaction_requests (request_id);
-CREATE INDEX        transaction_requests_status_idx     ON transaction_requests (status);
+CREATE INDEX transaction_requests_status_idx ON transaction_requests (status);

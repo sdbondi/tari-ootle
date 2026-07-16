@@ -8,25 +8,23 @@
 //! separately permissioned, so a tool granted only `:create` cannot approve the
 //! requests it creates.
 //!
-//! The transaction is **frozen at creation**: inputs are detected, the seal flag
-//! is normalised, and the resulting bytes are hashed. An approval commits to
-//! that hash and submit re-checks it, so the bytes a person approved are the
-//! bytes that get sealed. Nothing between approve and submit may rewrite them.
+//! The transaction is **frozen at creation**: inputs are detected and the seal
+//! flag is settled, then the transaction is stored immutably. The approver
+//! views exactly what will be sealed, and submit seals it unchanged.
 
 use std::time::Duration;
 
 use axum_extra::headers::authorization::Bearer;
-use blake2::{Blake2b, Digest, digest::consts::U32};
 use log::*;
-use tari_bor::encode;
 use tari_ootle_common_types::optional::Optional;
-use tari_ootle_transaction::{TransactionId, UnsignedTransaction};
+use tari_ootle_transaction::UnsignedTransaction;
 use tari_ootle_transaction_validation::check_stealth_limits;
 use tari_ootle_wallet_sdk::{
     models::{
         EffectiveStatus,
         OutputStatus,
         TransactionRequestCreatedEvent,
+        TransactionRequestId,
         TransactionRequestModel,
         TransactionRequestStatus,
         WalletEvent,
@@ -81,10 +79,10 @@ pub async fn handle_create(
         .validate_blob_references()
         .map_err(|e| invalid_params("transaction.blobs", Some(e.to_string())))?;
 
-    // Detect inputs NOW, not at submit. Submit must not rewrite the approved
-    // bytes, so anything that changes the transaction happens before the hash
-    // is taken. Safe to freeze early because detected inputs are unversioned by
-    // default and consensus resolves them.
+    // Detect inputs NOW, not at submit. The stored transaction is what the
+    // approver sees and what gets sealed, so anything that changes it happens
+    // before it is stored. Safe to freeze early because detected inputs are
+    // unversioned by default and consensus resolves them.
     let detected_inputs = if req.detect_inputs {
         let substates = req.transaction.to_referenced_substates()?;
         let substates = substates
@@ -113,8 +111,9 @@ pub async fn handle_create(
         .with_inputs(detected_inputs)
         .build_unsigned();
 
-    // Derive the signer set the same way submit will, so normalisation below
-    // settles on the value `seal()` will settle on.
+    // Settle the seal-authorized flag to the value `seal()` will produce, so
+    // the transaction the approver views is the one that gets sealed. `seal()`
+    // forces it true when nothing else signs.
     let stealth_signers = derive_stealth_signers(sdk, &req.lock_ids)?;
     let has_signers = !req.other_signers.is_empty() || !stealth_signers.is_empty();
     normalize_seal_authorization(&mut unsigned, has_signers);
@@ -133,15 +132,10 @@ pub async fn handle_create(
         )
     })?;
 
-    let bytes = encode(&unsigned).map_err(|e| invalid_params("transaction", Some(e.to_string())))?;
-    let hash = hash_unsigned(&bytes);
-
     let ttl = req
         .ttl_secs
         .map(Duration::from_secs)
         .unwrap_or(context.config().transaction_request_ttl);
-    let request_id = new_request_id();
-
     let model = {
         let mut tx = sdk.store().create_write_tx()?;
 
@@ -153,12 +147,10 @@ pub async fn handle_create(
         }
 
         let model = tx.transaction_request_insert(
-            &request_id,
-            &bytes,
-            &hash,
-            &serde_json::to_string(&req.seal_signer)?,
-            &serde_json::to_string(&req.other_signers)?,
-            &serde_json::to_string(&req.lock_ids)?,
+            &unsigned,
+            req.seal_signer,
+            &req.other_signers,
+            &req.lock_ids,
             auth.api_key_name.as_deref(),
             ttl,
         )?;
@@ -169,7 +161,7 @@ pub async fn handle_create(
     info!(
         target: LOG_TARGET,
         "Transaction request {} created by {} ({} lock(s), expires {})",
-        request_id,
+        model.id,
         auth.api_key_name.as_deref().unwrap_or("a wallet session"),
         req.lock_ids.len(),
         model.expires_at,
@@ -178,13 +170,12 @@ pub async fn handle_create(
     context
         .notifier()
         .notify(WalletEvent::TransactionRequestCreated(TransactionRequestCreatedEvent {
-            request_id: request_id.clone(),
+            request_id: model.id,
             requested_by: auth.api_key_name.clone(),
         }));
 
     Ok(TransactionRequestCreateResponse {
-        request_id,
-        transaction_hash: hash,
+        request_id: model.id,
         expires_at: model.expires_at.assume_utc().unix_timestamp(),
     })
 }
@@ -199,7 +190,7 @@ pub async fn handle_get(
     let model = context
         .wallet_sdk()
         .store()
-        .with_read_tx(|tx| tx.transaction_request_get(&req.request_id))?;
+        .with_read_tx(|tx| tx.transaction_request_get(req.request_id))?;
 
     Ok(TransactionRequestGetResponse {
         request: to_info(context, model)?,
@@ -241,8 +232,7 @@ pub async fn handle_approve(
 
     let model = transition(
         context,
-        &req.request_id,
-        req.transaction_hash.as_deref(),
+        req.request_id,
         TransactionRequestStatus::Pending,
         TransactionRequestStatus::Approved,
     )?;
@@ -264,16 +254,15 @@ pub async fn handle_reject(
 
     let model = transition(
         context,
-        &req.request_id,
-        req.transaction_hash.as_deref(),
+        req.request_id,
         TransactionRequestStatus::Pending,
         TransactionRequestStatus::Rejected,
     )?;
 
     // Release the inputs immediately rather than idling them until the sweep:
     // a refused request is never going to spend them.
-    for lock_id in parse_lock_ids(&model)? {
-        if let Err(e) = context.wallet_sdk().locks_api().release_lock(lock_id) {
+    for lock_id in &model.lock_ids {
+        if let Err(e) = context.wallet_sdk().locks_api().release_lock(*lock_id) {
             warn!(
                 target: LOG_TARGET,
                 "Failed to release lock {lock_id} for rejected request {}: {e}", req.request_id,
@@ -293,14 +282,14 @@ pub async fn handle_submit(
     req: TransactionRequestSubmitRequest,
 ) -> Result<TransactionRequestSubmitResponse, anyhow::Error> {
     // Submitting an approved request is not the same authority as
-    // `transactions:create` (unrestricted submit): the bytes are frozen and
-    // hash-committed, so this confers no ability to alter what gets signed.
+    // `transactions:create` (unrestricted submit): the transaction is frozen at
+    // creation, so this confers no ability to alter what gets signed.
     context.authorize(token, &[Permission::TransactionRequests(TxRequestAction::Create)])?;
     let sdk = context.wallet_sdk();
 
     let model = sdk
         .store()
-        .with_read_tx(|tx| tx.transaction_request_get(&req.request_id))?;
+        .with_read_tx(|tx| tx.transaction_request_get(req.request_id))?;
 
     match model.effective_status_now() {
         EffectiveStatus::Approved => {},
@@ -318,64 +307,23 @@ pub async fn handle_submit(
         },
     }
 
-    let unsigned: UnsignedTransaction = tari_bor::decode(&model.unsigned_transaction).map_err(|e| {
-        invalid_request(format!(
-            "Transaction request {} holds undecodable bytes: {e}",
-            req.request_id
-        ))
-    })?;
-
-    // The bytes are the approved artifact; re-hash rather than trust the
-    // column, so a tampered row cannot be submitted as if approved.
-    let hash = hash_unsigned(&model.unsigned_transaction);
-    if hash != model.transaction_hash {
-        return Err(invalid_request(format!(
-            "Transaction request {} does not match the hash that was approved",
-            req.request_id
-        )));
-    }
-
-    let lock_ids = parse_lock_ids(&model)?;
-    let seal_signer = serde_json::from_str(&model.seal_signer)?;
-    let other_signers: Vec<_> = serde_json::from_str(&model.other_signers)?;
-
-    // Backstop for the seal-flag rewrite: `seal()` forces
-    // `is_seal_signer_authorized = true` when no other signature is attached,
-    // and that flag is inside the signing domain. Creation normalised it for
-    // the signer set as it stood then; if the set has since emptied (a lock
-    // reaped, say) sealing would silently rewrite the approved bytes and
-    // promote the seal signer to owner authority. Refuse instead.
-    let stealth_signers = derive_stealth_signers(sdk, &lock_ids)?;
-    let has_signers = !other_signers.is_empty() || !stealth_signers.is_empty();
-    let mut check = unsigned.clone();
-    normalize_seal_authorization(&mut check, has_signers);
-    if encode(&check).map_err(|e| invalid_request(e.to_string()))? != model.unsigned_transaction {
-        return Err(invalid_request(format!(
-            "Transaction request {} would be rewritten at seal time and no longer matches what was approved",
-            req.request_id
-        )));
-    }
-
     let submit = TransactionSubmitRequest {
-        transaction: unsigned,
-        seal_signer,
-        other_signers,
+        transaction: model.unsigned_transaction,
+        seal_signer: model.seal_signer,
+        other_signers: model.other_signers,
         // Everything was resolved at creation. Detecting again here would
-        // rewrite the approved input set.
+        // change the transaction the approver saw.
         detect_inputs: false,
         detect_inputs_use_unversioned: true,
-        lock_ids,
+        lock_ids: model.lock_ids,
     };
 
     let response = submit_inner_for_request(context, submit).await?;
 
-    sdk.store().with_write_tx(|tx| {
-        tx.transaction_request_transition(
-            &req.request_id,
-            TransactionRequestStatus::Approved,
-            TransactionRequestStatus::Submitted,
-        )
-    })?;
+    // Record what it became, so the approval is linked to the transaction it
+    // authorised rather than dead-ending at "Submitted".
+    sdk.store()
+        .with_write_tx(|tx| tx.transaction_request_mark_submitted(req.request_id, response.transaction_id))?;
 
     info!(
         target: LOG_TARGET,
@@ -387,42 +335,22 @@ pub async fn handle_submit(
     })
 }
 
-/// Apply `seal()`'s own rule up front.
+/// Settle the seal-authorized flag to the value `seal()` will produce.
 ///
 /// `UnsealedTransactionV1::seal` forces `is_seal_signer_authorized = true` when
-/// there are no other signatures. That field is part of the signed bytes, so
-/// leaving it false in a request that will attract no co-signers would mean the
-/// bytes a human approved are not the bytes that get sealed -- and the rewrite
-/// promotes the seal signer to the transaction's owner authority. Settle it
-/// here so the approver sees the value that will actually be sealed.
+/// there are no other signatures. Settling it at creation keeps the transaction
+/// the approver views identical to the one that gets sealed, rather than having
+/// `seal()` flip a flag they never saw.
 fn normalize_seal_authorization(unsigned: &mut UnsignedTransaction, has_signers: bool) {
     if !has_signers {
         unsigned.set_seal_signer_authorized(true);
     }
 }
 
-fn hash_unsigned(bytes: &[u8]) -> String {
-    let mut hasher = Blake2b::<U32>::new();
-    hasher.update(bytes);
-    hex::encode(hasher.finalize())
-}
-
-fn new_request_id() -> String {
-    use rand::Rng;
-    let mut bytes = [0u8; 16];
-    rand::rng().fill_bytes(&mut bytes);
-    hex::encode(bytes)
-}
-
-fn parse_lock_ids(model: &TransactionRequestModel) -> Result<Vec<WalletLockId>, anyhow::Error> {
-    Ok(serde_json::from_str(&model.lock_ids)?)
-}
-
-/// Guarded transition, optionally pinned to the hash the caller saw.
+/// Guarded transition to `to`, refusing an already-expired request.
 fn transition(
     context: &HandlerContext,
-    request_id: &str,
-    expect_hash: Option<&str>,
+    request_id: TransactionRequestId,
     from: TransactionRequestStatus,
     to: TransactionRequestStatus,
 ) -> Result<TransactionRequestModel, anyhow::Error> {
@@ -438,16 +366,6 @@ fn transition(
         )));
     }
 
-    // The approver acts on what they were shown. If the UI rendered a stale
-    // request, refuse rather than authorise something else.
-    if let Some(expected) = expect_hash &&
-        expected != current.transaction_hash
-    {
-        return Err(invalid_request(format!(
-            "Transaction request {request_id} no longer matches the hash you were shown",
-        )));
-    }
-
     let model = sdk
         .store()
         .with_write_tx(|tx| tx.transaction_request_transition(request_id, from, to))?;
@@ -457,23 +375,17 @@ fn transition(
 
 /// The wallet-computed view of a request, including what it moves.
 fn to_info(context: &HandlerContext, model: TransactionRequestModel) -> Result<TransactionRequestInfo, anyhow::Error> {
-    let transaction: UnsignedTransaction = tari_bor::decode(&model.unsigned_transaction)?;
     let status = model.effective_status_now();
-    let lock_ids = parse_lock_ids(&model)?;
 
     Ok(TransactionRequestInfo {
-        request_id: model.request_id.clone(),
-        transaction,
-        transaction_hash: model.transaction_hash.clone(),
-        seal_signer: serde_json::from_str(&model.seal_signer)?,
-        other_signers: serde_json::from_str(&model.other_signers)?,
-        requested_by: model.requested_by.clone(),
+        request_id: model.id,
+        transaction: model.unsigned_transaction,
+        seal_signer: model.seal_signer,
+        other_signers: model.other_signers,
+        requested_by: model.requested_by,
         status,
-        transaction_id: model
-            .transaction_id
-            .as_deref()
-            .and_then(|s| TransactionId::from_hex(s).ok()),
-        value_summary: value_summary(context, &lock_ids)?,
+        transaction_id: model.transaction_id,
+        value_summary: value_summary(context, &model.lock_ids)?,
         expires_at: model.expires_at.assume_utc().unix_timestamp(),
         approved_at: model.approved_at.map(|t| t.assume_utc().unix_timestamp()),
         created_at: model.created_at.assume_utc().unix_timestamp(),

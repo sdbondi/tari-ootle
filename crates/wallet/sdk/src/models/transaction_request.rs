@@ -3,7 +3,14 @@
 
 use std::str::FromStr;
 
+use tari_ootle_transaction::{TransactionId, UnsignedTransaction};
 use time::{OffsetDateTime, PrimitiveDateTime};
+
+use crate::models::{KeyId, WalletLockId};
+
+/// Primary key of a persisted transaction request, and the handle a caller
+/// uses to fetch, approve or submit it.
+pub type TransactionRequestId = i32;
 
 /// The persisted state of a transaction request.
 ///
@@ -18,8 +25,7 @@ use time::{OffsetDateTime, PrimitiveDateTime};
 pub enum TransactionRequestStatus {
     /// Created, awaiting a principal holding `transaction_requests:approve`.
     Pending,
-    /// Approved and not yet submitted. The approval commits to the request's
-    /// `transaction_hash`.
+    /// Approved by an approver and not yet submitted.
     Approved,
     /// Refused by an approver. Terminal; the request's locks are released.
     Rejected,
@@ -68,20 +74,24 @@ pub enum EffectiveStatus {
 
 #[derive(Debug, Clone)]
 pub struct TransactionRequestModel {
-    pub id: i32,
-    pub request_id: String,
-    /// Canonical CBOR of the frozen `UnsignedTransaction`. `transaction_hash`
-    /// is the hash an approval commits to.
-    pub unsigned_transaction: Vec<u8>,
-    pub transaction_hash: String,
-    pub seal_signer: String,
-    pub other_signers: String,
-    pub lock_ids: String,
+    pub id: TransactionRequestId,
+    /// The frozen transaction. Immutable once stored: the approver views this,
+    /// and submit seals exactly it.
+    pub unsigned_transaction: UnsignedTransaction,
+    /// Who pays, and seals last. Always a wallet key: the seal signature
+    /// commits to every other signature, so it cannot be sourced externally
+    /// before those exist.
+    pub seal_signer: KeyId,
+    pub other_signers: Vec<KeyId>,
+    /// Locks holding this request's inputs. The stealth spend keys are derived
+    /// from these at submit rather than named by the caller.
+    pub lock_ids: Vec<WalletLockId>,
     /// Admin-assigned name of the API key that created this request, or `None`
     /// for a wallet session. Display and audit only.
     pub requested_by: Option<String>,
     pub status: TransactionRequestStatus,
-    pub transaction_id: Option<String>,
+    /// The transaction this became. Set only on the move to `Submitted`.
+    pub transaction_id: Option<TransactionId>,
     pub expires_at: PrimitiveDateTime,
     pub approved_at: Option<PrimitiveDateTime>,
     pub created_at: PrimitiveDateTime,
@@ -119,6 +129,7 @@ mod tests {
     use time::{Date, Month, Time};
 
     use super::*;
+    use crate::models::KeyBranch;
 
     fn at(day: u8) -> PrimitiveDateTime {
         PrimitiveDateTime::new(
@@ -130,12 +141,13 @@ mod tests {
     fn request(status: TransactionRequestStatus) -> TransactionRequestModel {
         TransactionRequestModel {
             id: 1,
-            request_id: "req-1".to_string(),
-            unsigned_transaction: vec![],
-            transaction_hash: String::new(),
-            seal_signer: String::new(),
-            other_signers: "[]".to_string(),
-            lock_ids: "[]".to_string(),
+            unsigned_transaction: UnsignedTransaction::new(0u8),
+            seal_signer: KeyId::Derived {
+                key_branch: KeyBranch::Account,
+                index: 0u64,
+            },
+            other_signers: vec![],
+            lock_ids: vec![],
             requested_by: None,
             status,
             transaction_id: None,

@@ -35,6 +35,7 @@ use crate::{
         StealthOutputInfo,
         StealthOutputModel,
         SubstateModel,
+        TransactionRequestId,
         TransactionRequestModel,
         TransactionStatus,
         VaultModel,
@@ -214,7 +215,10 @@ pub trait WalletStoreReader {
     // Transaction requests
     /// Fetch a request by its public id. Returns `NotFound` when absent; use
     /// `.optional()` where absence is not an error.
-    fn transaction_request_get(&mut self, request_id: &str) -> Result<TransactionRequestModel, WalletStorageError>;
+    fn transaction_request_get(
+        &mut self,
+        id: TransactionRequestId,
+    ) -> Result<TransactionRequestModel, WalletStorageError>;
 
     /// Every request, newest first. Expiry is derived on read, so it cannot be
     /// filtered here -- callers filter on the effective status.

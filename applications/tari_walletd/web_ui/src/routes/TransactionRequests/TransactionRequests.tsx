@@ -88,10 +88,7 @@ function RequestCard({ request }: { request: TransactionRequestInfo }) {
   const busy = approve.isPending || reject.isPending || submit.isPending;
   const error = approve.error ?? reject.error ?? submit.error;
 
-  // Pin the decision to the bytes rendered here. If the request changed
-  // underneath this view, the daemon refuses rather than authorising something
-  // the approver never saw.
-  const params = { request_id: request.request_id, transaction_hash: request.transaction_hash };
+  const params = { request_id: request.request_id };
 
   const v1 = request.transaction.V1;
   const instructions = v1?.instructions ?? [];
@@ -113,7 +110,7 @@ function RequestCard({ request }: { request: TransactionRequestInfo }) {
       <ValueSummary request={request} />
 
       <Grid container spacing={2} sx={{ mb: 1 }}>
-        <Grid size={{ xs: 12, md: 6 }}>
+        <Grid size={12}>
           <Typography variant="body2" sx={{ opacity: 0.7 }}>
             Seal signer
           </Typography>
@@ -131,14 +128,6 @@ function RequestCard({ request }: { request: TransactionRequestInfo }) {
               variant="outlined"
             />
           </Stack>
-        </Grid>
-        <Grid size={{ xs: 12, md: 6 }}>
-          <Typography variant="body2" sx={{ opacity: 0.7 }}>
-            Approving commits to
-          </Typography>
-          <Typography variant="body2" sx={{ fontFamily: "monospace", wordBreak: "break-all" }}>
-            {request.transaction_hash}
-          </Typography>
         </Grid>
       </Grid>
 

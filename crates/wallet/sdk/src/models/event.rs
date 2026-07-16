@@ -7,7 +7,7 @@ use tari_engine_types::commit_result::FinalizeResult;
 use tari_ootle_transaction::TransactionId;
 use tari_template_lib::types::{ComponentAddress, UtxoAddress};
 
-use crate::models::{Account, TransactionContext, TransactionStatus};
+use crate::models::{Account, TransactionContext, TransactionRequestId, TransactionStatus};
 
 #[derive(Debug, Clone)]
 pub enum WalletEvent {
@@ -164,7 +164,7 @@ pub struct UtxoSpentEvent {
 /// restart.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TransactionRequestCreatedEvent {
-    pub request_id: String,
+    pub request_id: TransactionRequestId,
     /// Admin-assigned name of the API key that asked, or `None` for a wallet
     /// session. Display only.
     pub requested_by: Option<String>,

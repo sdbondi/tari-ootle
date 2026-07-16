@@ -44,6 +44,7 @@ use tari_ootle_wallet_sdk::{
         StealthOutputInfo,
         StealthOutputModel,
         SubstateModel,
+        TransactionRequestId,
         TransactionRequestModel,
         TransactionStatus,
         VaultModel,
@@ -1361,19 +1362,22 @@ impl WalletStoreReader for ReadTransaction<'_> {
             .collect()
     }
 
-    fn transaction_request_get(&mut self, request_id: &str) -> Result<TransactionRequestModel, WalletStorageError> {
+    fn transaction_request_get(
+        &mut self,
+        id: TransactionRequestId,
+    ) -> Result<TransactionRequestModel, WalletStorageError> {
         const OPERATION: &str = "transaction_request_get";
         use crate::schema::transaction_requests;
 
         let row = transaction_requests::table
-            .filter(transaction_requests::request_id.eq(request_id))
+            .filter(transaction_requests::id.eq(id))
             .first::<models::TransactionRequest>(self.connection())
             .optional()
             .map_err(|e| WalletStorageError::general(OPERATION, e))?
             .ok_or_else(|| WalletStorageError::NotFound {
                 operation: OPERATION,
                 entity: "transaction_requests".to_string(),
-                key: request_id.to_string(),
+                key: id.to_string(),
             })?;
 
         transaction_request_from_row(OPERATION, row)

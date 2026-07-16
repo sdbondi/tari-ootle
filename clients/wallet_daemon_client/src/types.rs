@@ -60,6 +60,7 @@ use tari_ootle_wallet_sdk::{
         NonFungibleToken,
         OutputStatus,
         StealthUtxoSpendKeyId,
+        TransactionRequestId,
         TransactionStatus,
         WalletLockId,
         WalletTransaction,
@@ -163,9 +164,7 @@ pub struct TransactionRequestCreateRequest {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct TransactionRequestCreateResponse {
-    pub request_id: String,
-    /// Hash of the frozen bytes. An approval commits to this.
-    pub transaction_hash: String,
+    pub request_id: TransactionRequestId,
     /// Unix timestamp (seconds).
     pub expires_at: i64,
 }
@@ -191,11 +190,10 @@ pub struct TransactionRequestValueSummary {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct TransactionRequestInfo {
-    pub request_id: String,
+    pub request_id: TransactionRequestId,
     /// The frozen transaction, decoded for display. These are the exact bytes
     /// an approval commits to.
     pub transaction: UnsignedTransaction,
-    pub transaction_hash: String,
     pub seal_signer: KeyId,
     pub other_signers: Vec<KeyId>,
     /// Admin-assigned name of the API key that created this request, or `None`
@@ -216,7 +214,7 @@ pub struct TransactionRequestInfo {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct TransactionRequestGetRequest {
-    pub request_id: String,
+    pub request_id: TransactionRequestId,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -242,25 +240,20 @@ pub struct TransactionRequestListResponse {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct TransactionRequestDecisionRequest {
-    pub request_id: String,
-    /// The hash the approver saw. When set, the request is only acted on if it
-    /// still hashes to this -- so a UI that rendered a stale request cannot
-    /// approve something other than what was displayed.
-    #[serde(default)]
-    pub transaction_hash: Option<String>,
+    pub request_id: TransactionRequestId,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct TransactionRequestDecisionResponse {
-    pub request_id: String,
+    pub request_id: TransactionRequestId,
     pub status: EffectiveStatus,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct TransactionRequestSubmitRequest {
-    pub request_id: String,
+    pub request_id: TransactionRequestId,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -34,7 +34,7 @@ use tari_ootle_common_types::{
     optional::Optional,
     shard::Shard,
 };
-use tari_ootle_transaction::{Transaction, TransactionId};
+use tari_ootle_transaction::{Transaction, TransactionId, UnsignedTransaction};
 use tari_ootle_wallet_sdk::{
     models::{
         AccountUpdate,
@@ -53,6 +53,7 @@ use tari_ootle_wallet_sdk::{
         OutputStatus,
         StealthOutputModel,
         SubstateModel,
+        TransactionRequestId,
         TransactionRequestModel,
         TransactionRequestStatus,
         TransactionStatus,
@@ -2037,12 +2038,10 @@ impl WalletStoreWriter for WriteTransaction<'_> {
 
     fn transaction_request_insert(
         &mut self,
-        request_id: &str,
-        unsigned_transaction: &[u8],
-        transaction_hash: &str,
-        seal_signer: &str,
-        other_signers: &str,
-        lock_ids: &str,
+        unsigned_transaction: &UnsignedTransaction,
+        seal_signer: KeyId,
+        other_signers: &[KeyId],
+        lock_ids: &[WalletLockId],
         requested_by: Option<&str>,
         ttl: Duration,
     ) -> Result<TransactionRequestModel, WalletStorageError> {
@@ -2052,14 +2051,14 @@ impl WalletStoreWriter for WriteTransaction<'_> {
         let now = OffsetDateTime::now_utc();
         let expires_at = now + ttl;
 
+        let unsigned_transaction = serialize_json(unsigned_transaction)?;
+
         diesel::insert_into(transaction_requests::table)
             .values(models::NewTransactionRequest {
-                request_id,
-                unsigned_transaction,
-                transaction_hash,
-                seal_signer,
-                other_signers,
-                lock_ids,
+                unsigned_transaction: unsigned_transaction.as_str(),
+                seal_signer: &serialize_json(&seal_signer)?,
+                other_signers: &serialize_json(&other_signers)?,
+                lock_ids: &serialize_json(&lock_ids)?,
                 requested_by,
                 status: TransactionRequestStatus::Pending.as_key_str(),
                 expires_at: PrimitiveDateTime::new(expires_at.date(), expires_at.time()),
@@ -2067,8 +2066,10 @@ impl WalletStoreWriter for WriteTransaction<'_> {
             .execute(self.connection())
             .map_err(|e| WalletStorageError::general(OPERATION, e))?;
 
+        // SQLite has no RETURNING here; the row we just inserted is the
+        // highest id in the table.
         let row = transaction_requests::table
-            .filter(transaction_requests::request_id.eq(request_id))
+            .order_by(transaction_requests::id.desc())
             .first::<models::TransactionRequest>(self.connection())
             .map_err(|e| WalletStorageError::general(OPERATION, e))?;
 
@@ -2077,7 +2078,7 @@ impl WalletStoreWriter for WriteTransaction<'_> {
 
     fn transaction_request_transition(
         &mut self,
-        request_id: &str,
+        id: TransactionRequestId,
         from: TransactionRequestStatus,
         to: TransactionRequestStatus,
     ) -> Result<TransactionRequestModel, WalletStorageError> {
@@ -2094,7 +2095,7 @@ impl WalletStoreWriter for WriteTransaction<'_> {
         let updated = if to == TransactionRequestStatus::Approved {
             diesel::update(
                 transaction_requests::table
-                    .filter(transaction_requests::request_id.eq(request_id))
+                    .filter(transaction_requests::id.eq(id))
                     .filter(transaction_requests::status.eq(from.as_key_str())),
             )
             .set((
@@ -2106,7 +2107,7 @@ impl WalletStoreWriter for WriteTransaction<'_> {
         } else {
             diesel::update(
                 transaction_requests::table
-                    .filter(transaction_requests::request_id.eq(request_id))
+                    .filter(transaction_requests::id.eq(id))
                     .filter(transaction_requests::status.eq(from.as_key_str())),
             )
             .set((
@@ -2121,27 +2122,80 @@ impl WalletStoreWriter for WriteTransaction<'_> {
             // Distinguish "no such request" from "wrong state" so the caller
             // can tell a bad id from a double-approve.
             let row = transaction_requests::table
-                .filter(transaction_requests::request_id.eq(request_id))
+                .filter(transaction_requests::id.eq(id))
                 .first::<models::TransactionRequest>(self.connection())
                 .optional()
                 .map_err(|e| WalletStorageError::general(OPERATION, e))?
                 .ok_or_else(|| WalletStorageError::NotFound {
                     operation: OPERATION,
                     entity: "transaction_requests".to_string(),
-                    key: request_id.to_string(),
+                    key: id.to_string(),
                 })?;
 
             return Err(WalletStorageError::UnexpectedState {
                 operation: OPERATION,
                 entity: "transaction_request",
-                key: request_id.to_string(),
+                key: id.to_string(),
                 expected: from.as_key_str(),
                 actual: row.status,
             });
         }
 
         let row = transaction_requests::table
-            .filter(transaction_requests::request_id.eq(request_id))
+            .filter(transaction_requests::id.eq(id))
+            .first::<models::TransactionRequest>(self.connection())
+            .map_err(|e| WalletStorageError::general(OPERATION, e))?;
+
+        transaction_request_from_row(OPERATION, row)
+    }
+
+    fn transaction_request_mark_submitted(
+        &mut self,
+        id: TransactionRequestId,
+        transaction_id: TransactionId,
+    ) -> Result<TransactionRequestModel, WalletStorageError> {
+        const OPERATION: &str = "transaction_request_mark_submitted";
+        use crate::schema::transaction_requests;
+
+        let now = OffsetDateTime::now_utc();
+        let now = PrimitiveDateTime::new(now.date(), now.time());
+
+        let updated = diesel::update(
+            transaction_requests::table
+                .filter(transaction_requests::id.eq(id))
+                .filter(transaction_requests::status.eq(TransactionRequestStatus::Approved.as_key_str())),
+        )
+        .set((
+            transaction_requests::status.eq(TransactionRequestStatus::Submitted.as_key_str()),
+            transaction_requests::transaction_id.eq(serialize_hex(transaction_id)),
+            transaction_requests::updated_at.eq(now),
+        ))
+        .execute(self.connection())
+        .map_err(|e| WalletStorageError::general(OPERATION, e))?;
+
+        if updated == 0 {
+            let row = transaction_requests::table
+                .filter(transaction_requests::id.eq(id))
+                .first::<models::TransactionRequest>(self.connection())
+                .optional()
+                .map_err(|e| WalletStorageError::general(OPERATION, e))?
+                .ok_or_else(|| WalletStorageError::NotFound {
+                    operation: OPERATION,
+                    entity: "transaction_requests".to_string(),
+                    key: id.to_string(),
+                })?;
+
+            return Err(WalletStorageError::UnexpectedState {
+                operation: OPERATION,
+                entity: "transaction_request",
+                key: id.to_string(),
+                expected: TransactionRequestStatus::Approved.as_key_str(),
+                actual: row.status,
+            });
+        }
+
+        let row = transaction_requests::table
+            .filter(transaction_requests::id.eq(id))
             .first::<models::TransactionRequest>(self.connection())
             .map_err(|e| WalletStorageError::general(OPERATION, e))?;
 
@@ -2684,15 +2738,17 @@ pub(crate) fn transaction_request_from_row(
 
     Ok(TransactionRequestModel {
         id: row.id,
-        request_id: row.request_id,
-        unsigned_transaction: row.unsigned_transaction,
-        transaction_hash: row.transaction_hash,
-        seal_signer: row.seal_signer,
-        other_signers: row.other_signers,
-        lock_ids: row.lock_ids,
+        unsigned_transaction: deserialize_json(&row.unsigned_transaction)?,
+        seal_signer: deserialize_json(&row.seal_signer)?,
+        other_signers: deserialize_json(&row.other_signers)?,
+        lock_ids: deserialize_json(&row.lock_ids)?,
         requested_by: row.requested_by,
         status,
-        transaction_id: row.transaction_id,
+        transaction_id: row
+            .transaction_id
+            .as_deref()
+            .map(deserialize_hex_try_from)
+            .transpose()?,
         expires_at: row.expires_at,
         approved_at: row.approved_at,
         created_at: row.created_at,
