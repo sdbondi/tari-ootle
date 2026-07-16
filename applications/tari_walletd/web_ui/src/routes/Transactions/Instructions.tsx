@@ -115,7 +115,7 @@ function summarize(instruction: Instruction): string {
     return `Call(${target}, "${method}"${args.length ? ", " + args.map(formatArg).join(", ") : ""})`;
   }
   if ("PutLastInstructionOutputOnWorkspace" in instruction) {
-    return `PushRetToWorkspace($${instruction.PutLastInstructionOutputOnWorkspace.key})`;
+    return `PutLastInstructionOutputOnWorkspace($${instruction.PutLastInstructionOutputOnWorkspace.key})`;
   }
   if ("EmitLog" in instruction) {
     const { level, message } = instruction.EmitLog;

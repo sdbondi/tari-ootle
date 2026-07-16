@@ -235,10 +235,10 @@ export default function TransactionRequests() {
       </Grid>
       <Grid size={12}>
         <FetchStatusCheck isLoading={isFetching && !data} isError={isError} errorMessage={error?.message ?? ""}>
-          {requests.length === 0 && (
+          {pending.length === 0 && (
             <StyledPaper>
               <Typography variant="body1" sx={{ opacity: 0.7 }}>
-                Nothing waiting. A tool holding <code>transaction_requests:create</code> can ask for approval here.
+                No pending requests.
               </Typography>
             </StyledPaper>
           )}

@@ -171,6 +171,14 @@ pub struct TransactionRequestCreateRequest {
     pub ttl_secs: Option<u64>,
 }
 
+/// Resolve a transaction's inputs without submitting it.
+///
+/// Detection returns the **dependency closure** of everything the instructions
+/// reference (e.g. an account component pulls in every vault it holds), which
+/// is a superset of what execution will touch: the wallet cannot know intent
+/// without executing, so it over-approximates. Narrowing the set is the
+/// caller's job — every declared input adds transaction weight (fees) and must
+/// be locked by consensus, so the caller pays for anything left in.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct TransactionDetectInputsRequest {

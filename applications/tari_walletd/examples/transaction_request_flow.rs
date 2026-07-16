@@ -74,6 +74,7 @@ struct Args {
 }
 
 #[tokio::main]
+#[expect(clippy::too_many_lines)]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let mut client = WalletDaemonClient::connect(format!("{}/json_rpc", args.endpoint.trim_end_matches('/')), None)?;
@@ -108,6 +109,12 @@ async fn main() -> anyhow::Result<()> {
     // transactions.detect_inputs resolves the substates this tool has no way to
     // enumerate itself; transactions.submit_dry_run executes without committing
     // (both gated on transactions:read).
+    //
+    // Detection returns the full dependency closure (every vault the account
+    // holds, not just the one being spent) — the wallet cannot know intent
+    // without executing. This demo keeps the closure for simplicity; a
+    // production requester should narrow the inputs to what its transaction
+    // touches, since every declared input adds weight (fees) and locking.
     let transaction = build_transfer(info.network_byte, source, dest_pk, args.amount, args.max_fee_cap);
     let transaction = detect_inputs(&mut client, transaction).await?;
 

@@ -230,9 +230,6 @@ export class WalletDaemonClient<T extends RpcTransport = FetchRpcTransport> {
    * If the granted permissions include `Admin`, the request must set
    * `confirm_admin: true`.
    */
-  // Transaction requests (issue #2343). `create` and `approve` are separately
-  // permissioned: a tool holding only `transaction_requests:create` cannot
-  // approve the requests it creates.
   public transactionRequestsCreate(params: TransactionRequestCreateRequest): Promise<TransactionRequestCreateResponse> {
     return this.sendRequest("transaction_requests.create", params);
   }
@@ -375,9 +372,7 @@ export class WalletDaemonClient<T extends RpcTransport = FetchRpcTransport> {
     return this.sendRequest("transactions.submit_dry_run", params);
   }
 
-  public transactionsDetectInputs(
-    params: TransactionDetectInputsRequest,
-  ): Promise<TransactionDetectInputsResponse> {
+  public transactionsDetectInputs(params: TransactionDetectInputsRequest): Promise<TransactionDetectInputsResponse> {
     return this.sendRequest("transactions.detect_inputs", params);
   }
 
