@@ -19,10 +19,17 @@ import Divider from "@mui/material/Divider";
 import Grid from "@mui/material/Grid";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
-import type { EffectiveStatus, TransactionRequestInfo } from "@tari-project/ootle-ts-bindings";
+import type { EffectiveStatus, KeyId, TransactionRequestInfo } from "@tari-project/ootle-ts-bindings";
 import { useEffect, useState } from "react";
 import Inputs from "../Transactions/Inputs";
 import Instructions from "../Transactions/Instructions";
+
+function formatKeyId(keyId: KeyId): string {
+  if ("Derived" in keyId) {
+    return `${keyId.Derived.key_branch.replace(/_/g, " ")} key #${keyId.Derived.index}`;
+  }
+  return `imported key #${keyId.Imported.local_key_id}`;
+}
 
 function statusColor(status: EffectiveStatus): "default" | "warning" | "success" | "error" | "info" {
   switch (status) {
@@ -82,8 +89,10 @@ function RequestCard({ request }: { request: TransactionRequestInfo }) {
   const submit = useSubmitTransactionRequest();
   const [expanded, setExpanded] = useState<string | null>(null);
   const isActionable = request.status === "Pending";
-  // Approving does not broadcast: submit is a separate permission, so an
-  // approved request waits here until someone holding it acts.
+  // Approve and submit are separate permissions and separate RPCs, but this UI
+  // holds both, so approving chains straight into submitting. If the submit
+  // half fails (or another principal beat it), the request stays Approved and
+  // this standalone button finishes the job.
   const isSubmittable = request.status === "Approved";
   const busy = approve.isPending || reject.isPending || submit.isPending;
   // A mutation error is only worth showing while the decision is still open.
@@ -123,9 +132,7 @@ function RequestCard({ request }: { request: TransactionRequestInfo }) {
             Seal signer
           </Typography>
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-            <Typography variant="body2" sx={{ fontFamily: "monospace", wordBreak: "break-all" }}>
-              {JSON.stringify(request.seal_signer)}
-            </Typography>
+            <Typography variant="body2">{formatKeyId(request.seal_signer)}</Typography>
             {/* Not an implementation detail: when set, the seal signature also
                 authorises the transaction, lending the sealer's account
                 authority to these instructions. */}
@@ -188,10 +195,12 @@ function RequestCard({ request }: { request: TransactionRequestInfo }) {
                 <Button
                   variant="contained"
                   disabled={busy}
-                  startIcon={approve.isPending ? <CircularProgress size={16} color="inherit" /> : undefined}
-                  onClick={() => approve.mutate(params)}
+                  startIcon={
+                    approve.isPending || submit.isPending ? <CircularProgress size={16} color="inherit" /> : undefined
+                  }
+                  onClick={() => approve.mutate(params, { onSuccess: () => submit.mutate(params) })}
                 >
-                  Approve
+                  Approve &amp; Submit
                 </Button>
               </>
             )}

@@ -149,7 +149,7 @@ async fn main() -> anyhow::Result<()> {
 
     // transaction_requests:create satisfies :read, so the requester can poll
     // its own ask without an extra grant.
-    let status = loop {
+    let request = loop {
         let response = client
             .get_transaction_request(TransactionRequestGetRequest {
                 request_id: created.request_id,
@@ -158,36 +158,47 @@ async fn main() -> anyhow::Result<()> {
             .context("transaction_requests.get failed")?;
         match response.request.status {
             EffectiveStatus::Pending => tokio::time::sleep(Duration::from_secs(3)).await,
-            status => break status,
+            _ => break response.request,
         }
     };
 
-    match status {
-        EffectiveStatus::Approved => println!("Approved."),
+    let transaction_id = match request.status {
+        EffectiveStatus::Approved => {
+            println!("Approved.");
+            let submitted = client
+                .submit_transaction_request(TransactionRequestSubmitRequest {
+                    request_id: created.request_id,
+                })
+                .await
+                .context("transaction_requests.submit failed")?;
+            println!("Submitted as transaction {}", submitted.transaction_id);
+            submitted.transaction_id
+        },
+        // Any principal holding transaction_requests:create can submit an approved
+        // request (the web UI does this in one click), so the tool may find its ask
+        // already submitted. That is success — the frozen transaction is the one that
+        // was sealed regardless of who pressed submit.
+        EffectiveStatus::Submitted => {
+            let id = request
+                .transaction_id
+                .ok_or_else(|| anyhow!("request is Submitted but no transaction id was recorded"))?;
+            println!("Approved and submitted by another principal as transaction {id}");
+            id
+        },
         EffectiveStatus::Rejected => bail!("the request was rejected"),
         EffectiveStatus::Expired => bail!("the request expired before it was approved"),
-        // Pending is broken out of the loop above; Submitted cannot happen because
-        // only this tool's key can submit and it hasn't yet.
-        other => bail!("unexpected request status {other:?}"),
-    }
-
-    let submitted = client
-        .submit_transaction_request(TransactionRequestSubmitRequest {
-            request_id: created.request_id,
-        })
-        .await
-        .context("transaction_requests.submit failed")?;
-    println!("Submitted as transaction {}", submitted.transaction_id);
+        EffectiveStatus::Pending => unreachable!("the poll loop only exits on a settled status"),
+    };
 
     let result = client
         .wait_transaction_result(TransactionWaitResultRequest {
-            transaction_id: submitted.transaction_id,
+            transaction_id,
             timeout_secs: Some(120),
         })
         .await
         .context("transactions.wait_result failed")?;
     if result.timed_out {
-        bail!("timed out waiting for transaction {}", submitted.transaction_id);
+        bail!("timed out waiting for transaction {transaction_id}");
     }
     println!("Finalized: status {:?}, fee {} µT", result.status, result.final_fee,);
     Ok(())
