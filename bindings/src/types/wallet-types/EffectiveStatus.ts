@@ -4,4 +4,4 @@
  * What a caller sees for a request: its stored status, or `Expired` when the
  * approval window has closed on a request that never reached a terminal state.
  */
-export type EffectiveStatus = "Pending" | "Approved" | "Rejected" | "Submitted" | "Expired";
+export type EffectiveStatus = "Pending" | "Approved" | "Rejected" | "Submitting" | "Submitted" | "Expired";

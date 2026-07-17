@@ -29,6 +29,12 @@ pub enum TransactionRequestStatus {
     Approved,
     /// Refused by an approver. Terminal; the request's locks are released.
     Rejected,
+    /// Claimed by a submitter that is sealing and broadcasting. The claim is
+    /// what makes concurrent `transaction_requests.submit` calls resolve to a
+    /// single sealer: submit is not atomic (seal + broadcast is async work),
+    /// so the guard must be taken *before* sealing, not when recording the
+    /// result.
+    Submitting,
     /// Sealed and handed to the transaction service. Terminal.
     Submitted,
 }
@@ -39,6 +45,7 @@ impl TransactionRequestStatus {
             Self::Pending => "Pending",
             Self::Approved => "Approved",
             Self::Rejected => "Rejected",
+            Self::Submitting => "Submitting",
             Self::Submitted => "Submitted",
         }
     }
@@ -52,6 +59,7 @@ impl FromStr for TransactionRequestStatus {
             "Pending" => Ok(Self::Pending),
             "Approved" => Ok(Self::Approved),
             "Rejected" => Ok(Self::Rejected),
+            "Submitting" => Ok(Self::Submitting),
             "Submitted" => Ok(Self::Submitted),
             _ => Err(()),
         }
@@ -66,9 +74,13 @@ pub enum EffectiveStatus {
     Pending,
     Approved,
     Rejected,
+    /// A submitter holds the claim and is sealing/broadcasting.
+    Submitting,
     Submitted,
-    /// `expires_at` has passed while the request was still Pending or
-    /// Approved. Nothing writes this; it is derived on read.
+    /// `expires_at` has passed while the request had not reached a terminal
+    /// state. Nothing writes this; it is derived on read. A `Submitting`
+    /// claim expires too — that is the backstop for a daemon that died
+    /// mid-submit, whose claim would otherwise be held forever.
     Expired,
 }
 
@@ -113,10 +125,10 @@ impl TransactionRequestModel {
         match self.status {
             TransactionRequestStatus::Rejected => EffectiveStatus::Rejected,
             TransactionRequestStatus::Submitted => EffectiveStatus::Submitted,
-            TransactionRequestStatus::Pending if self.is_past_expiry(now) => EffectiveStatus::Expired,
-            TransactionRequestStatus::Approved if self.is_past_expiry(now) => EffectiveStatus::Expired,
+            _ if self.is_past_expiry(now) => EffectiveStatus::Expired,
             TransactionRequestStatus::Pending => EffectiveStatus::Pending,
             TransactionRequestStatus::Approved => EffectiveStatus::Approved,
+            TransactionRequestStatus::Submitting => EffectiveStatus::Submitting,
         }
     }
 
@@ -186,6 +198,11 @@ mod tests {
             request(TransactionRequestStatus::Approved).effective_status(at(16)),
             EffectiveStatus::Expired,
             "approved-but-never-submitted expires too, so submit cannot use a stale approval"
+        );
+        assert_eq!(
+            request(TransactionRequestStatus::Submitting).effective_status(at(16)),
+            EffectiveStatus::Expired,
+            "a claim held past the window expires -- the backstop for a daemon that died mid-submit"
         );
     }
 

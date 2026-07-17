@@ -2088,7 +2088,7 @@ impl WalletStoreWriter for WriteTransaction<'_> {
     fn transaction_request_transition(
         &mut self,
         id: TransactionRequestId,
-        from: TransactionRequestStatus,
+        from: &[TransactionRequestStatus],
         to: TransactionRequestStatus,
     ) -> Result<TransactionRequestModel, WalletStorageError> {
         const OPERATION: &str = "transaction_request_transition";
@@ -2096,28 +2096,30 @@ impl WalletStoreWriter for WriteTransaction<'_> {
 
         let now = OffsetDateTime::now_utc();
         let now = PrimitiveDateTime::new(now.date(), now.time());
+        let from_keys = from.iter().map(TransactionRequestStatus::as_key_str);
 
-        // The `status.eq(from)` filter and the write are one statement: two
-        // callers racing cannot both match. `approved_at` is written only on
-        // the transition into Approved -- every other transition must leave it
-        // alone, or Approved -> Submitted would erase when the human said yes.
+        // The `status` filter and the write are one statement: two callers
+        // racing cannot both match. `approved_at` is stamped only the first
+        // time a request becomes Approved -- a claim released back to Approved
+        // (Submitting -> Approved after a failed submit) must not rewrite when
+        // the human said yes.
         let updated = if to == TransactionRequestStatus::Approved {
             diesel::update(
                 transaction_requests::table
                     .filter(transaction_requests::id.eq(id))
-                    .filter(transaction_requests::status.eq(from.as_key_str())),
+                    .filter(transaction_requests::status.eq_any(from_keys)),
             )
             .set((
                 transaction_requests::status.eq(to.as_key_str()),
                 transaction_requests::updated_at.eq(now),
-                transaction_requests::approved_at.eq(Some(now)),
+                transaction_requests::approved_at.eq(dsl::sql("COALESCE(approved_at, datetime('now'))")),
             ))
             .execute(self.connection())
         } else {
             diesel::update(
                 transaction_requests::table
                     .filter(transaction_requests::id.eq(id))
-                    .filter(transaction_requests::status.eq(from.as_key_str())),
+                    .filter(transaction_requests::status.eq_any(from_keys)),
             )
             .set((
                 transaction_requests::status.eq(to.as_key_str()),
@@ -2145,7 +2147,11 @@ impl WalletStoreWriter for WriteTransaction<'_> {
                 operation: OPERATION,
                 entity: "transaction_request",
                 key: id.to_string(),
-                expected: from.as_key_str(),
+                expected: from
+                    .iter()
+                    .map(TransactionRequestStatus::as_key_str)
+                    .collect::<Vec<_>>()
+                    .join(" or "),
                 actual: row.status,
             });
         }
@@ -2172,7 +2178,7 @@ impl WalletStoreWriter for WriteTransaction<'_> {
         let updated = diesel::update(
             transaction_requests::table
                 .filter(transaction_requests::id.eq(id))
-                .filter(transaction_requests::status.eq(TransactionRequestStatus::Approved.as_key_str())),
+                .filter(transaction_requests::status.eq(TransactionRequestStatus::Submitting.as_key_str())),
         )
         .set((
             transaction_requests::status.eq(TransactionRequestStatus::Submitted.as_key_str()),
@@ -2198,7 +2204,7 @@ impl WalletStoreWriter for WriteTransaction<'_> {
                 operation: OPERATION,
                 entity: "transaction_request",
                 key: id.to_string(),
-                expected: TransactionRequestStatus::Approved.as_key_str(),
+                expected: TransactionRequestStatus::Submitting.as_key_str().to_string(),
                 actual: row.status,
             });
         }

@@ -67,14 +67,14 @@ fn a_request_can_only_be_approved_once() {
     let mut tx = db.create_write_tx().unwrap();
     tx.transaction_request_transition(
         request_id,
-        TransactionRequestStatus::Pending,
+        &[TransactionRequestStatus::Pending],
         TransactionRequestStatus::Approved,
     )
     .unwrap();
 
     let second = tx.transaction_request_transition(
         request_id,
-        TransactionRequestStatus::Pending,
+        &[TransactionRequestStatus::Pending],
         TransactionRequestStatus::Approved,
     );
     assert!(second.is_err(), "a second approval must be refused");
@@ -88,6 +88,22 @@ fn a_request_can_only_be_approved_once() {
     tx.commit().unwrap();
 }
 
+/// Approve then take the submit claim, as `handle_submit` does.
+fn approve_and_claim(tx: &mut impl WalletStoreWriter, request_id: TransactionRequestId) {
+    tx.transaction_request_transition(
+        request_id,
+        &[TransactionRequestStatus::Pending],
+        TransactionRequestStatus::Approved,
+    )
+    .unwrap();
+    tx.transaction_request_transition(
+        request_id,
+        &[TransactionRequestStatus::Approved],
+        TransactionRequestStatus::Submitting,
+    )
+    .unwrap();
+}
+
 #[test]
 fn submitting_records_the_transaction_it_became() {
     // Without this the request is a dead end: it says Submitted but cannot tell
@@ -97,12 +113,7 @@ fn submitting_records_the_transaction_it_became() {
     let request_id = insert_request(&db);
 
     let mut tx = db.create_write_tx().unwrap();
-    tx.transaction_request_transition(
-        request_id,
-        TransactionRequestStatus::Pending,
-        TransactionRequestStatus::Approved,
-    )
-    .unwrap();
+    approve_and_claim(&mut tx, request_id);
 
     let submitted = tx
         .transaction_request_mark_submitted(request_id, transaction_id())
@@ -114,17 +125,64 @@ fn submitting_records_the_transaction_it_became() {
 }
 
 #[test]
-fn only_an_approved_request_can_be_submitted() {
+fn only_a_claimed_request_can_be_marked_submitted() {
+    // The claim (Approved -> Submitting) is taken before sealing; recording a
+    // submission for a request nobody claimed means the guard was bypassed.
     let db = open_store();
     let request_id = insert_request(&db);
 
     let mut tx = db.create_write_tx().unwrap();
     let err = tx.transaction_request_mark_submitted(request_id, transaction_id());
-
     assert!(err.is_err(), "a Pending request must not be submittable");
+
+    tx.transaction_request_transition(
+        request_id,
+        &[TransactionRequestStatus::Pending],
+        TransactionRequestStatus::Approved,
+    )
+    .unwrap();
+    let err = tx.transaction_request_mark_submitted(request_id, transaction_id());
+    assert!(err.is_err(), "an unclaimed Approved request must not be submittable");
+
     let found = tx.transaction_request_get(request_id).unwrap();
-    assert_eq!(found.status, TransactionRequestStatus::Pending);
+    assert_eq!(found.status, TransactionRequestStatus::Approved);
     assert!(found.transaction_id.is_none(), "a refused submit records nothing");
+}
+
+#[test]
+fn two_submitters_racing_resolve_to_one_claim() {
+    // Submit is not atomic (sealing + broadcast happens after the read), so
+    // the claim must be: of two concurrent submitters, exactly one may seal.
+    // Two sealers would produce two distinct transactions (random seal nonce)
+    // spending the same inputs.
+    let db = open_store();
+    let request_id = insert_request(&db);
+
+    let mut tx = db.create_write_tx().unwrap();
+    tx.transaction_request_transition(
+        request_id,
+        &[TransactionRequestStatus::Pending],
+        TransactionRequestStatus::Approved,
+    )
+    .unwrap();
+
+    tx.transaction_request_transition(
+        request_id,
+        &[TransactionRequestStatus::Approved],
+        TransactionRequestStatus::Submitting,
+    )
+    .unwrap();
+
+    let second = tx.transaction_request_transition(
+        request_id,
+        &[TransactionRequestStatus::Approved],
+        TransactionRequestStatus::Submitting,
+    );
+    assert!(second.is_err(), "the second claim must lose");
+
+    let found = tx.transaction_request_get(request_id).unwrap();
+    assert_eq!(found.status, TransactionRequestStatus::Submitting);
+    tx.commit().unwrap();
 }
 
 #[test]
@@ -136,12 +194,18 @@ fn submitting_preserves_when_the_human_approved() {
     let approved = tx
         .transaction_request_transition(
             request_id,
-            TransactionRequestStatus::Pending,
+            &[TransactionRequestStatus::Pending],
             TransactionRequestStatus::Approved,
         )
         .unwrap();
     let approved_at = approved.approved_at.expect("approving records when it happened");
 
+    tx.transaction_request_transition(
+        request_id,
+        &[TransactionRequestStatus::Approved],
+        TransactionRequestStatus::Submitting,
+    )
+    .unwrap();
     let submitted = tx
         .transaction_request_mark_submitted(request_id, transaction_id())
         .unwrap();
@@ -155,6 +219,82 @@ fn submitting_preserves_when_the_human_approved() {
 }
 
 #[test]
+fn releasing_a_claim_preserves_when_the_human_approved() {
+    // A failed submit releases Submitting -> Approved; the request re-enters
+    // Approved without rewriting the original approval timestamp.
+    let db = open_store();
+    let request_id = insert_request(&db);
+
+    let mut tx = db.create_write_tx().unwrap();
+    let approved = tx
+        .transaction_request_transition(
+            request_id,
+            &[TransactionRequestStatus::Pending],
+            TransactionRequestStatus::Approved,
+        )
+        .unwrap();
+    let approved_at = approved.approved_at.expect("approving records when it happened");
+
+    tx.transaction_request_transition(
+        request_id,
+        &[TransactionRequestStatus::Approved],
+        TransactionRequestStatus::Submitting,
+    )
+    .unwrap();
+    let released = tx
+        .transaction_request_transition(
+            request_id,
+            &[TransactionRequestStatus::Submitting],
+            TransactionRequestStatus::Approved,
+        )
+        .unwrap();
+
+    assert_eq!(released.status, TransactionRequestStatus::Approved);
+    assert_eq!(
+        released.approved_at,
+        Some(approved_at),
+        "releasing the claim must not rewrite when the approval happened"
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn an_approved_request_can_be_rejected_but_a_claimed_one_cannot() {
+    // Approval is a decision, not a commitment: until a submitter claims the
+    // request, an approver can still withdraw it. Once sealing is in flight
+    // the point of refusal has passed.
+    let db = open_store();
+    let approved_then_rejected = insert_request(&db);
+    let claimed = insert_request(&db);
+
+    let mut tx = db.create_write_tx().unwrap();
+
+    tx.transaction_request_transition(
+        approved_then_rejected,
+        &[TransactionRequestStatus::Pending],
+        TransactionRequestStatus::Approved,
+    )
+    .unwrap();
+    let rejected = tx
+        .transaction_request_transition(
+            approved_then_rejected,
+            &[TransactionRequestStatus::Pending, TransactionRequestStatus::Approved],
+            TransactionRequestStatus::Rejected,
+        )
+        .unwrap();
+    assert_eq!(rejected.status, TransactionRequestStatus::Rejected);
+
+    approve_and_claim(&mut tx, claimed);
+    let reject = tx.transaction_request_transition(
+        claimed,
+        &[TransactionRequestStatus::Pending, TransactionRequestStatus::Approved],
+        TransactionRequestStatus::Rejected,
+    );
+    assert!(reject.is_err(), "a claimed request is past the point of refusal");
+    tx.commit().unwrap();
+}
+
+#[test]
 fn a_rejected_request_cannot_later_be_approved() {
     let db = open_store();
     let request_id = insert_request(&db);
@@ -162,14 +302,14 @@ fn a_rejected_request_cannot_later_be_approved() {
     let mut tx = db.create_write_tx().unwrap();
     tx.transaction_request_transition(
         request_id,
-        TransactionRequestStatus::Pending,
+        &[TransactionRequestStatus::Pending],
         TransactionRequestStatus::Rejected,
     )
     .unwrap();
 
     let approve = tx.transaction_request_transition(
         request_id,
-        TransactionRequestStatus::Pending,
+        &[TransactionRequestStatus::Pending],
         TransactionRequestStatus::Approved,
     );
     assert!(approve.is_err(), "rejection is terminal");
@@ -190,7 +330,7 @@ fn transitioning_an_unknown_request_is_not_found() {
     let err = tx
         .transaction_request_transition(
             9999,
-            TransactionRequestStatus::Pending,
+            &[TransactionRequestStatus::Pending],
             TransactionRequestStatus::Approved,
         )
         .unwrap_err();

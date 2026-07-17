@@ -196,7 +196,7 @@ pub async fn handle_approve(
     let model = transition(
         context,
         req.request_id,
-        TransactionRequestStatus::Pending,
+        &[TransactionRequestStatus::Pending],
         TransactionRequestStatus::Approved,
     )?;
 
@@ -215,10 +215,14 @@ pub async fn handle_reject(
 ) -> Result<TransactionRequestDecisionResponse, anyhow::Error> {
     context.authorize(token, &[Permission::TransactionRequests(TxRequestAction::Approve)])?;
 
+    // An approved-but-unsubmitted request is still cancellable: approval is a
+    // decision, not a commitment, and without this the only way out is letting
+    // the request idle its input locks until expiry. Only an in-flight submit
+    // (Submitting) is past the point of refusal.
     let model = transition(
         context,
         req.request_id,
-        TransactionRequestStatus::Pending,
+        &[TransactionRequestStatus::Pending, TransactionRequestStatus::Approved],
         TransactionRequestStatus::Rejected,
     )?;
 
@@ -250,25 +254,18 @@ pub async fn handle_submit(
     context.authorize(token, &[Permission::TransactionRequests(TxRequestAction::Create)])?;
     let sdk = context.wallet_sdk();
 
-    let model = sdk
-        .store()
-        .with_read_tx(|tx| tx.transaction_request_get(req.request_id))?;
-
-    match model.effective_status_now() {
-        EffectiveStatus::Approved => {},
-        EffectiveStatus::Expired => {
-            return Err(invalid_request(format!(
-                "Transaction request {} expired at {}",
-                req.request_id, model.expires_at
-            )));
-        },
-        other => {
-            return Err(invalid_request(format!(
-                "Transaction request {} is {other:?}, expected Approved",
-                req.request_id
-            )));
-        },
-    }
+    // Claim the request before any sealing work: sealing uses a random nonce,
+    // so two concurrent submitters that both passed a status *check* would
+    // produce two distinct transactions spending the same inputs, and the
+    // locks would end up linked to whichever sealed last. The conditional
+    // Approved -> Submitting UPDATE lets exactly one caller proceed; the rest
+    // fail here with the request untouched.
+    let model = transition(
+        context,
+        req.request_id,
+        &[TransactionRequestStatus::Approved],
+        TransactionRequestStatus::Submitting,
+    )?;
 
     let submit = TransactionSubmitRequest {
         transaction: model.unsigned_transaction,
@@ -282,7 +279,28 @@ pub async fn handle_submit(
         lock_ids: model.lock_ids,
     };
 
-    let response = submit_inner_for_request(context, submit).await?;
+    let response = match submit_inner_for_request(context, submit).await {
+        Ok(response) => response,
+        Err(e) => {
+            // Release the claim so the approval survives a failed submit and
+            // another holder can retry. Best-effort: if this also fails the
+            // claim expires with the request and the stale sweep reclaims the
+            // (still unlinked) locks.
+            if let Err(release_err) = sdk.store().with_write_tx(|tx| {
+                tx.transaction_request_transition(
+                    req.request_id,
+                    &[TransactionRequestStatus::Submitting],
+                    TransactionRequestStatus::Approved,
+                )
+            }) {
+                warn!(
+                    target: LOG_TARGET,
+                    "Failed to release submit claim on transaction request {}: {release_err}", req.request_id,
+                );
+            }
+            return Err(e);
+        },
+    };
 
     // Record what it became, so the approval is linked to the transaction it
     // authorised rather than dead-ending at "Submitted".
@@ -303,7 +321,7 @@ pub async fn handle_submit(
 fn transition(
     context: &HandlerContext,
     request_id: TransactionRequestId,
-    from: TransactionRequestStatus,
+    from: &[TransactionRequestStatus],
     to: TransactionRequestStatus,
 ) -> Result<TransactionRequestModel, anyhow::Error> {
     let sdk = context.wallet_sdk();

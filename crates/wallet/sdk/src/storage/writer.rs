@@ -211,21 +211,24 @@ pub trait WalletStoreWriter: CommittableStore {
         ttl: Duration,
     ) -> Result<TransactionRequestModel, WalletStorageError>;
 
-    /// Move a request from `from` to `to`, returning the updated request.
+    /// Move a request from any of `from` to `to`, returning the updated
+    /// request.
     ///
     /// The `from` check and the write are a single conditional UPDATE, so
-    /// concurrent approvers resolve to one winner rather than both believing
-    /// they approved. A request not in `from` is left untouched and
-    /// [`WalletStorageError::UnexpectedState`] is returned.
+    /// concurrent callers resolve to one winner rather than both believing
+    /// they acted — this is both the approve guard and the `Submitting` claim
+    /// that serializes concurrent submitters. A request not in `from` is left
+    /// untouched and [`WalletStorageError::UnexpectedState`] is returned.
     fn transaction_request_transition(
         &mut self,
         id: TransactionRequestId,
-        from: TransactionRequestStatus,
+        from: &[TransactionRequestStatus],
         to: TransactionRequestStatus,
     ) -> Result<TransactionRequestModel, WalletStorageError>;
 
-    /// Move an approved request to `Submitted`, recording the transaction it
-    /// became. Guarded on `Approved` in the same statement as the write.
+    /// Move a claimed (`Submitting`) request to `Submitted`, recording the
+    /// transaction it became. Guarded on `Submitting` in the same statement as
+    /// the write.
     ///
     /// Separate from [`Self::transaction_request_transition`] because
     /// `Submitted` is the only state that carries data: a submitted request

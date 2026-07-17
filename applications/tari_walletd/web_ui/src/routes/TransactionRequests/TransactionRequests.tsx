@@ -37,6 +37,8 @@ function statusColor(status: EffectiveStatus): "default" | "warning" | "success"
       return "warning";
     case "Approved":
       return "info";
+    case "Submitting":
+      return "info";
     case "Submitted":
       return "success";
     case "Rejected":

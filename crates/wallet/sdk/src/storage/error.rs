@@ -43,7 +43,7 @@ pub enum WalletStorageError {
         operation: &'static str,
         entity: &'static str,
         key: String,
-        expected: &'static str,
+        expected: String,
         actual: String,
     },
 }

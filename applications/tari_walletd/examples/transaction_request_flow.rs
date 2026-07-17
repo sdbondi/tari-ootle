@@ -164,7 +164,9 @@ async fn main() -> anyhow::Result<()> {
             .await
             .context("transaction_requests.get failed")?;
         match response.request.status {
-            EffectiveStatus::Pending => tokio::time::sleep(Duration::from_secs(3)).await,
+            // Submitting means another principal holds the submit claim; the
+            // outcome (Submitted, or back to Approved on failure) is imminent.
+            EffectiveStatus::Pending | EffectiveStatus::Submitting => tokio::time::sleep(Duration::from_secs(3)).await,
             _ => break response.request,
         }
     };
@@ -194,7 +196,9 @@ async fn main() -> anyhow::Result<()> {
         },
         EffectiveStatus::Rejected => bail!("the request was rejected"),
         EffectiveStatus::Expired => bail!("the request expired before it was approved"),
-        EffectiveStatus::Pending => unreachable!("the poll loop only exits on a settled status"),
+        EffectiveStatus::Pending | EffectiveStatus::Submitting => {
+            unreachable!("the poll loop only exits on a settled status")
+        },
     };
 
     let result = client
