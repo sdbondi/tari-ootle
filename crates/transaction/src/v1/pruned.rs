@@ -12,7 +12,6 @@
 
 use indexmap::IndexSet;
 use log::*;
-use tari_engine_types::hashing::{EngineHashDomainLabel, hasher32};
 use tari_ootle_common_types::{Epoch, SubstateRequirement};
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 
@@ -257,17 +256,16 @@ impl PrunedTransactionV1 {
         self.body.transaction.dry_run
     }
 
-    /// Compute the deterministic transaction id. Identical to the full form's id.
+    /// Compute the deterministic transaction id. Identical to the full form's id — see
+    /// [`calculate_id_v1`](super::transaction::calculate_id_v1) for the projection invariants.
     pub fn calculate_id(&self) -> TransactionId {
-        hasher32(EngineHashDomainLabel::Transaction)
-            .chain(&self.schema_version())
-            .chain(&TransactionSignatureFields::from(&self.body.transaction))
-            .chain(self.blob_hashes())
-            .chain(self.signatures())
-            .chain(&self.seal_signature)
-            .result()
-            .into_array()
-            .into()
+        super::transaction::calculate_id_v1(
+            self.schema_version(),
+            TransactionSignatureFields::from(&self.body.transaction),
+            self.blob_hashes(),
+            self.signatures(),
+            self.seal_signature.public_key(),
+        )
     }
 
     /// Verify the seal and all extra signatures.
