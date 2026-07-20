@@ -70,4 +70,10 @@ pub enum TransactionValidationError {
         max: usize,
         actual: usize,
     },
+    #[error("Transaction {transaction_id} contains {actual} signatures, but the maximum allowed is {max}")]
+    TooManySignatures {
+        transaction_id: TransactionId,
+        max: usize,
+        actual: usize,
+    },
 }

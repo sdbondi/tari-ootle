@@ -73,6 +73,7 @@ use tari_ootle_transaction_validation::{
     BasicValidations,
     EpochRangeValidator,
     PublishTemplateLimitValidator,
+    SignatureLimitValidator,
     StealthTransactionLimitsValidator,
     TemplateExistsValidator,
     TransactionDryRunValidator,
@@ -488,6 +489,8 @@ pub fn create_mempool_transaction_validator<TProvider: TemplateProvider>(
         // verifying signatures or executing.
         .and_then(StealthTransactionLimitsValidator::new())
         .and_then(PublishTemplateLimitValidator::new())
+        // Bounds the number of signature verifications the next validator performs.
+        .and_then(SignatureLimitValidator::new())
         .and_then(TransactionSignatureValidator)
         .and_then(TemplateExistsValidator::new(template_manager))
 }

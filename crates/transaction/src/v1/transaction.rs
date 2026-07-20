@@ -27,6 +27,17 @@ use crate::{
 
 const LOG_TARGET: &str = "tari::ootle::transaction::transaction";
 
+/// Maximum number of authorization signatures a transaction may carry.
+///
+/// Each signature costs one Ristretto Schnorr verification, performed by every node that receives
+/// the transaction, before any fee is charged. Transaction weight alone bounds this too loosely —
+/// at `SIGNER_FACTOR` weight per signer the per-transaction weight cap permits signature counts in
+/// the hundreds of thousands — so the count is capped directly. The ceiling is well above any
+/// multi-party authorization scheme, which names its signers explicitly; authorization by a large
+/// or open-ended group is expressed through a component's access rules, not through raw
+/// transaction signatures.
+pub const MAX_SIGNATURES_PER_TRANSACTION: usize = 16;
+
 static XTR_REQUIREMENT: SubstateRequirement = SubstateRequirement::new(SubstateId::Resource(TARI_TOKEN), None);
 
 #[derive(Debug, Clone, borsh::BorshSerialize, minicbor::Encode, minicbor::Decode, minicbor::CborLen)]
