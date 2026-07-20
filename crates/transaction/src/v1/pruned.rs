@@ -67,6 +67,11 @@ pub struct PrunedUnsignedTransactionV1 {
     #[cbor(default)]
     #[borsh(skip)]
     pub blob_sizes: Vec<u32>,
+    /// Mirrors `UnsignedTransactionV1::nonce` of the full form.
+    #[n(10)]
+    #[cfg_attr(feature = "serde", serde(default))]
+    #[cbor(default)]
+    pub nonce: u64,
 }
 
 impl PrunedUnsignedTransactionV1 {
@@ -106,6 +111,7 @@ impl From<UnsignedTransactionV1> for PrunedUnsignedTransactionV1 {
             dry_run: t.dry_run,
             blob_hashes,
             blob_sizes,
+            nonce: t.nonce,
         }
     }
 }
@@ -309,6 +315,7 @@ impl PrunedTransactionV1 {
             dry_run,
             blob_hashes: _,
             blob_sizes: _,
+            nonce,
         } = transaction;
 
         let unsigned = UnsignedTransactionV1 {
@@ -321,6 +328,7 @@ impl PrunedTransactionV1 {
             is_seal_signer_authorized,
             dry_run,
             blobs,
+            nonce,
         };
         let unsealed = UnsealedTransactionV1::new(unsigned, signatures);
         Ok(TransactionV1::new(unsealed, seal_signature))
@@ -366,6 +374,7 @@ mod tests {
             is_seal_signer_authorized: false,
             dry_run: true,
             blobs,
+            nonce: 7,
         }
     }
 

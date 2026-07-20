@@ -425,6 +425,7 @@ mod blob_validation_tests {
             is_seal_signer_authorized: true,
             dry_run: false,
             blobs,
+            nonce: 0,
         };
         let sealer = RistrettoSecretKey::random(&mut rand::rng());
         let unsealed = UnsealedTransactionV1::new(unsigned, vec![]);
@@ -582,6 +583,7 @@ mod transaction_id_tests {
             is_seal_signer_authorized: true,
             dry_run: false,
             blobs: Blobs::empty(),
+            nonce: 0,
         }
     }
 
@@ -635,6 +637,30 @@ mod transaction_id_tests {
 
         let a = TransactionV1::new(unsealed.clone(), TransactionSealSignature::sign_v1(&sk_a, &unsealed));
         let b = TransactionV1::new(unsealed.clone(), TransactionSealSignature::sign_v1(&sk_b, &unsealed));
+
+        assert_ne!(a.calculate_id(), b.calculate_id());
+    }
+
+    /// The nonce is the intent-level distinguisher: identical bodies sealed by the same key
+    /// differing only in nonce must be distinct transactions.
+    #[test]
+    fn id_binds_nonce() {
+        let (sealer_sk, _) = random_key();
+        let mut a_unsigned = sample_unsigned();
+        a_unsigned.nonce = 1;
+        let mut b_unsigned = sample_unsigned();
+        b_unsigned.nonce = 2;
+
+        let a_unsealed = UnsealedTransactionV1::new(a_unsigned, vec![]);
+        let b_unsealed = UnsealedTransactionV1::new(b_unsigned, vec![]);
+        let a = TransactionV1::new(
+            a_unsealed.clone(),
+            TransactionSealSignature::sign_v1(&sealer_sk, &a_unsealed),
+        );
+        let b = TransactionV1::new(
+            b_unsealed.clone(),
+            TransactionSealSignature::sign_v1(&sealer_sk, &b_unsealed),
+        );
 
         assert_ne!(a.calculate_id(), b.calculate_id());
     }
