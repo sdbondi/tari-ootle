@@ -84,12 +84,16 @@ impl TransactionV1 {
     }
 
     pub fn verify_all_signatures(&self) -> bool {
-        if !self.seal_signature.verify_v1(&self.body) {
+        // Derived once and shared between the seal and the authorization messages: deriving blob
+        // commitments hashes every blob payload.
+        let blob_hashes = self.body.unsigned_transaction().blobs.hashes();
+        if !self.seal_signature.verify_v1_with_blob_hashes(&self.body, &blob_hashes) {
             debug!(target: LOG_TARGET, "Transaction seal signature is invalid");
             return false;
         }
 
-        self.body.verify_all_signatures(self.seal_signature.public_key())
+        self.body
+            .verify_all_signatures_with_blob_hashes(self.seal_signature.public_key(), &blob_hashes)
     }
 
     pub(crate) fn inputs(&self) -> &IndexSet<SubstateRequirement> {

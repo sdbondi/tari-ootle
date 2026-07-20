@@ -180,7 +180,8 @@ where
     }
 
     async fn handle_new_transaction_from_local(&mut self, transaction: Transaction) -> Result<(), MempoolError> {
-        if self.transaction_exists(&transaction.calculate_id())? {
+        let transaction_id = transaction.calculate_id();
+        if self.transaction_exists(&transaction_id)? {
             return Ok(());
         }
         info!(
@@ -188,8 +189,13 @@ where
             "🎱 Received NEW transaction from local: {transaction}",
         );
 
-        self.handle_new_transaction(transaction, true, self.gossip.get_num_incoming_messages())
-            .await?;
+        self.handle_new_transaction(
+            transaction,
+            transaction_id,
+            true,
+            self.gossip.get_num_incoming_messages(),
+        )
+        .await?;
 
         Ok(())
     }
@@ -228,21 +234,24 @@ where
             transaction
         );
 
-        self.handle_new_transaction(transaction, false, num_pending).await?;
+        self.handle_new_transaction(transaction, transaction_id, false, num_pending)
+            .await?;
 
         Ok(())
     }
 
+    /// `tx_id` must be the id of `transaction`. Taken from the caller rather than recomputed:
+    /// deriving it hashes every blob payload, and both callers already hold it.
     #[allow(clippy::too_many_lines)]
     async fn handle_new_transaction(
         &mut self,
         transaction: Transaction,
+        tx_id: TransactionId,
         is_local: bool,
         num_pending: usize,
     ) -> Result<(), MempoolError> {
         #[cfg(feature = "metrics")]
         self.metrics.on_transaction_received(&transaction);
-        let tx_id = transaction.calculate_id();
 
         if let Err(e) = self.before_execute_validator.validate(&(), &transaction) {
             // Throw the transaction away
