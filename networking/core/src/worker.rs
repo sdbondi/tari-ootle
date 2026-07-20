@@ -758,12 +758,12 @@ where
         // report `Ignore` here rather than leaving the message pinned in the validation cache.
         let topic = message.topic.clone();
         let len = message.data.len();
-        if let Err(e) = self.messaging_mode.send_gossip_message(GossipMessage {
+        if let Err(e) = self.messaging_mode.send_gossip_message(GossipMessage::new(
             source,
             propagation_source,
-            message_id: message_id.clone(),
+            message_id.clone(),
             message,
-        }) {
+        )) {
             warn!(target: LOG_TARGET, "📢 Gossipsub message failed to be handled: {}", e);
             self.report_gossip_validation(
                 &message_id,

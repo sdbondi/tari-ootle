@@ -48,15 +48,12 @@ impl MempoolGossipCodec {
 pub(super) struct MempoolGossip {
     is_subscribed: bool,
     networking: NetworkingHandle<TariMessagingSpec>,
-    rx_gossip: mpsc::UnboundedReceiver<GossipMessage>,
+    rx_gossip: mpsc::Receiver<GossipMessage>,
     codec: MempoolGossipCodec,
 }
 
 impl MempoolGossip {
-    pub fn new(
-        networking: NetworkingHandle<TariMessagingSpec>,
-        rx_gossip: mpsc::UnboundedReceiver<GossipMessage>,
-    ) -> Self {
+    pub fn new(networking: NetworkingHandle<TariMessagingSpec>, rx_gossip: mpsc::Receiver<GossipMessage>) -> Self {
         Self {
             is_subscribed: false,
             networking,

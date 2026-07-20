@@ -52,7 +52,14 @@ use tari_epoch_oracles::{
     hybrid::{HybridEpochOracle, mpsc_ticker},
     store::EpochOracleStore,
 };
-use tari_networking::{MessagingMode, NetworkingHandle, RelayCircuitLimits, RelayReservationLimits, SwarmConfig};
+use tari_networking::{
+    MessagingMode,
+    NetworkingHandle,
+    RelayCircuitLimits,
+    RelayReservationLimits,
+    SwarmConfig,
+    gossip_queue,
+};
 use tari_ootle_app_utilities::{
     claim_burn_proof_verifier::TariClaimBurnProofVerifier,
     configuration::convert_network_to_l1_network,
@@ -139,9 +146,20 @@ pub async fn spawn_services(
     // Networking
     let (tx_consensus_messages, rx_consensus_messages) = mpsc::unbounded_channel();
 
-    // gossip channels
-    let (tx_transaction_gossip_messages, rx_transaction_gossip_messages) = mpsc::unbounded_channel();
-    let (tx_consensus_gossip_messages, rx_consensus_gossip_messages) = mpsc::unbounded_channel();
+    // Bounded gossip ingress queues. Each is drained serially by its service, so the queue absorbs
+    // arrival bursts that outpace processing; beyond its budget messages are dropped rather than
+    // queued without limit. See `ValidatorNodeConfig::max_transaction_gossip_queue_bytes`. The
+    // message-count bound is a secondary guard against a flood of tiny messages, whose per-message
+    // overhead the byte budget does not capture.
+    const MAX_QUEUED_GOSSIP_MESSAGES: usize = 100_000;
+    let (tx_transaction_gossip_messages, rx_transaction_gossip_messages) = gossip_queue(
+        MAX_QUEUED_GOSSIP_MESSAGES,
+        config.validator_node.max_transaction_gossip_queue_bytes,
+    );
+    let (tx_consensus_gossip_messages, rx_consensus_gossip_messages) = gossip_queue(
+        MAX_QUEUED_GOSSIP_MESSAGES,
+        config.validator_node.max_consensus_gossip_queue_bytes,
+    );
     let mut tx_gossip_messages_by_topic = HashMap::new();
     tx_gossip_messages_by_topic.insert(mempool::TOPIC_PREFIX.to_string(), tx_transaction_gossip_messages);
     tx_gossip_messages_by_topic.insert(consensus_gossip::TOPIC_PREFIX.to_string(), tx_consensus_gossip_messages);

@@ -45,7 +45,7 @@ pub(super) struct ConsensusGossipService {
     is_subscribed: bool,
     networking: NetworkingHandle<TariMessagingSpec>,
     codec: ProstCodec<proto::consensus::HotStuffMessage>,
-    rx_gossip: mpsc::UnboundedReceiver<GossipMessage>,
+    rx_gossip: mpsc::Receiver<GossipMessage>,
     tx_consensus_gossip: mpsc::Sender<(PeerId, proto::consensus::HotStuffMessage)>,
 }
 
@@ -54,7 +54,7 @@ impl ConsensusGossipService {
         epoch_manager_events: broadcast::Receiver<EpochManagerEvent>,
         consensus_events: broadcast::Receiver<HotstuffEvent>,
         networking: NetworkingHandle<TariMessagingSpec>,
-        rx_gossip: mpsc::UnboundedReceiver<GossipMessage>,
+        rx_gossip: mpsc::Receiver<GossipMessage>,
         tx_consensus_gossip: mpsc::Sender<(PeerId, proto::consensus::HotStuffMessage)>,
     ) -> Self {
         Self {

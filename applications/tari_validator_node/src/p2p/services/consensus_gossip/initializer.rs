@@ -40,7 +40,7 @@ pub fn spawn(
     epoch_manager_events: broadcast::Receiver<EpochManagerEvent>,
     consensus_events: broadcast::Receiver<HotstuffEvent>,
     networking: NetworkingHandle<TariMessagingSpec>,
-    rx_gossip: mpsc::UnboundedReceiver<GossipMessage>,
+    rx_gossip: mpsc::Receiver<GossipMessage>,
 ) -> (
     ConsensusGossipHandle,
     JoinHandle<anyhow::Result<()>>,

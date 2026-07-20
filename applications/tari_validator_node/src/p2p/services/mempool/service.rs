@@ -20,7 +20,10 @@
 //   WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use std::{collections::HashSet, fmt::Display};
+use std::{
+    collections::{HashSet, VecDeque},
+    fmt::Display,
+};
 
 use libp2p::gossipsub::MessageAcceptance;
 use log::*;
@@ -47,11 +50,12 @@ use crate::{
 
 const LOG_TARGET: &str = "tari::validator_node::mempool::service";
 
-const MEM_MAX_TRANSACTIONS_DEDUP_ALLOC: usize = 1_000_000; // 32Mb
+/// Ids retained by the seen-transaction cache. Each is 32 bytes, so this bounds it at ~32 MiB.
+const MEM_MAX_TRANSACTIONS_DEDUP: usize = 1_000_000;
 
 #[derive(Debug)]
 pub struct MempoolService<TValidator, TStateStore> {
-    transactions: HashSet<TransactionId>,
+    transactions: SeenTransactions,
     mempool_requests: mpsc::Receiver<MempoolRequest>,
     epoch_manager: EpochManagerHandle<PeerAddress>,
     before_execute_validator: TValidator,
@@ -74,12 +78,12 @@ where
         state_store: TStateStore,
         consensus_handle: ConsensusHandle,
         networking: NetworkingHandle<TariMessagingSpec>,
-        rx_gossip: mpsc::UnboundedReceiver<GossipMessage>,
+        rx_gossip: mpsc::Receiver<GossipMessage>,
         #[cfg(feature = "metrics")] metrics: PrometheusMempoolMetrics,
     ) -> Self {
         Self {
             gossip: MempoolGossip::new(networking, rx_gossip),
-            transactions: Default::default(),
+            transactions: SeenTransactions::new(MEM_MAX_TRANSACTIONS_DEDUP),
             mempool_requests,
             epoch_manager,
             before_execute_validator,
@@ -172,9 +176,6 @@ where
             if self.transactions.remove(id) {
                 num_found += 1;
             }
-        }
-        if self.transactions.capacity() > MEM_MAX_TRANSACTIONS_DEDUP_ALLOC {
-            self.transactions.shrink_to(MEM_MAX_TRANSACTIONS_DEDUP_ALLOC);
         }
         num_found
     }
@@ -366,11 +367,114 @@ where
     }
 }
 
+/// Bounded cache of transaction ids the mempool has already seen.
+///
+/// Purely a fast path: [`MempoolService::transaction_exists`] falls through to the state store on a
+/// miss, so evicting an id costs one extra database read should that transaction arrive again, and
+/// nothing more. That is what makes a hard bound safe here — without one the cache grows with the
+/// unfinalized backlog, which nothing else bounds.
+///
+/// Eviction is oldest-first. Ids removed by [`Self::remove`] are dropped from the set immediately
+/// but left in the eviction order to be skipped when they surface, which keeps removal O(1); the
+/// order therefore bounds the set rather than matching it exactly.
+#[derive(Debug)]
+struct SeenTransactions {
+    ids: HashSet<TransactionId>,
+    eviction_order: VecDeque<TransactionId>,
+    capacity: usize,
+}
+
+impl SeenTransactions {
+    fn new(capacity: usize) -> Self {
+        Self {
+            ids: HashSet::new(),
+            eviction_order: VecDeque::new(),
+            capacity,
+        }
+    }
+
+    fn contains(&self, id: &TransactionId) -> bool {
+        self.ids.contains(id)
+    }
+
+    fn insert(&mut self, id: TransactionId) {
+        if !self.ids.insert(id) {
+            return;
+        }
+        self.eviction_order.push_back(id);
+        while self.eviction_order.len() > self.capacity {
+            if let Some(evicted) = self.eviction_order.pop_front() {
+                self.ids.remove(&evicted);
+            }
+        }
+    }
+
+    fn remove(&mut self, id: &TransactionId) -> bool {
+        self.ids.remove(id)
+    }
+
+    fn len(&self) -> usize {
+        self.ids.len()
+    }
+}
+
 fn handle<T, E: Display>(reply: oneshot::Sender<Result<T, E>>, result: Result<T, E>) {
     if let Err(ref e) = result {
         error!(target: LOG_TARGET, "Request failed with error: {}", e);
     }
     if reply.send(result).is_err() {
         error!(target: LOG_TARGET, "Requester abandoned request");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(n: u8) -> TransactionId {
+        TransactionId::new([n; 32])
+    }
+
+    #[test]
+    fn evicts_oldest_ids_beyond_capacity() {
+        let mut seen = SeenTransactions::new(2);
+        seen.insert(id(1));
+        seen.insert(id(2));
+        seen.insert(id(3));
+
+        assert!(!seen.contains(&id(1)), "the oldest id is evicted");
+        assert!(seen.contains(&id(2)));
+        assert!(seen.contains(&id(3)));
+        assert_eq!(seen.len(), 2);
+    }
+
+    #[test]
+    fn reinserting_a_known_id_does_not_consume_capacity() {
+        let mut seen = SeenTransactions::new(4);
+        for _ in 0..10 {
+            seen.insert(id(1));
+        }
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            seen.eviction_order.len(),
+            1,
+            "duplicates must not stack up for eviction"
+        );
+    }
+
+    #[test]
+    fn removed_ids_are_forgotten_without_unbounding_the_eviction_order() {
+        let mut seen = SeenTransactions::new(2);
+        seen.insert(id(1));
+        assert!(seen.remove(&id(1)));
+        assert!(!seen.contains(&id(1)));
+
+        // The removed id lingers in the eviction order and is skipped when it surfaces, so the
+        // order stays bounded by capacity rather than by how much has passed through.
+        for n in 2..=10 {
+            seen.insert(id(n));
+        }
+        assert!(seen.eviction_order.len() <= 2);
+        assert_eq!(seen.len(), 2);
     }
 }

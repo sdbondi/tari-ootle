@@ -105,6 +105,26 @@ pub struct ValidatorNodeConfig {
     pub layer_one_transaction_path: PathBuf,
     /// Consensus configuration
     pub consensus: ConsensusConfig,
+    /// Maximum total size of inbound transaction gossip awaiting mempool validation. The mempool
+    /// drains this queue serially, so it absorbs bursts that arrive faster than validation; once it
+    /// is full, further messages are dropped rather than queued without limit. Sized in bytes
+    /// because every message may be up to `gossip_sub_max_message_size`: at ordinary transaction
+    /// sizes this admits a very deep backlog, while capping a flood of maximum-size messages.
+    #[serde(default = "default_max_transaction_gossip_queue_bytes")]
+    pub max_transaction_gossip_queue_bytes: usize,
+    /// Maximum total size of inbound consensus gossip awaiting processing. Consensus carries far
+    /// less volume than transactions — one proposal per block plus a vote per committee member — so
+    /// this queue should never run deep, and dropping from it indicates the node has fallen behind.
+    #[serde(default = "default_max_consensus_gossip_queue_bytes")]
+    pub max_consensus_gossip_queue_bytes: usize,
+}
+
+fn default_max_transaction_gossip_queue_bytes() -> usize {
+    256 * 1024 * 1024
+}
+
+fn default_max_consensus_gossip_queue_bytes() -> usize {
+    64 * 1024 * 1024
 }
 
 impl ValidatorNodeConfig {
@@ -161,6 +181,8 @@ impl Default for ValidatorNodeConfig {
             sidechain_id: None,
             layer_one_transaction_path: PathBuf::from("data/layer_one_transactions"),
             consensus: ConsensusConfig::default(),
+            max_transaction_gossip_queue_bytes: default_max_transaction_gossip_queue_bytes(),
+            max_consensus_gossip_queue_bytes: default_max_consensus_gossip_queue_bytes(),
         }
     }
 }
