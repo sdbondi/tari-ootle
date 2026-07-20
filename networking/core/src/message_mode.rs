@@ -5,7 +5,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -113,7 +113,7 @@ impl GossipMessage {
 #[derive(Debug, Clone)]
 pub struct GossipQueueSender {
     tx: mpsc::Sender<GossipMessage>,
-    budget: ByteBudget,
+    budget: QueueAccounting,
 }
 
 /// Creates a bounded inbound gossip queue for a single topic.
@@ -125,7 +125,7 @@ pub fn gossip_queue(
     (
         GossipQueueSender {
             tx,
-            budget: ByteBudget::new(max_queued_bytes),
+            budget: QueueAccounting::new(max_queued_bytes),
         },
         rx,
     )
@@ -137,18 +137,36 @@ impl GossipQueueSender {
         self.budget.queued()
     }
 
+    /// The byte budget this queue admits up to.
+    pub fn max_queued_bytes(&self) -> usize {
+        self.budget.max
+    }
+
     /// Messages currently queued.
     pub fn queued_messages(&self) -> usize {
         self.tx.max_capacity() - self.tx.capacity()
     }
 
+    /// Messages turned away because the queue was full, since start-up.
+    pub fn dropped_messages(&self) -> u64 {
+        self.budget.dropped_messages()
+    }
+
+    /// Bytes turned away because the queue was full, since start-up.
+    pub fn dropped_bytes(&self) -> u64 {
+        self.budget.dropped_bytes()
+    }
+
     fn try_send(&self, msg: GossipMessage) -> Result<(), GossipSendError> {
         let len = msg.message.data.len();
-        let full = |msg: &GossipMessage| GossipSendError::QueueFull {
-            topic: msg.message.topic.to_string(),
-            queued_messages: self.queued_messages(),
-            queued_bytes: self.queued_bytes(),
-            len,
+        let full = |msg: &GossipMessage| {
+            self.budget.record_drop(len);
+            GossipSendError::QueueFull {
+                topic: msg.message.topic.to_string(),
+                queued_messages: self.queued_messages(),
+                queued_bytes: self.queued_bytes(),
+                len,
+            }
         };
 
         let Some(permit) = self.budget.reserve(len) else {
@@ -182,7 +200,7 @@ pub struct InboundMessage<TMsg> {
 #[derive(Debug)]
 pub struct MessageQueueSender<TMsg> {
     tx: mpsc::Sender<InboundMessage<TMsg>>,
-    budget: ByteBudget,
+    budget: QueueAccounting,
 }
 
 /// Creates a bounded inbound queue for direct messages.
@@ -194,10 +212,21 @@ pub fn message_queue<TMsg>(
     (
         MessageQueueSender {
             tx,
-            budget: ByteBudget::new(max_queued_bytes),
+            budget: QueueAccounting::new(max_queued_bytes),
         },
         rx,
     )
+}
+
+/// Cloning yields another handle to the same queue, independent of whether `TMsg` is itself
+/// cloneable — so `#[derive(Clone)]`, which would demand `TMsg: Clone`, is not usable here.
+impl<TMsg> Clone for MessageQueueSender<TMsg> {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            budget: self.budget.clone(),
+        }
+    }
 }
 
 impl<TMsg> MessageQueueSender<TMsg> {
@@ -206,19 +235,37 @@ impl<TMsg> MessageQueueSender<TMsg> {
         self.budget.queued()
     }
 
+    /// The byte budget this queue admits up to.
+    pub fn max_queued_bytes(&self) -> usize {
+        self.budget.max
+    }
+
     /// Messages currently queued.
     pub fn queued_messages(&self) -> usize {
         self.tx.max_capacity() - self.tx.capacity()
     }
 
+    /// Messages turned away because the queue was full, since start-up.
+    pub fn dropped_messages(&self) -> u64 {
+        self.budget.dropped_messages()
+    }
+
+    /// Bytes turned away because the queue was full, since start-up.
+    pub fn dropped_bytes(&self) -> u64 {
+        self.budget.dropped_bytes()
+    }
+
     /// `len` is the message's encoded size on the wire; the decoded form is not measurable here, so
     /// the wire size stands in for it.
     fn try_send(&self, peer_id: PeerId, message: TMsg, len: usize) -> Result<(), MessageSendError> {
-        let full = || MessageSendError::QueueFull {
-            peer_id,
-            queued_messages: self.queued_messages(),
-            queued_bytes: self.queued_bytes(),
-            len,
+        let full = || {
+            self.budget.record_drop(len);
+            MessageSendError::QueueFull {
+                peer_id,
+                queued_messages: self.queued_messages(),
+                queued_bytes: self.queued_bytes(),
+                len,
+            }
         };
 
         let Some(permit) = self.budget.reserve(len) else {
@@ -238,24 +285,45 @@ impl<TMsg> MessageQueueSender<TMsg> {
     }
 }
 
-/// Tracks the bytes held by one bounded inbound queue, handing out reservations that are released
-/// when the message they travel with is dropped.
+/// Accounting for one bounded inbound queue: the bytes it currently holds, and what it has turned
+/// away. Reservations are released when the message they travel with is dropped.
+///
+/// Drop counters are maintained unconditionally rather than behind a metrics feature — they are two
+/// relaxed atomic adds on a path that has already decided to discard a message, and a queue whose
+/// drops are invisible cannot be sized against real traffic.
 #[derive(Debug, Clone)]
-struct ByteBudget {
+struct QueueAccounting {
     queued: Arc<AtomicUsize>,
     max: usize,
+    dropped_messages: Arc<AtomicU64>,
+    dropped_bytes: Arc<AtomicU64>,
 }
 
-impl ByteBudget {
+impl QueueAccounting {
     fn new(max: usize) -> Self {
         Self {
             queued: Arc::new(AtomicUsize::new(0)),
             max,
+            dropped_messages: Arc::new(AtomicU64::new(0)),
+            dropped_bytes: Arc::new(AtomicU64::new(0)),
         }
     }
 
     fn queued(&self) -> usize {
         self.queued.load(Ordering::Relaxed)
+    }
+
+    fn dropped_messages(&self) -> u64 {
+        self.dropped_messages.load(Ordering::Relaxed)
+    }
+
+    fn dropped_bytes(&self) -> u64 {
+        self.dropped_bytes.load(Ordering::Relaxed)
+    }
+
+    fn record_drop(&self, len: usize) {
+        self.dropped_messages.fetch_add(1, Ordering::Relaxed);
+        self.dropped_bytes.fetch_add(len as u64, Ordering::Relaxed);
     }
 
     /// Reserves `len` bytes, or `None` when that would exceed the budget.
@@ -375,6 +443,32 @@ mod tests {
         drop(rx.try_recv().unwrap());
         assert_eq!(tx.queued_bytes(), 0);
         tx.try_send(message(100)).unwrap();
+    }
+
+    #[test]
+    fn drops_are_counted_on_both_bounds() {
+        // Sizing the budgets against real traffic depends on these counters, so a rejection by
+        // either bound must be visible.
+        let (tx, _rx) = gossip_queue(1, 100);
+        assert_eq!(tx.dropped_messages(), 0);
+
+        tx.try_send(message(10)).unwrap();
+
+        // Rejected by the byte budget.
+        tx.try_send(message(200)).unwrap_err();
+        assert_eq!(tx.dropped_messages(), 1);
+        assert_eq!(tx.dropped_bytes(), 200);
+
+        // Rejected by the message count, which is already at its limit of one.
+        tx.try_send(message(1)).unwrap_err();
+        assert_eq!(tx.dropped_messages(), 2);
+        assert_eq!(tx.dropped_bytes(), 201);
+
+        assert_eq!(
+            tx.queued_bytes(),
+            10,
+            "rejections must not disturb the admitted message"
+        );
     }
 
     #[test]

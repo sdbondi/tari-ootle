@@ -104,6 +104,8 @@ use tokio::{
 use crate::consensus::metrics::PrometheusConsensusMetrics;
 #[cfg(feature = "metrics")]
 use crate::epoch_metrics::{EpochManagerCollector, MeteredEpochOracle, PrometheusEpochOracleMetrics};
+#[cfg(feature = "metrics")]
+use crate::inbound_queue_metrics::InboundQueueCollector;
 use crate::{
     ApplicationConfig,
     ValidatorNodeEpochManagerSpec,
@@ -163,6 +165,14 @@ pub async fn spawn_services(
         MAX_QUEUED_INBOUND_MESSAGES,
         config.validator_node.max_consensus_gossip_queue_bytes,
     );
+    #[cfg(feature = "metrics")]
+    InboundQueueCollector::new(
+        tx_transaction_gossip_messages.clone(),
+        tx_consensus_gossip_messages.clone(),
+        tx_consensus_messages.clone(),
+    )
+    .register(metrics_registry);
+
     let mut tx_gossip_messages_by_topic = HashMap::new();
     tx_gossip_messages_by_topic.insert(mempool::TOPIC_PREFIX.to_string(), tx_transaction_gossip_messages);
     tx_gossip_messages_by_topic.insert(consensus_gossip::TOPIC_PREFIX.to_string(), tx_consensus_gossip_messages);

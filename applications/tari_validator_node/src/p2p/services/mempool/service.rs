@@ -20,10 +20,7 @@
 //   WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use std::{
-    collections::{HashSet, VecDeque},
-    fmt::Display,
-};
+use std::{collections::HashSet, fmt::Display, mem};
 
 use libp2p::gossipsub::MessageAcceptance;
 use log::*;
@@ -50,7 +47,9 @@ use crate::{
 
 const LOG_TARGET: &str = "tari::validator_node::mempool::service";
 
-/// Ids retained by the seen-transaction cache. Each is 32 bytes, so this bounds it at ~32 MiB.
+/// Transaction ids the mempool remembers having seen. See [`SeenTransactions`] for the footprint
+/// this implies; it is a cache with a database fallback, so this trades memory against how often a
+/// re-gossiped transaction costs a lookup, not against correctness.
 const MEM_MAX_TRANSACTIONS_DEDUP: usize = 1_000_000;
 
 #[derive(Debug)]
@@ -370,51 +369,59 @@ where
 /// Bounded cache of transaction ids the mempool has already seen.
 ///
 /// Purely a fast path: [`MempoolService::transaction_exists`] falls through to the state store on a
-/// miss, so evicting an id costs one extra database read should that transaction arrive again, and
-/// nothing more. That is what makes a hard bound safe here — without one the cache grows with the
-/// unfinalized backlog, which nothing else bounds.
+/// miss, so forgetting an id costs one extra database read should that transaction arrive again,
+/// and nothing more. That is what makes a hard bound safe here — without one the cache grows with
+/// the unfinalized backlog, which nothing else bounds. It is also what makes coarse eviction
+/// acceptable, which is what keeps the footprint down.
 ///
-/// Eviction is oldest-first. Ids removed by [`Self::remove`] are dropped from the set immediately
-/// but left in the eviction order to be skipped when they surface, which keeps removal O(1); the
-/// order therefore bounds the set rather than matching it exactly.
+/// Ids are held in two generations rather than a set alongside an eviction queue: a queue would
+/// store every id a second time, and exact eviction order is worth less than that memory when a
+/// miss is merely a database read. Inserts land in the current generation; when it fills, it
+/// becomes the previous generation and the older one is dropped wholesale. Lookups check both, so
+/// an id is remembered for between `capacity / 2` and `capacity` subsequent inserts.
+///
+/// Footprint is roughly `capacity` × 33 bytes across the two tables, rounded up to whatever
+/// power-of-two bucket count each needs — so tens of MiB at the capacity used here, against
+/// roughly double that for a set plus a queue.
 #[derive(Debug)]
 struct SeenTransactions {
-    ids: HashSet<TransactionId>,
-    eviction_order: VecDeque<TransactionId>,
-    capacity: usize,
+    current: HashSet<TransactionId>,
+    previous: HashSet<TransactionId>,
+    generation_capacity: usize,
 }
 
 impl SeenTransactions {
     fn new(capacity: usize) -> Self {
         Self {
-            ids: HashSet::new(),
-            eviction_order: VecDeque::new(),
-            capacity,
+            current: HashSet::new(),
+            previous: HashSet::new(),
+            generation_capacity: capacity.div_ceil(2).max(1),
         }
     }
 
     fn contains(&self, id: &TransactionId) -> bool {
-        self.ids.contains(id)
+        self.current.contains(id) || self.previous.contains(id)
     }
 
     fn insert(&mut self, id: TransactionId) {
-        if !self.ids.insert(id) {
+        if self.contains(&id) {
             return;
         }
-        self.eviction_order.push_back(id);
-        while self.eviction_order.len() > self.capacity {
-            if let Some(evicted) = self.eviction_order.pop_front() {
-                self.ids.remove(&evicted);
-            }
+        if self.current.len() >= self.generation_capacity {
+            self.previous = mem::take(&mut self.current);
         }
+        self.current.insert(id);
     }
 
     fn remove(&mut self, id: &TransactionId) -> bool {
-        self.ids.remove(id)
+        // Which generation holds the id is not tracked, so both are cleared.
+        let was_current = self.current.remove(id);
+        let was_previous = self.previous.remove(id);
+        was_current || was_previous
     }
 
     fn len(&self) -> usize {
-        self.ids.len()
+        self.current.len() + self.previous.len()
     }
 }
 
@@ -455,26 +462,30 @@ mod tests {
             seen.insert(id(1));
         }
         assert_eq!(seen.len(), 1);
-        assert_eq!(
-            seen.eviction_order.len(),
-            1,
-            "duplicates must not stack up for eviction"
-        );
+        assert!(seen.previous.is_empty(), "duplicates must not drive a rotation");
     }
 
     #[test]
-    fn removed_ids_are_forgotten_without_unbounding_the_eviction_order() {
+    fn removed_ids_are_forgotten_from_either_generation() {
         let mut seen = SeenTransactions::new(2);
         seen.insert(id(1));
+        seen.insert(id(2));
+        // One id per generation at this capacity, so these are now in different generations.
         assert!(seen.remove(&id(1)));
+        assert!(seen.remove(&id(2)));
         assert!(!seen.contains(&id(1)));
+        assert!(!seen.contains(&id(2)));
+        assert_eq!(seen.len(), 0);
+        assert!(!seen.remove(&id(1)), "removing an unknown id reports nothing found");
+    }
 
-        // The removed id lingers in the eviction order and is skipped when it surfaces, so the
-        // order stays bounded by capacity rather than by how much has passed through.
-        for n in 2..=10 {
+    #[test]
+    fn total_retained_never_exceeds_capacity() {
+        let mut seen = SeenTransactions::new(8);
+        for n in 0..=255u8 {
             seen.insert(id(n));
+            assert!(seen.len() <= 8, "cache grew past its bound at id {n}");
         }
-        assert!(seen.eviction_order.len() <= 2);
-        assert_eq!(seen.len(), 2);
+        assert!(seen.contains(&id(255)), "the most recent id is always retained");
     }
 }
