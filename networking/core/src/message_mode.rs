@@ -34,6 +34,22 @@ pub enum GossipSendError {
     },
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum MessageSendError {
+    #[error("Inbound message channel closed")]
+    InboundMessageChannelClosed,
+    #[error(
+        "Inbound message queue is full ({queued_messages} messages, {queued_bytes} bytes queued); dropped a {len} \
+         byte message from {peer_id}"
+    )]
+    QueueFull {
+        peer_id: PeerId,
+        queued_messages: usize,
+        queued_bytes: usize,
+        len: usize,
+    },
+}
+
 /// An inbound gossipsub message, carrying the identifiers needed to report its validation verdict.
 ///
 /// gossipsub runs in `validate_messages` mode, so a message is held and propagated to nobody until a
@@ -97,8 +113,7 @@ impl GossipMessage {
 #[derive(Debug, Clone)]
 pub struct GossipQueueSender {
     tx: mpsc::Sender<GossipMessage>,
-    queued_bytes: Arc<AtomicUsize>,
-    max_queued_bytes: usize,
+    budget: ByteBudget,
 }
 
 /// Creates a bounded inbound gossip queue for a single topic.
@@ -110,8 +125,7 @@ pub fn gossip_queue(
     (
         GossipQueueSender {
             tx,
-            queued_bytes: Arc::new(AtomicUsize::new(0)),
-            max_queued_bytes,
+            budget: ByteBudget::new(max_queued_bytes),
         },
         rx,
     )
@@ -120,7 +134,7 @@ pub fn gossip_queue(
 impl GossipQueueSender {
     /// Bytes currently held by queued messages.
     pub fn queued_bytes(&self) -> usize {
-        self.queued_bytes.load(Ordering::Relaxed)
+        self.budget.queued()
     }
 
     /// Messages currently queued.
@@ -137,7 +151,7 @@ impl GossipQueueSender {
             len,
         };
 
-        let Some(permit) = self.reserve(len) else {
+        let Some(permit) = self.budget.reserve(len) else {
             return Err(full(&msg));
         };
 
@@ -148,18 +162,111 @@ impl GossipQueueSender {
             Err(mpsc::error::TrySendError::Closed(_)) => Err(GossipSendError::InboundGossipChannelClosed),
         }
     }
+}
 
-    /// Reserves `len` bytes of this queue's budget, or `None` when that would exceed it. The
-    /// reservation is released when the returned permit drops, i.e. once the consumer is done with
-    /// the message it travels with.
+/// An inbound direct message, carrying its reservation against the inbound queue's byte budget.
+#[derive(Debug)]
+pub struct InboundMessage<TMsg> {
+    pub peer_id: PeerId,
+    pub message: TMsg,
+    /// Released when this message is dropped by the consumer. `None` until it is admitted.
+    _queue_permit: Option<QueuePermit>,
+}
+
+/// Sender half of the bounded inbound queue for direct (non-gossip) messages.
+///
+/// Bounded on the same basis as [`GossipQueueSender`], and for the same reason: the queue drains
+/// serially into consensus while messages vary from small votes to block-sized proposals, so a
+/// count alone cannot bound memory without also throttling ordinary traffic. Admission does not
+/// block the networking worker; a message that does not fit is dropped.
+#[derive(Debug)]
+pub struct MessageQueueSender<TMsg> {
+    tx: mpsc::Sender<InboundMessage<TMsg>>,
+    budget: ByteBudget,
+}
+
+/// Creates a bounded inbound queue for direct messages.
+pub fn message_queue<TMsg>(
+    max_queued_messages: usize,
+    max_queued_bytes: usize,
+) -> (MessageQueueSender<TMsg>, mpsc::Receiver<InboundMessage<TMsg>>) {
+    let (tx, rx) = mpsc::channel(max_queued_messages);
+    (
+        MessageQueueSender {
+            tx,
+            budget: ByteBudget::new(max_queued_bytes),
+        },
+        rx,
+    )
+}
+
+impl<TMsg> MessageQueueSender<TMsg> {
+    /// Bytes currently held by queued messages.
+    pub fn queued_bytes(&self) -> usize {
+        self.budget.queued()
+    }
+
+    /// Messages currently queued.
+    pub fn queued_messages(&self) -> usize {
+        self.tx.max_capacity() - self.tx.capacity()
+    }
+
+    /// `len` is the message's encoded size on the wire; the decoded form is not measurable here, so
+    /// the wire size stands in for it.
+    fn try_send(&self, peer_id: PeerId, message: TMsg, len: usize) -> Result<(), MessageSendError> {
+        let full = || MessageSendError::QueueFull {
+            peer_id,
+            queued_messages: self.queued_messages(),
+            queued_bytes: self.queued_bytes(),
+            len,
+        };
+
+        let Some(permit) = self.budget.reserve(len) else {
+            return Err(full());
+        };
+
+        match self.tx.try_send(InboundMessage {
+            peer_id,
+            message,
+            _queue_permit: Some(permit),
+        }) {
+            Ok(()) => Ok(()),
+            // The rejected message carries its permit, so the reservation is released as it drops.
+            Err(mpsc::error::TrySendError::Full(_)) => Err(full()),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(MessageSendError::InboundMessageChannelClosed),
+        }
+    }
+}
+
+/// Tracks the bytes held by one bounded inbound queue, handing out reservations that are released
+/// when the message they travel with is dropped.
+#[derive(Debug, Clone)]
+struct ByteBudget {
+    queued: Arc<AtomicUsize>,
+    max: usize,
+}
+
+impl ByteBudget {
+    fn new(max: usize) -> Self {
+        Self {
+            queued: Arc::new(AtomicUsize::new(0)),
+            max,
+        }
+    }
+
+    fn queued(&self) -> usize {
+        self.queued.load(Ordering::Relaxed)
+    }
+
+    /// Reserves `len` bytes, or `None` when that would exceed the budget.
     fn reserve(&self, len: usize) -> Option<QueuePermit> {
-        let previous = self.queued_bytes.fetch_add(len, Ordering::AcqRel);
-        if previous.saturating_add(len) > self.max_queued_bytes {
-            self.queued_bytes.fetch_sub(len, Ordering::AcqRel);
+        let previous = self.queued.fetch_add(len, Ordering::AcqRel);
+        if previous.saturating_add(len) > self.max {
+            self.queued.fetch_sub(len, Ordering::AcqRel);
             return None;
         }
         Some(QueuePermit {
-            queued_bytes: self.queued_bytes.clone(),
+            queued_bytes: self.queued.clone(),
             len,
         })
     }
@@ -180,7 +287,7 @@ impl Drop for QueuePermit {
 
 pub enum MessagingMode<TMsg: MessageSpec> {
     Enabled {
-        tx_messages: mpsc::UnboundedSender<(PeerId, TMsg::Message)>,
+        tx_messages: MessageQueueSender<TMsg::Message>,
         tx_gossip_messages_by_topic: HashMap<String, GossipQueueSender>,
     },
     Disabled,
@@ -193,13 +300,11 @@ impl<TMsg: MessageSpec> MessagingMode<TMsg> {
 }
 
 impl<TMsg: MessageSpec> MessagingMode<TMsg> {
-    pub fn send_message(
-        &self,
-        peer_id: PeerId,
-        msg: TMsg::Message,
-    ) -> Result<(), mpsc::error::SendError<(PeerId, TMsg::Message)>> {
+    /// `len` is the message's encoded size on the wire, used to charge the inbound queue's byte
+    /// budget.
+    pub fn send_message(&self, peer_id: PeerId, msg: TMsg::Message, len: usize) -> Result<(), MessageSendError> {
         if let MessagingMode::Enabled { tx_messages, .. } = self {
-            tx_messages.send((peer_id, msg))?;
+            tx_messages.try_send(peer_id, msg, len)?;
         }
         Ok(())
     }
@@ -270,6 +375,25 @@ mod tests {
         drop(rx.try_recv().unwrap());
         assert_eq!(tx.queued_bytes(), 0);
         tx.try_send(message(100)).unwrap();
+    }
+
+    #[test]
+    fn direct_messages_are_bounded_by_wire_size() {
+        // The decoded message is not measurable here, so admission charges the wire size reported
+        // by the messaging layer rather than anything derived from the payload.
+        let (tx, mut rx) = message_queue::<&str>(16, 100);
+        let peer = PeerId::random();
+
+        tx.try_send(peer, "small payload, large wire size", 60).unwrap();
+        assert_eq!(tx.queued_bytes(), 60);
+
+        let err = tx.try_send(peer, "rejected", 60).unwrap_err();
+        assert!(matches!(err, MessageSendError::QueueFull { .. }));
+        assert_eq!(tx.queued_bytes(), 60, "a rejected message must not hold budget");
+
+        drop(rx.try_recv().unwrap());
+        assert_eq!(tx.queued_bytes(), 0);
+        tx.try_send(peer, "fits again", 100).unwrap();
     }
 
     #[test]

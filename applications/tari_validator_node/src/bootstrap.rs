@@ -59,6 +59,7 @@ use tari_networking::{
     RelayReservationLimits,
     SwarmConfig,
     gossip_queue,
+    message_queue,
 };
 use tari_ootle_app_utilities::{
     claim_burn_proof_verifier::TariClaimBurnProofVerifier,
@@ -143,21 +144,23 @@ pub async fn spawn_services(
 
     ensure_directories_exist(&config)?;
 
-    // Networking
-    let (tx_consensus_messages, rx_consensus_messages) = mpsc::unbounded_channel();
+    // Bounded ingress queues. Each is drained serially by its service, so a queue absorbs arrival
+    // bursts that outpace processing; beyond its budget messages are dropped rather than queued
+    // without limit. Budgets are per-queue — see `ValidatorNodeConfig`. The message-count bound is
+    // a secondary guard against a flood of tiny messages, whose per-message overhead the byte
+    // budget does not capture.
+    const MAX_QUEUED_INBOUND_MESSAGES: usize = 100_000;
 
-    // Bounded gossip ingress queues. Each is drained serially by its service, so the queue absorbs
-    // arrival bursts that outpace processing; beyond its budget messages are dropped rather than
-    // queued without limit. See `ValidatorNodeConfig::max_transaction_gossip_queue_bytes`. The
-    // message-count bound is a secondary guard against a flood of tiny messages, whose per-message
-    // overhead the byte budget does not capture.
-    const MAX_QUEUED_GOSSIP_MESSAGES: usize = 100_000;
+    let (tx_consensus_messages, rx_consensus_messages) = message_queue(
+        MAX_QUEUED_INBOUND_MESSAGES,
+        config.validator_node.max_consensus_messaging_queue_bytes,
+    );
     let (tx_transaction_gossip_messages, rx_transaction_gossip_messages) = gossip_queue(
-        MAX_QUEUED_GOSSIP_MESSAGES,
+        MAX_QUEUED_INBOUND_MESSAGES,
         config.validator_node.max_transaction_gossip_queue_bytes,
     );
     let (tx_consensus_gossip_messages, rx_consensus_gossip_messages) = gossip_queue(
-        MAX_QUEUED_GOSSIP_MESSAGES,
+        MAX_QUEUED_INBOUND_MESSAGES,
         config.validator_node.max_consensus_gossip_queue_bytes,
     );
     let mut tx_gossip_messages_by_topic = HashMap::new();
