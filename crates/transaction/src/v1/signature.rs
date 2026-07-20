@@ -253,7 +253,17 @@ impl TransactionSignature {
     }
 
     pub fn verify_v1(&self, seal_signer: &RistrettoPublicKeyBytes, transaction: &UnsignedTransactionV1) -> bool {
-        let message = Self::create_message_v1(seal_signer, transaction);
+        self.verify_message(Self::create_message_v1(seal_signer, transaction))
+    }
+
+    /// Verifies this signature against an already-derived signing message.
+    ///
+    /// The message is identical for every signature over the same transaction, and deriving it
+    /// hashes the entire body — including a commitment over every blob's bytes. A caller verifying
+    /// more than one signature MUST derive the message once and use this: deriving it per signature
+    /// makes verification cost `O(signatures × body bytes)`, which an attacker controls on both
+    /// factors within a single transaction.
+    pub fn verify_message(&self, message: [u8; 64]) -> bool {
         let Ok(public_key) = self.public_key.try_from_byte_type() else {
             return false;
         };
@@ -350,14 +360,7 @@ impl TransactionSignature {
         transaction: &PrunedUnsignedTransactionV1,
         blob_hashes: &BlobHashes,
     ) -> bool {
-        let message = Self::create_message_v1_pruned(seal_signer, transaction, blob_hashes);
-        let Ok(public_key) = self.public_key.try_from_byte_type() else {
-            return false;
-        };
-        let Ok(signature) = RistrettoSchnorr::convert_from_byte_type(&self.signature) else {
-            return false;
-        };
-        signature.verify(&public_key, message)
+        self.verify_message(Self::create_message_v1_pruned(seal_signer, transaction, blob_hashes))
     }
 }
 
@@ -757,6 +760,37 @@ mod tests {
         BorshSerialize::serialize(&unsealed.signatures(), &mut expected).unwrap();
 
         assert_eq!(reconstructed, expected);
+    }
+
+    /// The signing message is derived once for the whole signature set, so every signature must
+    /// still be checked against it individually: a fully valid set verifies, and a signature over a
+    /// different body fails at any position in the set.
+    #[test]
+    fn verify_all_signatures_checks_every_signature() {
+        let seal_signer = sample_seal_signer();
+        let unsigned = sample_unsigned();
+
+        let sigs: Vec<_> = (0..4).map(|_| random_signature(&unsigned, &seal_signer)).collect();
+        let all_valid = unsealed_with(unsigned.clone(), sigs.clone());
+        assert!(all_valid.verify_all_signatures(&seal_signer));
+
+        let mut other_body = unsigned.clone();
+        other_body.dry_run = !other_body.dry_run;
+        let foreign = random_signature(&other_body, &seal_signer);
+
+        for i in 0..sigs.len() {
+            let mut planted = sigs.clone();
+            planted[i] = foreign.clone();
+            assert!(
+                !unsealed_with(unsigned.clone(), planted).verify_all_signatures(&seal_signer),
+                "a signature over a different body at index {i} must fail verification",
+            );
+        }
+
+        assert!(
+            !all_valid.verify_all_signatures(&sample_seal_signer()),
+            "the set is bound to the seal signer it was signed under",
+        );
     }
 
     #[test]

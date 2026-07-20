@@ -96,8 +96,11 @@ impl UnsealedTransactionV1 {
             return true;
         }
 
+        // Derived once and reused: every signature over this transaction signs the same message, and
+        // deriving it hashes the whole body including a commitment over every blob's bytes.
+        let message = TransactionSignature::create_message_v1(seal_signer, &self.transaction);
         self.signatures().iter().enumerate().all(|(i, sig)| {
-            if sig.verify_v1(seal_signer, &self.transaction) {
+            if sig.verify_message(message) {
                 true
             } else {
                 log::debug!(target: LOG_TARGET, "Failed to verify signature at index {}", i);
