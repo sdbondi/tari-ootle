@@ -259,8 +259,14 @@ fn noise_prologue() -> Vec<u8> {
 /// per window, which on a quiet network is every honest peer. Scoring liveness that way would
 /// punish peers for the network being idle, so they are disabled rather than tuned.
 ///
-/// P6 (IP colocation) is disabled because sharing an address is normal here — a local swarm runs
-/// every validator on one host — so it is not evidence of misbehaviour.
+/// P6 (IP colocation) is omitted. It exists to make Sybil identities cost IP addresses, which
+/// matters where identity is free; here consensus participation is gated by validator registration
+/// on the base layer, so how an operator distributes their nodes says nothing about whether they
+/// are one entity or many. Penalising colocation would tax honest deployments — a local swarm on
+/// one host, nodes sharing a NAT egress address — for no signal. Its residual value is bounding
+/// eclipse of the gossip mesh, which is accepted: that degrades propagation but not consensus
+/// safety, since intra-committee traffic uses direct messaging to peers drawn from the registered
+/// set rather than from mesh selection.
 ///
 /// That leaves P4 carrying the signal the application actually produces: a `Reject` verdict from
 /// `report_gossip_validation`, reported for messages that fail to decode or fail validation. The
