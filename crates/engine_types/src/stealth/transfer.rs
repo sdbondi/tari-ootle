@@ -32,8 +32,20 @@ pub struct ValidatedStealthTransfer {
 /// prices at zero, and the per-output ElGamal viewable-balance proof is only verified (and only
 /// priced) when the resource carries a view key.
 pub fn transfer_native_points(transfer: &StealthTransferStatement, has_view_key: bool) -> u64 {
+    transfer_native_points_for_shape(
+        transfer.inputs_statement.inputs.len(),
+        transfer.outputs_statement.outputs.len(),
+        has_view_key,
+    )
+}
+
+/// [`transfer_native_points`] priced from a statement's shape alone, before the statement is built.
+/// A builder must know the cost while choosing that shape — the range proofs it would have to
+/// generate to produce a statement are the very work being priced — so the cost cannot depend on
+/// anything but the input and output counts and the resource's view key.
+pub fn transfer_native_points_for_shape(num_inputs: usize, num_outputs: usize, has_view_key: bool) -> u64 {
     use crate::limits::NativeExecutionPoints as P;
-    if transfer.inputs_statement.inputs.is_empty() && transfer.outputs_statement.outputs.is_empty() {
+    if num_inputs == 0 && num_outputs == 0 {
         return 0;
     }
     let per_output = P::PER_OUTPUT.saturating_add(if has_view_key {
@@ -42,8 +54,8 @@ pub fn transfer_native_points(transfer: &StealthTransferStatement, has_view_key:
         0
     });
     P::PER_STATEMENT
-        .saturating_add(per_output.saturating_mul(transfer.outputs_statement.outputs.len() as u64))
-        .saturating_add(P::PER_INPUT.saturating_mul(transfer.inputs_statement.inputs.len() as u64))
+        .saturating_add(per_output.saturating_mul(num_outputs as u64))
+        .saturating_add(P::PER_INPUT.saturating_mul(num_inputs as u64))
 }
 
 pub fn validate_transfer(
