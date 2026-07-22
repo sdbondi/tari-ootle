@@ -448,7 +448,7 @@ pub trait StateStoreWriteTransaction {
     fn transactions_finalize_all<'a, I: IntoIterator<Item = &'a TransactionPoolRecord>>(
         &mut self,
         epoch: Epoch,
-        transaction: I,
+        transactions: I,
     ) -> Result<(), StorageError>;
 
     /// Forgets the node-local finalized bookkeeping for a transaction: the finalized marker and all
