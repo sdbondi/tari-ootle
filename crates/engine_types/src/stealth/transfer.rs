@@ -219,3 +219,32 @@ fn basic_validations(transfer: &StealthTransferStatement) -> Result<(), Resource
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::limits::NativeExecutionPoints as P;
+
+    #[test]
+    fn empty_statement_prices_at_zero() {
+        // A revealed-only statement verifies no balance proof and no range proof, matching the
+        // short-circuit in `validate_transfer`.
+        assert_eq!(transfer_native_points_for_shape(0, 0, false), 0);
+        assert_eq!(transfer_native_points_for_shape(0, 0, true), 0);
+    }
+
+    #[test]
+    fn price_is_statement_plus_per_output_plus_per_input() {
+        assert_eq!(
+            transfer_native_points_for_shape(3, 2, false),
+            P::PER_STATEMENT + 2 * P::PER_OUTPUT + 3 * P::PER_INPUT
+        );
+    }
+
+    #[test]
+    fn view_key_adds_the_surcharge_per_output() {
+        let no_vk = transfer_native_points_for_shape(1, 2, false);
+        let with_vk = transfer_native_points_for_shape(1, 2, true);
+        assert_eq!(with_vk - no_vk, 2 * P::PER_OUTPUT_VIEWABLE_SURCHARGE);
+    }
+}

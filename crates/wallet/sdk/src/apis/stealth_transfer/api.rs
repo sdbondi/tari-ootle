@@ -537,7 +537,11 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
                 Some(self.build_fee_statement(lock.id(), &owner_account, &params, &owner_address, account_key_id)?)
             };
 
-            let merged_fee_amount = if merge_candidate {
+            // The fee the transfer statement itself reveals. Non-zero only while the merge holds: on
+            // fallback the fee reverts to a statement of its own and this drops back to zero, so the
+            // transfer statement reveals only what the recipients are owed and the surplus locked against
+            // the fee becomes change.
+            let mut merged_fee_amount = if merge_candidate {
                 Amount::from(params.max_fee)
             } else {
                 Amount::zero()
@@ -584,6 +588,8 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
                         &owner_address,
                         account_key_id,
                     )?);
+                    // The fee is now sourced separately, so the transfer statement must stop revealing it.
+                    merged_fee_amount = Amount::zero();
                 }
             }
 
@@ -1189,5 +1195,47 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
             is_condition_spendable: self.outputs_api.is_spendable_auth(&output.auth),
         })?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod merged_credit_tests {
+    use tari_engine_types::limits::{FREE_COMPUTE_GRACE_POINTS, NativeExecutionPoints as P};
+
+    use super::{MERGED_STATEMENT_CREDIT_UTILISATION_PERCENT, merged_statement_fits_credit};
+
+    fn budget() -> u64 {
+        FREE_COMPUTE_GRACE_POINTS / 100 * MERGED_STATEMENT_CREDIT_UTILISATION_PERCENT
+    }
+
+    #[test]
+    fn a_single_recipient_send_merges() {
+        // One recipient output plus one change output, the overwhelmingly common shape.
+        assert!(merged_statement_fits_credit(2, 2, false));
+    }
+
+    #[test]
+    fn two_recipients_plus_change_is_the_ceiling() {
+        // Three no-view-key outputs is the most the credit funds; the fourth tips it over even with
+        // zero inputs, which is what caps a merged send at two recipients.
+        assert!(merged_statement_fits_credit(0, 3, false));
+        assert!(!merged_statement_fits_credit(0, 4, false));
+    }
+
+    #[test]
+    fn inputs_can_exhaust_the_credit_for_a_mergeable_output_count() {
+        // Outputs dominate, but enough inputs still push a 3-output statement past the budget and force
+        // the fallback - the case the runtime input count guards after selection.
+        let per_output_room = budget() - (P::PER_STATEMENT + 3 * P::PER_OUTPUT);
+        let max_inputs = (per_output_room / P::PER_INPUT) as usize;
+        assert!(merged_statement_fits_credit(max_inputs, 3, false));
+        assert!(!merged_statement_fits_credit(max_inputs + 1, 3, false));
+    }
+
+    #[test]
+    fn a_view_key_resource_is_priced_more_strictly() {
+        // The per-output ElGamal surcharge lowers the output ceiling for view-key resources.
+        assert!(merged_statement_fits_credit(0, 3, false));
+        assert!(!merged_statement_fits_credit(0, 3, true));
     }
 }
