@@ -442,8 +442,12 @@ pub trait StateStoreWriteTransaction {
     // -------------------------------- Transaction -------------------------------- //
     fn transactions_insert(&mut self, transaction: &TransactionRecord) -> Result<(), StorageError>;
 
+    /// Marks the given transactions as finalized in the epoch of the finalizing block. The epoch is
+    /// recorded so that epoch GC can prune finalized transaction bookkeeping once it ages out of the
+    /// retained window.
     fn transactions_finalize_all<'a, I: IntoIterator<Item = &'a TransactionPoolRecord>>(
         &mut self,
+        epoch: Epoch,
         transaction: I,
     ) -> Result<(), StorageError>;
 

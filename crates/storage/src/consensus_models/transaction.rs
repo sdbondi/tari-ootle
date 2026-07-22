@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tari_consensus_types::Decision;
 use tari_engine_types::substate::SubstateId;
 use tari_ootle_common_types::{
+    Epoch,
     NumPreshards,
     ToSubstateAddress,
     committee::CommitteeInfo,
@@ -252,13 +253,13 @@ impl TransactionRecord {
         tx.substates_exists_any_version(&receipt_id)
     }
 
-    pub fn finalize_all<'a, TTx, I>(tx: &mut TTx, transactions: I) -> Result<(), StorageError>
+    pub fn finalize_all<'a, TTx, I>(tx: &mut TTx, epoch: Epoch, transactions: I) -> Result<(), StorageError>
     where
         TTx: StateStoreWriteTransaction + Deref,
         TTx::Target: StateStoreReadTransaction,
         I: IntoIterator<Item = &'a TransactionPoolRecord>,
     {
-        tx.transactions_finalize_all(transactions)
+        tx.transactions_finalize_all(epoch, transactions)
     }
 
     pub fn has_all_required_input_pledges<TTx: StateStoreReadTransaction>(
