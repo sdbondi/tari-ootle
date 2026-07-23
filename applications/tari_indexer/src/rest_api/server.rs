@@ -230,7 +230,7 @@ impl Server {
                         get(handlers::transaction_receipts::get_transaction_receipt)
                            .route_layer(middleware::from_fn_with_state(transactions_fetch_limiter, rate_limit_middleware)))
             )
-            .nest("/resources/", Router::new()
+            .nest("/resources", Router::new()
                 // Convenience Shortcut
                 .route("/xtr" , get(handlers::resources::get_tari))
                 .route("/tari" , get(handlers::resources::get_tari))
