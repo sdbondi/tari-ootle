@@ -108,19 +108,9 @@ impl HandlerContext {
     }
 
     pub fn apply_cache_control(&self, body: impl IntoResponse, max_age: u32) -> Response {
-        self.apply_cache_config(body, HttpCacheConfig::new().with_max_age(max_age))
-    }
-
-    /// Caches a response that describes this node rather than the network, so that a shared cache
-    /// cannot serve it to another node's clients.
-    pub fn apply_private_cache_control(&self, body: impl IntoResponse, max_age: u32) -> Response {
-        self.apply_cache_config(body, HttpCacheConfig::new().with_max_age(max_age).private())
-    }
-
-    fn apply_cache_config(&self, body: impl IntoResponse, config: HttpCacheConfig) -> Response {
         let mut response = body.into_response();
         let headers = response.headers_mut();
-        self.apply_custom_cache_control(headers, &config);
+        self.apply_custom_cache_control(headers, &HttpCacheConfig::new().with_max_age(max_age));
         response
     }
 

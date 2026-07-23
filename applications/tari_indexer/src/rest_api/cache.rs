@@ -65,14 +65,6 @@ impl HttpCacheConfig {
         self.stale_while_revalidate = (max_age / 4).max(1);
         self
     }
-
-    /// Restricts storage to the requesting client. Required for anything that describes *this* node
-    /// rather than the network, since a shared cache fronting several indexers would otherwise serve
-    /// one node's answer to another node's clients.
-    pub fn private(mut self) -> Self {
-        self.is_public = false;
-        self
-    }
 }
 
 impl Default for HttpCacheConfig {
@@ -105,17 +97,6 @@ mod tests {
         assert_eq!(
             headers[header::CACHE_CONTROL],
             "public, max-age=30, s-maxage=15, stale-while-revalidate=7"
-        );
-    }
-
-    #[test]
-    fn private_responses_are_not_stored_by_shared_caches() {
-        assert!(
-            HttpCacheConfig::new()
-                .with_max_age(10)
-                .private()
-                .to_header_string()
-                .starts_with("private,")
         );
     }
 }

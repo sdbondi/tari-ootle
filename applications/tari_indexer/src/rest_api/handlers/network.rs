@@ -180,5 +180,5 @@ pub async fn get_connections(Extension(context): Extension<HandlerContext>) -> H
         })
         .collect();
 
-    Ok(context.apply_private_cache_control(Json(GetConnectionsResponse { connections }), 10))
+    Ok(context.apply_cache_control(Json(GetConnectionsResponse { connections }), 10))
 }

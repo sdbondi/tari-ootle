@@ -34,7 +34,7 @@ pub async fn get_identity(Extension(context): Extension<HandlerContext>) -> Hand
         // NOTE: we use a string here to avoid depending on multiaddr in the client
         public_addresses: info.listen_addrs.iter().map(|addr| addr.to_string()).collect(),
     };
-    Ok(context.apply_private_cache_control(Json(response), 1000))
+    Ok(context.apply_cache_control(Json(response), 1000))
 }
 
 #[utoipa::path(
