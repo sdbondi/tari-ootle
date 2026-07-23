@@ -32,7 +32,7 @@ use crate::rest_api::{
 
 const LOG_TARGET: &str = "tari::ootle::indexer::rest_api::handlers::utxos";
 
-#[utoipa::path(post, path = "/utxos/updates", description = "Streams UTXO updates",
+#[utoipa::path(post, path = "/utxos/stream", description = "Streams UTXO updates",
     request_body = GetUtxoUpdatesRequest,
     responses(
         (status = 200, description = "Stream of UTXO updates"),

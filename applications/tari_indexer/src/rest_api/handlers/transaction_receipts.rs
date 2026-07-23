@@ -52,8 +52,8 @@ pub async fn list_transaction_receipts(
 
 #[utoipa::path(
     get,
-    path = "/transaction-receipt/{transaction_id}",
-    description = "Get the transaction receipt by transaction ID",
+    path = "/transaction-receipts/{address}",
+    description = "Get the transaction receipt by its address",
     responses(
         (status = 200, description = "Transaction receipt found", body = GetTransactionReceiptResponse),
         (status = 404, description = "Transaction receipt not found", body = ErrorResponse),
