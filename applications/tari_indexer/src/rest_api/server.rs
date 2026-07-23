@@ -22,6 +22,7 @@ use crate::{
     bootstrap::Services,
     config::IndexerRateLimitsConfig,
     rest_api::{
+        cache::default_no_store,
         context::HandlerContext,
         handlers,
         rate_limit::{
@@ -241,6 +242,9 @@ impl Server {
             )
             .route("/events", get(handlers::indexer_events::sse_events)
                 .route_layer(middleware::from_fn_with_state(sse_limiter.clone(), sse_limit_middleware)))
+            // Wraps the API routes so that a handler which sets no policy still denies caching. Applied
+            // before the Swagger UI is merged in, whose static assets are fine to cache normally.
+            .layer(middleware::from_fn(default_no_store))
             .layer(CorsLayer::permissive())
             .layer(RequestBodyLimitLayer::new(REQUEST_BODY_LIMIT))
             .merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", ApiDoc::openapi()))
