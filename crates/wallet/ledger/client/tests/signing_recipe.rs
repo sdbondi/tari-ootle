@@ -326,9 +326,10 @@ fn stealth_recipe_matches_and_verifies() {
         "stealth authorization signature failed to verify"
     );
 
-    // (4) `GetPublicKey` with a stealth tweak must return exactly that key, so the seal key is
-    // known before any signature binds to it. Round-tripping the request through borsh exercises
-    // the bytes the device decodes.
+    // (4) The tweak a `GetPublicKey` request carries must survive the wire and, fed to the same
+    // derivation the signing path uses, reproduce the stealth address — that equality is what lets
+    // a caller resolve the seal key before any signature binds to it. (Whether the device handler
+    // applies the tweak at all is only observable on Speculos.)
     let request = GetPublicKeyRequest {
         account: 0,
         index: 0,
@@ -350,7 +351,6 @@ fn stealth_recipe_matches_and_verifies() {
     // (5) The tweak binds both of its parts: the same nonce on another network, and another nonce
     // on the same network, must each yield a different key.
     let other_network = Network::Igor;
-    assert_ne!(network.as_byte(), other_network.as_byte());
     assert_ne!(
         returned,
         public_key(&derive_stealth_secret(other_network.as_byte(), &k_scalar, &r_bytes)),

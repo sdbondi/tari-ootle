@@ -118,6 +118,20 @@ where
             .map_err(|_| SignerError::other("device returned malformed signature bytes"))?;
         Ok((public_key, signature))
     }
+
+    /// A stealth key is bound to a network, and the two APDUs take that network from different
+    /// places: `GetPublicKey` from this signer's address, signing from the transaction's own
+    /// `Network` field. They must agree, or the key resolved up front is not the key the device
+    /// signs with and every authorization commits to the wrong seal signer.
+    fn check_stealth_network(&self, tx_network: u8) -> signer::Result<()> {
+        let network = self.address.network().as_byte();
+        if tx_network != network {
+            return Err(SignerError::other(format!(
+                "cannot sign a transaction for network {tx_network} with a stealth key derived on network {network}",
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -177,6 +191,7 @@ where
         tx: &UnsignedTransaction,
     ) -> signer::Result<TransactionAuthorization> {
         let UnsignedTransaction::V1(unsigned) = tx;
+        self.check_stealth_network(unsigned.network)?;
         let segments = TransactionSignature::signing_preimage_v1(seal_signer, unsigned);
         let (public_key, signature) = self
             .stream(SignMode::AddSigner, Some(nonce_bytes(public_nonce)), segments)
@@ -190,6 +205,7 @@ where
         message: &UnsealedTransaction,
     ) -> signer::Result<TransactionSealSignature> {
         let UnsealedTransaction::V1(unsealed) = message;
+        self.check_stealth_network(unsealed.unsigned_transaction().network)?;
         let segments = TransactionSealSignature::signing_preimage_v1(unsealed);
         let (public_key, signature) = self
             .stream(SignMode::Seal, Some(nonce_bytes(public_nonce)), segments)
@@ -237,5 +253,72 @@ fn to_wire(field: PreimageField) -> SigningField {
         PreimageField::DryRun => SigningField::DryRun,
         PreimageField::BlobHashes => SigningField::BlobHashes,
         PreimageField::Signatures => SigningField::Signatures,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ootle_ledger_client::ledger_transport::{APDUAnswer, APDUCommand, async_trait as transport_async_trait};
+    use tari_crypto::{
+        keys::{PublicKey, SecretKey},
+        ristretto::RistrettoSecretKey,
+    };
+    use tari_ootle_transaction::{Transaction as TransactionBuilderEntry, UnsealedTransactionV1};
+
+    use super::*;
+
+    /// A transport that fails the test if the device is contacted: the network guard must reject
+    /// before any APDU is sent.
+    struct NoDevice;
+
+    #[transport_async_trait]
+    impl Exchange for NoDevice {
+        type AnswerType = Vec<u8>;
+        type Error = std::io::Error;
+
+        async fn exchange<I>(&self, _command: &APDUCommand<I>) -> Result<APDUAnswer<Self::AnswerType>, Self::Error>
+        where I: core::ops::Deref<Target = [u8]> + Send + Sync {
+            panic!("the device must not be contacted for a transaction on the wrong network");
+        }
+    }
+
+    fn signer_on(network: Network) -> LedgerSigner<NoDevice> {
+        let mut rng = rand::rng();
+        let mut key = || {
+            RistrettoPublicKeyBytes::from_bytes(
+                RistrettoPublicKey::from_secret_key(&RistrettoSecretKey::random(&mut rng)).as_bytes(),
+            )
+            .unwrap()
+        };
+        let address = OotleAddress::new(network, key(), key());
+        LedgerSigner::with_address(LedgerClient::new(NoDevice), address, 0, 0)
+    }
+
+    /// The stealth key `GetPublicKey` returns is derived under the signer's network, while the device
+    /// derives the key it signs with from the transaction's own `Network` field. Signing a transaction
+    /// from another network would silently sign with a different key than the one the caller bound its
+    /// authorizations to.
+    #[tokio::test]
+    async fn signing_a_transaction_from_another_network_is_rejected() {
+        let signer = signer_on(Network::Igor);
+        let tx = TransactionBuilderEntry::builder(Network::LocalNet).build_unsigned();
+        let nonce = RistrettoPublicKey::from_secret_key(&RistrettoSecretKey::random(&mut rand::rng()));
+
+        let err = signer
+            .sign_authorization_with_stealth(&nonce, &RistrettoPublicKeyBytes::default(), &tx)
+            .await
+            .expect_err("a transaction from another network must not be signed");
+        assert!(err.to_string().contains("network"), "unexpected error: {err}");
+
+        let unsealed = UnsealedTransaction::V1(UnsealedTransactionV1::new(
+            match tx {
+                UnsignedTransaction::V1(unsigned) => unsigned,
+            },
+            vec![],
+        ));
+        signer
+            .seal_transaction_with_stealth(&nonce, &unsealed)
+            .await
+            .expect_err("a transaction from another network must not be sealed");
     }
 }

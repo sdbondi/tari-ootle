@@ -12,7 +12,7 @@
 
 use alloc::format;
 
-use curve25519_dalek::{Scalar, ristretto::CompressedRistretto};
+use curve25519_dalek::{Scalar, ristretto::CompressedRistretto, traits::IsIdentity};
 use ledger_device_sdk::hash::{HashError, HashInit, blake2::Blake2b_512};
 use ootle_ledger_common::{
     OotleStatusWord,
@@ -102,6 +102,10 @@ pub fn derive_stealth_secret(
     let r = CompressedRistretto(*public_nonce)
         .decompress()
         .ok_or(AppStatus::OotleStatusWord(OotleStatusWord::BadRequest))?;
+    // The identity yields a DH point independent of the account key, so the resulting key belongs to no UTXO.
+    if r.is_identity() {
+        return Err(AppStatus::OotleStatusWord(OotleStatusWord::BadRequest));
+    }
     let dh = (account_secret * r).compress().0;
 
     let label = format!("{STEALTH_OWNER_LABEL}.n{network_byte}");
