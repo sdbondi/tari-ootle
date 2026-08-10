@@ -6,7 +6,7 @@ use ootle_network::Network;
 use tari_bor::{Deserialize, Serialize};
 use tari_engine_types::crypto::MAX_LAZY_BP_AGG_FACTORS;
 use tari_ootle_address::OotleAddress;
-use tari_ootle_wallet_crypto::{memo::Memo, pay_to::PayTo};
+use tari_ootle_wallet_crypto::{memo::Memo, pay_to::PayTo, stealth::condition_root};
 use tari_template_lib::types::{Amount, ComponentAddress, NonFungibleAddress, ResourceAddress};
 
 use crate::apis::{
@@ -84,6 +84,16 @@ impl StealthTransferParams {
                     param: "destination_address",
                     reason: format!("Invalid destination address: {}", e),
                 })?;
+
+            // A condition set that cannot form a tree (empty, or with duplicate leaves) is rejected here so the
+            // caller is told which field is malformed, rather than failing deep in output construction after
+            // inputs have been locked.
+            if let PayTo::Conditions(conditions) = &output.pay_to {
+                condition_root(conditions).map_err(|e| StealthTransferApiError::InvalidParameter {
+                    param: "pay_to",
+                    reason: e.to_string(),
+                })?;
+            }
         }
 
         Ok(())
@@ -193,4 +203,75 @@ pub struct PayFeeWithSwapParams {
     pub input_resource: ResourceAddress,
     pub input_amount: Amount,
     pub min_xtr_output_amount: Amount,
+}
+
+#[cfg(test)]
+mod tests {
+    use ootle_byte_type::ToByteType;
+    use tari_crypto::{keys::PublicKey as _, ristretto::RistrettoPublicKey};
+    use tari_template_lib::types::{
+        constants::STEALTH_TARI_RESOURCE_ADDRESS,
+        stealth::{AtomicCondition, BuiltinPredicate, SpendCondition},
+    };
+
+    use super::*;
+
+    const NETWORK: Network = Network::LocalNet;
+
+    fn address() -> OotleAddress {
+        let (_, view_only) = RistrettoPublicKey::random_keypair(&mut rand::rng());
+        let (_, account) = RistrettoPublicKey::random_keypair(&mut rand::rng());
+        OotleAddress::new(NETWORK, view_only.to_byte_type(), account.to_byte_type())
+    }
+
+    /// A single-leaf condition, distinct per `epoch`.
+    fn a_condition(epoch: u64) -> SpendCondition {
+        SpendCondition::all([AtomicCondition::Builtin(BuiltinPredicate::AfterEpoch(epoch))])
+    }
+
+    fn params_paying_to(pay_to: PayTo) -> StealthTransferParams {
+        StealthTransferParams {
+            fee_params: TransferFeeParams::new(UtxoInputSelection::PreferConfidential),
+            input_selection: UtxoInputSelection::PreferConfidential,
+            outputs: vec![TransferOutput {
+                address: address(),
+                revealed_amount: Amount::zero(),
+                blinded_amount: 100,
+                memo: None,
+                pay_to,
+            }],
+            badge_usage: BadgeUsage::None,
+            resource_address: STEALTH_TARI_RESOURCE_ADDRESS,
+            max_fee: 1000,
+            is_dry_run: false,
+        }
+    }
+
+    fn assert_rejects_pay_to(pay_to: PayTo) {
+        let err = params_paying_to(pay_to)
+            .validate(NETWORK)
+            .expect_err("a condition set that cannot form a tree must be rejected");
+        assert!(
+            matches!(err, StealthTransferApiError::InvalidParameter { param: "pay_to", .. }),
+            "expected an InvalidParameter naming pay_to, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_an_empty_condition_set() {
+        assert_rejects_pay_to(PayTo::Conditions(vec![]));
+    }
+
+    #[test]
+    fn rejects_duplicate_condition_leaves() {
+        let condition = a_condition(1);
+        assert_rejects_pay_to(PayTo::Conditions(vec![condition.clone(), condition]));
+    }
+
+    #[test]
+    fn accepts_a_well_formed_condition_set() {
+        params_paying_to(PayTo::Conditions(vec![a_condition(1), a_condition(2)]))
+            .validate(NETWORK)
+            .expect("distinct condition leaves form a tree");
+    }
 }

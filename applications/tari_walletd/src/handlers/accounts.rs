@@ -17,7 +17,13 @@ use tari_engine_types::{
 };
 use tari_ootle_common_types::{SubstateRequirement, optional::Optional};
 use tari_ootle_transaction::{Transaction, args};
-use tari_ootle_wallet_crypto::{OutputWitness, StealthInputWitness, StealthOutputWitness, memo::Memo};
+use tari_ootle_wallet_crypto::{
+    OutputWitness,
+    StealthInputWitness,
+    StealthOutputWitness,
+    WalletCryptoError,
+    memo::Memo,
+};
 use tari_ootle_wallet_sdk::{
     apis::{
         confidential_transfer::ConfidentialTransferParams,
@@ -1471,7 +1477,8 @@ pub async fn handle_create_stealth_transfer_statement(
                     })?,
                 outputs,
                 output_revealed_amount,
-            })?;
+            })
+            .map_err(map_statement_construction_error)?;
 
         utxo_signers.extend(inputs.iter().flat_map(|i| &i.inputs).map(|i| StealthUtxoSpendKeyId {
             account_key_id: sender_key_id,
@@ -1506,6 +1513,20 @@ fn map_specific_selection_error(err: StealthOutputsApiError) -> anyhow::Error {
         )
     } else {
         err.into()
+    }
+}
+
+/// Map a `generate_transfer_statement` failure to an RPC error. `WalletCryptoError::InvalidArgument` is only raised
+/// for a malformed request payload — chiefly a `PayTo` intent whose condition set cannot form a tree (empty, or with
+/// duplicate leaves) — so it is a caller error carrying the offending field name; everything else propagates
+/// unchanged as a server error.
+fn map_statement_construction_error(err: StealthOutputsApiError) -> anyhow::Error {
+    match &err {
+        StealthOutputsApiError::WalletCrypto(WalletCryptoError::InvalidArgument { name, details }) => {
+            debug!(target: LOG_TARGET, "Rejected stealth transfer statement: {err}");
+            invalid_params(name, Some(details.clone()))
+        },
+        _ => err.into(),
     }
 }
 
@@ -2373,5 +2394,95 @@ mod create_stealth_transfer_statement_handler_tests {
             );
             assert_eq!(stored.lock_id, Some(response.lock_id));
         }
+    }
+
+    /// Builds a balanced single-output request paying the whole of one 100-value input to `conditions`.
+    fn pay_to_conditions_request(
+        test: &StatementTest,
+        input: &StealthOutputModel,
+        conditions: Vec<SpendCondition>,
+    ) -> AccountsCreateStealthTransferStatementRequest {
+        AccountsCreateStealthTransferStatementRequest {
+            requests: vec![TransferStatementRequest {
+                sender_account: test.account.into(),
+                resource_address: test.stealth_resource,
+                input_selection: InputSelection::Specific {
+                    utxo_addresses: vec![input.to_utxo_address()],
+                },
+                outputs: vec![TransferOutput {
+                    address: account_ootle_address(test),
+                    revealed_amount: Amount::zero(),
+                    blinded_amount: 100,
+                    memo: None,
+                    pay_to: PayTo::Conditions(conditions),
+                }],
+            }],
+        }
+    }
+
+    /// A condition set that cannot form a tree is a malformed request, not a server fault: it must surface as
+    /// `InvalidParams` naming the offending field, and must not leave the selected input locked.
+    #[tokio::test]
+    async fn empty_condition_set_is_rejected_as_invalid_params() {
+        let test = setup().await;
+        let bearer = test.bearer(&test.transfer_and_read_scopes());
+        let input = insert_valid_output(&test, 100);
+
+        let err = handle_create_stealth_transfer_statement(
+            &test.context,
+            Some(&bearer),
+            pay_to_conditions_request(&test, &input, vec![]),
+        )
+        .await
+        .expect_err("an empty condition set must be rejected");
+
+        let message = assert_invalid_params(&err).to_string();
+        assert!(
+            message.contains("conditions"),
+            "expected the offending field to be named, got: {message}"
+        );
+
+        let stored = stored_output(&test, &input.commitment);
+        assert!(
+            matches!(stored.status, OutputStatus::Unspent),
+            "expected Unspent after release, got {:?}",
+            stored.status
+        );
+        assert_eq!(stored.lock_id, None);
+    }
+
+    /// Duplicate leaves are likewise a caller error: the tree rejects them rather than silently deduplicating, so the
+    /// caller learns the condition set is malformed instead of receiving a root over fewer leaves than they supplied.
+    #[tokio::test]
+    async fn duplicate_condition_leaves_are_rejected_as_invalid_params() {
+        let test = setup().await;
+        let bearer = test.bearer(&test.transfer_and_read_scopes());
+        let input = insert_valid_output(&test, 100);
+
+        let (claim_condition, _) =
+            htlc_conditions(b"preimage", 4_242, htlc_participant_key(1), htlc_participant_key(2));
+        let conditions = vec![claim_condition.clone(), claim_condition];
+
+        let err = handle_create_stealth_transfer_statement(
+            &test.context,
+            Some(&bearer),
+            pay_to_conditions_request(&test, &input, conditions),
+        )
+        .await
+        .expect_err("a duplicate condition leaf must be rejected");
+
+        let message = assert_invalid_params(&err).to_string();
+        assert!(
+            message.contains("conditions"),
+            "expected the offending field to be named, got: {message}"
+        );
+
+        let stored = stored_output(&test, &input.commitment);
+        assert!(
+            matches!(stored.status, OutputStatus::Unspent),
+            "expected Unspent after release, got {:?}",
+            stored.status
+        );
+        assert_eq!(stored.lock_id, None);
     }
 }
