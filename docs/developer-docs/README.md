@@ -26,9 +26,13 @@ Skills for other agents (Cursor, Windsurf, Aider) are listed at
 
 All commands are run from the root of the project, from a terminal:
 
-| Command        | Action                                                |
-| :------------- | :---------------------------------------------------- |
-| `pnpm install` | Installs project dependencies                         |
-| `pnpm dev`     | Starts a local development server at `localhost:4321` |
-| `pnpm build`   | Builds the production documentation site to `./dist/` |
-| `pnpm preview` | Previews the built site locally                       |
+This site is an npm project (not part of the repo's pnpm workspace), so
+`package-lock.json` is the lockfile CI and the deploy both install from.
+
+| Command           | Action                                                |
+| :---------------- | :---------------------------------------------------- |
+| `npm ci`          | Installs project dependencies from the lockfile       |
+| `npm install <p>` | Adds a dependency and updates `package-lock.json`     |
+| `npm run dev`     | Starts a local development server at `localhost:4321` |
+| `npm run build`   | Builds the production documentation site to `./dist/` |
+| `npm run preview` | Previews the built site locally                       |

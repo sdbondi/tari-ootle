@@ -114,6 +114,34 @@ jobs:
           npm ci
           npm run build
 
+  # The developer docs site is a standalone npm project, not part of the pnpm workspace,
+  # and is deployed by docs-deploy.yml on release. Building it here catches breakage in a
+  # PR rather than at deploy time.
+  docs_build:
+    name: docs build
+    runs-on: [ ubuntu-latest ]
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: setup node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: docs/developer-docs/package-lock.json
+
+      # `npm ci` aborts when package-lock.json disagrees with package.json, so this also
+      # asserts the lockfile is up to date.
+      - name: install dependencies
+        working-directory: docs/developer-docs
+        run: npm ci
+
+      - name: build docs
+        working-directory: docs/developer-docs
+        run: npm run build
+
   clippy:
     name: clippy
     runs-on: [ ubuntu-latest ]
