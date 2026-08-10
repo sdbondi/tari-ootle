@@ -24,7 +24,7 @@ import urllib.error
 # Version tiers (concern domains). Tier 3 is the only workspace-versioned cohort;
 # every other tier is independently versioned (each crate carries its own version):
 #   1 = Stable/foundational — shared primitives, rarely change
-#   2 = Template — template authoring crates
+#   2 = Template — template authoring crates & the built-in templates
 #   3 = Core — workspace-versioned (shares [workspace.package].version), moves together
 #   4 = Wallet — wallet SDK, clients & storage, decoupled from the core version
 #
@@ -48,7 +48,9 @@ CRATES = [
     ("tari_ootle_wallet_crypto", "crates/wallet/crypto", 4),
     ("tari_ootle_address", "crates/ootle_address", 1),
     ("tari_ootle_transaction", "crates/transaction", 3),
-    ("tari_template_builtin", "crates/template_builtin", 3),
+    # Tier 2, not tier 3: its only build dependency is tari_template_lib_types, so it has no build-time coupling to
+    # the core cohort (its tari_engine_types / tari_ootle_transaction deps are dev-only) and carries its own version.
+    ("tari_template_builtin", "crates/template_builtin", 2),
     ("tari_transaction_manifest", "crates/transaction_manifest", 3),
     ("tari_engine", "crates/engine", 3),
     ("tari_consensus_types", "crates/consensus_types", 3),

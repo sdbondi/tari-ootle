@@ -16,7 +16,7 @@ Usage:
 Tier semantics (mirrors publish_crates.py). Tier 3 is the only workspace-versioned
 cohort; every other tier is independently versioned:
   1 = stable/foundational, rarely changes
-  2 = template authoring crates
+  2 = template authoring crates & the built-in templates
   3 = core, all share workspace.package.version (move together)
   4 = wallet (SDK, clients, storage), decoupled from the core version
 
