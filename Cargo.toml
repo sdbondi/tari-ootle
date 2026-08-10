@@ -172,7 +172,7 @@ tari_utilities = "0.10"
 tari_hashing = "5.5.0"
 
 ## Ledger
-ootle_ledger_common = { path = "crates/wallet/ledger/common", version = "0.1.0" }
+ootle_ledger_common = { path = "crates/wallet/ledger/common", version = "0.2.0" }
 
 # networking crates
 proto_builder = { path = "networking/proto_builder" }

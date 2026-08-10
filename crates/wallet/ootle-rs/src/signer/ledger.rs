@@ -18,7 +18,7 @@
 
 use async_trait::async_trait;
 use ootle_ledger_client::{Exchange, LedgerClient, LedgerClientError};
-use ootle_ledger_common::arg_types::{KeyType, SignMode, SigningField};
+use ootle_ledger_common::arg_types::{KeyType, SignMode, SigningField, StealthTweak};
 use tari_crypto::{ristretto::RistrettoPublicKey, tari_utilities::ByteArray};
 use tari_ootle_address::OotleAddress;
 use tari_ootle_transaction::{
@@ -58,11 +58,11 @@ where
     /// `(account, index)` and derive the wallet [`Address`].
     pub async fn connect(client: LedgerClient<T>, network: Network, account: u64, index: u64) -> signer::Result<Self> {
         let account_pk = client
-            .get_public_key(account, index, KeyType::Account)
+            .get_public_key(account, index, KeyType::Account, None)
             .await
             .map_err(map_client_err)?;
         let view_only_pk = client
-            .get_public_key(account, index, KeyType::ViewOnlyKey)
+            .get_public_key(account, index, KeyType::ViewOnlyKey, None)
             .await
             .map_err(map_client_err)?;
         let address = OotleAddress::new(network, view_only_pk, account_pk);
@@ -155,13 +155,19 @@ where
     T: Exchange + Send + Sync,
     T::Error: core::fmt::Display + Send + Sync,
 {
-    async fn stealth_public_key(&self, _public_nonce: &RistrettoPublicKey) -> signer::Result<RistrettoPublicKeyBytes> {
-        // `GetPublicKey` derives from (account, index, key_type) only; the device has no request that takes a sender
-        // public nonce, so `c + k` is only ever returned alongside a signature it makes with it.
-        Err(SignerError::other(
-            "the Ledger device cannot derive a stealth public key without signing, so it cannot seal a stealth \
-             transfer that also needs authorization signatures",
-        ))
+    async fn stealth_public_key(&self, public_nonce: &RistrettoPublicKey) -> signer::Result<RistrettoPublicKeyBytes> {
+        self.client
+            .get_public_key(
+                self.account,
+                self.index,
+                KeyType::Account,
+                Some(StealthTweak {
+                    network: self.address.network().as_byte(),
+                    public_nonce: nonce_bytes(public_nonce),
+                }),
+            )
+            .await
+            .map_err(map_client_err)
     }
 
     async fn sign_authorization_with_stealth(

@@ -278,6 +278,7 @@ fn seal_recipe_matches_and_verifies() {
 
 #[test]
 fn stealth_recipe_matches_and_verifies() {
+    use ootle_ledger_common::arg_types::{GetPublicKeyRequest, KeyType, StealthTweak};
     use ootle_network::Network;
     use tari_crypto::{
         keys::{PublicKey, SecretKey},
@@ -323,5 +324,44 @@ fn stealth_recipe_matches_and_verifies() {
     assert!(
         signature.verify_v1(&seal_signer, &tx),
         "stealth authorization signature failed to verify"
+    );
+
+    // (4) `GetPublicKey` with a stealth tweak must return exactly that key, so the seal key is
+    // known before any signature binds to it. Round-tripping the request through borsh exercises
+    // the bytes the device decodes.
+    let request = GetPublicKeyRequest {
+        account: 0,
+        index: 0,
+        key_type: KeyType::Account,
+        stealth: Some(StealthTweak {
+            network: network.as_byte(),
+            public_nonce: r_bytes,
+        }),
+    };
+    let decoded: GetPublicKeyRequest = borsh::from_slice(&borsh::to_vec(&request).unwrap()).unwrap();
+    let tweak = decoded.stealth.expect("stealth tweak survives the wire");
+    let returned = public_key(&derive_stealth_secret(tweak.network, &k_scalar, &tweak.public_nonce));
+    assert_eq!(
+        returned,
+        <[u8; 32]>::try_from(stealth_address.as_bytes()).unwrap(),
+        "GetPublicKey stealth key mismatch"
+    );
+
+    // (5) The tweak binds both of its parts: the same nonce on another network, and another nonce
+    // on the same network, must each yield a different key.
+    let other_network = Network::Igor;
+    assert_ne!(network.as_byte(), other_network.as_byte());
+    assert_ne!(
+        returned,
+        public_key(&derive_stealth_secret(other_network.as_byte(), &k_scalar, &r_bytes)),
+        "stealth key is not bound to the network"
+    );
+    let other_nonce =
+        <[u8; 32]>::try_from(RistrettoPublicKey::from_secret_key(&RistrettoSecretKey::random(&mut rng)).as_bytes())
+            .unwrap();
+    assert_ne!(
+        returned,
+        public_key(&derive_stealth_secret(network.as_byte(), &k_scalar, &other_nonce)),
+        "stealth key is not bound to the public nonce"
     );
 }

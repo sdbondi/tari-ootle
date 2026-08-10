@@ -21,6 +21,13 @@ All commands use APDU class byte `0x80`.
 | `GetPublicKey`    | `0x03` | `GetPublicKeyRequest` | `GetPublicKeyResponse`    |
 | `SignTransaction` | `0x04` | Streamed (see below)  | `SignTransactionResponse` |
 
+### `GetPublicKey`
+
+`GetPublicKeyRequest` names a derivation path and may carry a `StealthTweak` (network + the spent
+UTXO's sender public nonce). With the tweak the device returns the stealth one-time key `(c + k)·G`
+— the key it also signs with when the same nonce is given in a `SignTransaction` header — so a host
+can resolve the seal key of a stealth input before binding any signature to it.
+
 ### `SignTransaction` streaming
 
 A signing exchange streams the canonical transaction signing preimage to the device as a sequence

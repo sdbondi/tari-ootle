@@ -39,12 +39,28 @@ impl KeyType {
     }
 }
 
+/// The tweak that turns a derived account key into a stealth one-time key: the spent UTXO's sender
+/// public nonce `R`, and the network the resulting key is bound to.
+///
+/// Both travel together because neither is meaningful alone — the tweak is
+/// `c = H_stealth_owner(network, k·R)`, so the same nonce yields a different key on each network.
+#[derive(BorshSerialize, BorshDeserialize)]
+pub struct StealthTweak {
+    pub network: u8,
+    pub public_nonce: [u8; 32],
+}
+
 /// Body of a `GetPublicKey` request: the derivation path of the key to return.
+///
+/// When `stealth` is set the device returns the stealth one-time key `(c + k)·G` for that tweak
+/// rather than the derived key `k·G` itself. This is the key a stealth input signs with, so it must
+/// be resolvable before any signature binds to it.
 #[derive(BorshSerialize, BorshDeserialize)]
 pub struct GetPublicKeyRequest {
     pub account: u64,
     pub index: u64,
     pub key_type: KeyType,
+    pub stealth: Option<StealthTweak>,
 }
 
 /// Response to `GetPublicKey`: the compressed Ristretto public key for the requested path.

@@ -2,12 +2,23 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use ootle_ledger_common::arg_types::{GetPublicKeyRequest, GetPublicKeyResponse};
+use zeroize::Zeroizing;
 
-use crate::{crypto::public_key_from_scalar, key_derive::derive_from_bip32_key, state::State, status::AppStatus};
+use crate::{
+    crypto::public_key_from_scalar,
+    hashing::derive_stealth_secret,
+    key_derive::derive_from_bip32_key,
+    state::State,
+    status::AppStatus,
+};
 
 pub fn get_public_key(_state_mut: &mut State, request: GetPublicKeyRequest) -> Result<GetPublicKeyResponse, AppStatus> {
-    let k = derive_from_bip32_key(request.account, request.index, request.key_type)?;
-    let pk = public_key_from_scalar(&k);
+    let k = Zeroizing::new(derive_from_bip32_key(request.account, request.index, request.key_type)?);
+    let secret = match request.stealth {
+        Some(tweak) => Zeroizing::new(derive_stealth_secret(tweak.network, &k, &tweak.public_nonce)?),
+        None => k,
+    };
+    let pk = public_key_from_scalar(&secret);
 
     Ok(GetPublicKeyResponse {
         public_key: pk.compress().0,

@@ -15,6 +15,7 @@ use ootle_ledger_common::{
         SignTransactionHeader,
         SignTransactionResponse,
         SigningField,
+        StealthTweak,
     },
 };
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
@@ -74,16 +75,22 @@ impl<T: Exchange> LedgerClient<T> {
 
     /// Derive a key on-device from the `(account, index, key_type)` BIP-32 path parameters and
     /// return its public key. The secret never leaves the device.
+    ///
+    /// `stealth` is `Some` to obtain the stealth one-time key for a confidential transfer: the
+    /// returned key is `(c + k)·G`, the same key the device signs with when given the tweak's
+    /// public nonce in [`Self::sign_transaction`].
     pub async fn get_public_key(
         &self,
         account: u64,
         index: u64,
         key_type: KeyType,
+        stealth: Option<StealthTweak>,
     ) -> LedgerClientResult<RistrettoPublicKeyBytes, T::Error> {
         let req = GetPublicKeyRequest {
             account,
             index,
             key_type,
+            stealth,
         };
 
         let command = APDUCommand {
@@ -207,20 +214,20 @@ mod tests {
         let client = LedgerClient::new(speculos_transport());
 
         let version = client.get_app_version().await.unwrap();
-        assert_eq!(version, "0.1.0");
+        assert_eq!(version, "0.2.0");
 
         let app_name = client.get_app_name().await.unwrap();
         assert_eq!(app_name, "Tari Ootle");
 
-        let public_key = client.get_public_key(0, 0, KeyType::Transaction).await.unwrap();
+        let public_key = client.get_public_key(0, 0, KeyType::Transaction, None).await.unwrap();
         assert_eq!(public_key.len(), 32);
-        let other_pk = client.get_public_key(0, 0, KeyType::Transaction).await.unwrap();
+        let other_pk = client.get_public_key(0, 0, KeyType::Transaction, None).await.unwrap();
         assert_eq!(public_key, other_pk);
-        let other_pk = client.get_public_key(0, 1, KeyType::Transaction).await.unwrap();
+        let other_pk = client.get_public_key(0, 1, KeyType::Transaction, None).await.unwrap();
         assert_ne!(public_key, other_pk);
-        let other_pk = client.get_public_key(0, 0, KeyType::Account).await.unwrap();
+        let other_pk = client.get_public_key(0, 0, KeyType::Account, None).await.unwrap();
         assert_ne!(public_key, other_pk);
-        let other_pk = client.get_public_key(1, 0, KeyType::Transaction).await.unwrap();
+        let other_pk = client.get_public_key(1, 0, KeyType::Transaction, None).await.unwrap();
         assert_ne!(public_key, other_pk);
     }
 
@@ -272,7 +279,10 @@ mod tests {
         let (account, index) = (0u64, 0u64);
 
         // Any public key works as the seal-signer context for an authorization signature.
-        let seal_signer = client.get_public_key(account, index, KeyType::Account).await.unwrap();
+        let seal_signer = client
+            .get_public_key(account, index, KeyType::Account, None)
+            .await
+            .unwrap();
         let tx = sample_unsigned();
 
         let segments = TransactionSignature::signing_preimage_v1(&seal_signer, &tx);
@@ -341,7 +351,10 @@ mod tests {
 
         // The device's account public key, and a fresh sender ephemeral nonce (r, R) standing in for
         // the sender nonce of a received stealth UTXO being spent.
-        let account_pk_bytes = client.get_public_key(account, index, KeyType::Account).await.unwrap();
+        let account_pk_bytes = client
+            .get_public_key(account, index, KeyType::Account, None)
+            .await
+            .unwrap();
         let account_pk = RistrettoPublicKey::from_canonical_bytes(&account_pk_bytes[..]).unwrap();
         let r = RistrettoSecretKey::random(&mut rand::rng());
         let r_pub = RistrettoPublicKey::from_secret_key(&r);
@@ -388,6 +401,85 @@ mod tests {
         assert!(
             signature.verify_v1(&seal_signer, &tx),
             "device stealth signature did not verify"
+        );
+
+        // `GetPublicKey` must resolve the very key the device signs with, so callers can bind
+        // authorizations to the seal key before any signature is made.
+        let queried = client
+            .get_public_key(
+                account,
+                index,
+                KeyType::Account,
+                Some(StealthTweak {
+                    network: tx.network,
+                    public_nonce: nonce,
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            *queried, response.public_key,
+            "GetPublicKey disagrees with the signing key"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Speculos to be running with the ootle ledger app."]
+    async fn stealth_public_key_derivation() {
+        use ootle_network::Network;
+        use tari_crypto::{
+            keys::{PublicKey, SecretKey},
+            ristretto::{RistrettoPublicKey, RistrettoSecretKey},
+            tari_utilities::ByteArray,
+        };
+
+        let client = LedgerClient::new(speculos_transport());
+        let (account, index) = (0u64, 0u64);
+
+        let mut rng = rand::rng();
+        let nonce_of = |secret: &RistrettoSecretKey| {
+            let mut bytes = [0u8; 32];
+            bytes.copy_from_slice(RistrettoPublicKey::from_secret_key(secret).as_bytes());
+            bytes
+        };
+        let nonce = nonce_of(&RistrettoSecretKey::random(&mut rng));
+        let other_nonce = nonce_of(&RistrettoSecretKey::random(&mut rng));
+
+        let stealth_key = |network: Network, public_nonce: [u8; 32]| {
+            client.get_public_key(
+                account,
+                index,
+                KeyType::Account,
+                Some(StealthTweak {
+                    network: network.as_byte(),
+                    public_nonce,
+                }),
+            )
+        };
+
+        let key = stealth_key(Network::LocalNet, nonce).await.unwrap();
+        assert_eq!(
+            key,
+            stealth_key(Network::LocalNet, nonce).await.unwrap(),
+            "stealth key is not deterministic"
+        );
+        assert_ne!(
+            key,
+            stealth_key(Network::LocalNet, other_nonce).await.unwrap(),
+            "stealth key is not bound to the public nonce"
+        );
+        assert_ne!(
+            key,
+            stealth_key(Network::Igor, nonce).await.unwrap(),
+            "stealth key is not bound to the network"
+        );
+        assert_ne!(
+            key,
+            client
+                .get_public_key(account, index, KeyType::Account, None)
+                .await
+                .unwrap(),
+            "stealth key equals the untweaked account key"
         );
     }
 }

@@ -7,7 +7,8 @@ any [`ledger_transport::Exchange`](https://docs.rs/ledger-transport) APDU transp
 the app's instruction set:
 
 - app name and version queries,
-- on-device key derivation (`get_public_key`) — secrets never leave the device,
+- on-device key derivation (`get_public_key`), optionally tweaked to a stealth one-time key —
+  secrets never leave the device,
 - streamed transaction signing (`sign_transaction`) for both authorization ("add signer") and
   seal signatures, with optional stealth key derivation for confidential transfers.
 
@@ -41,7 +42,7 @@ use ootle_ledger_common::arg_types::KeyType;
 let client = LedgerClient::new(SpeculosTransport::new());
 
 let version = client.get_app_version().await?;
-let public_key = client.get_public_key(0, 0, KeyType::Account).await?;
+let public_key = client.get_public_key(0, 0, KeyType::Account, None).await?;
 # Ok(())
 # }
 ```
