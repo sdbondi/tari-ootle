@@ -780,6 +780,53 @@ jobs:
           omitBodyDuringUpdate: true
           omitNameDuringUpdate: true
 
+  ledger-app:
+    name: Building the Ledger device app
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v7.0.1
+
+      # The device app versions independently of the workspace: it is installed on the device, not
+      # released alongside the binaries, so its own version identifies what a user is flashing.
+      - name: Declare Ledger app variables
+        shell: bash
+        run: |
+          echo "VSHA_SHORT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+          LEDGER_APP_VERSION=$(awk -F ' = ' '$1 ~ /^version/ \
+            { gsub(/["]/, "", $2); printf("%s",$2); exit }' \
+            "$GITHUB_WORKSPACE/crates/wallet/ledger/app/Cargo.toml")
+          echo "LEDGER_APP_VERSION=${LEDGER_APP_VERSION}" >> $GITHUB_ENV
+
+      # Builds in the Ledger builder image; the embedded Rust toolchain and device SDKs live there.
+      - name: Build the device app for every target
+        run: ./crates/wallet/ledger/app/build-app.sh all
+
+      - name: Collect ELFs and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIST="$GITHUB_WORKSPACE/dist-ledger"
+          mkdir -p "${DIST}"
+          for elf in "$GITHUB_WORKSPACE"/crates/wallet/ledger/app/target/*/release/ootle; do
+            device=$(basename "$(dirname "$(dirname "${elf}")")")
+            cp -v "${elf}" \
+              "${DIST}/${TS_FILENAME}_ledger_app-${LEDGER_APP_VERSION}-${VSHA_SHORT}-${device}.elf"
+          done
+          cd "${DIST}"
+          shasum --algorithm 256 *.elf \
+            >> "${TS_FILENAME}_ledger_app-${LEDGER_APP_VERSION}-${VSHA_SHORT}.sha256"
+          shasum --algorithm 256 --check "${TS_FILENAME}_ledger_app-${LEDGER_APP_VERSION}-${VSHA_SHORT}.sha256"
+          ls -alht
+
+      # Named with the `tari_ootle` prefix so `create-release` picks it up with the other artifacts.
+      - name: Artifact upload for the Ledger app
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.TS_FILENAME }}_ledger_app-${{ env.LEDGER_APP_VERSION }}-${{ env.VSHA_SHORT }}
+          path: "${{ github.workspace }}/dist-ledger/*"
+
   macOS-universal-assemble:
     name: macOS universal assemble
     needs: builds
@@ -985,7 +1032,7 @@ jobs:
     if: ${{ startsWith(github.ref, 'refs/tags/v') }}
 
     runs-on: ubuntu-latest
-    needs: [ builds, macOS-universal-assemble ]
+    needs: [ builds, macOS-universal-assemble, ledger-app ]
 
     env:
       TARI_NETWORK_DIR: ${{ needs.builds.outputs.TARI_NETWORK_DIR }}

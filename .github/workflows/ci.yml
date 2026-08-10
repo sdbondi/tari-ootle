@@ -202,6 +202,30 @@ jobs:
       - name: run the license check
         run: ./scripts/file_license_check.sh
 
+  ledger-app:
+    # The Ledger device app declares its own `[workspace]`, so nothing else in CI compiles it — a
+    # change to `ootle_ledger_common` can break the firmware without any other job noticing.
+    name: ledger app
+    runs-on: [ ubuntu-latest ]
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v7.0.1
+
+      # Builds in the Ledger builder image (the embedded Rust toolchain and every device SDK live
+      # there); BAGL and NBGL targets exercise both device UI backends.
+      - name: build device app
+        run: ./crates/wallet/ledger/app/build-app.sh all
+
+      - name: app metadata
+        run: |
+          for elf in crates/wallet/ledger/app/target/*/release/ootle; do
+            echo "::group::${elf}"
+            size "${elf}"
+            readelf -p ledger.app_version "${elf}"
+            echo "::endgroup::"
+          done
+
   test-shards:
     name: test (${{ matrix.partition }})
     runs-on: [ ubuntu-latest ]
