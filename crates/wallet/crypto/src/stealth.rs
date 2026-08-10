@@ -7,7 +7,10 @@ use tari_crypto::ristretto::RistrettoSecretKey;
 /// [`BuiltinPredicate::HashLock`](tari_template_lib_types::stealth::BuiltinPredicate::HashLock)
 /// preimage, re-exported so a wallet can build a hashlock condition without depending on `tari_engine_types`.
 pub use tari_engine_types::stealth::hashlock_digest;
-use tari_engine_types::{limits::STEALTH_LIMITS, stealth::MerkleTree};
+use tari_engine_types::{
+    limits::STEALTH_LIMITS,
+    stealth::{MerkleTree, validate_condition_structure},
+};
 use tari_template_lib_types::{
     Amount,
     Hash32,
@@ -41,6 +44,9 @@ use crate::{
 /// Computes the committed condition-tree (MAST) root for a set of spend-condition leaves. The root is independent of
 /// leaf order. Native hashing lives in `tari_engine_types`; this is the wallet-side entry point for building a
 /// script-gated output.
+///
+/// This is the bare tree construction: it rejects a set that cannot form a tree, but says nothing about whether the
+/// individual leaves are ones the engine will admit. Use [`validated_condition_root`] for a caller-supplied set.
 pub fn condition_root(conditions: &[SpendCondition]) -> Result<Hash32, WalletCryptoError> {
     MerkleTree::from_conditions(conditions)
         .map(|tree| tree.root())
@@ -48,6 +54,23 @@ pub fn condition_root(conditions: &[SpendCondition]) -> Result<Hash32, WalletCry
             name: "conditions",
             details: e.to_string(),
         })
+}
+
+/// Computes the committed condition-tree root for a caller-supplied set, checking each leaf against the engine's
+/// spend-time structural rule first.
+///
+/// A leaf the engine will refuse to evaluate is a spend path that can never be taken, so a tree whose leaves are all
+/// inadmissible commits funds to an output nobody can spend. The wallet must not build such an output, even though
+/// the tree itself is well formed.
+pub fn validated_condition_root(conditions: &[SpendCondition]) -> Result<Hash32, WalletCryptoError> {
+    for leaf in conditions {
+        validate_condition_structure(leaf).map_err(|e| WalletCryptoError::InvalidArgument {
+            name: "conditions",
+            details: e.to_string(),
+        })?;
+    }
+
+    condition_root(conditions)
 }
 
 /// Resolves a [`PayTo`] intent to a stealth output's [`SpendAuthorization`]. The one-time stealth key is derived lazily
@@ -64,7 +87,7 @@ pub fn pay_to_output_authorization(
         PayTo::TemplateFunction(tf) => Ok(SpendAuthorization::Script(condition_root(&[
             SpendCondition::template_function(tf.clone()),
         ])?)),
-        PayTo::Conditions(conditions) => Ok(SpendAuthorization::Script(condition_root(conditions)?)),
+        PayTo::Conditions(conditions) => Ok(SpendAuthorization::Script(validated_condition_root(conditions)?)),
     }
 }
 

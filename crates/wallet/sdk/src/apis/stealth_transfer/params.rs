@@ -6,7 +6,7 @@ use ootle_network::Network;
 use tari_bor::{Deserialize, Serialize};
 use tari_engine_types::crypto::MAX_LAZY_BP_AGG_FACTORS;
 use tari_ootle_address::OotleAddress;
-use tari_ootle_wallet_crypto::{memo::Memo, pay_to::PayTo, stealth::condition_root};
+use tari_ootle_wallet_crypto::{memo::Memo, pay_to::PayTo, stealth::validated_condition_root};
 use tari_template_lib::types::{Amount, ComponentAddress, NonFungibleAddress, ResourceAddress};
 
 use crate::apis::{
@@ -85,15 +85,12 @@ impl StealthTransferParams {
                     reason: format!("Invalid destination address: {}", e),
                 })?;
 
-            // A condition set that cannot form a tree (empty, or with duplicate leaves) is rejected here so the
-            // caller is told which field is malformed, rather than failing deep in output construction after
-            // inputs have been locked.
-            if let PayTo::Conditions(conditions) = &output.pay_to {
-                condition_root(conditions).map_err(|e| StealthTransferApiError::InvalidParameter {
+            output
+                .validate_pay_to()
+                .map_err(|reason| StealthTransferApiError::InvalidParameter {
                     param: "pay_to",
-                    reason: e.to_string(),
+                    reason,
                 })?;
-            }
         }
 
         Ok(())
@@ -126,6 +123,31 @@ pub struct TransferOutput {
 impl TransferOutput {
     pub fn total_output_amount(&self) -> Amount {
         self.revealed_amount + Amount::from(self.blinded_amount)
+    }
+
+    /// Checks that this output's `pay_to` intent will be honoured as written, returning the reason it will not.
+    ///
+    /// `pay_to` gates the spend of the *blinded* output. An output with no blinded amount produces no stealth output
+    /// at all — statement construction filters it out — so a gating intent on one would be silently dropped and the
+    /// funds deposited unguarded. Reject it rather than mislead the caller.
+    ///
+    /// For a condition set, the tree is built here so a malformed set is reported against the field the caller
+    /// supplied, before any inputs are locked, rather than failing deep in output construction.
+    pub fn validate_pay_to(&self) -> Result<(), String> {
+        if self.blinded_amount == 0 {
+            if matches!(self.pay_to, PayTo::StealthPublicKey) {
+                return Ok(());
+            }
+            return Err(
+                "An output with no blinded amount produces no stealth output, so its spend cannot be gated".to_string(),
+            );
+        }
+
+        if let PayTo::Conditions(conditions) = &self.pay_to {
+            validated_condition_root(conditions).map_err(|e| e.to_string())?;
+        }
+
+        Ok(())
     }
 }
 
@@ -209,6 +231,7 @@ pub struct PayFeeWithSwapParams {
 mod tests {
     use ootle_byte_type::ToByteType;
     use tari_crypto::{keys::PublicKey as _, ristretto::RistrettoPublicKey};
+    use tari_engine_types::limits::STEALTH_LIMITS;
     use tari_template_lib::types::{
         constants::STEALTH_TARI_RESOURCE_ADDRESS,
         stealth::{AtomicCondition, BuiltinPredicate, SpendCondition},
@@ -229,14 +252,15 @@ mod tests {
         SpendCondition::all([AtomicCondition::Builtin(BuiltinPredicate::AfterEpoch(epoch))])
     }
 
-    fn params_paying_to(pay_to: PayTo) -> StealthTransferParams {
+    /// A single output of `blinded_amount` blinded plus `revealed_amount` revealed, paying to `pay_to`.
+    fn params_paying_to(blinded_amount: u64, revealed_amount: u64, pay_to: PayTo) -> StealthTransferParams {
         StealthTransferParams {
             fee_params: TransferFeeParams::new(UtxoInputSelection::PreferConfidential),
             input_selection: UtxoInputSelection::PreferConfidential,
             outputs: vec![TransferOutput {
                 address: address(),
-                revealed_amount: Amount::zero(),
-                blinded_amount: 100,
+                revealed_amount: Amount::from(revealed_amount),
+                blinded_amount,
                 memo: None,
                 pay_to,
             }],
@@ -247,14 +271,22 @@ mod tests {
         }
     }
 
-    fn assert_rejects_pay_to(pay_to: PayTo) {
-        let err = params_paying_to(pay_to)
+    fn blinded_paying_to(pay_to: PayTo) -> StealthTransferParams {
+        params_paying_to(100, 0, pay_to)
+    }
+
+    fn assert_rejects(params: StealthTransferParams) {
+        let err = params
             .validate(NETWORK)
-            .expect_err("a condition set that cannot form a tree must be rejected");
+            .expect_err("a pay_to that will not be honoured as written must be rejected");
         assert!(
             matches!(err, StealthTransferApiError::InvalidParameter { param: "pay_to", .. }),
             "expected an InvalidParameter naming pay_to, got: {err}"
         );
+    }
+
+    fn assert_rejects_pay_to(pay_to: PayTo) {
+        assert_rejects(blinded_paying_to(pay_to));
     }
 
     #[test]
@@ -268,9 +300,34 @@ mod tests {
         assert_rejects_pay_to(PayTo::Conditions(vec![condition.clone(), condition]));
     }
 
+    /// A leaf the engine refuses to evaluate is a spend path that can never be taken. A tree built only from such
+    /// leaves is well formed but unspendable, so it must not reach an output.
+    #[test]
+    fn rejects_a_structurally_inadmissible_leaf() {
+        assert_rejects_pay_to(PayTo::Conditions(vec![SpendCondition::all([])]));
+        assert_rejects_pay_to(PayTo::Conditions(vec![SpendCondition::all(vec![
+            AtomicCondition::Builtin(BuiltinPredicate::AfterEpoch(1));
+            STEALTH_LIMITS.max_conditions_per_conjunction + 1
+        ])]));
+    }
+
+    /// `pay_to` gates the blinded output, which a revealed-only transfer never produces. Silently depositing the
+    /// funds unguarded would give the caller the opposite of what they asked for.
+    #[test]
+    fn rejects_a_gated_output_with_no_blinded_amount() {
+        assert_rejects(params_paying_to(0, 100, PayTo::Conditions(vec![a_condition(1)])));
+    }
+
+    #[test]
+    fn accepts_an_ungated_output_with_no_blinded_amount() {
+        params_paying_to(0, 100, PayTo::StealthPublicKey)
+            .validate(NETWORK)
+            .expect("a revealed-only output needs no spend gating");
+    }
+
     #[test]
     fn accepts_a_well_formed_condition_set() {
-        params_paying_to(PayTo::Conditions(vec![a_condition(1), a_condition(2)]))
+        blinded_paying_to(PayTo::Conditions(vec![a_condition(1), a_condition(2)]))
             .validate(NETWORK)
             .expect("distinct condition leaves form a tree");
     }

@@ -760,50 +760,18 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         )
     }
 
-    /// Validates a revealed condition leaf's structure before it is hashed or evaluated.
-    ///
-    /// A leaf is a conjunction of atoms (logical AND). It must be non-empty and must not exceed
-    /// `STEALTH_LIMITS.max_conditions_per_conjunction`, which caps the worst-case work of evaluating one leaf.
-    ///
-    /// A data-consuming builtin (e.g. a hashlock) reads the entire witness `data` blob as its own raw input and cannot
-    /// know the blob's shape relative to siblings, so it must be the sole consumer of `data` in its leaf: a leaf may
-    /// hold at most one data-consuming builtin, and one may not share a leaf with a `TemplateFunction` (which may also
-    /// read `data`). Context-only conditions (timelocks, covenants, access rules) consume nothing and compose freely.
+    /// Validates a revealed condition leaf's structure before it is hashed or evaluated. The rule itself lives in
+    /// [`stealth::validate_condition_structure`] so the wallet can apply the same admissibility test before committing
+    /// funds to a tree; this only attributes a failure to the UTXO being spent.
     fn validate_condition_structure(
         leaf: &SpendCondition,
         commitment: &PedersenCommitmentBytes,
     ) -> Result<(), RuntimeError> {
-        let reject = |details: String| Err(RuntimeError::ResourceError(ResourceError::InvalidSpend { details }));
-
-        let conditions = leaf.conditions();
-        if conditions.is_empty() {
-            return reject(format!(
-                "Empty conjunction in spend condition for stealth UTXO {commitment}"
-            ));
-        }
-        let max_conditions = limits::STEALTH_LIMITS.max_conditions_per_conjunction;
-        if conditions.len() > max_conditions {
-            return reject(format!(
-                "Conjunction in spend condition for stealth UTXO {commitment} has {} conditions, exceeding the limit \
-                 of {max_conditions}",
-                conditions.len()
-            ));
-        }
-
-        let data_owning_builtins = conditions.iter().filter(|c| c.is_data_owning_builtin()).count();
-        if data_owning_builtins > 1 {
-            return reject(format!(
-                "Spend condition for stealth UTXO {commitment} has {data_owning_builtins} data-consuming builtins; at \
-                 most one may consume the witness data"
-            ));
-        }
-        if data_owning_builtins == 1 && conditions.iter().any(AtomicCondition::is_template_function) {
-            return reject(format!(
-                "Spend condition for stealth UTXO {commitment} pairs a data-consuming builtin with a \
-                 TemplateFunction; a data-consuming builtin must be the sole consumer of the witness data"
-            ));
-        }
-        Ok(())
+        stealth::validate_condition_structure(leaf).map_err(|err| {
+            RuntimeError::ResourceError(ResourceError::InvalidSpend {
+                details: format!("Spend condition for stealth UTXO {commitment}: {err}"),
+            })
+        })
     }
 
     /// Evaluates a revealed condition leaf that has already been proven included in the committed root. The leaf is a
