@@ -14,6 +14,7 @@ use tari_engine_types::{
 use tari_ootle_common_types::{Epoch, SubstateRequirement, SubstateRequirementRef};
 use tari_template_lib_types::{
     ComponentAddress,
+    Hash32,
     constants::TARI_TOKEN,
     crypto::RistrettoPublicKeyBytes,
     stealth::StealthTransferStatement,
@@ -23,10 +24,14 @@ use crate::{
     Blobs,
     Instruction,
     TransactionId,
+    TransactionIntent,
     TransactionSealSignature,
     UnsealedTransactionV1,
     args::InstructionArg,
-    v1::signature::{TransactionSignature, TransactionSignatureFields},
+    v1::{
+        intent::calculate_intent_commitment_v1,
+        signature::{TransactionSignature, TransactionSignatureFields},
+    },
     weight::TransactionWeight,
 };
 
@@ -268,6 +273,17 @@ pub(crate) fn calculate_id_v1(
         .result()
         .into_array()
         .into()
+}
+
+impl TransactionIntent for TransactionV1 {
+    fn calculate_intent_commitment(&self) -> Hash32 {
+        let unsigned = self.body.unsigned_transaction();
+        calculate_intent_commitment_v1(
+            self.schema_version(),
+            &TransactionSignatureFields::from(unsigned),
+            &unsigned.blobs.hashes(),
+        )
+    }
 }
 
 /// Failure modes for `TransactionV1::validate_blob_references`.

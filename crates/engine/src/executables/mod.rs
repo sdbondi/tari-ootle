@@ -5,7 +5,7 @@ mod transaction;
 
 use tari_engine_types::substate::SubstateId;
 use tari_ootle_transaction::{Blobs, Instruction, TransactionId, TransactionWeight};
-use tari_template_lib::types::crypto::RistrettoPublicKeyBytes;
+use tari_template_lib::types::{Hash32, crypto::RistrettoPublicKeyBytes};
 
 pub struct Instructions {
     pub fee: Vec<Instruction>,
@@ -17,6 +17,10 @@ pub struct Instructions {
 
 pub trait Executable {
     fn to_id(&self) -> TransactionId;
+
+    /// Commitment to everything the signers authorized, recorded in the transaction receipt so that
+    /// a holder of the transaction can prove it produced the receipt without revealing the signers.
+    fn calculate_intent_commitment(&self) -> Hash32;
 
     fn all_inputs_iter(&self) -> impl Iterator<Item = SubstateId> + '_;
 

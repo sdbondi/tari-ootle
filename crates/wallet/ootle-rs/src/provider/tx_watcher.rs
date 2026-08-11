@@ -27,6 +27,7 @@ use tari_ootle_common_types::{
     optional::Optional,
 };
 use tari_ootle_transaction::TransactionId;
+use tari_template_lib_types::Hash32;
 use tokio::{
     sync::{mpsc, oneshot},
     task,
@@ -460,6 +461,10 @@ impl PendingTransaction {
                             .map(|res| res.finalize.fee_receipt.clone())
                             .unwrap_or_default(),
                         epoch: execute_epoch,
+                        // Locally reconstructed from the execution result, which does not carry the
+                        // commitment. Zero marks it as absent — a caller wanting to prove the
+                        // transaction produced this receipt must fetch the indexed receipt.
+                        intent_commitment: Hash32::default(),
                     });
 
                     // return Err(PendingTransactionError::ReceiptNotFound { tx_id: self.tx_id });

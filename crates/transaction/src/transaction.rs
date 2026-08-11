@@ -23,6 +23,7 @@ use tari_ootle_common_types::{
 use tari_template_lib_types::{
     ClaimedOutputTombstoneAddress,
     ComponentAddress,
+    Hash32,
     TemplateAddress,
     crypto::RistrettoPublicKeyBytes,
 };
@@ -30,6 +31,7 @@ use tari_template_lib_types::{
 use crate::{
     Blobs,
     Instruction,
+    TransactionIntent,
     TransactionSealSignature,
     TransactionSignature,
     TransactionV1,
@@ -327,6 +329,14 @@ impl Transaction {
     }
 }
 
+impl TransactionIntent for Transaction {
+    fn calculate_intent_commitment(&self) -> Hash32 {
+        match self {
+            Self::V1(tx) => tx.calculate_intent_commitment(),
+        }
+    }
+}
+
 impl From<TransactionV1> for Transaction {
     fn from(tx: TransactionV1) -> Self {
         Self::V1(tx)
@@ -431,6 +441,14 @@ impl PrunedTransaction {
     pub fn is_dry_run(&self) -> bool {
         match self {
             Self::V1(tx) => tx.is_dry_run(),
+        }
+    }
+}
+
+impl TransactionIntent for PrunedTransaction {
+    fn calculate_intent_commitment(&self) -> Hash32 {
+        match self {
+            Self::V1(tx) => tx.calculate_intent_commitment(),
         }
     }
 }

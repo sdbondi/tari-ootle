@@ -177,6 +177,7 @@ where
             virtual_substates,
             initial_call_scope,
             id.as_hash(),
+            executable.calculate_intent_commitment(),
             transaction_weight,
             wasm_metering_rate,
             burn_rate_bps,
