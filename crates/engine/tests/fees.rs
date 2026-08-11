@@ -1,7 +1,10 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use tari_engine_types::{commit_result::RejectReason, fees::FeeSource};
+use tari_engine_types::{
+    commit_result::{RejectReason, TransactionResult},
+    fees::FeeSource,
+};
 use tari_ootle_transaction::{Transaction, args};
 use tari_template_lib::types::{Amount, ComponentAddress, constants::STEALTH_TARI_RESOURCE_ADDRESS};
 use tari_template_test_tooling::{TemplateTest, support::assert_error::assert_reject_reason, xtr_faucet_component};
@@ -236,6 +239,45 @@ fn a_fee_intent_commit_is_not_charged_for_the_state_it_abandons() {
     );
 }
 
+/// The fee intent's own writes are charged before the checkpoint weighs payments against charges, so
+/// a fee intent cannot leave behind state that nothing paid for. Nothing commits when it cannot:
+/// there is no earlier checkpoint to fall back to.
+#[test]
+fn the_fee_intent_pays_for_the_storage_it_writes() {
+    // Covers the fee intent's execution several times over — that alone requires 34 — but not the
+    // ~450 of state those instructions write.
+    const FEE: u64 = 100;
+    let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
+    let (account, owner_token, private_key) = test.create_empty_account();
+    test.enable_fees();
+
+    let result = test
+        .try_execute(
+            Transaction::builder_localnet()
+                .with_fee_instructions_builder(|builder| {
+                    builder
+                        // Writes the account's vault and the faucet's, then pays far less than those
+                        // writes cost.
+                        .call_method(xtr_faucet_component(), "take", args![account])
+                        .call_method(account, "pay_fee", args![FEE])
+                })
+                .build_and_seal(&private_key),
+            vec![owner_token],
+        )
+        .unwrap();
+
+    // Rejected outright rather than committed as a fee intent: the checkpoint is what a fee-intent
+    // commit falls back to, so a fee intent that cannot pay for its own writes leaves nothing behind.
+    assert!(
+        matches!(
+            result.finalize.result,
+            TransactionResult::Reject(RejectReason::InsufficientFeesPaid(_))
+        ),
+        "actual result: {:?}",
+        result.finalize.result
+    );
+}
+
 #[test]
 fn fail_partial_paid_fees() {
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
@@ -277,9 +319,11 @@ fn fail_partial_paid_fees() {
         total_fees > FEE_PAID && total_fees - storage < FEE_PAID * 3,
         "total fees: {total_fees}, of which storage: {storage}"
     );
+    // The main instructions write state the payment cannot cover, and storage is charged as they
+    // run, so the transaction is stopped at the instruction that overran rather than at finalization.
     let reason = result.expect_failure();
     assert!(
-        matches!(reason, RejectReason::ExecutionFailure(msg) if msg.contains("Insufficient fees")),
+        matches!(reason, RejectReason::InsufficientFeesPaid(msg) if msg.contains("At instruction #1")),
         "actual reason: {reason}"
     );
 

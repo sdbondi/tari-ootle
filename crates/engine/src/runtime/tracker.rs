@@ -471,6 +471,16 @@ impl<TStore: StateReader> StateTracker<TStore> {
         })
     }
 
+    /// Whether the fee intent has ended. Past that point the transaction has paid what its fee
+    /// instructions charged, and any further work is funded by that payment alone.
+    pub fn has_fee_checkpoint(&self) -> bool {
+        self.fee_checkpoint.is_some()
+    }
+
+    pub fn take_storage_bytes_written(&mut self) -> Result<u64, RuntimeError> {
+        self.write_with(|state| state.take_storage_bytes_written())
+    }
+
     /// Runs `f` against the live working state.
     ///
     /// The fee module uses this to compute its finalization charges before the state to persist has
