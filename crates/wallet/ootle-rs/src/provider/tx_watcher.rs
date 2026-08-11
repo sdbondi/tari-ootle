@@ -432,13 +432,11 @@ impl PendingTransaction {
                     // TODO: improvements to the indexer may be needed to fully resolve this.
                     tracing::warn!("Transaction committed but receipt not found for tx_id: {}", self.tx_id);
                     // The accept diff carries the receipt substate.
-                    if let Some(receipt) = execution_result
+                    return execution_result
                         .as_ref()
                         .and_then(|res| res.finalize.get_transaction_receipt())
-                    {
-                        return Ok(receipt.clone());
-                    }
-                    return Err(PendingTransactionError::ReceiptNotFound { tx_id: self.tx_id });
+                        .cloned()
+                        .ok_or_else(|| PendingTransactionError::ReceiptNotFound { tx_id: self.tx_id });
                 }
             },
         }
