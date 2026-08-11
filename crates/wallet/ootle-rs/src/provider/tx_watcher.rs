@@ -431,10 +431,7 @@ impl PendingTransaction {
                     //
                     // TODO: improvements to the indexer may be needed to fully resolve this.
                     tracing::warn!("Transaction committed but receipt not found for tx_id: {}", self.tx_id);
-                    // The execution result's accept diff carries the receipt substate itself, so
-                    // return that rather than reconstructing the fields by hand: a reconstruction
-                    // cannot recover the receipt's intent commitment, and a caller could not tell
-                    // an absent commitment from one belonging to a different transaction.
+                    // The accept diff carries the receipt substate.
                     if let Some(receipt) = execution_result
                         .as_ref()
                         .and_then(|res| res.finalize.get_transaction_receipt())
