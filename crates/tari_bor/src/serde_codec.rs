@@ -1,23 +1,17 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-//! Local fork of [`minicbor-serde`](https://docs.rs/minicbor-serde) with `u128` / `i128` support
-//! added on both the encode and decode sides.
+//! Local fork of [`minicbor-serde`](https://docs.rs/minicbor-serde) that additionally accepts a
+//! CBOR byte string wherever serde asks for a sequence.
 //!
-//! Upstream's `Serializer` and `Deserializer` don't implement `serialize_u128`/`serialize_i128`
-//! or `deserialize_u128`/`deserialize_i128`, so any serde-bridged struct that names a `u128` or
-//! `i128` field fails to round-trip. The relevant upstream change is in flight at
-//! <https://github.com/twittner/minicbor/pull/63>; when it lands (and a `minicbor-serde` release
-//! picks it up), this module can be deleted and call sites switched back to `minicbor_serde`.
+//! serde's blanket `Deserialize for Vec<u8>` (and `Cow<'_, [u8]>`, which routes through it) calls
+//! `deserialize_seq` even when the encoded form is a CBOR `bstr`. Upstream only handles a CBOR
+//! array there, so foreign serde-only types that serialize bytes as `bstr` — the consensus proofs
+//! in `tari_sidechain`, for example — fail to round-trip through `adapters::serde_bridge`. See
+//! [`Deserializer::deserialize_seq`].
 //!
-//! The wire format is intentionally identical to `minicbor-serde`'s for every type it already
-//! supports — only the 128-bit integer arms are new. Those use the RFC 8949 §3.4.3 bignum form:
-//!   - `u128`  → tag `2`  ("positive bignum") + bstr of big-endian magnitude (leading zeros stripped; a single `0x00`
-//!     byte for the value `0`).
-//!   - `i128`  → tag `2` for non-negative, tag `3` ("negative bignum", encoding `-1 - n`) for negative values, payload
-//!     as above.
-//!
-//! Code structure mirrors upstream so the eventual diff to drop this fork is mechanical.
+//! The wire format is otherwise identical to `minicbor-serde`'s, so code structure mirrors
+//! upstream to keep the diff small.
 
 #![cfg(feature = "serde")]
 
@@ -28,7 +22,7 @@ use core::fmt;
 use minicbor::{
     Decoder,
     Encoder,
-    data::{Tag, Type},
+    data::{IanaTag, Type},
     decode,
     encode::{self, Write},
 };
@@ -48,8 +42,6 @@ use serde::{
     },
 };
 
-const TAG_POSITIVE_BIGNUM: u64 = 2;
-const TAG_NEGATIVE_BIGNUM: u64 = 3;
 const BREAK: u8 = 0xff;
 
 // ============================================================================
@@ -125,30 +117,8 @@ pub fn from_slice<'de, T: Deserialize<'de>>(b: &'de [u8]) -> Result<T, DecodeErr
 }
 
 // ============================================================================
-// 128-bit helpers (the reason this fork exists)
+// Helpers
 // ============================================================================
-
-fn encode_u128<W: Write>(e: &mut Encoder<W>, v: u128) -> Result<(), encode::Error<W::Error>> {
-    let bytes = v.to_be_bytes();
-    let first = bytes.iter().position(|&b| b != 0).unwrap_or(15);
-    e.tag(Tag::new(TAG_POSITIVE_BIGNUM))?;
-    e.bytes(&bytes[first..])?;
-    Ok(())
-}
-
-fn encode_i128<W: Write>(e: &mut Encoder<W>, v: i128) -> Result<(), encode::Error<W::Error>> {
-    if v >= 0 {
-        return encode_u128(e, v as u128);
-    }
-    // RFC 8949 §3.4.3: negative bignum encodes -1 - n. So for v < 0, the encoded magnitude is
-    // (-1 - v) as an unsigned bignum.
-    let magnitude = (-1i128 - v) as u128;
-    let bytes = magnitude.to_be_bytes();
-    let first = bytes.iter().position(|&b| b != 0).unwrap_or(15);
-    e.tag(Tag::new(TAG_NEGATIVE_BIGNUM))?;
-    e.bytes(&bytes[first..])?;
-    Ok(())
-}
 
 /// Concatenate the chunks of an indefinite-length CBOR byte string into a single `Vec<u8>`,
 /// pre-sized so the output buffer is allocated exactly once. Collecting the chunk references
@@ -162,56 +132,6 @@ fn collect_indef_bytes(d: &mut Decoder<'_>) -> Result<Vec<u8>, decode::Error> {
         buf.extend_from_slice(chunk);
     }
     Ok(buf)
-}
-
-fn read_bignum_payload(d: &mut Decoder<'_>) -> Result<u128, decode::Error> {
-    let bytes = d.bytes()?;
-    if bytes.len() > 16 {
-        return Err(decode::Error::message("bignum payload exceeds 128 bits"));
-    }
-    let mut buf = [0u8; 16];
-    buf[16 - bytes.len()..].copy_from_slice(bytes);
-    Ok(u128::from_be_bytes(buf))
-}
-
-fn decode_u128(d: &mut Decoder<'_>) -> Result<u128, decode::Error> {
-    // Accept a plain CBOR unsigned integer too, since RFC 8949 lets bignums skip the tag when the
-    // value fits in u64.
-    let ty = d.datatype()?;
-    match ty {
-        Type::U8 | Type::U16 | Type::U32 | Type::U64 => Ok(u128::from(d.u64()?)),
-        Type::Tag => {
-            let tag: u64 = d.tag()?.into();
-            if tag != TAG_POSITIVE_BIGNUM {
-                return Err(decode::Error::message("u128: expected positive-bignum tag (2)"));
-            }
-            read_bignum_payload(d)
-        },
-        other => Err(decode::Error::type_mismatch(other).with_message("u128: unexpected CBOR type")),
-    }
-}
-
-fn decode_i128(d: &mut Decoder<'_>) -> Result<i128, decode::Error> {
-    let ty = d.datatype()?;
-    match ty {
-        Type::U8 | Type::U16 | Type::U32 | Type::U64 => Ok(i128::from(d.u64()?)),
-        Type::I8 | Type::I16 | Type::I32 | Type::I64 => Ok(i128::from(d.i64()?)),
-        Type::Tag => {
-            let tag: u64 = d.tag()?.into();
-            let magnitude = read_bignum_payload(d)?;
-            match tag {
-                TAG_POSITIVE_BIGNUM => i128::try_from(magnitude)
-                    .map_err(|_| decode::Error::message("i128: positive bignum overflows i128")),
-                TAG_NEGATIVE_BIGNUM => {
-                    let signed = i128::try_from(magnitude)
-                        .map_err(|_| decode::Error::message("i128: negative bignum overflows i128"))?;
-                    Ok(-1i128 - signed)
-                },
-                _ => Err(decode::Error::message("i128: unexpected bignum tag")),
-            }
-        },
-        other => Err(decode::Error::type_mismatch(other).with_message("i128: unexpected CBOR type")),
-    }
 }
 
 // ============================================================================
@@ -287,7 +207,8 @@ where <W as Write>::Error: core::error::Error + 'static
     }
 
     fn serialize_i128(self, v: i128) -> Result<(), Self::Error> {
-        encode_i128(&mut self.encoder, v).map_err(Into::into)
+        self.encoder.i128(v)?;
+        Ok(())
     }
 
     fn serialize_u8(self, v: u8) -> Result<(), Self::Error> {
@@ -311,7 +232,8 @@ where <W as Write>::Error: core::error::Error + 'static
     }
 
     fn serialize_u128(self, v: u128) -> Result<(), Self::Error> {
-        encode_u128(&mut self.encoder, v).map_err(Into::into)
+        self.encoder.u128(v)?;
+        Ok(())
     }
 
     fn serialize_f32(self, v: f32) -> Result<(), Self::Error> {
@@ -651,12 +573,14 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
             },
             Type::Array | Type::ArrayIndef => self.deserialize_seq(visitor),
             Type::Map | Type::MapIndef => self.deserialize_map(visitor),
+            Type::Int => self.deserialize_i128(visitor),
             Type::Tag => {
-                // Could be a bignum (positive or negative). decode_i128 handles both
-                // TAG_POSITIVE_BIGNUM and TAG_NEGATIVE_BIGNUM; anything else is currently
-                // unsupported, matching upstream.
-                let v = decode_i128(&mut self.decoder)?;
-                visitor.visit_i128(v)
+                let tag = self.decoder.probe().tag()?;
+                match tag.try_into() {
+                    Ok(IanaTag::PosBignum) => self.deserialize_u128(visitor),
+                    Ok(IanaTag::NegBignum) => self.deserialize_i128(visitor),
+                    _ => Err(decode::Error::tag_mismatch(tag).at(self.decoder.position()).into()),
+                }
             },
             Type::BytesIndef => visitor.visit_byte_buf(collect_indef_bytes(&mut self.decoder)?),
             Type::StringIndef => {
@@ -669,7 +593,7 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
                 }
                 visitor.visit_string(buf)
             },
-            t @ (Type::F16 | Type::Undefined | Type::Int | Type::Simple | Type::Break | Type::Unknown(_)) => {
+            t @ (Type::F16 | Type::Undefined | Type::Simple | Type::Break | Type::Unknown(_)) => {
                 Err(decode::Error::type_mismatch(t)
                     .with_message("unexpected type")
                     .at(self.decoder.position())
@@ -699,8 +623,7 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     }
 
     fn deserialize_i128<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let v = decode_i128(&mut self.decoder)?;
-        visitor.visit_i128(v)
+        visitor.visit_i128(self.decoder.i128()?)
     }
 
     fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
@@ -720,8 +643,7 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     }
 
     fn deserialize_u128<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let v = decode_u128(&mut self.decoder)?;
-        visitor.visit_u128(v)
+        visitor.visit_u128(self.decoder.u128()?)
     }
 
     fn deserialize_f32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {

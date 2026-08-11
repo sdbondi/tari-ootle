@@ -8,7 +8,7 @@ edition = "2024"
 
 [dependencies]
 tari_template_lib = { path = "../../../../../template_lib" }
-minicbor = { version = "2.2", default-features = false, features = ["alloc", "derive"] }
+minicbor = { version = "2.3", default-features = false, features = ["alloc", "derive"] }
 
 [lib]
 crate-type = ["cdylib"]

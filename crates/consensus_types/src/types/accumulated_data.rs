@@ -8,10 +8,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, BorshSerialize, Encode, Decode, CborLen)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ShardGroupAccumulatedData {
-    // minicbor 2.2 has no Encode/Decode for u128; bridge via tari_bor's u128 adapter until
-    // upstream PR https://github.com/twittner/minicbor/pull/63 lands.
     #[n(0)]
-    #[cbor(with = "tari_bor::adapters::u128_codec")]
     pub total_exhaust_burn: u128,
 }
 
@@ -19,6 +16,25 @@ impl From<ShardGroupAccumulatedData> for tari_sidechain::ShardGroupAccumulatedDa
     fn from(value: ShardGroupAccumulatedData) -> Self {
         Self {
             total_exhaust_burn: value.total_exhaust_burn,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `total_exhaust_burn` crosses the `u64::MAX` boundary where minicbor switches between a
+    /// plain CBOR integer and an RFC 8949 bignum, and `CborLen` has to agree with the encoder on
+    /// both sides of it.
+    #[test]
+    fn total_exhaust_burn_roundtrips_across_the_bignum_boundary() {
+        for total_exhaust_burn in [0, 1, u128::from(u64::MAX), u128::from(u64::MAX) + 1, u128::MAX] {
+            let data = ShardGroupAccumulatedData { total_exhaust_burn };
+            let bytes = minicbor::to_vec(data).unwrap();
+            assert_eq!(bytes.len(), minicbor::len(data));
+            let decoded: ShardGroupAccumulatedData = minicbor::decode(&bytes).unwrap();
+            assert_eq!(decoded.total_exhaust_burn, total_exhaust_burn);
         }
     }
 }

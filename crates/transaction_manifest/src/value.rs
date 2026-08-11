@@ -74,12 +74,9 @@ pub fn lit_to_arg(lit: &Lit) -> Result<InstructionArg, ManifestError> {
             "" => Ok(call_arg!(i.base10_parse::<i64>()?)),
             // 128-bit integer literals are emitted as `tari_bor::Value::Integer(i128)` and on the
             // wire become a CBOR integer (Value's encoder accepts the i64::MIN..=u64::MAX range
-            // and errors at submission time for anything wider). This unblocks templates whose
-            // arg type is `tari_bor::Value` — they can read back via `Value::as_integer()`.
-            // Templates that take native `u128` / `i128` parameters still won't decode, because
-            // minicbor 2.2 has no `Decode` impl for those types (upstream PR
-            // <https://github.com/twittner/minicbor/pull/63> is pending); use the adapters in
-            // `tari_bor::adapters::{u128_codec, i128_codec}` on those fields in the meantime.
+            // and errors at submission time for anything wider). Templates taking native `u128` /
+            // `i128` parameters decode that form too, so both they and templates whose arg type is
+            // `tari_bor::Value` (read back via `Value::as_integer()`) accept these literals.
             "u128" => {
                 let parsed = i.base10_parse::<u128>()?;
                 let as_i128 = i128::try_from(parsed).map_err(|_| {
