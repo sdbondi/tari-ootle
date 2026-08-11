@@ -34,6 +34,10 @@ impl Executable for WrappedTransaction {
         self.transaction.calculate_intent_commitment()
     }
 
+    fn to_id_and_intent_commitment(&self) -> (tari_ootle_transaction::TransactionId, Hash32) {
+        self.transaction.to_id_and_intent_commitment()
+    }
+
     fn all_inputs_iter(&self) -> impl Iterator<Item = SubstateId> + '_ {
         // Combine the inputs from the transaction and the additional inputs
         // Note: duplicates are possible

@@ -6,14 +6,23 @@
 //! A transaction receipt is bound to its transaction transitively: the receipt is addressed by the
 //! [`TransactionId`](crate::TransactionId), and that id is derived from the signing projection
 //! *plus* the authorization signatures and the seal signature. Reproducing the id therefore
-//! requires the signers' public keys, so proving "this transaction produced that receipt" reveals
-//! who authorized it.
+//! requires the signers' public keys, so linking a transaction to its receipt that way reveals who
+//! authorized it.
 //!
 //! The intent commitment breaks that entanglement. It commits to
 //! [`TransactionSignatureFields`] — network, fee instructions, instructions, inputs, epoch bounds
 //! and flags — plus the schema version and the per-blob commitments, and nothing else. Whoever
 //! kept the transaction can recompute it and compare against the receipt; nobody learns the
 //! signers.
+//!
+//! What it is not:
+//!  * **Not a proof of authorship.** No signer material enters the commitment, so two transactions that differ only in
+//!    who signed them — identical network, instructions, unversioned inputs, epoch bounds and flags — have identical
+//!    commitments and each verifies against the other's receipt. It establishes that a receipt came from *some*
+//!    transaction with exactly this intent.
+//!  * **Not hiding.** The preimage is the transaction body, which is gossiped in the clear, so anyone who observed the
+//!    transaction can recompute the commitment and construct the same comparison. It hides the signers from a party
+//!    reading the receipt, nothing more.
 //!
 //! Invariants:
 //!  * The commitment is identical for a `TransactionV1` and the `PrunedTransactionV1` derived from it, matching the
@@ -42,20 +51,21 @@ pub(crate) fn calculate_intent_commitment_v1(
         .result()
 }
 
-/// A transaction form that can prove which receipt it produced.
+/// A transaction form that can be linked to the receipt it produced.
 ///
-/// Implemented for both the full and pruned transaction types; a holder of either can verify a
+/// Implemented for both the full and pruned transaction types; a holder of either can check a
 /// receipt without holding the blob payloads.
 pub trait TransactionIntent {
     /// The 32-byte commitment to everything the signers authorized.
     fn calculate_intent_commitment(&self) -> Hash32;
 
-    /// Verifies that `receipt` was produced by this transaction.
+    /// Checks `receipt` against this transaction's intent.
     ///
-    /// This proves the link between a held transaction and a receipt without reproducing the
-    /// transaction id, and so without revealing the signers. It says nothing about whether the
-    /// receipt itself is authentic — the caller is responsible for obtaining the receipt from the
-    /// chain.
+    /// `Ok(())` means the receipt was produced by a transaction with exactly this intent, without
+    /// reproducing the transaction id and so without revealing the signers. It does not establish
+    /// that *this* transaction produced it — transactions differing only in their signers share a
+    /// commitment — nor that the receipt itself is authentic; the caller is responsible for
+    /// obtaining the receipt from the chain.
     fn verify_receipt_intent(&self, receipt: &TransactionReceipt) -> Result<(), IntentCommitmentMismatch> {
         let expected = self.calculate_intent_commitment();
         if receipt.intent_commitment == expected {
@@ -263,8 +273,9 @@ mod tests {
         assert_ne!(commitment_of(u), base_commitment, "blobs (contents)");
     }
 
-    /// The point of the commitment: it must be independent of who signed, so proving intent never
-    /// reveals the signers. The transaction id, which does bind them, must still differ.
+    /// The point of the commitment: it is independent of who signed, so it never reveals the
+    /// signers. The flip side is that transactions differing only in their signers are
+    /// indistinguishable by commitment — only the transaction id, which does bind them, differs.
     #[test]
     fn commitment_is_unaffected_by_signatures() {
         let unsigned = sample_unsigned();
@@ -273,6 +284,21 @@ mod tests {
 
         assert_eq!(a.calculate_intent_commitment(), b.calculate_intent_commitment());
         assert_ne!(a.calculate_id(), b.calculate_id());
+    }
+
+    /// The paired derivation exists only to hash the blobs once. It must produce exactly what the
+    /// separate entry points do, otherwise an executed transaction's receipt would carry a
+    /// different commitment than a verifier computes.
+    #[test]
+    fn paired_derivation_matches_the_separate_entry_points() {
+        let mut unsigned = sample_unsigned();
+        unsigned.blobs.push(Blob::from(vec![9; 64])).unwrap();
+        let tx = seal(unsigned, 2);
+
+        assert_eq!(
+            tx.calculate_id_and_intent_commitment(),
+            (tx.calculate_id(), tx.calculate_intent_commitment())
+        );
     }
 
     #[test]
@@ -284,7 +310,7 @@ mod tests {
         assert_eq!(
             PrunedTransactionV1::from(tx).verify_receipt_intent(&receipt),
             Ok(()),
-            "the pruned form proves the same receipt",
+            "the pruned form checks against the same receipt",
         );
     }
 

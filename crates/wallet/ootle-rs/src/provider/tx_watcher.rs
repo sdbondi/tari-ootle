@@ -22,12 +22,11 @@ use tari_indexer_client::{
 use tari_ootle_common_types::{
     engine_types::{
         commit_result::{ExecuteResult, TransactionResult},
-        transaction_receipt::{DiffSummary, FinalizeOutcome, TransactionReceipt},
+        transaction_receipt::{FinalizeOutcome, TransactionReceipt},
     },
     optional::Optional,
 };
 use tari_ootle_transaction::TransactionId;
-use tari_template_lib_types::Hash32;
 use tokio::{
     sync::{mpsc, oneshot},
     task,
@@ -432,42 +431,17 @@ impl PendingTransaction {
                     //
                     // TODO: improvements to the indexer may be needed to fully resolve this.
                     tracing::warn!("Transaction committed but receipt not found for tx_id: {}", self.tx_id);
-                    let execute_epoch = execution_result
+                    // The execution result's accept diff carries the receipt substate itself, so
+                    // return that rather than reconstructing the fields by hand: a reconstruction
+                    // cannot recover the receipt's intent commitment, and a caller could not tell
+                    // an absent commitment from one belonging to a different transaction.
+                    if let Some(receipt) = execution_result
                         .as_ref()
-                        .and_then(|res| res.execute_epoch)
-                        .unwrap_or_default();
-                    return Ok(TransactionReceipt {
-                        outcome: FinalizeOutcome::Commit,
-                        diff_summary: execution_result
-                            .as_ref()
-                            .and_then(|res| res.finalize.any_accept())
-                            .map(|diff| DiffSummary::from_diff(diff, execute_epoch))
-                            .unwrap_or_default(),
-                        fee_withdrawals: execution_result
-                            .as_ref()
-                            .and_then(|res| res.finalize.any_accept())
-                            .map(|diff| diff.validator_fee_withdrawals().to_vec().into_boxed_slice())
-                            .unwrap_or_default(),
-                        events: execution_result
-                            .as_ref()
-                            .map(|res| res.finalize.events.clone().into_boxed_slice())
-                            .unwrap_or_default(),
-                        logs: execution_result
-                            .as_ref()
-                            .map(|res| res.finalize.logs.clone().into_boxed_slice())
-                            .unwrap_or_default(),
-                        fee_receipt: execution_result
-                            .as_ref()
-                            .map(|res| res.finalize.fee_receipt.clone())
-                            .unwrap_or_default(),
-                        epoch: execute_epoch,
-                        // Locally reconstructed from the execution result, which does not carry the
-                        // commitment. Zero marks it as absent — a caller wanting to prove the
-                        // transaction produced this receipt must fetch the indexed receipt.
-                        intent_commitment: Hash32::default(),
-                    });
-
-                    // return Err(PendingTransactionError::ReceiptNotFound { tx_id: self.tx_id });
+                        .and_then(|res| res.finalize.get_transaction_receipt())
+                    {
+                        return Ok(receipt.clone());
+                    }
+                    return Err(PendingTransactionError::ReceiptNotFound { tx_id: self.tx_id });
                 }
             },
         }

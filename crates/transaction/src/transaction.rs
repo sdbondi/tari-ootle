@@ -74,6 +74,14 @@ impl Transaction {
         }
     }
 
+    /// Id and intent commitment derived from a single pass over the blobs. See
+    /// [`TransactionV1::calculate_id_and_intent_commitment`].
+    pub fn calculate_id_and_intent_commitment(&self) -> (TransactionId, Hash32) {
+        match self {
+            Self::V1(tx) => tx.calculate_id_and_intent_commitment(),
+        }
+    }
+
     pub fn calculate_transaction_weight(&self) -> TransactionWeight {
         match self {
             Self::V1(tx) => tx.calculate_transaction_weight(),

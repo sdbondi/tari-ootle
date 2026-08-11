@@ -128,14 +128,39 @@ impl TransactionV1 {
     /// Compute the deterministic transaction id. See [`calculate_id_v1`] for the projection
     /// invariants.
     pub fn calculate_id(&self) -> TransactionId {
-        let unsigned = self.body.unsigned_transaction();
-        let blob_hashes = unsigned.blobs.hashes();
+        let blob_hashes = self.body.unsigned_transaction().blobs.hashes();
+        self.calculate_id_with_blob_hashes(&blob_hashes)
+    }
+
+    /// Id and intent commitment derived from a single pass over the blobs.
+    ///
+    /// Both digests commit to the per-blob hashes, and deriving those hashes hashes every blob
+    /// payload. A caller that needs both — every execution does — must use this rather than
+    /// calling `calculate_id` and `calculate_intent_commitment` separately, which would hash the
+    /// transaction's blobs twice.
+    pub fn calculate_id_and_intent_commitment(&self) -> (TransactionId, Hash32) {
+        let blob_hashes = self.body.unsigned_transaction().blobs.hashes();
+        (
+            self.calculate_id_with_blob_hashes(&blob_hashes),
+            self.calculate_intent_commitment_with_blob_hashes(&blob_hashes),
+        )
+    }
+
+    fn calculate_id_with_blob_hashes(&self, blob_hashes: &crate::BlobHashes) -> TransactionId {
         calculate_id_v1(
             self.schema_version(),
-            TransactionSignatureFields::from(unsigned),
-            &blob_hashes,
+            TransactionSignatureFields::from(self.body.unsigned_transaction()),
+            blob_hashes,
             self.body.signatures(),
             self.seal_signature.public_key(),
+        )
+    }
+
+    fn calculate_intent_commitment_with_blob_hashes(&self, blob_hashes: &crate::BlobHashes) -> Hash32 {
+        calculate_intent_commitment_v1(
+            self.schema_version(),
+            &TransactionSignatureFields::from(self.body.unsigned_transaction()),
+            blob_hashes,
         )
     }
 
@@ -277,12 +302,8 @@ pub(crate) fn calculate_id_v1(
 
 impl TransactionIntent for TransactionV1 {
     fn calculate_intent_commitment(&self) -> Hash32 {
-        let unsigned = self.body.unsigned_transaction();
-        calculate_intent_commitment_v1(
-            self.schema_version(),
-            &TransactionSignatureFields::from(unsigned),
-            &unsigned.blobs.hashes(),
-        )
+        let blob_hashes = self.body.unsigned_transaction().blobs.hashes();
+        self.calculate_intent_commitment_with_blob_hashes(&blob_hashes)
     }
 }
 

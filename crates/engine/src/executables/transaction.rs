@@ -16,6 +16,10 @@ impl Executable for Transaction {
         TransactionIntent::calculate_intent_commitment(self)
     }
 
+    fn to_id_and_intent_commitment(&self) -> (TransactionId, Hash32) {
+        self.calculate_id_and_intent_commitment()
+    }
+
     fn all_inputs_iter(&self) -> impl Iterator<Item = SubstateId> + '_ {
         self.all_inputs_iter().map(|req| req.substate_id().clone())
     }

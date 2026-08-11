@@ -43,9 +43,10 @@ pub struct TransactionReceipt {
     ///
     /// The receipt is already bound to the transaction transitively — it is addressed by the
     /// transaction id — but reproducing that id requires the signatures and the seal signature, so
-    /// proving the link reveals the signers. This commitment is over the same projection minus the
-    /// signatures, so whoever holds the transaction can prove it produced this receipt without
-    /// revealing who authorized it.
+    /// establishing the link that way reveals the signers. This commitment is over the same
+    /// projection minus the signatures, so whoever holds the transaction can link it to this
+    /// receipt without revealing who authorized it. It identifies the intent, not the signers:
+    /// transactions differing only in who signed them share a commitment.
     #[n(7)]
     pub intent_commitment: Hash32,
 }

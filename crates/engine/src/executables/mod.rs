@@ -18,9 +18,15 @@ pub struct Instructions {
 pub trait Executable {
     fn to_id(&self) -> TransactionId;
 
-    /// Commitment to everything the signers authorized, recorded in the transaction receipt so that
-    /// a holder of the transaction can prove it produced the receipt without revealing the signers.
+    /// Commitment to everything the signers authorized, recorded in the transaction receipt so a
+    /// holder of the transaction can link it to the receipt without revealing the signers.
     fn calculate_intent_commitment(&self) -> Hash32;
+
+    /// Both of the above. Implementations whose id and commitment share work — deriving blob
+    /// commitments hashes every blob payload — should override this to do that work once.
+    fn to_id_and_intent_commitment(&self) -> (TransactionId, Hash32) {
+        (self.to_id(), self.calculate_intent_commitment())
+    }
 
     fn all_inputs_iter(&self) -> impl Iterator<Item = SubstateId> + '_;
 

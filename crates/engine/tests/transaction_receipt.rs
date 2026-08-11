@@ -8,7 +8,7 @@ const CRATE_PATH: &str = env!("CARGO_MANIFEST_DIR");
 const TEMPLATE_PATHS: [&str; 1] = ["tests/templates/state"];
 
 /// The receipt of a committed transaction commits to that transaction's intent, so a holder of the
-/// transaction — full or pruned — can prove it produced the receipt.
+/// transaction — full or pruned — can link it to the receipt.
 #[test]
 fn committed_receipt_commits_to_the_transaction_intent() {
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
@@ -25,7 +25,7 @@ fn committed_receipt_commits_to_the_transaction_intent() {
     assert_eq!(
         PrunedTransaction::from(transaction).verify_receipt_intent(receipt),
         Ok(()),
-        "the pruned form must prove the same receipt",
+        "the pruned form must check against the same receipt",
     );
 }
 
@@ -50,9 +50,9 @@ fn fee_intent_receipt_commits_to_the_transaction_intent() {
     assert_eq!(transaction.verify_receipt_intent(receipt), Ok(()));
 }
 
-/// A receipt only proves the transaction that produced it: a different intent must not verify.
+/// A receipt only matches the intent that produced it: a different intent must not verify.
 #[test]
-fn receipt_does_not_prove_a_different_transaction() {
+fn receipt_does_not_match_a_different_intent() {
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
     let template = test.get_template_address("State");
 
