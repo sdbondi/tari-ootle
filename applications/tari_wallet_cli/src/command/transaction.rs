@@ -125,8 +125,19 @@ pub struct CommonSubmitArgs {
     pub fee_account: Option<ComponentAddressOrName>,
     #[clap(long)]
     pub min_epoch: Option<u64>,
+    /// The last epoch this transaction may be sequenced in. Defaults to the wallet daemon's
+    /// configured window past the current epoch.
     #[clap(long)]
     pub max_epoch: Option<u64>,
+}
+
+impl CommonSubmitArgs {
+    /// The caller's explicit `max_epoch`, or the daemon's default window past the current epoch.
+    fn resolve_max_epoch(&self, current_epoch: Epoch, default_validity_epochs: u64) -> Epoch {
+        self.max_epoch
+            .map(Epoch)
+            .unwrap_or_else(|| Epoch(current_epoch.as_u64().saturating_add(default_validity_epochs)))
+    }
 }
 
 #[derive(Debug, Args, Clone)]
@@ -256,16 +267,21 @@ pub async fn handle_submit(args: SubmitArgs, client: &mut WalletDaemonClient) ->
         .owner_key_id
         .ok_or_else(|| anyhow!("Fee account does not have an owner key ID"))?;
 
-    let SettingsGetResponse { network, .. } = client.get_settings().await?;
+    let SettingsGetResponse {
+        network,
+        current_epoch,
+        default_transaction_validity_epochs,
+        ..
+    } = client.get_settings().await?;
+    let max_epoch = common.resolve_max_epoch(current_epoch, default_transaction_validity_epochs);
 
-    let mut builder = Transaction::builder(network.byte)
+    let mut builder = Transaction::builder(network.byte, max_epoch)
         .call_method(fee_account.component_address, "withdraw", args![common.max_fee,])
         .put_last_instruction_output_on_workspace("fee_bucket")
         .pay_fee_from_bucket("fee_bucket")
         .add_instruction(instruction)
         .with_inputs(common.inputs)
-        .with_min_epoch(common.min_epoch.map(Epoch))
-        .with_max_epoch(common.max_epoch.map(Epoch));
+        .with_min_epoch(common.min_epoch.map(Epoch));
 
     if let Some(dump_account) = common.dump_outputs_into {
         let AccountGetResponse { account, .. } = client.accounts_get(dump_account).await?;
@@ -336,9 +352,15 @@ async fn handle_submit_manifest(
         .owner_key_id
         .ok_or_else(|| anyhow!("Fee account does not have an owner key ID"))?;
 
-    let SettingsGetResponse { network, .. } = client.get_settings().await?;
+    let SettingsGetResponse {
+        network,
+        current_epoch,
+        default_transaction_validity_epochs,
+        ..
+    } = client.get_settings().await?;
+    let max_epoch = common.resolve_max_epoch(current_epoch, default_transaction_validity_epochs);
 
-    let builder = Transaction::builder(network.byte)
+    let builder = Transaction::builder(network.byte, max_epoch)
         .with_fee_instructions_builder(|builder| {
             builder.with_instructions(instructions.fee_instructions).call_method(
                 fee_account.component_address,
@@ -348,8 +370,7 @@ async fn handle_submit_manifest(
         })
         .with_instructions(instructions.instructions)
         .with_inputs(common.inputs)
-        .with_min_epoch(common.min_epoch.map(Epoch))
-        .with_max_epoch(common.max_epoch.map(Epoch));
+        .with_min_epoch(common.min_epoch.map(Epoch));
 
     let transaction = builder.build_unsigned();
     summarize_transaction(&transaction);

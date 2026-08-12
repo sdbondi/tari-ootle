@@ -58,7 +58,7 @@ use tari_crypto::{
 };
 use tari_engine::fees::FeeTable;
 use tari_engine_types::{fees::FeeSource, stealth::validate_transfer};
-use tari_ootle_transaction::{Transaction, args};
+use tari_ootle_transaction::{Epoch, Transaction, args};
 use tari_template_lib::types::stealth::StealthTransferStatement;
 use tari_template_test_tooling::{
     TemplateTest,
@@ -302,7 +302,7 @@ fn measure(host: Host) -> Calibration {
     // One measured execution: returns (WasmExecution points, wall-clock sample in ms).
     let run = |test: &mut TemplateTest, rounds: u64| -> (u64, Sample) {
         let execute = |test: &mut TemplateTest| -> (u64, f64) {
-            let tx = Transaction::builder_localnet()
+            let tx = Transaction::builder_localnet(Epoch(1))
                 .pay_fee_from_component(account, MAX_FEE)
                 .call_function(bench, "bench_div_u64", args![rounds])
                 .build_and_seal(&key);

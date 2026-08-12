@@ -119,6 +119,7 @@ pub async fn handle_mint_faucet(
     let fee = req.max_fee.unwrap_or(3000);
     let transaction = context
         .transaction_builder()
+        .await?
         .pay_fee_from_component(account.component_address, fee)
         .call_method(NFT_FAUCET_COMPONENT_ADDRESS, "mint", args![
             req.number_to_mint,
@@ -274,7 +275,7 @@ pub async fn handle_transfer(
     );
 
     // TODO: this can be simplified
-    let mut builder = context.transaction_builder();
+    let mut builder = context.transaction_builder().await?;
     // collect all instructions
     let non_fungible_api = sdk.non_fungible_api();
 

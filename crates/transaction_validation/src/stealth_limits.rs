@@ -128,6 +128,7 @@ impl StealthTransactionLimitsValidator {
 #[cfg(test)]
 mod tests {
     use indexmap::IndexSet;
+    use tari_ootle_common_types::Epoch;
     use tari_ootle_transaction::{
         Network,
         ResourceAddressRef,
@@ -203,7 +204,7 @@ mod tests {
                     transfer_instructions(main_statements),
                     IndexSet::new(),
                     None,
-                    None,
+                    Epoch(1),
                     false,
                 ),
                 vec![TransactionSignature::new(

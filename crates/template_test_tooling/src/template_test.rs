@@ -796,7 +796,7 @@ impl TemplateTest {
     pub fn transaction(&self) -> TransactionBuilder<MainIntent> {
         let seq = self.transaction_seq.get();
         self.transaction_seq.set(seq + 1);
-        Transaction::builder(Network::LocalNet).with_max_epoch(Some(Epoch(seq)))
+        Transaction::builder(Network::LocalNet, Epoch(seq))
     }
 
     /// Executes a transaction. Panics if the transaction is not finalized (fee transaction fails). Does not panic if

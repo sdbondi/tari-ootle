@@ -102,6 +102,14 @@ pub struct WalletDaemonConfig {
     /// transactions when new burn proof files are detected, deferring each claim to the next epoch as required.
     #[serde(default = "return_default_auto_claim_burns")]
     pub auto_claim_burns: bool,
+    /// How many epochs ahead of the current epoch to stamp `max_epoch` on transactions this wallet
+    /// builds, when the caller does not supply one. Every transaction must declare the last epoch it
+    /// may be sequenced in; past it the transaction can never land, so this decides how long a built
+    /// transaction stays submittable. Must not exceed the network's `max_transaction_validity_epochs`
+    /// ceiling — the default is far below it, leaving the long windows to callers that ask for one
+    /// explicitly (e.g. offline or multi-party signing).
+    #[serde(default = "return_default_transaction_validity_epochs")]
+    pub default_transaction_validity_epochs: u64,
 }
 
 impl WalletDaemonConfig {
@@ -114,6 +122,12 @@ impl WalletDaemonConfig {
 
 fn return_default_auto_claim_burns() -> bool {
     true
+}
+
+/// Three epochs is roughly an hour at the ~20 minute epoch target: long enough for an interactive
+/// approval flow, short enough that an abandoned transaction stops being submittable quickly.
+fn return_default_transaction_validity_epochs() -> u64 {
+    3
 }
 
 fn return_default_transaction_request_ttl() -> Duration {
@@ -153,6 +167,7 @@ impl Default for WalletDaemonConfig {
             burn_proof_dir: None,
             override_keyring_password: None,
             auto_claim_burns: true,
+            default_transaction_validity_epochs: return_default_transaction_validity_epochs(),
         }
     }
 }

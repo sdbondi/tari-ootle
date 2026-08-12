@@ -9,12 +9,20 @@ use crate::{TransactionValidationError, Validator};
 
 const LOG_TARGET: &str = "tari::ootle::mempool::validators::epoch_range";
 
-#[derive(Debug, Default)]
-pub struct EpochRangeValidator;
+/// Validates a transaction's validity window against the current epoch.
+///
+/// `max_validity_epochs` is the consensus-uniform ceiling on how far ahead of the current epoch a
+/// transaction's `max_epoch` may sit. Bounding it is what makes a transaction's death deterministic:
+/// past `max_epoch` the transaction can never be sequenced, so a wallet can declare it dead and an
+/// aborted attempt cannot be retried forever.
+#[derive(Debug)]
+pub struct EpochRangeValidator {
+    max_validity_epochs: u64,
+}
 
 impl EpochRangeValidator {
-    pub fn new() -> Self {
-        Self
+    pub fn new(max_validity_epochs: u64) -> Self {
+        Self { max_validity_epochs }
     }
 }
 
@@ -33,9 +41,8 @@ impl Validator<Transaction> for EpochRangeValidator {
             });
         }
 
-        if let Some(max_epoch) = transaction.max_epoch() &&
-            current_epoch > max_epoch
-        {
+        let max_epoch = transaction.max_epoch();
+        if current_epoch > max_epoch {
             warn!(target: LOG_TARGET, "EpochRangeValidator - FAIL: Current epoch {current_epoch} greater than maximum epoch {max_epoch}.");
             return Err(TransactionValidationError::CurrentEpochGreaterThanMaximum {
                 current_epoch,
@@ -43,6 +50,110 @@ impl Validator<Transaction> for EpochRangeValidator {
             });
         }
 
+        // Saturating: an overflowing ceiling admits every representable max_epoch, which is the
+        // correct reading of "no epoch is further ahead than the limit allows".
+        let latest_permitted = Epoch(current_epoch.as_u64().saturating_add(self.max_validity_epochs));
+        if max_epoch > latest_permitted {
+            warn!(
+                target: LOG_TARGET,
+                "EpochRangeValidator - FAIL: Maximum epoch {max_epoch} is more than {} epochs beyond current epoch \
+                 {current_epoch}.",
+                self.max_validity_epochs
+            );
+            return Err(TransactionValidationError::MaxEpochTooFarAhead {
+                current_epoch,
+                max_epoch,
+                max_validity_epochs: self.max_validity_epochs,
+            });
+        }
+
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use indexmap::IndexSet;
+    use tari_ootle_common_types::Epoch;
+    use tari_ootle_transaction::{
+        Network,
+        Transaction,
+        TransactionSealSignature,
+        UnsealedTransactionV1,
+        UnsignedTransactionV1,
+    };
+    use tari_template_lib::types::crypto::{RistrettoPublicKeyBytes, SchnorrSignatureBytes};
+
+    use super::*;
+
+    const MAX_VALIDITY_EPOCHS: u64 = 10;
+
+    fn transaction(min_epoch: Option<Epoch>, max_epoch: Epoch) -> Transaction {
+        Transaction::new(
+            UnsealedTransactionV1::new(
+                UnsignedTransactionV1::new(
+                    Network::LocalNet.as_byte(),
+                    vec![],
+                    vec![],
+                    IndexSet::new(),
+                    min_epoch,
+                    max_epoch,
+                    false,
+                ),
+                vec![],
+            )
+            .into(),
+            TransactionSealSignature::new(RistrettoPublicKeyBytes::zero(), SchnorrSignatureBytes::zero()),
+        )
+    }
+
+    fn validate(current_epoch: Epoch, transaction: &Transaction) -> Result<(), TransactionValidationError> {
+        EpochRangeValidator::new(MAX_VALIDITY_EPOCHS).validate(&current_epoch, transaction)
+    }
+
+    #[test]
+    fn it_accepts_a_transaction_inside_its_window() {
+        let tx = transaction(Some(Epoch(5)), Epoch(12));
+        validate(Epoch(5), &tx).unwrap();
+        validate(Epoch(12), &tx).unwrap();
+    }
+
+    #[test]
+    fn it_rejects_a_transaction_before_its_min_epoch() {
+        let tx = transaction(Some(Epoch(5)), Epoch(12));
+        assert!(matches!(
+            validate(Epoch(4), &tx),
+            Err(TransactionValidationError::CurrentEpochLessThanMinimum { .. })
+        ));
+    }
+
+    #[test]
+    fn it_rejects_an_expired_transaction() {
+        let tx = transaction(None, Epoch(12));
+        assert!(matches!(
+            validate(Epoch(13), &tx),
+            Err(TransactionValidationError::CurrentEpochGreaterThanMaximum { .. })
+        ));
+    }
+
+    #[test]
+    fn it_rejects_a_window_beyond_the_ceiling() {
+        let tx = transaction(None, Epoch(11));
+        assert!(matches!(
+            validate(Epoch(0), &tx),
+            Err(TransactionValidationError::MaxEpochTooFarAhead { .. })
+        ));
+    }
+
+    #[test]
+    fn the_ceiling_is_inclusive() {
+        let tx = transaction(None, Epoch(MAX_VALIDITY_EPOCHS));
+        validate(Epoch(0), &tx).unwrap();
+    }
+
+    #[test]
+    fn a_ceiling_that_overflows_admits_any_max_epoch() {
+        let tx = transaction(None, Epoch(u64::MAX));
+        EpochRangeValidator::new(u64::MAX).validate(&Epoch(1), &tx).unwrap();
     }
 }

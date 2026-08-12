@@ -221,9 +221,8 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         pledged_transaction: PledgedTransaction,
     ) -> Result<TransactionExecution, BlockTransactionExecutorError> {
         // Abort before execution if the execution epoch exceeds the transaction's max_epoch
-        if let Some(max_epoch) = pledged_transaction.transaction.transaction().max_epoch() &&
-            execution_epoch.epoch() > max_epoch
-        {
+        let max_epoch = pledged_transaction.transaction.transaction().max_epoch();
+        if execution_epoch.epoch() > max_epoch {
             warn!(
                 target: LOG_TARGET,
                 "⏰ Transaction {} has expired: execution epoch {} exceeds max_epoch {}",
@@ -270,9 +269,8 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         execution_locked_epoch: LockedEpoch,
     ) -> Result<TransactionExecution, BlockTransactionExecutorError> {
         // Abort before execution if the execution epoch exceeds the transaction's max_epoch
-        if let Some(max_epoch) = transaction.transaction().max_epoch() &&
-            execution_locked_epoch.epoch() > max_epoch
-        {
+        let max_epoch = transaction.transaction().max_epoch();
+        if execution_locked_epoch.epoch() > max_epoch {
             warn!(
                 target: LOG_TARGET,
                 "⏰ Transaction {} has expired: execution epoch {} exceeds max_epoch {}",

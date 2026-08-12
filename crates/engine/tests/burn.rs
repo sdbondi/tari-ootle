@@ -1,7 +1,7 @@
 //   Copyright 2025 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use tari_ootle_transaction::{Transaction, args};
+use tari_ootle_transaction::{Epoch, Transaction, args};
 use tari_template_lib::types::{Amount, ComponentAddress};
 use tari_template_test_tooling::{TemplateTest, support::confidential::generate_confidential_output_statement};
 
@@ -16,7 +16,7 @@ fn it_burns_all_resource_types() {
     initial_supply.output_revealed_amount = Amount::from(1000u64);
 
     let result = test.execute_expect_success(
-        Transaction::builder_localnet()
+        Transaction::builder_localnet(Epoch(1))
             .call_function(recall_template, "new", args![initial_supply])
             .build_and_seal(test.secret_key()),
         vec![],
@@ -50,7 +50,7 @@ fn it_burns_all_resource_types() {
     }
 
     test.execute_expect_success(
-        Transaction::builder_localnet()
+        Transaction::builder_localnet(Epoch(1))
             .call_method(component, "burn_all", args![])
             .build_and_seal(test.secret_key()),
         vec![],

@@ -23,6 +23,7 @@
 use log::*;
 use tari_epoch_manager::service::EpochManagerHandle;
 use tari_networking::{GossipMessage, NetworkingHandle};
+use tari_ootle_common_types::Epoch;
 use tari_ootle_p2p::{PeerAddress, TariMessagingSpec};
 use tari_ootle_storage::StateStore;
 use tari_ootle_transaction::Transaction;
@@ -38,9 +39,10 @@ use crate::{
 
 const LOG_TARGET: &str = "tari::ootle::validator_node::mempool";
 
-pub fn spawn<TValidator, TStateStore>(
+pub fn spawn<TValidator, TEpochValidator, TStateStore>(
     epoch_manager: EpochManagerHandle<PeerAddress>,
     transaction_validator: TValidator,
+    epoch_validator: TEpochValidator,
     state_store: TStateStore,
     consensus_handle: ConsensusHandle,
     networking: NetworkingHandle<TariMessagingSpec>,
@@ -49,6 +51,8 @@ pub fn spawn<TValidator, TStateStore>(
 ) -> (MempoolHandle, JoinHandle<anyhow::Result<()>>)
 where
     TValidator: Validator<Transaction, Context = (), Error = TransactionValidationError> + Send + Sync + 'static,
+    TEpochValidator:
+        Validator<Transaction, Context = Epoch, Error = TransactionValidationError> + Send + Sync + 'static,
     TStateStore: StateStore<Addr = PeerAddress> + Send + Sync + 'static,
 {
     // This channel only needs to be size 1, because each mempool request must wait for a reply and the mempool is
@@ -61,6 +65,7 @@ where
         rx_mempool_request,
         epoch_manager,
         transaction_validator,
+        epoch_validator,
         state_store,
         consensus_handle,
         networking,

@@ -67,6 +67,12 @@ pub struct WriteArgs {
     pub signer_secret_key: Option<String>,
     #[clap(long, short = 't')]
     pub network: Option<Network>,
+    /// The last epoch the generated transactions are valid in. Every transaction carries a mandatory
+    /// validity window, so this must be set to an epoch the target network will still accept when the
+    /// generated file is submitted: no earlier than the current epoch and no more than
+    /// `max_transaction_validity_epochs` beyond it.
+    #[clap(long)]
+    pub max_epoch: u64,
 }
 #[derive(Args, Debug)]
 pub struct ReadArgs {

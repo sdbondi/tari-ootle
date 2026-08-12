@@ -21,7 +21,7 @@ use tari_ootle_common_types::{
     engine_types::published_template::PublishedTemplateAddress,
     optional::Optional,
 };
-use tari_ootle_transaction::{Network, Transaction, args};
+use tari_ootle_transaction::{Epoch, Network, Transaction, args};
 use tari_ootle_wallet_sdk::{
     apis::{
         confidential_transfer::UtxoInputSelection,
@@ -68,7 +68,17 @@ pub struct Wallet {
     pub network: Network,
 }
 
+/// Validity window stamped on simulated transactions. Well within any network's ceiling, and long
+/// enough that a slow simulation run never has a transaction expire mid-flight.
+const SIM_TRANSACTION_VALIDITY_EPOCHS: u64 = 10;
+
 impl Wallet {
+    /// A validity window ending [`SIM_TRANSACTION_VALIDITY_EPOCHS`] past the daemon's current epoch.
+    pub async fn max_epoch(&mut self) -> anyhow::Result<Epoch> {
+        let settings = self.client.get_settings().await?;
+        Ok(Epoch(settings.current_epoch.as_u64() + SIM_TRANSACTION_VALIDITY_EPOCHS))
+    }
+
     pub async fn connect(name: String, address: &str) -> anyhow::Result<Self> {
         let mut client = WalletDaemonClient::connect(address, None)?;
         let resp = client
@@ -304,7 +314,8 @@ impl TrafficSim {
             },
         };
 
-        let transaction = Transaction::builder(exchange_wallet.network.as_byte())
+        let max_epoch = exchange_wallet.max_epoch().await?;
+        let transaction = Transaction::builder(exchange_wallet.network.as_byte(), max_epoch)
             .pay_fee_from_component(*account.component_address(), 3000u64)
             .allocate_component_address("sc")
             .call_function(stablecoin_template, "instantiate", args![
@@ -411,6 +422,8 @@ impl TrafficSim {
             .owner_key_id
             .ok_or_else(|| anyhow::anyhow!("Exchange account has no owner key ID"))?;
 
+        let max_epoch = exchange_wallet.max_epoch().await?;
+
         for (wallet, account) in self.wallet_and_account_iter() {
             let mut client = wallet.client.clone();
 
@@ -482,7 +495,7 @@ impl TrafficSim {
                 })
                 .await?;
 
-            let transaction = Transaction::builder(wallet.network.as_byte())
+            let transaction = Transaction::builder(wallet.network.as_byte(), max_epoch)
                 .pay_fee_from_component(*exchange_account.component_address(), 2000u64)
                 .call_method(*exchange_account.component_address(), "create_proof_by_amount", args![
                     admin_resource_address,

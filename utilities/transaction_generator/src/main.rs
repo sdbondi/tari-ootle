@@ -14,7 +14,7 @@ use std::{
 use anyhow::anyhow;
 use cli::Cli;
 use tari_crypto::{keys::SecretKey, ristretto::RistrettoSecretKey, tari_utilities::hex::Hex};
-use tari_ootle_common_types::SubstateRequirement;
+use tari_ootle_common_types::{Epoch, SubstateRequirement};
 use tari_ootle_transaction::{Blob, Network};
 use tari_template_lib_types::TemplateAddress;
 use tari_transaction_manifest::ManifestValue;
@@ -121,9 +121,10 @@ fn get_transaction_builder(args: &WriteArgs) -> anyhow::Result<BoxedTransactionB
                 inputs,
                 blobs,
                 args.random_signer,
+                Epoch(args.max_epoch),
             )
         },
-        None => Ok(Box::new(free_coins::builder(network))),
+        None => Ok(Box::new(free_coins::builder(network, Epoch(args.max_epoch)))),
     }
 }
 

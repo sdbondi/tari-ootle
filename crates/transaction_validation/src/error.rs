@@ -32,6 +32,15 @@ pub enum TransactionValidationError {
     CurrentEpochLessThanMinimum { current_epoch: Epoch, min_epoch: Epoch },
     #[error("Current epoch ({current_epoch}) is greater than maximum epoch ({max_epoch}) required for transaction")]
     CurrentEpochGreaterThanMaximum { current_epoch: Epoch, max_epoch: Epoch },
+    #[error(
+        "Maximum epoch ({max_epoch}) is more than {max_validity_epochs} epochs beyond the current epoch \
+         ({current_epoch})"
+    )]
+    MaxEpochTooFarAhead {
+        current_epoch: Epoch,
+        max_epoch: Epoch,
+        max_validity_epochs: u64,
+    },
     #[error("Invalid transaction signature")]
     InvalidSignature,
     #[error("Transaction {transaction_id} has no main signer")]
@@ -108,7 +117,8 @@ impl TransactionValidationError {
             Self::OutputSubstateExists { .. } |
             Self::ValidatorFeeClaimEpochInvalid { .. } |
             Self::CurrentEpochLessThanMinimum { .. } |
-            Self::CurrentEpochGreaterThanMaximum { .. } => false,
+            Self::CurrentEpochGreaterThanMaximum { .. } |
+            Self::MaxEpochTooFarAhead { .. } => false,
 
             // Properties of the transaction itself, on which every node agrees.
             Self::NoFeeInstructions { .. } |
@@ -156,6 +166,11 @@ mod tests {
             TransactionValidationError::CurrentEpochGreaterThanMaximum {
                 current_epoch: Epoch(3),
                 max_epoch: Epoch(2),
+            },
+            TransactionValidationError::MaxEpochTooFarAhead {
+                current_epoch: Epoch(1),
+                max_epoch: Epoch(100),
+                max_validity_epochs: 10,
             },
         ];
         for err in node_local {

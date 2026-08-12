@@ -35,6 +35,8 @@ pub async fn handle_get(
         .optional()?
         .unwrap_or_default();
 
+    let current_epoch = context.current_epoch().await?;
+
     Ok(SettingsGetResponse {
         indexer_url,
         network: NetworkInfo {
@@ -43,6 +45,8 @@ pub async fn handle_get(
         },
         advanced_ui_features,
         claimed_accounts,
+        current_epoch,
+        default_transaction_validity_epochs: context.config().default_transaction_validity_epochs,
     })
 }
 

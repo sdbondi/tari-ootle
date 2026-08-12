@@ -32,6 +32,7 @@ use tari_engine_types::{
 };
 use tari_ootle_address::OotleAddress;
 use tari_ootle_common_types::{
+    Epoch,
     ShardGroup,
     SubstateAddress,
     SubstateRequirement,
@@ -1335,6 +1336,14 @@ pub struct SettingsGetResponse {
     pub network: NetworkInfo,
     pub advanced_ui_features: AdvancedUiFeatures,
     pub claimed_accounts: Vec<String>,
+    /// The network's current epoch, as the wallet daemon sees it. Callers that build transactions
+    /// themselves need it to choose a `max_epoch` the network will accept.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub current_epoch: Epoch,
+    /// How many epochs past `current_epoch` the wallet daemon stamps `max_epoch` when a caller does
+    /// not choose one.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub default_transaction_validity_epochs: u64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

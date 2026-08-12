@@ -20,7 +20,7 @@ use ootle_rs::{
     wallet::OotleWallet,
 };
 use tari_ootle_common_types::engine_types::transaction_receipt::TransactionReceipt;
-use tari_ootle_transaction::Transaction;
+use tari_ootle_transaction::{Epoch, Transaction};
 
 #[tokio::main]
 async fn main() {
@@ -59,6 +59,10 @@ async fn main() {
     assert_eq!(network, provider.network());
     // Get the latest block number.
     let latest_epoch = provider.get_epoch().await.unwrap();
+    // Every transaction declares the last epoch it may be sequenced in; past it the transaction can
+    // never land. Ten epochs is a comfortable window for an example — the network caps how far
+    // ahead this may be set.
+    let max_epoch = Epoch(provider.get_epoch().await.unwrap().as_u64() + 10);
     println!("Latest epoch: {latest_epoch}");
 
     // Send some TARI to another address. You can replace TARI with any other fungible token resource address.
@@ -97,7 +101,7 @@ async fn main() {
     let inputs_to_spend = faucet_transfer.stealth_outputs().to_vec();
 
     // First let's transfer some faucet TARI to our account to have funds for fees and transfers.
-    let unsigned_tx = IFaucet::new(&provider)
+    let unsigned_tx = IFaucet::new(&provider, max_epoch)
         .take_faucet_funds()
         .into_stealth_transfer(faucet_transfer)
         .and_pay_fee_from_revealed_output()
@@ -141,7 +145,7 @@ async fn main() {
 
     // We'll generate an unsigned transaction directly using the Transaction builder. In future, we may make this
     // easier.
-    let unsigned_tx = Transaction::builder(provider.network())
+    let unsigned_tx = Transaction::builder(provider.network(), max_epoch)
         .with_fee_instructions_builder(|builder| {
             builder
                 .stealth_transfer(tari_token, transfer)

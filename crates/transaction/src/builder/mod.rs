@@ -79,13 +79,15 @@ pub struct TransactionBuilder<D = MainIntent> {
 }
 
 impl TransactionBuilder<MainIntent> {
-    pub fn new<N: Into<u8>>(network: N) -> Self {
+    /// `max_epoch` is required: every transaction has a bounded validity window, so the last epoch
+    /// in which it may be sequenced must be chosen when it is built.
+    pub fn new<N: Into<u8>>(network: N, max_epoch: Epoch) -> Self {
         let network = network.into();
         Self {
-            unsigned_transaction: UnsignedTransaction::new(network),
+            unsigned_transaction: UnsignedTransaction::new(network, max_epoch),
             workspace_ids: WorkspaceIds::new(),
             blob_ids: BlobIds::new(),
-            fee_instruction_builder: Some(Box::new(Self::new_fee_builder(network))),
+            fee_instruction_builder: Some(Box::new(Self::new_fee_builder(network, max_epoch))),
             _discriminator: std::marker::PhantomData,
             fill_inputs: false,
         }
@@ -94,7 +96,10 @@ impl TransactionBuilder<MainIntent> {
     pub fn with_unsigned_transaction<T: Into<UnsignedTransaction>>(self, unsigned_transaction: T) -> Self {
         let unsigned_transaction = unsigned_transaction.into();
         Self {
-            fee_instruction_builder: Some(Box::new(Self::new_fee_builder(unsigned_transaction.network()))),
+            fee_instruction_builder: Some(Box::new(Self::new_fee_builder(
+                unsigned_transaction.network(),
+                unsigned_transaction.max_epoch(),
+            ))),
             unsigned_transaction,
             workspace_ids: WorkspaceIds::new(),
             blob_ids: BlobIds::new(),
@@ -103,9 +108,9 @@ impl TransactionBuilder<MainIntent> {
         }
     }
 
-    fn new_fee_builder<N: Into<u8>>(network: N) -> TransactionBuilder<FeeIntent> {
+    fn new_fee_builder<N: Into<u8>>(network: N, max_epoch: Epoch) -> TransactionBuilder<FeeIntent> {
         TransactionBuilder {
-            unsigned_transaction: UnsignedTransaction::new(network),
+            unsigned_transaction: UnsignedTransaction::new(network, max_epoch),
             workspace_ids: WorkspaceIds::new(),
             blob_ids: BlobIds::new(),
             fee_instruction_builder: None,
@@ -194,7 +199,7 @@ impl TransactionBuilder<MainIntent> {
         self
     }
 
-    pub fn with_max_epoch(mut self, max_epoch: Option<Epoch>) -> Self {
+    pub fn with_max_epoch(mut self, max_epoch: Epoch) -> Self {
         self.unsigned_transaction.set_max_epoch(max_epoch);
         self
     }

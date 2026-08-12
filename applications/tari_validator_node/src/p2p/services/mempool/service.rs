@@ -27,7 +27,7 @@ use log::*;
 use tari_consensus::hotstuff::HotstuffEvent;
 use tari_epoch_manager::{EpochManagerReader, service::EpochManagerHandle};
 use tari_networking::{GossipMessage, NetworkingHandle};
-use tari_ootle_common_types::optional::Optional;
+use tari_ootle_common_types::{Epoch, optional::Optional};
 use tari_ootle_p2p::{NewTransactionMessage, PeerAddress, TariMessage, TariMessagingSpec};
 use tari_ootle_storage::{StateStore, StateStoreReadTransaction, StorageError, consensus_models::TransactionRecord};
 use tari_ootle_transaction::{Transaction, TransactionId};
@@ -53,11 +53,12 @@ const LOG_TARGET: &str = "tari::validator_node::mempool::service";
 const MEM_MAX_TRANSACTIONS_DEDUP: usize = 1_000_000;
 
 #[derive(Debug)]
-pub struct MempoolService<TValidator, TStateStore> {
+pub struct MempoolService<TValidator, TEpochValidator, TStateStore> {
     transactions: SeenTransactions,
     mempool_requests: mpsc::Receiver<MempoolRequest>,
     epoch_manager: EpochManagerHandle<PeerAddress>,
     before_execute_validator: TValidator,
+    epoch_validator: TEpochValidator,
     state_store: TStateStore,
     gossip: MempoolGossip,
     consensus_handle: ConsensusHandle,
@@ -65,15 +66,17 @@ pub struct MempoolService<TValidator, TStateStore> {
     metrics: PrometheusMempoolMetrics,
 }
 
-impl<TValidator, TStateStore> MempoolService<TValidator, TStateStore>
+impl<TValidator, TEpochValidator, TStateStore> MempoolService<TValidator, TEpochValidator, TStateStore>
 where
     TValidator: Validator<Transaction, Context = (), Error = TransactionValidationError>,
+    TEpochValidator: Validator<Transaction, Context = Epoch, Error = TransactionValidationError>,
     TStateStore: StateStore,
 {
     pub(super) fn new(
         mempool_requests: mpsc::Receiver<MempoolRequest>,
         epoch_manager: EpochManagerHandle<PeerAddress>,
         before_execute_validator: TValidator,
+        epoch_validator: TEpochValidator,
         state_store: TStateStore,
         consensus_handle: ConsensusHandle,
         networking: NetworkingHandle<TariMessagingSpec>,
@@ -86,6 +89,7 @@ where
             mempool_requests,
             epoch_manager,
             before_execute_validator,
+            epoch_validator,
             state_store,
             consensus_handle,
             #[cfg(feature = "metrics")]
@@ -263,7 +267,14 @@ where
         self.metrics.on_transaction_received(&transaction);
         let is_local = gossip_validation.is_none();
 
-        let validation_result = self.before_execute_validator.validate(&(), &transaction);
+        // The epoch-dependent rules are checked here, alongside the structural ones, so that a
+        // transaction outside its validity window is refused before it is admitted or re-gossiped
+        // rather than after. Both feed the single acceptance verdict below.
+        let current_epoch = self.consensus_handle.current_view().get_epoch();
+        let validation_result = self
+            .before_execute_validator
+            .validate(&(), &transaction)
+            .and_then(|_| self.epoch_validator.validate(&current_epoch, &transaction));
 
         // Reported here rather than at the end of this function: everything below is about whether
         // *we* act on the transaction, not whether it is valid, and gossipsub only holds a message
@@ -289,8 +300,6 @@ where
             self.metrics.on_transaction_validation_error(&tx_id, &e);
             return Err(e.into());
         }
-
-        let current_epoch = self.consensus_handle.current_view().get_epoch();
 
         let local_committee_shard = self.epoch_manager.get_local_committee_info(current_epoch).await?;
         let is_involved = transaction.is_involved(&local_committee_shard);

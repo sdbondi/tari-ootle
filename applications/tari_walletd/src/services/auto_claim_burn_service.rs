@@ -32,6 +32,10 @@ use crate::{
 const LOG_TARGET: &str = "tari::ootle::wallet_daemon::auto_claim_burn";
 const EPOCH_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 /// Maximum retries for network/submission errors (indexer unreachable, tx service down).
+/// Validity window for an unattended claim: a few epochs is ample for the submit itself, and a
+/// claim that does not land in that time is retried with a fresh window.
+const CLAIM_TRANSACTION_VALIDITY_EPOCHS: u64 = 3;
+
 const MAX_RETRIES_NETWORK: u32 = 10;
 /// Maximum retries for file read/parse errors (file still being written on macOS).
 const MAX_RETRIES_FILE_READ: u32 = 1;
@@ -458,6 +462,7 @@ impl AutoClaimBurnService {
             &account,
             proof_contents.clone(),
             1,
+            self.claim_max_epoch().await.map_err(ClaimError::Permanent)?,
             true,
             Some(file_name.to_string()),
         )
@@ -500,6 +505,7 @@ impl AutoClaimBurnService {
             &account,
             proof_contents,
             required_fees,
+            self.claim_max_epoch().await.map_err(ClaimError::Permanent)?,
             false,
             Some(file_name.to_string()),
         )
@@ -507,6 +513,15 @@ impl AutoClaimBurnService {
         .map_err(ClaimError::Permanent)?;
 
         Ok(resp.transaction_id)
+    }
+
+    /// The validity window stamped on claim transactions this service builds. Claims are submitted
+    /// unattended, so the window only has to cover the submission itself.
+    async fn claim_max_epoch(&self) -> anyhow::Result<Epoch> {
+        let current = self.query_current_epoch().await?;
+        Ok(Epoch(
+            current.as_u64().saturating_add(CLAIM_TRANSACTION_VALIDITY_EPOCHS),
+        ))
     }
 
     async fn query_current_epoch(&self) -> anyhow::Result<Epoch> {
