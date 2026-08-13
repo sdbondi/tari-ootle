@@ -62,7 +62,7 @@ function Keys() {
 
   const setActive = (keyId: KeyId) => {
     if ("Derived" in keyId) {
-      mutateSetActive(keyId.Derived.index);
+      mutateSetActive(BigInt(keyId.Derived.index));
     }
   };
 

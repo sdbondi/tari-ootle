@@ -214,7 +214,7 @@ export default function ClaimFees() {
 
   function extractKeyIndex(keyId: KeyId): bigint | null {
     if ("Derived" in keyId) {
-      return keyId.Derived.index;
+      return BigInt(keyId.Derived.index);
     }
     return null;
   }
