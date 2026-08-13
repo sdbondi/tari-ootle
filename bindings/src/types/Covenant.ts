@@ -10,5 +10,5 @@ import type { Hash32 } from "./Hash32";
  */
 export type Covenant =
   | "OutputPreservesCondition"
-  | { OutputTo: { condition_root: Hash32; min_value: bigint } }
-  | { BalancePreserved: bigint };
+  | { OutputTo: { condition_root: Hash32; min_value: number | bigint | string } }
+  | { BalancePreserved: number | bigint | string };

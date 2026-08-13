@@ -51,7 +51,11 @@ pub struct UnsignedTransactionV1 {
     /// an intent builder (e.g. a wallet) that wants each submission to execute independently
     /// must stamp a distinct nonce per intent. Part of the signing and id domains.
     #[n(9)]
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, deserialize_with = "ootle_serde::str_number::deserialize")
+    )]
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
     #[cbor(default)]
     pub nonce: u64,
 }

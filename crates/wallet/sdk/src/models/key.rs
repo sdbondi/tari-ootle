@@ -349,10 +349,16 @@ pub enum KeyId {
     /// Derived from the seed key
     Derived {
         key_branch: KeyBranch,
+        #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
+        #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
         index: DerivedKeyIndex,
     },
     /// Imported key
-    Imported { local_key_id: ImportedKeyId },
+    Imported {
+        #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
+        #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+        local_key_id: ImportedKeyId,
+    },
 }
 
 impl KeyId {
@@ -403,5 +409,32 @@ impl Display for KeyId {
                 local_key_id: local_import_id,
             } => write!(f, "Imported({local_import_id})"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A JS client encodes every 64-bit field as a string, since JavaScript cannot hold an integer
+    /// above `Number.MAX_SAFE_INTEGER` in a `number` without losing precision.
+    #[test]
+    fn key_id_accepts_string_and_number_indices() {
+        let from_string: KeyId = serde_json::from_value(serde_json::json!({
+            "Derived": { "key_branch": "account", "index": "9007199254740993" },
+        }))
+        .unwrap();
+        assert_eq!(from_string, KeyId::derived(KeyBranch::Account, 9_007_199_254_740_993));
+
+        let from_number: KeyId = serde_json::from_value(serde_json::json!({
+            "Derived": { "key_branch": "account", "index": 3 },
+        }))
+        .unwrap();
+        assert_eq!(from_number, KeyId::derived(KeyBranch::Account, 3));
+
+        let imported: KeyId =
+            serde_json::from_value(serde_json::json!({ "Imported": { "local_key_id": "18446744073709551615" } }))
+                .unwrap();
+        assert_eq!(imported, KeyId::imported(u64::MAX));
     }
 }

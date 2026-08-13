@@ -3,6 +3,7 @@
  * //  SPDX-License-Identifier: BSD-3-Clause
  */
 
+import { stringifyRequestBody } from "../json";
 import { connectSse, SseStream, SseStreamOptions } from "../sse";
 import { HttpTransport, TransportOptions } from "./index";
 
@@ -95,7 +96,7 @@ export default class FetchTransport implements HttpTransport {
         request.headers = {};
       }
       request.headers["Content-Type"] = "application/json";
-      request.body = JSON.stringify(request.body);
+      request.body = stringifyRequestBody(request.body);
     }
 
     let fqPath = `${this.url}/${path}`;

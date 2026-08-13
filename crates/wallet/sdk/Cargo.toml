@@ -1,7 +1,7 @@
 [package]
 name = "tari_ootle_wallet_sdk"
 description = "The Tari wallet library"
-version = "0.39.0"
+version = "0.40.0"
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -21,7 +21,7 @@ tari_template_lib = { workspace = true }
 tari_template_abi = { workspace = true }
 tari_ootle_address = { workspace = true, features = ["serde"] }
 tari_indexer_client = { workspace = true, default-features = false }
-ootle_serde = { workspace = true }
+ootle_serde = { workspace = true, features = ["std", "cbor"] }
 ootle_byte_type = { workspace = true }
 ootle-network = { workspace = true }
 
@@ -52,3 +52,6 @@ ts = [
     "tari_consensus_types/ts",
     "tari_indexer_client/ts",
 ]
+
+[dev-dependencies]
+serde_json = { workspace = true }

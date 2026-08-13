@@ -10,6 +10,6 @@ export type TransferNftRequest = {
   fee_payer_account: ComponentAddressOrName;
   source_account: ComponentAddressOrName;
   target_account_address: OotleAddress;
-  max_fee: bigint;
+  max_fee: number | bigint | string;
   dry_run: boolean;
 };

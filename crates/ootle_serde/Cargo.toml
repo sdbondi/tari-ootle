@@ -1,6 +1,6 @@
 [package]
 name = "ootle_serde"
-version = "0.4.0"
+version = "0.5.0"
 description = "serde utilities for Tari Ootle"
 edition.workspace = true
 authors.workspace = true
@@ -10,17 +10,21 @@ license.workspace = true
 [dependencies]
 tari_bor = { workspace = true, optional = true, features = ["std", "serde"] }
 
-serde = { workspace = true }
+serde = { workspace = true, features = ["alloc"] }
 base64 = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 
 [dev-dependencies]
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_urlencoded = "0.7"
 tari_template_lib = { workspace = true }
 tari_bor = { workspace = true, features = ["std", "serde"] }
 
 [features]
-default = ["hex", "cbor"]
-hex = ["dep:hex"]
-cbor = ["dep:tari_bor"]
-base64 = ["dep:base64"]
+default = ["std", "hex", "cbor"]
+std = ["serde/std"]
+# The hex, base64 and cbor adapters pull in dependencies that are built with std.
+hex = ["dep:hex", "std"]
+cbor = ["dep:tari_bor", "std"]
+base64 = ["dep:base64", "std"]

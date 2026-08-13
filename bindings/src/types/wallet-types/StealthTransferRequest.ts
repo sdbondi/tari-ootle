@@ -13,6 +13,6 @@ export type StealthTransferRequest = {
   resource_address: ResourceAddress;
   badge_usage?: BadgeUsage;
   transfers: Array<StealthTransfer>;
-  max_fee: bigint;
+  max_fee: number | bigint | string;
   dry_run: boolean;
 };

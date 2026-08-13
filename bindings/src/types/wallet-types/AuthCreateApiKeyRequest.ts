@@ -23,5 +23,5 @@ export type AuthCreateApiKeyRequest = {
    * for a never-expiring key. Rejected at the handler if it lies in the
    * past — refusing to mint an instantly-expired credential.
    */
-  expires_at: bigint | null;
+  expires_at: number | bigint | string | null;
 };

@@ -112,6 +112,8 @@ pub struct CallInstructionRequest {
     pub instructions: Vec<Instruction>,
     #[serde(deserialize_with = "string_or_struct")]
     pub fee_account: ComponentAddressOrName,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
     pub max_fee: u64,
     /// Substates the instructions require as transaction inputs. Needed for any input that cannot be inferred
     /// from the instructions, e.g. a `ConfidentialOutput` named only by a commitment inside an opaque proof.
@@ -353,6 +355,8 @@ pub struct TransactionSubmitManifestRequest {
     /// Additional signing keys for accounts involved in the transaction (e.g. for multi-account manifests).
     #[serde(default)]
     pub signing_key_ids: Vec<KeyId>,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
     pub max_fee: u64,
     pub dry_run: bool,
     /// Blob payloads referenced from the manifest via `blob!(name)`. Keys are the names used
@@ -381,6 +385,8 @@ pub struct PublishTemplateRequest {
     pub binary: Vec<u8>,
     #[serde(deserialize_with = "opt_string_or_struct")]
     pub fee_account: Option<ComponentAddressOrName>,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
     pub max_fee: u64,
     /// Attempt to infer inputs and their dependencies from instructions. If false, the provided transaction must
     /// contain the required inputs.
@@ -547,6 +553,8 @@ pub struct KeysListResponse {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct KeysSetActiveRequest {
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
     pub index: u64,
 }
 
@@ -727,6 +735,8 @@ pub struct AccountGetDefaultRequest {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct AccountGetByKeyIndexRequest {
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
     pub key_index: u64,
 }
 
@@ -768,6 +778,8 @@ pub struct AccountsTransferRequest {
     pub amount: Amount,
     pub resource_address: ResourceAddress,
     pub destination_public_key: RistrettoPublicKeyBytes,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
     pub max_fee: u64,
     pub proof_from_badge_resource: Option<ResourceAddress>,
     pub dry_run: bool,
@@ -839,6 +851,8 @@ pub struct ConfidentialTransferRequest {
     pub input_selection: UtxoInputSelection,
     pub resource_address: ResourceAddress,
     pub destination_address: OotleAddress,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
     pub max_fee: u64,
     pub output_to_revealed: bool,
     pub proof_from_badge_resource: Option<ResourceAddress>,
@@ -861,6 +875,8 @@ pub struct ConfidentialViewVaultBalanceRequest {
     pub minimum_expected_value: Option<u64>,
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub maximum_expected_value: Option<u64>,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
     pub view_key_id: u64,
 }
 
@@ -876,6 +892,8 @@ pub struct ConfidentialViewVaultBalanceResponse {
 pub struct ClaimBurnRequest {
     pub account: ComponentAddressOrName,
     pub claim_proof: ClaimBurnProof,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
     pub max_fee: u64,
     pub is_dry_run: bool,
 }
@@ -913,6 +931,8 @@ pub struct ProofsCancelResponse {}
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct AccountsCreateFreeTestCoinsRequest {
     pub account: ComponentAddressOrName,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
     pub max_fee: u64,
 }
 
@@ -1078,7 +1098,8 @@ pub struct AuthCreateApiKeyRequest {
     /// Unix timestamp (seconds) at which the key becomes unusable. `None`
     /// for a never-expiring key. Rejected at the handler if it lies in the
     /// past — refusing to mint an instantly-expired credential.
-    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string | null"))]
+    #[serde(default, deserialize_with = "ootle_serde::str_number::option::deserialize")]
     pub expires_at: Option<i64>,
 }
 
@@ -1177,7 +1198,11 @@ pub struct MintFaucetNftRequest {
     pub account: ComponentAddressOrName,
     #[cfg_attr(feature = "ts", ts(type = "object"))]
     pub mutable_data: serde_json::Value,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
     pub number_to_mint: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string | null"))]
+    #[serde(default, deserialize_with = "ootle_serde::str_number::option::deserialize")]
     pub max_fee: Option<u64>,
 }
 
@@ -1267,6 +1292,8 @@ pub struct ClaimValidatorFeesRequest {
     pub account: Option<ComponentAddressOrName>,
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub claim_key_index: Option<u64>,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
     pub max_fee: u64,
     pub shards: Vec<Shard>,
     pub dry_run: bool,
@@ -1529,6 +1556,8 @@ pub struct TransferNftRequest {
     #[serde(deserialize_with = "string_or_struct")]
     pub source_account: ComponentAddressOrName,
     pub target_account_address: OotleAddress,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
     pub max_fee: u64,
     pub dry_run: bool,
 }
@@ -1625,6 +1654,8 @@ pub struct StealthTransferRequest {
     #[serde(default, skip_serializing_if = "BadgeUsage::is_none")]
     pub badge_usage: BadgeUsage,
     pub transfers: Vec<StealthTransfer>,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
     pub max_fee: u64,
     pub dry_run: bool,
 }
@@ -1734,7 +1765,11 @@ pub struct StealthUtxosDecryptValueRequest {
     pub resource_address: ResourceAddress,
     pub ids: Vec<UtxoId>,
     pub view_key_id: KeyId,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string | null"))]
+    #[serde(default, deserialize_with = "ootle_serde::str_number::option::deserialize")]
     pub minimum_expected_value: Option<u64>,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string | null"))]
+    #[serde(default, deserialize_with = "ootle_serde::str_number::option::deserialize")]
     pub maximum_expected_value: Option<u64>,
 }
 
@@ -1827,7 +1862,11 @@ pub struct SwapPoolsListRequest {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(type = "[string, string] | null"))]
     pub resource_pair: Option<(ResourceAddress, ResourceAddress)>,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string | null"))]
+    #[serde(default, deserialize_with = "ootle_serde::str_number::option::deserialize")]
     pub limit: Option<u64>,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string | null"))]
+    #[serde(default, deserialize_with = "ootle_serde::str_number::option::deserialize")]
     pub offset: Option<u64>,
 }
 
@@ -1922,6 +1961,45 @@ mod tests {
     use tari_ootle_wallet_sdk::models::{BalanceChangeSource, BalanceChangeSourceType};
 
     use super::*;
+
+    /// A JS client encodes every 64-bit field as a string, because JavaScript cannot hold an integer
+    /// above `Number.MAX_SAFE_INTEGER` in a `number` without losing precision. Both encodings must be
+    /// accepted, for any magnitude.
+    #[test]
+    fn requests_accept_string_encoded_64_bit_fields() {
+        let request: KeysSetActiveRequest = serde_json::from_value(serde_json::json!({
+            "index": "18446744073709551615",
+        }))
+        .unwrap();
+        assert_eq!(request.index, u64::MAX);
+
+        let request: AccountGetByKeyIndexRequest = serde_json::from_value(serde_json::json!({
+            "key_index": "9007199254740993",
+        }))
+        .unwrap();
+        assert_eq!(request.key_index, 9_007_199_254_740_993);
+
+        // Numbers still work, and the two encodings agree.
+        let request: KeysSetActiveRequest = serde_json::from_value(serde_json::json!({ "index": 7 })).unwrap();
+        assert_eq!(request.index, 7);
+    }
+
+    #[test]
+    fn optional_64_bit_fields_accept_string_number_null_and_absent() {
+        let from_string: SwapPoolsListRequest =
+            serde_json::from_value(serde_json::json!({ "limit": "9007199254740993", "offset": "0" })).unwrap();
+        assert_eq!(from_string.limit, Some(9_007_199_254_740_993));
+        assert_eq!(from_string.offset, Some(0));
+
+        let from_number: SwapPoolsListRequest =
+            serde_json::from_value(serde_json::json!({ "limit": 10, "offset": null })).unwrap();
+        assert_eq!(from_number.limit, Some(10));
+        assert_eq!(from_number.offset, None);
+
+        let absent: SwapPoolsListRequest = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(absent.limit, None);
+        assert_eq!(absent.offset, None);
+    }
 
     #[test]
     fn balance_change_request_accepts_string_account_and_optional_filters() {

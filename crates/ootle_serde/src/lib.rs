@@ -1,6 +1,10 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
 #[cfg(feature = "base64")]
 pub mod base64;
 #[cfg(feature = "cbor")]

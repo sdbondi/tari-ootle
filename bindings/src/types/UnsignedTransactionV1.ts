@@ -29,5 +29,5 @@ export type UnsignedTransactionV1 = {
    * an intent builder (e.g. a wallet) that wants each submission to execute independently
    * must stamp a distinct nonce per intent. Part of the signing and id domains.
    */
-  nonce: bigint;
+  nonce: number | bigint | string;
 };

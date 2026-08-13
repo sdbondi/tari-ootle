@@ -12,7 +12,7 @@ export type ConfidentialTransferRequest = {
   input_selection: UtxoInputSelection;
   resource_address: ResourceAddress;
   destination_address: OotleAddress;
-  max_fee: bigint;
+  max_fee: number | bigint | string;
   output_to_revealed: boolean;
   proof_from_badge_resource: ResourceAddress | null;
   output_memo?: Memo | null;

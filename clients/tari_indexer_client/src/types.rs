@@ -213,6 +213,8 @@ pub struct ListTemplateCatalogueRequest {
     /// Optional substring filter on template name.
     pub name_filter: Option<String>,
     /// Maximum number of entries to return (default: 20, max: 100).
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string | null"))]
+    #[serde(default, deserialize_with = "ootle_serde::str_number::option::deserialize")]
     pub limit: Option<u64>,
     /// Cursor: return entries inserted after the row with this template address.
     /// When omitted, returns from the beginning.
@@ -336,6 +338,8 @@ pub struct StreamTransactionEventsRequest {
     pub resource_address: Option<ResourceAddress>,
     /// Resume the event stream from this event ID (exclusive). Events with id > after_id will be
     /// replayed from the database before switching to the live stream.
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string | null"))]
+    #[serde(default, deserialize_with = "ootle_serde::str_number::option::deserialize")]
     pub after_id: Option<i64>,
 }
 
@@ -432,7 +436,11 @@ pub struct GetIdentityResponse {
 pub struct GetNonFungiblesRequest {
     #[cfg_attr(feature = "utoipa", schema(value_type = String))]
     pub address: ResourceAddress,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
     pub start_index: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
     pub end_index: u64,
 }
 
@@ -897,7 +905,11 @@ pub struct GetLatestEpochCheckpointResponse {
 pub struct ListWatchedSubstatesRequest {
     #[cfg_attr(feature = "utoipa", schema(value_type = Option<String>))]
     pub template_address: Option<TemplateAddress>,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string | null"))]
+    #[serde(default, deserialize_with = "ootle_serde::str_number::option::deserialize")]
     pub limit: Option<u64>,
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string | null"))]
+    #[serde(default, deserialize_with = "ootle_serde::str_number::option::deserialize")]
     pub offset: Option<u64>,
 }
 

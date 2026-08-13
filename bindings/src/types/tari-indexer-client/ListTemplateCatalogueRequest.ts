@@ -9,7 +9,7 @@ export type ListTemplateCatalogueRequest = {
   /**
    * Maximum number of entries to return (default: 20, max: 100).
    */
-  limit: bigint | null;
+  limit: number | bigint | string | null;
   /**
    * Cursor: return entries inserted after the row with this template address.
    * When omitted, returns from the beginning.

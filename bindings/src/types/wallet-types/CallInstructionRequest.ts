@@ -6,7 +6,7 @@ import type { ComponentAddressOrName } from "./ComponentAddressOrName";
 export type CallInstructionRequest = {
   instructions: Array<Instruction>;
   fee_account: ComponentAddressOrName;
-  max_fee: bigint;
+  max_fee: number | bigint | string;
   inputs: Array<SubstateRequirement>;
   override_inputs: boolean | null;
   new_outputs: number | null;

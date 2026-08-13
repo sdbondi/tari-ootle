@@ -1,7 +1,8 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::{fmt, marker::PhantomData};
+use alloc::{boxed::Box, vec::Vec};
+use core::{fmt, marker::PhantomData};
 
 use serde::{de, de::Visitor};
 

@@ -35,6 +35,8 @@ pub struct MinotariBurnClaimProof {
     #[n(4)]
     pub kernel: AbridgedTransactionKernel,
     #[n(5)]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
     pub value: u64,
     #[n(6)]
     pub sender_offset_public_key: RistrettoPublicKeyBytes,
@@ -98,6 +100,8 @@ pub struct EncodedMerkleProof {
     #[cbor(with = "bounded_vec_bytes")]
     pub encoded_merkle_proof: bounded_vec::BoundedVec<u8, 1, 4096>,
     #[n(2)]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
     pub leaf_index: u64,
 }
 
@@ -150,8 +154,12 @@ pub struct AbridgedTransactionKernel {
     #[n(0)]
     pub version: u8,
     #[n(1)]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
     pub fee: u64,
     #[n(2)]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
     pub lock_height: u64,
     #[n(3)]
     pub excess: PedersenCommitmentBytes,

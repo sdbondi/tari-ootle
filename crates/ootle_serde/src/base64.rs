@@ -1,6 +1,9 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
+use alloc::{format, string::String, vec::Vec};
+use core::any;
+
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Deserializer, Serializer};
 
@@ -24,17 +27,14 @@ where
         let s = String::deserialize(d)?;
         let bytes = STANDARD.decode(s.as_bytes()).map_err(serde::de::Error::custom)?;
         T::try_from(bytes).map_err(|_| {
-            serde::de::Error::custom(format!(
-                "base64 Failed to convert bytes to {}",
-                std::any::type_name::<T>()
-            ))
+            serde::de::Error::custom(format!("base64 Failed to convert bytes to {}", any::type_name::<T>()))
         })
     } else {
         let bytes = d.deserialize_byte_buf(BytesVisitor::new())?;
         T::try_from(bytes.into()).map_err(|_| {
             serde::de::Error::custom(format!(
                 "base64: Failed to convert base64 bytes to {}",
-                std::any::type_name::<T>()
+                any::type_name::<T>()
             ))
         })
     }

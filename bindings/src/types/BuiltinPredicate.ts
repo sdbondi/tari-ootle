@@ -15,6 +15,6 @@ import type { HashAlg } from "./HashAlg";
  * [`BuiltinPredicate::consumes_data`] and the sole-consumer rule it implies.
  */
 export type BuiltinPredicate =
-  | { AfterEpoch: bigint }
-  | { BeforeEpoch: bigint }
+  | { AfterEpoch: number | bigint | string }
+  | { BeforeEpoch: number | bigint | string }
   | { HashLock: { hash: Hash32; alg: HashAlg } };

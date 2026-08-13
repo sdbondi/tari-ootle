@@ -20,7 +20,7 @@ tari_engine_types = { workspace = true }
 tari_ootle_transaction = { workspace = true, features = ["serde"] }
 tari_bor = { workspace = true, default-features = true, features = ["std", "indexmap", "serde"] }
 minicbor = { workspace = true, default-features = false, features = ["alloc", "derive"] }
-ootle_serde = { workspace = true, features = ["cbor"] }
+ootle_serde = { workspace = true, features = ["std", "cbor", "hex"] }
 tari_crypto = { workspace = true }
 tari_state_tree = { workspace = true }
 

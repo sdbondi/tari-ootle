@@ -3,6 +3,6 @@ import type { Hash32 } from "../Hash32";
 
 export type ListWatchedSubstatesRequest = {
   template_address: Hash32 | null;
-  limit: bigint | null;
-  offset: bigint | null;
+  limit: number | bigint | string | null;
+  offset: number | bigint | string | null;
 };

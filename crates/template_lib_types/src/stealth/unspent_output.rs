@@ -39,6 +39,8 @@ pub struct UnspentOutput {
     #[n(2)]
     pub encrypted_data: EncryptedData,
     #[n(3)]
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "ootle_serde::str_number::deserialize"))]
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
     pub minimum_value_promise: u64,
     /// If the view key is enabled for a given resource, this proof MUST be provided, otherwise it MUST NOT.
     #[n(4)]
@@ -259,10 +261,20 @@ impl TemplateFunction {
 pub enum BuiltinPredicate {
     /// Absolute epoch lock: admissible only once the current epoch is at or after `unlock_epoch`.
     #[n(0)]
-    AfterEpoch(#[n(0)] u64),
+    AfterEpoch(
+        #[n(0)]
+        #[cfg_attr(feature = "serde", serde(deserialize_with = "ootle_serde::str_number::deserialize"))]
+        #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+        u64,
+    ),
     /// Absolute epoch deadline: admissible only while the current epoch is strictly before `deadline_epoch`.
     #[n(1)]
-    BeforeEpoch(#[n(0)] u64),
+    BeforeEpoch(
+        #[n(0)]
+        #[cfg_attr(feature = "serde", serde(deserialize_with = "ootle_serde::str_number::deserialize"))]
+        #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+        u64,
+    ),
     /// Hashlock: the witness `data` blob must be a preimage whose `alg` digest equals `hash`. As a data-consuming
     /// builtin it reads the entire blob as raw bytes, so it must be the sole `data` consumer in its leaf.
     ///
@@ -309,13 +321,20 @@ pub enum Covenant {
         #[n(0)]
         condition_root: Hash32,
         #[n(1)]
+        #[cfg_attr(feature = "serde", serde(deserialize_with = "ootle_serde::str_number::deserialize"))]
+        #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
         min_value: u64,
     },
     /// Value-conservation (TIP-0006 Option A/C): the invoking partition's committed value is conserved into outputs
     /// carrying its `condition_root`, save for an exact cleartext outflow of at most `max_revealed`. A `max_revealed`
     /// of zero admits no cleartext escape (full conservation).
     #[n(2)]
-    BalancePreserved(#[n(0)] u64),
+    BalancePreserved(
+        #[n(0)]
+        #[cfg_attr(feature = "serde", serde(deserialize_with = "ootle_serde::str_number::deserialize"))]
+        #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
+        u64,
+    ),
 }
 
 /// The digest used by a [`BuiltinPredicate::HashLock`]. The preimage is hashed with no domain separation so a hashlock

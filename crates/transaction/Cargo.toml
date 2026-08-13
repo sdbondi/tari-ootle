@@ -16,7 +16,7 @@ tari_template_lib_types = { workspace = true, features = ["std"] }
 tari_bor = { workspace = true, features = ["std", "indexmap"] }
 minicbor = { workspace = true, default-features = false, features = ["alloc", "derive"] }
 tari_hashing = { workspace = true }
-ootle_serde = { workspace = true, features = ["base64"], optional = true }
+ootle_serde = { workspace = true, features = ["std", "base64", "hex"], optional = true }
 ootle_byte_type = { workspace = true, features = ["crypto"] }
 ootle-network = { workspace = true }
 

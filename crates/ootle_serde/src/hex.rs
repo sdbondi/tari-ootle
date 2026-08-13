@@ -1,7 +1,8 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::borrow::Cow;
+use alloc::{borrow::Cow, format, string::String, vec::Vec};
+use core::{any, fmt::Display};
 
 use serde::{Deserialize, Deserializer, Serializer};
 
@@ -20,24 +21,18 @@ pub fn deserialize<'de, D, T>(d: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
     T: for<'a> TryFrom<&'a [u8]>,
-    for<'a> <T as TryFrom<&'a [u8]>>::Error: std::fmt::Display,
+    for<'a> <T as TryFrom<&'a [u8]>>::Error: Display,
 {
     let value = if d.is_human_readable() {
         let hex = <Cow<'_, str> as Deserialize>::deserialize(d)?;
         let bytes = hex::decode(&*hex).map_err(serde::de::Error::custom)?;
         T::try_from(&bytes).map_err(|e| {
-            serde::de::Error::custom(format!(
-                "Failed to convert hex bytes to {}: {e}",
-                std::any::type_name::<T>()
-            ))
+            serde::de::Error::custom(format!("Failed to convert hex bytes to {}: {e}", any::type_name::<T>()))
         })?
     } else {
         let bytes = d.deserialize_byte_buf(BytesVisitor::new())?;
         T::try_from(bytes.as_ref()).map_err(|e| {
-            serde::de::Error::custom(format!(
-                "Failed to convert hex bytes to {}: {e}",
-                std::any::type_name::<T>()
-            ))
+            serde::de::Error::custom(format!("Failed to convert hex bytes to {}: {e}", any::type_name::<T>()))
         })?
     };
 
@@ -49,24 +44,18 @@ pub fn deserialize_from_vec<'de, D, T>(d: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
     T: TryFrom<Vec<u8>>,
-    T::Error: std::fmt::Display,
+    T::Error: Display,
 {
     let value = if d.is_human_readable() {
         let hex = <Cow<'_, str> as Deserialize>::deserialize(d)?;
         let bytes = hex::decode(&*hex).map_err(serde::de::Error::custom)?;
         T::try_from(bytes).map_err(|e| {
-            serde::de::Error::custom(format!(
-                "Failed to convert hex bytes to {}: {e}",
-                std::any::type_name::<T>()
-            ))
+            serde::de::Error::custom(format!("Failed to convert hex bytes to {}: {e}", any::type_name::<T>()))
         })?
     } else {
         let bytes = d.deserialize_byte_buf(BytesVisitor::new())?;
         T::try_from(bytes.into()).map_err(|e| {
-            serde::de::Error::custom(format!(
-                "Failed to convert hex bytes to {}: {e}",
-                std::any::type_name::<T>()
-            ))
+            serde::de::Error::custom(format!("Failed to convert hex bytes to {}: {e}", any::type_name::<T>()))
         })?
     };
 
@@ -97,7 +86,7 @@ pub mod option {
     where
         D: Deserializer<'de>,
         T: for<'a> TryFrom<&'a [u8]>,
-        for<'a> <T as TryFrom<&'a [u8]>>::Error: std::fmt::Display,
+        for<'a> <T as TryFrom<&'a [u8]>>::Error: Display,
     {
         let bytes = if d.is_human_readable() {
             let hex = <Option<String> as Deserialize>::deserialize(d)?;
@@ -114,10 +103,7 @@ pub mod option {
             .map(|b| T::try_from(b.as_slice()))
             .transpose()
             .map_err(|e| {
-                serde::de::Error::custom(format!(
-                    "Failed to convert hex bytes to {}: {e}",
-                    std::any::type_name::<T>()
-                ))
+                serde::de::Error::custom(format!("Failed to convert hex bytes to {}: {e}", any::type_name::<T>()))
             })?;
         Ok(value)
     }

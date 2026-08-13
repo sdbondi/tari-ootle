@@ -14,6 +14,6 @@ export type MinotariBurnClaimProof = {
   ownership_proof: SchnorrSignatureBytes;
   encoded_merkle_proof: EncodedMerkleProof;
   kernel: AbridgedTransactionKernel;
-  value: bigint;
+  value: number | bigint | string;
   sender_offset_public_key: RistrettoPublicKeyBytes;
 };

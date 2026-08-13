@@ -4,6 +4,6 @@ import type { ComponentAddressOrName } from "./ComponentAddressOrName";
 export type MintFaucetNftRequest = {
   account: ComponentAddressOrName;
   mutable_data: object;
-  number_to_mint: bigint;
-  max_fee: bigint | null;
+  number_to_mint: number | bigint | string;
+  max_fee: number | bigint | string | null;
 };

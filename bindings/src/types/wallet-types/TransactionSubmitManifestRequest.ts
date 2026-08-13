@@ -13,7 +13,7 @@ export type TransactionSubmitManifestRequest = {
    * Additional signing keys for accounts involved in the transaction (e.g. for multi-account manifests).
    */
   signing_key_ids: Array<KeyId>;
-  max_fee: bigint;
+  max_fee: number | bigint | string;
   dry_run: boolean;
   /**
    * Blob payloads referenced from the manifest via `blob!(name)`. Keys are the names used

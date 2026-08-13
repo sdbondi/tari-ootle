@@ -114,6 +114,8 @@ pub struct TransferOutput {
     /// Amount to spend to a revealed output
     pub revealed_amount: Amount,
     /// Amount to spend to a blinded output
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
     pub blinded_amount: u64,
     /// Optional memo to include a memo in the output. This memo is encrypted and can only be read by the recipient.
     pub memo: Option<Memo>,

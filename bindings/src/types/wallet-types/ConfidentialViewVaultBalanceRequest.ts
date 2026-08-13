@@ -5,5 +5,5 @@ export type ConfidentialViewVaultBalanceRequest = {
   vault_id: VaultId;
   minimum_expected_value: number | null;
   maximum_expected_value: number | null;
-  view_key_id: bigint;
+  view_key_id: number | bigint | string;
 };

@@ -26,7 +26,8 @@ use tari_bor::{Deserialize, Serialize};
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct StateVersion(
     #[n(0)]
-    #[cfg_attr(feature = "ts", ts(type = "number | bigint"))]
+    #[serde(deserialize_with = "ootle_serde::str_number::deserialize")]
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
     u64,
 );
 

@@ -17,7 +17,7 @@ export type TransferOutput = {
   /**
    * Amount to spend to a blinded output
    */
-  blinded_amount: bigint;
+  blinded_amount: number | bigint | string;
   /**
    * Optional memo to include a memo in the output. This memo is encrypted and can only be read by the recipient.
    */

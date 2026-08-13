@@ -6,6 +6,6 @@ export type SwapPoolsListRequest = {
    * Both must be provided for filtering to take effect.
    */
   resource_pair: [string, string] | null;
-  limit: bigint | null;
-  offset: bigint | null;
+  limit: number | bigint | string | null;
+  offset: number | bigint | string | null;
 };

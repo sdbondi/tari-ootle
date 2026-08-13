@@ -15,7 +15,7 @@ tari_hashing = { workspace = true }
 tari_template_lib = { workspace = true }
 tari_engine_types = { workspace = true }
 tari_crypto = { workspace = true }
-ootle_serde = { workspace = true }
+ootle_serde = { workspace = true, features = ["std", "hex"] }
 tari_bor = { workspace = true, features = ["serde"] }
 minicbor = { workspace = true, default-features = false, features = ["alloc", "derive"] }
 

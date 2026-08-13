@@ -1,7 +1,8 @@
 //   Copyright 2022 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::str::FromStr;
+use alloc::string::{String, ToString};
+use core::{fmt::Display, str::FromStr};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
 
@@ -17,7 +18,7 @@ pub fn deserialize<'de, D, T>(d: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
     T: FromStr + DeserializeOwned,
-    T::Err: std::fmt::Display,
+    T::Err: Display,
 {
     if d.is_human_readable() {
         let s = <String as Deserialize>::deserialize(d)?;
@@ -45,7 +46,7 @@ pub mod option {
     where
         D: Deserializer<'de>,
         T: FromStr + DeserializeOwned,
-        T::Err: std::fmt::Display,
+        T::Err: Display,
     {
         if d.is_human_readable() {
             let s = <Option<String> as Deserialize>::deserialize(d)?;

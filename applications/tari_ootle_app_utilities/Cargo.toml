@@ -23,7 +23,7 @@ tari_networking = { workspace = true, optional = true }
 tari_transaction_components = { workspace = true }
 tari_hashing = { workspace = true }
 tari_ootle_p2p = { workspace = true, optional = true }
-ootle_serde = { workspace = true }
+ootle_serde = { workspace = true, features = ["std"] }
 ootle_byte_type = { workspace = true, features = ["crypto"] }
 
 anyhow = { workspace = true }

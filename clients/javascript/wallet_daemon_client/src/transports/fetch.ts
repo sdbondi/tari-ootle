@@ -3,6 +3,7 @@
  * //  SPDX-License-Identifier: BSD-3-Clause
  */
 
+import { stringifyRequestBody } from "../json";
 import { RpcRequest, RpcResponse, RpcTransport, RpcTransportOptions } from "./index";
 
 export interface FetchRpcTransportOptions {
@@ -51,7 +52,7 @@ export default class FetchRpcTransport implements RpcTransport {
 
     const response = await fetch(this.url, {
       method: "POST",
-      body: JSON.stringify(data),
+      body: stringifyRequestBody(data),
       headers,
       credentials: this.credentials,
       signal,

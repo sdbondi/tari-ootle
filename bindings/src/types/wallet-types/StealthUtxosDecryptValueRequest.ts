@@ -7,6 +7,6 @@ export type StealthUtxosDecryptValueRequest = {
   resource_address: ResourceAddress;
   ids: Array<UtxoId>;
   view_key_id: KeyId;
-  minimum_expected_value: bigint | null;
-  maximum_expected_value: bigint | null;
+  minimum_expected_value: number | bigint | string | null;
+  maximum_expected_value: number | bigint | string | null;
 };

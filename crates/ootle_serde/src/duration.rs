@@ -4,7 +4,7 @@
 pub mod seconds {
     //! Helper module for serialising configuration variables from `Duration` to integers representing seconds and back.
     //! Use this converter by employing
-    use std::time::Duration;
+    use core::time::Duration;
 
     use serde::{Deserialize, Deserializer, Serializer};
 
@@ -28,7 +28,7 @@ pub mod optional_seconds {
     //! #[serde(with="optional_seconds")]
     //! pub my_var: Option<Duration>
     //! ```
-    use std::time::Duration;
+    use core::time::Duration;
 
     use serde::{Deserialize, Deserializer, Serializer};
 

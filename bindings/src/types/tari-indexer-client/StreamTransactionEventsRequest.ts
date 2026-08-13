@@ -20,5 +20,5 @@ export type StreamTransactionEventsRequest = {
    * Resume the event stream from this event ID (exclusive). Events with id > after_id will be
    * replayed from the database before switching to the live stream.
    */
-  after_id: bigint | null;
+  after_id: number | bigint | string | null;
 };

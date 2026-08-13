@@ -25,7 +25,7 @@ export type UnspentOutput = {
    * Encrypted mask and value for the recipient.
    */
   encrypted_data: EncryptedData;
-  minimum_value_promise: bigint;
+  minimum_value_promise: number | bigint | string;
   /**
    * If the view key is enabled for a given resource, this proof MUST be provided, otherwise it MUST NOT.
    */
