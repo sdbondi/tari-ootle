@@ -41,6 +41,7 @@ jobs:
         run: pnpm --filter "tari_indexer_web_ui..." run build
 
       - name: Deploy to Cloudflare
+        id: deploy
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -48,3 +49,16 @@ jobs:
           workingDirectory: applications/tari_indexer/web_ui
           packageManager: npm
           command: deploy
+
+      # The workers.dev hostname is derived from the Cloudflare account subdomain, which is
+      # only visible in the dashboard. Publish it on the run summary so the deployed site is
+      # reachable from the Actions UI alone.
+      - name: Report deployed URL
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          if [ -n "$DEPLOYMENT_URL" ]; then
+            echo "Deployed to $DEPLOYMENT_URL" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Deployed. See the deploy step log for the URL." >> "$GITHUB_STEP_SUMMARY"
+          fi
