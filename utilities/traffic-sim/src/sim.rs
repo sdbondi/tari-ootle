@@ -76,7 +76,10 @@ impl Wallet {
     /// A validity window ending [`SIM_TRANSACTION_VALIDITY_EPOCHS`] past the daemon's current epoch.
     pub async fn max_epoch(&mut self) -> anyhow::Result<Epoch> {
         let settings = self.client.get_settings().await?;
-        Ok(Epoch(settings.current_epoch.as_u64() + SIM_TRANSACTION_VALIDITY_EPOCHS))
+        let current_epoch = settings
+            .current_epoch
+            .ok_or_else(|| anyhow::anyhow!("Wallet daemon could not reach its indexer, so the epoch is unknown"))?;
+        Ok(Epoch(current_epoch.as_u64() + SIM_TRANSACTION_VALIDITY_EPOCHS))
     }
 
     pub async fn connect(name: String, address: &str) -> anyhow::Result<Self> {

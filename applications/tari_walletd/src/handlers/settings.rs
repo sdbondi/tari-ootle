@@ -35,7 +35,9 @@ pub async fn handle_get(
         .optional()?
         .unwrap_or_default();
 
-    let current_epoch = context.current_epoch().await?;
+    // Deliberately not fatal: the indexer being down must not make settings unreadable, since this
+    // is where the indexer URL is corrected.
+    let current_epoch = context.current_epoch().await.ok();
 
     Ok(SettingsGetResponse {
         indexer_url,

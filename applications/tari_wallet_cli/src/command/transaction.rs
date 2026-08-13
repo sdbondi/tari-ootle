@@ -133,10 +133,19 @@ pub struct CommonSubmitArgs {
 
 impl CommonSubmitArgs {
     /// The caller's explicit `max_epoch`, or the daemon's default window past the current epoch.
-    fn resolve_max_epoch(&self, current_epoch: Epoch, default_validity_epochs: u64) -> Epoch {
-        self.max_epoch
-            .map(Epoch)
-            .unwrap_or_else(|| Epoch(current_epoch.as_u64().saturating_add(default_validity_epochs)))
+    /// Without either — the daemon could not reach its indexer and no `--max-epoch` was given —
+    /// there is no window the network is known to accept, so fail rather than guess.
+    fn resolve_max_epoch(&self, current_epoch: Option<Epoch>, default_validity_epochs: u64) -> anyhow::Result<Epoch> {
+        if let Some(max_epoch) = self.max_epoch {
+            return Ok(Epoch(max_epoch));
+        }
+        let current_epoch = current_epoch.ok_or_else(|| {
+            anyhow!(
+                "The wallet daemon could not reach its indexer, so the current epoch is unknown. Pass --max-epoch to \
+                 choose the transaction's validity window explicitly."
+            )
+        })?;
+        Ok(Epoch(current_epoch.as_u64().saturating_add(default_validity_epochs)))
     }
 }
 
@@ -273,7 +282,7 @@ pub async fn handle_submit(args: SubmitArgs, client: &mut WalletDaemonClient) ->
         default_transaction_validity_epochs,
         ..
     } = client.get_settings().await?;
-    let max_epoch = common.resolve_max_epoch(current_epoch, default_transaction_validity_epochs);
+    let max_epoch = common.resolve_max_epoch(current_epoch, default_transaction_validity_epochs)?;
 
     let mut builder = Transaction::builder(network.byte, max_epoch)
         .call_method(fee_account.component_address, "withdraw", args![common.max_fee,])
@@ -358,7 +367,7 @@ async fn handle_submit_manifest(
         default_transaction_validity_epochs,
         ..
     } = client.get_settings().await?;
-    let max_epoch = common.resolve_max_epoch(current_epoch, default_transaction_validity_epochs);
+    let max_epoch = common.resolve_max_epoch(current_epoch, default_transaction_validity_epochs)?;
 
     let builder = Transaction::builder(network.byte, max_epoch)
         .with_fee_instructions_builder(|builder| {
