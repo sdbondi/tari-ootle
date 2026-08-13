@@ -40,25 +40,24 @@ jobs:
           VITE_INDEXER_API_ADDRESS: ${{ vars.INDEXER_API_ADDRESS || 'https://ootle-indexer-a.tari.com' }}
         run: pnpm --filter "tari_indexer_web_ui..." run build
 
+      # wrangler-action is not used here: it installs wrangler into the working directory,
+      # which npm cannot do in a pnpm workspace package (`workspace:*` dependencies), and
+      # `pnpm dlx` resolves it in a temporary directory instead. The workers.dev hostname is
+      # derived from the Cloudflare account subdomain, which is only visible in the
+      # dashboard, so echo whatever wrangler reports onto the run summary — that makes the
+      # deployed site reachable from the Actions UI alone.
       - name: Deploy to Cloudflare
-        id: deploy
-        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: applications/tari_indexer/web_ui
-          packageManager: npm
-          command: deploy
-
-      # The workers.dev hostname is derived from the Cloudflare account subdomain, which is
-      # only visible in the dashboard. Publish it on the run summary so the deployed site is
-      # reachable from the Actions UI alone.
-      - name: Report deployed URL
         env:
-          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        working-directory: applications/tari_indexer/web_ui
         run: |
-          if [ -n "$DEPLOYMENT_URL" ]; then
-            echo "Deployed to $DEPLOYMENT_URL" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "Deployed. See the deploy step log for the URL." >> "$GITHUB_STEP_SUMMARY"
-          fi
+          set -o pipefail
+          pnpm dlx wrangler@4.122.0 deploy 2>&1 | tee deploy.log
+          {
+            if url=$(grep -oEm1 'https://[a-zA-Z0-9.-]+\.workers\.dev[^ ]*' deploy.log); then
+              echo "Deployed to $url"
+            else
+              echo "Deployed. See the deploy step log for the URL."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
