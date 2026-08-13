@@ -32,18 +32,13 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # `...` builds the web UI together with the bindings/clients it depends on.
+      # Without VITE_INDEXER_API_ADDRESS the UI asks the indexer serving it for its API
+      # address; there is no indexer behind this deployment, so bake the address in.
+      # Override it with the INDEXER_API_ADDRESS repository variable.
       - name: Build
-        run: pnpm --filter "tari_indexer_web_ui..." run build
-
-      # The UI resolves its API address at runtime by fetching /rest_api_address, which the
-      # indexer binary serves itself. Deployed standalone there is no indexer behind the
-      # site, so the address is emitted as a static asset. Override the default by setting
-      # the INDEXER_API_ADDRESS repository variable.
-      - name: Write indexer API address
         env:
-          INDEXER_API_ADDRESS: ${{ vars.INDEXER_API_ADDRESS || 'https://ootle-indexer-a.tari.com' }}
-        working-directory: applications/tari_indexer/web_ui
-        run: printf '%s' "$INDEXER_API_ADDRESS" > dist/rest_api_address
+          VITE_INDEXER_API_ADDRESS: ${{ vars.INDEXER_API_ADDRESS || 'https://ootle-indexer-a.tari.com' }}
+        run: pnpm --filter "tari_indexer_web_ui..." run build
 
       - name: Deploy to Cloudflare
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
