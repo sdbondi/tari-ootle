@@ -414,7 +414,6 @@ pub struct TransactionPoolRecord {
     #[n(10)]
     is_ready: bool,
     /// The maximum epoch for which this transaction is valid.
-    #[serde(default)]
     #[n(11)]
     max_epoch: Epoch,
     /// Epoch to use when executing the transaction. This updates as foreign proposals are received

@@ -113,6 +113,32 @@ pub struct WalletDaemonConfig {
 }
 
 impl WalletDaemonConfig {
+    /// Rejects a configuration that cannot build a usable transaction.
+    ///
+    /// A zero window stamps `max_epoch == current_epoch`, so every transaction the daemon builds
+    /// must be sequenced within the epoch it was built in and one built near a boundary expires
+    /// before it can land. An oversized window is only warned about: it is the network's ceiling
+    /// that decides, and this process cannot read it.
+    pub fn validate(&self) -> Result<(), anyhow::Error> {
+        if self.default_transaction_validity_epochs == 0 {
+            return Err(
+                anyhow::anyhow!(
+                    "default_transaction_validity_epochs must be at least 1: a zero window expires transactions in \
+                     the                  epoch they are built in"
+                ),
+            );
+        }
+        if self.default_transaction_validity_epochs > IMPLAUSIBLE_TRANSACTION_VALIDITY_EPOCHS {
+            log::warn!(
+                target: LOG_TARGET,
+                "default_transaction_validity_epochs ({}) is beyond the network transaction validity ceiling known to                  this build ({}). If the network enforces that ceiling, every transaction this wallet builds will be                  refused as out of range.",
+                self.default_transaction_validity_epochs,
+                IMPLAUSIBLE_TRANSACTION_VALIDITY_EPOCHS,
+            );
+        }
+        Ok(())
+    }
+
     pub fn get_burn_proof_dir(&self, network: Network) -> PathBuf {
         self.burn_proof_dir
             .clone()
@@ -129,6 +155,14 @@ fn return_default_auto_claim_burns() -> bool {
 fn return_default_transaction_validity_epochs() -> u64 {
     3
 }
+
+/// The network's `max_transaction_validity_epochs` at the time of writing. The wallet does not
+/// depend on the consensus crate, so it cannot read the live value and treats this only as the
+/// threshold for warning an operator that their window looks implausible — never as a hard limit,
+/// which would wrongly refuse to start against a network configured with a larger ceiling.
+const IMPLAUSIBLE_TRANSACTION_VALIDITY_EPOCHS: u64 = 2160;
+
+const LOG_TARGET: &str = "tari::ootle::wallet_daemon::config";
 
 fn return_default_transaction_request_ttl() -> Duration {
     Duration::from_secs(30 * 60)

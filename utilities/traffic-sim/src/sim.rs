@@ -74,8 +74,8 @@ const SIM_TRANSACTION_VALIDITY_EPOCHS: u64 = 10;
 
 impl Wallet {
     /// A validity window ending [`SIM_TRANSACTION_VALIDITY_EPOCHS`] past the daemon's current epoch.
-    pub async fn max_epoch(&mut self) -> anyhow::Result<Epoch> {
-        let settings = self.client.get_settings().await?;
+    pub async fn max_epoch(&self) -> anyhow::Result<Epoch> {
+        let settings = self.client.clone().get_settings().await?;
         let current_epoch = settings
             .current_epoch
             .ok_or_else(|| anyhow::anyhow!("Wallet daemon could not reach its indexer, so the epoch is unknown"))?;
@@ -425,10 +425,12 @@ impl TrafficSim {
             .owner_key_id
             .ok_or_else(|| anyhow::anyhow!("Exchange account has no owner key ID"))?;
 
-        let max_epoch = exchange_wallet.max_epoch().await?;
-
         for (wallet, account) in self.wallet_and_account_iter() {
             let mut client = wallet.client.clone();
+            // Resolved per wallet, not once for the run: each iteration makes several daemon
+            // round-trips, so a window taken at the start can lapse before the later wallets are
+            // funded.
+            let max_epoch = wallet.max_epoch().await?;
 
             let fund_amount = 100_000_000_000u64; // 1000 coins
 
