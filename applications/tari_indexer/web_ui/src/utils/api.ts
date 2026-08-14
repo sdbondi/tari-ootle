@@ -48,11 +48,17 @@ import type {
 } from "@tari-project/ootle-ts-bindings";
 import { IndexerClient } from "@tari-project/indexer-client";
 
-const DEFAULT_API_ADDRESS = new URL(
-  import.meta.env.VITE_INDEXER_API_ADDRESS || import.meta.env.VITE_API_ADDRESS || "http://localhost:9000",
-);
+const CONFIGURED_API_ADDRESS = import.meta.env.VITE_INDEXER_API_ADDRESS || import.meta.env.VITE_API_ADDRESS;
+
+const DEFAULT_API_ADDRESS = new URL(CONFIGURED_API_ADDRESS || "http://localhost:9000");
 
 export async function getClientAddress(): Promise<URL> {
+  // `/rest_api_address` is served by the indexer that also serves this UI. A build configured
+  // with an explicit address is not hosted by an indexer, so there is nothing to ask.
+  if (CONFIGURED_API_ADDRESS) {
+    return DEFAULT_API_ADDRESS;
+  }
+
   try {
     const resp = await fetch("/rest_api_address");
     if (resp.status === 200) {
