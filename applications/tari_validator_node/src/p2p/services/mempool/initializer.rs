@@ -39,10 +39,9 @@ use crate::{
 
 const LOG_TARGET: &str = "tari::ootle::validator_node::mempool";
 
-pub fn spawn<TValidator, TEpochValidator, TStateStore>(
+pub fn spawn<TValidator, TStateStore>(
     epoch_manager: EpochManagerHandle<PeerAddress>,
     transaction_validator: TValidator,
-    epoch_validator: TEpochValidator,
     state_store: TStateStore,
     consensus_handle: ConsensusHandle,
     networking: NetworkingHandle<TariMessagingSpec>,
@@ -50,9 +49,7 @@ pub fn spawn<TValidator, TEpochValidator, TStateStore>(
     #[cfg(feature = "metrics")] metrics_registry: &mut prometheus_client::registry::Registry,
 ) -> (MempoolHandle, JoinHandle<anyhow::Result<()>>)
 where
-    TValidator: Validator<Transaction, Context = (), Error = TransactionValidationError> + Send + Sync + 'static,
-    TEpochValidator:
-        Validator<Transaction, Context = Epoch, Error = TransactionValidationError> + Send + Sync + 'static,
+    TValidator: Validator<Transaction, Context = Epoch, Error = TransactionValidationError> + Send + Sync + 'static,
     TStateStore: StateStore<Addr = PeerAddress> + Send + Sync + 'static,
 {
     // This channel only needs to be size 1, because each mempool request must wait for a reply and the mempool is
@@ -65,7 +62,6 @@ where
         rx_mempool_request,
         epoch_manager,
         transaction_validator,
-        epoch_validator,
         state_store,
         consensus_handle,
         networking,

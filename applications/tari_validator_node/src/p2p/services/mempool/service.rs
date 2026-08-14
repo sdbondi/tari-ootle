@@ -53,12 +53,11 @@ const LOG_TARGET: &str = "tari::validator_node::mempool::service";
 const MEM_MAX_TRANSACTIONS_DEDUP: usize = 1_000_000;
 
 #[derive(Debug)]
-pub struct MempoolService<TValidator, TEpochValidator, TStateStore> {
+pub struct MempoolService<TValidator, TStateStore> {
     transactions: SeenTransactions,
     mempool_requests: mpsc::Receiver<MempoolRequest>,
     epoch_manager: EpochManagerHandle<PeerAddress>,
     before_execute_validator: TValidator,
-    epoch_validator: TEpochValidator,
     state_store: TStateStore,
     gossip: MempoolGossip,
     consensus_handle: ConsensusHandle,
@@ -66,17 +65,15 @@ pub struct MempoolService<TValidator, TEpochValidator, TStateStore> {
     metrics: PrometheusMempoolMetrics,
 }
 
-impl<TValidator, TEpochValidator, TStateStore> MempoolService<TValidator, TEpochValidator, TStateStore>
+impl<TValidator, TStateStore> MempoolService<TValidator, TStateStore>
 where
-    TValidator: Validator<Transaction, Context = (), Error = TransactionValidationError>,
-    TEpochValidator: Validator<Transaction, Context = Epoch, Error = TransactionValidationError>,
+    TValidator: Validator<Transaction, Context = Epoch, Error = TransactionValidationError>,
     TStateStore: StateStore,
 {
     pub(super) fn new(
         mempool_requests: mpsc::Receiver<MempoolRequest>,
         epoch_manager: EpochManagerHandle<PeerAddress>,
         before_execute_validator: TValidator,
-        epoch_validator: TEpochValidator,
         state_store: TStateStore,
         consensus_handle: ConsensusHandle,
         networking: NetworkingHandle<TariMessagingSpec>,
@@ -89,7 +86,6 @@ where
             mempool_requests,
             epoch_manager,
             before_execute_validator,
-            epoch_validator,
             state_store,
             consensus_handle,
             #[cfg(feature = "metrics")]
@@ -271,10 +267,7 @@ where
         // transaction outside its validity window is refused before it is admitted or re-gossiped
         // rather than after. Both feed the single acceptance verdict below.
         let current_epoch = self.consensus_handle.current_view().get_epoch();
-        let validation_result = self
-            .before_execute_validator
-            .validate(&(), &transaction)
-            .and_then(|_| self.epoch_validator.validate(&current_epoch, &transaction));
+        let validation_result = self.before_execute_validator.validate(&current_epoch, &transaction);
 
         // Reported here rather than at the end of this function: everything below is about whether
         // *we* act on the transaction, not whether it is valid, and gossipsub only holds a message
