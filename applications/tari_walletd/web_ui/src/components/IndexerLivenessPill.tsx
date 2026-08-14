@@ -24,17 +24,20 @@ import Box from "@mui/material/Box";
 import Chip from "@mui/material/Chip";
 import Tooltip from "@mui/material/Tooltip";
 import { useTheme } from "@mui/material/styles";
+import useAuthStore from "@store/authStore";
 import { indexerGetNetworkInfo, settingsGet } from "@utils/json_rpc";
 import { useEffect, useRef, useState } from "react";
 
 /// How often the configured indexer is re-probed.
 const POLL_INTERVAL_MS = 15_000;
 
-/// Consecutive failures tolerated before the pill goes red. One failed probe is reported as the
-/// intermediate state so a single dropped request does not read as an outage.
+/// Consecutive failures tolerated before the pill goes red. One failed probe leaves the pill
+/// unknown so a single dropped request does not read as an outage.
 const FAILURES_BEFORE_DISCONNECTED = 2;
 
-type Liveness = "connected" | "degraded" | "disconnected";
+/// "connecting" is a request in flight with no verdict yet; "unknown" is no verdict and nothing in
+/// flight, which is also where a probe that failed once lands.
+type Liveness = "connected" | "connecting" | "unknown" | "disconnected";
 
 interface Status {
   liveness: Liveness;
@@ -45,7 +48,8 @@ interface Status {
 
 const LABELS: Record<Liveness, string> = {
   connected: "Connected",
-  degraded: "Connecting…",
+  connecting: "Connecting…",
+  unknown: "Unknown",
   disconnected: "Disconnected",
 };
 
@@ -55,11 +59,15 @@ const LABELS: Record<Liveness, string> = {
  * Probes the same endpoint the indexer settings tab uses, reading the URL from `settings.get` so
  * that changing the indexer takes effect here without a reload. The probe goes browser → indexer
  * directly, so it reflects whether *this* page can reach the indexer.
+ *
+ * `settings.get` is authenticated, so the pill is inert until the user is logged in — probing
+ * before then would only ever report the authentication failure as an indexer outage.
  */
 function IndexerLivenessPill() {
   const theme = useTheme();
+  const loggedIn = useAuthStore((state) => state.loggedIn);
   const [status, setStatus] = useState<Status>({
-    liveness: "degraded",
+    liveness: "unknown",
     epoch: null,
     indexerUrl: null,
     detail: null,
@@ -69,15 +77,26 @@ function IndexerLivenessPill() {
   const consecutiveFailures = useRef(0);
 
   useEffect(() => {
+    if (!loggedIn) {
+      // A logged out session carries no probe history into the next one.
+      consecutiveFailures.current = 0;
+      setStatus({ liveness: "unknown", epoch: null, indexerUrl: null, detail: null });
+      return;
+    }
+
     let cancelled = false;
 
     const probe = async () => {
       try {
         const settings = await settingsGet();
+        if (cancelled) return;
         const indexerUrl = settings.indexer_url;
         if (!indexerUrl) {
           throw new Error("No indexer URL is configured");
         }
+        // Announced only when there is no verdict to keep showing, so a poll from an established
+        // state does not flicker through "Connecting…" every interval.
+        setStatus((prev) => (prev.liveness === "unknown" ? { ...prev, liveness: "connecting", indexerUrl } : prev));
         const info = await indexerGetNetworkInfo(indexerUrl);
         if (cancelled) return;
         consecutiveFailures.current = 0;
@@ -93,7 +112,7 @@ function IndexerLivenessPill() {
         const detail = e instanceof Error ? e.message : "Cannot reach the indexer";
         setStatus((prev) => ({
           ...prev,
-          liveness: consecutiveFailures.current >= FAILURES_BEFORE_DISCONNECTED ? "disconnected" : "degraded",
+          liveness: consecutiveFailures.current >= FAILURES_BEFORE_DISCONNECTED ? "disconnected" : "unknown",
           detail,
         }));
       }
@@ -105,11 +124,16 @@ function IndexerLivenessPill() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, []);
+  }, [loggedIn]);
+
+  if (!loggedIn) {
+    return null;
+  }
 
   const colour = {
     connected: theme.palette.success.main,
-    degraded: theme.palette.warning.main,
+    connecting: theme.palette.info.main,
+    unknown: theme.palette.text.disabled,
     disconnected: theme.palette.error.main,
   }[status.liveness];
 
