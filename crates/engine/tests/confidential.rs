@@ -120,7 +120,7 @@ fn minting_a_commitment_without_a_value_proof_is_rejected() {
     let commitment = commit_amount(&mint_mask, Amount::from(42u64)).unwrap().to_byte_type();
 
     let reason = test.execute_expect_failure(
-        Transaction::builder_localnet()
+        test.transaction()
             .call_method(faucet, "mint_more", args![mint_proof, ValueProofs::new()])
             .build_and_seal(test.secret_key()),
         vec![owner],
@@ -784,7 +784,7 @@ fn minting_and_burning_a_commitment_tracks_total_supply() {
     // Move the whole 500 out of the commitment and into revealed funds.
     let reveal_proof = generate_reveal_proof(&mask, 500);
     test.execute_expect_success(
-        Transaction::builder_localnet()
+        test.transaction()
             .call_method(faucet, "take_free_coins", args![reveal_proof])
             .put_last_instruction_output_on_workspace("coins")
             .call_function(utilities, "burn_bucket", args![Workspace("coins")])
@@ -809,7 +809,7 @@ fn burning_a_bucket_holding_commitments_without_a_value_proof_is_rejected() {
         .unwrap()
         .to_byte_type();
     let reason = test.execute_expect_failure(
-        Transaction::builder_localnet()
+        test.transaction()
             .call_method(faucet, "take_free_coins", args![withdraw_proof.proof])
             .put_last_instruction_output_on_workspace("coins")
             .call_function(utilities, "burn_bucket", args![Workspace("coins")])
@@ -846,7 +846,7 @@ fn burning_a_bucket_holding_commitments_with_value_proofs_decreases_total_supply
     )]);
 
     test.execute_expect_success(
-        Transaction::builder_localnet()
+        test.transaction()
             .call_method(faucet, "take_free_coins", args![withdraw_proof.proof])
             .put_last_instruction_output_on_workspace("coins")
             .call_function(utilities, "burn_bucket_with_value_proofs", args![

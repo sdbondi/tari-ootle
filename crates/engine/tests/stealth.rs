@@ -769,7 +769,7 @@ fn burn_with_elgamal_value_proof_adjusts_supply() {
 
     let owner = test.owner_proof();
     test.execute_expect_success(
-        Transaction::builder_localnet()
+        test.transaction()
             .call_method(faucet, "burn_utxos", args![vec![(utxo_id, proof)]])
             .build_and_seal(test.secret_key()),
         vec![owner],
@@ -814,7 +814,7 @@ fn burn_rejects_elgamal_value_proof_for_a_false_value() {
 
     let owner = test.owner_proof();
     let reason = test.execute_expect_failure(
-        Transaction::builder_localnet()
+        test.transaction()
             .call_method(faucet, "burn_utxos", args![vec![(utxo_id, proof)]])
             .build_and_seal(test.secret_key()),
         vec![owner],
