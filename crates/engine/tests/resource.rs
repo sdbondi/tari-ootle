@@ -3,7 +3,10 @@
 
 use tari_ootle_transaction::args;
 use tari_template_lib::types::{ComponentAddress, Metadata, ResourceAddress};
-use tari_template_test_tooling::{TemplateTest, support::confidential::generate_confidential_output_statement};
+use tari_template_test_tooling::{
+    TemplateTest,
+    support::{confidential::generate_confidential_output_statement, value_proof::value_proofs_for_commitment},
+};
 
 const CRATE_PATH: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -25,8 +28,9 @@ fn non_fungible_join() {
 fn confidential_join() {
     let mut test = TemplateTest::new(CRATE_PATH, vec!["tests/templates/resource"]);
     let component: ComponentAddress = test.call_function("ResourceTest", "new", args![], vec![]);
-    let (output, _, _) = generate_confidential_output_statement(1000, None);
-    test.call_method::<()>(component, "confidential_join", args![output], vec![]);
+    let (output, mask, _) = generate_confidential_output_statement(1000, None);
+    let value_proofs = value_proofs_for_commitment(1000u64, &mask);
+    test.call_method::<()>(component, "confidential_join", args![output, value_proofs], vec![]);
 }
 
 #[test]

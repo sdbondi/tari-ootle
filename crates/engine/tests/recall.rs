@@ -8,7 +8,10 @@ use tari_ootle_transaction::{Epoch, Transaction, args};
 use tari_template_lib::types::{Amount, ComponentAddress, NonFungibleId, ResourceAddress, VaultId};
 use tari_template_test_tooling::{
     TemplateTest,
-    support::confidential::{generate_confidential_output_statement, generate_withdraw_proof},
+    support::{
+        confidential::{generate_confidential_output_statement, generate_withdraw_proof},
+        value_proof::value_proofs_for_commitment,
+    },
 };
 
 const CRATE_PATH: &str = env!("CARGO_MANIFEST_DIR");
@@ -21,10 +24,11 @@ fn it_recalls_all_resource_types() {
 
     let (mut initial_supply, mask, _) = generate_confidential_output_statement(1000, None);
     initial_supply.output_revealed_amount = Amount::from(1000u64);
+    let value_proofs = value_proofs_for_commitment(1000u64, &mask);
 
     let result = test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
-            .call_function(recall_template, "new", args![initial_supply])
+            .call_function(recall_template, "new", args![initial_supply, value_proofs])
             .build_and_seal(test.secret_key()),
         vec![],
     );
