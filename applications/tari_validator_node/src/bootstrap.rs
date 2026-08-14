@@ -89,6 +89,7 @@ use tari_ootle_transaction_validation::{
     TransactionNetworkValidator,
     TransactionSignatureValidator,
     TransactionValidationError,
+    TransactionValidityWindowValidator,
     TransactionWeightValidator,
     Validator,
 };
@@ -362,7 +363,7 @@ pub async fn spawn_services(
     let transaction_executor = TariBlockTransactionExecutor::new(transaction_processor, consensus_constants.clone());
     let transaction_validator = TariBlockTransactionValidator::new(
         create_mempool_transaction_validator(config.network, template_provider.clone()).boxed(),
-        EpochRangeValidator::new(consensus_constants.max_transaction_validity_epochs).boxed(),
+        EpochRangeValidator::new().boxed(),
     );
 
     #[cfg(feature = "metrics")]
@@ -398,7 +399,9 @@ pub async fn spawn_services(
     let (mempool, join_handle) = mempool::spawn(
         epoch_manager.clone(),
         create_mempool_transaction_validator(config.network, template_provider.clone()),
-        EpochRangeValidator::new(consensus_constants.max_transaction_validity_epochs),
+        EpochRangeValidator::new().and_then(TransactionValidityWindowValidator::new(
+            consensus_constants.max_transaction_validity_epochs,
+        )),
         state_store.clone(),
         consensus_handle.clone(),
         networking.clone(),

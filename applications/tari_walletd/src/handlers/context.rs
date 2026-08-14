@@ -8,7 +8,7 @@ use std::{
 
 use axum_extra::headers::authorization::Bearer;
 use dashmap::DashMap;
-use tari_ootle_transaction::{Epoch, Transaction, TransactionBuilder};
+use tari_ootle_transaction::{Epoch, Transaction, TransactionBuilder, UnsignedTransaction};
 use tari_ootle_wallet_sdk::{models::WalletEvent, network::WalletNetworkInterface};
 use tari_ootle_wallet_sdk_services::{
     account_monitor::AccountMonitorHandle,
@@ -295,6 +295,15 @@ impl HandlerContext {
         self.authenticator.webauthn()
     }
 
+    /// Discards the cached epoch, forcing the next read to go to the network.
+    ///
+    /// Must be called whenever the daemon is repointed at a different indexer: the cached value
+    /// describes the previous indexer's chain, and stamping a `max_epoch` derived from it onto a
+    /// transaction for a different chain yields a window that chain will not accept.
+    pub fn invalidate_epoch_cache(&self) {
+        *self.cached_epoch.lock().unwrap() = None;
+    }
+
     /// The current epoch, re-read from the network at most every [`EPOCH_CACHE_TTL`].
     pub async fn current_epoch(&self) -> Result<Epoch, anyhow::Error> {
         if let Some((epoch, read_at)) = *self.cached_epoch.lock().unwrap() &&
@@ -317,6 +326,19 @@ impl HandlerContext {
                 .as_u64()
                 .saturating_add(self.config().default_transaction_validity_epochs),
         ))
+    }
+
+    /// A builder seeded from a caller-supplied transaction.
+    ///
+    /// The caller has already chosen everything this would otherwise resolve — including its own
+    /// `max_epoch` — so unlike [`Self::transaction_builder`] this needs no epoch and makes no
+    /// network call. Submitting a pre-built transaction therefore does not depend on the indexer
+    /// being reachable.
+    pub fn transaction_builder_from_unsigned<T: Into<UnsignedTransaction>>(
+        &self,
+        transaction: T,
+    ) -> TransactionBuilder {
+        TransactionBuilder::from_unsigned(transaction)
     }
 
     /// Returns a TransactionBuilder with the current network configured.

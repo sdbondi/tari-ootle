@@ -188,9 +188,7 @@ async fn submit_inner(
     // Signatures collected out of band are attached first; walletd's own
     // signatures are added on top and the seal signature commits to all of them.
     let mut transaction = context
-        .transaction_builder()
-        .await?
-        .with_unsigned_transaction(req.transaction)
+        .transaction_builder_from_unsigned(req.transaction)
         .with_inputs(detected_inputs)
         .with_signatures(req.signatures);
 
@@ -384,9 +382,7 @@ pub async fn handle_detect_inputs(
         .collect::<Vec<_>>();
 
     let transaction = context
-        .transaction_builder()
-        .await?
-        .with_unsigned_transaction(req.transaction)
+        .transaction_builder_from_unsigned(req.transaction)
         .with_inputs(detected)
         .build_unsigned();
 
@@ -436,9 +432,7 @@ async fn submit_dry_run_inner(
     };
 
     let mut transaction = context
-        .transaction_builder()
-        .await?
-        .with_unsigned_transaction(req.transaction)
+        .transaction_builder_from_unsigned(req.transaction)
         .with_inputs(detected_inputs)
         .with_dry_run(true)
         .with_signatures(req.signatures);

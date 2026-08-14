@@ -9,20 +9,20 @@ use crate::{TransactionValidationError, Validator};
 
 const LOG_TARGET: &str = "tari::ootle::mempool::validators::epoch_range";
 
-/// Validates a transaction's validity window against the current epoch.
+/// Checks a transaction against the epoch window it declares: not before `min_epoch`, not after
+/// `max_epoch`.
 ///
-/// `max_validity_epochs` is the consensus-uniform ceiling on how far ahead of the current epoch a
-/// transaction's `max_epoch` may sit. Bounding it is what makes a transaction's death deterministic:
-/// past `max_epoch` the transaction can never be sequenced, so a wallet can declare it dead and an
-/// aborted attempt cannot be retried forever.
-#[derive(Debug)]
-pub struct EpochRangeValidator {
-    max_validity_epochs: u64,
-}
+/// Safe to run wherever a transaction is admitted, including the consensus sequencing path. Both
+/// rules fail in the permissive direction for a node whose epoch view lags: a lagging node admits
+/// what a node ahead of it would refuse, so it never discards a transaction its committee has
+/// already sequenced. The complementary ceiling on how far ahead `max_epoch` may sit is deliberately
+/// **not** here — see [`TransactionValidityWindowValidator`].
+#[derive(Debug, Default)]
+pub struct EpochRangeValidator;
 
 impl EpochRangeValidator {
-    pub fn new(max_validity_epochs: u64) -> Self {
-        Self { max_validity_epochs }
+    pub fn new() -> Self {
+        Self
     }
 }
 
@@ -50,14 +50,46 @@ impl Validator<Transaction> for EpochRangeValidator {
             });
         }
 
+        Ok(())
+    }
+}
+
+/// Caps how far ahead of the current epoch a transaction's `max_epoch` may sit, bounding every
+/// transaction's lifetime.
+///
+/// **Admission only.** Unlike [`EpochRangeValidator`] this rule fails in the *strict* direction for
+/// a lagging node: a node an epoch behind computes a lower ceiling and refuses a window a node ahead
+/// of it accepts. Running it where a transaction can be silently discarded after being sequenced —
+/// the consensus new-transaction gate — would let a lagging shard group refuse to admit a
+/// transaction another group had already sequenced, stalling it until that group catches up. The
+/// binding enforcement therefore happens at execution against the pinned, cross-group-agreed epoch,
+/// where every node reaches the same verdict and an out-of-window transaction is sequenced as an
+/// abort rather than dropped.
+#[derive(Debug)]
+pub struct TransactionValidityWindowValidator {
+    max_validity_epochs: u64,
+}
+
+impl TransactionValidityWindowValidator {
+    pub fn new(max_validity_epochs: u64) -> Self {
+        Self { max_validity_epochs }
+    }
+}
+
+impl Validator<Transaction> for TransactionValidityWindowValidator {
+    type Context = Epoch;
+    type Error = TransactionValidationError;
+
+    fn validate(&self, &current_epoch: &Epoch, transaction: &Transaction) -> Result<(), TransactionValidationError> {
+        let max_epoch = transaction.max_epoch();
         // Saturating: an overflowing ceiling admits every representable max_epoch, which is the
         // correct reading of "no epoch is further ahead than the limit allows".
         let latest_permitted = Epoch(current_epoch.as_u64().saturating_add(self.max_validity_epochs));
         if max_epoch > latest_permitted {
             warn!(
                 target: LOG_TARGET,
-                "EpochRangeValidator - FAIL: Maximum epoch {max_epoch} is more than {} epochs beyond current epoch \
-                 {current_epoch}.",
+                "TransactionValidityWindowValidator - FAIL: Maximum epoch {max_epoch} is more than {} epochs beyond \
+                 current epoch {current_epoch}.",
                 self.max_validity_epochs
             );
             return Err(TransactionValidationError::MaxEpochTooFarAhead {
@@ -107,8 +139,10 @@ mod tests {
         )
     }
 
+    /// The pair as composed at mempool ingress: window rules plus the admission ceiling.
     fn validate(current_epoch: Epoch, transaction: &Transaction) -> Result<(), TransactionValidationError> {
-        EpochRangeValidator::new(MAX_VALIDITY_EPOCHS).validate(&current_epoch, transaction)
+        EpochRangeValidator::new().validate(&current_epoch, transaction)?;
+        TransactionValidityWindowValidator::new(MAX_VALIDITY_EPOCHS).validate(&current_epoch, transaction)
     }
 
     #[test]
@@ -145,6 +179,14 @@ mod tests {
         ));
     }
 
+    /// The consensus sequencing path must never refuse a window for being too far ahead: a lagging
+    /// node would otherwise discard a transaction another shard group has already sequenced.
+    #[test]
+    fn the_sequencing_rules_ignore_the_ceiling() {
+        let tx = transaction(None, Epoch(u64::MAX));
+        EpochRangeValidator::new().validate(&Epoch(1), &tx).unwrap();
+    }
+
     #[test]
     fn the_ceiling_is_inclusive() {
         let tx = transaction(None, Epoch(MAX_VALIDITY_EPOCHS));
@@ -154,6 +196,8 @@ mod tests {
     #[test]
     fn a_ceiling_that_overflows_admits_any_max_epoch() {
         let tx = transaction(None, Epoch(u64::MAX));
-        EpochRangeValidator::new(u64::MAX).validate(&Epoch(1), &tx).unwrap();
+        TransactionValidityWindowValidator::new(u64::MAX)
+            .validate(&Epoch(1), &tx)
+            .unwrap();
     }
 }

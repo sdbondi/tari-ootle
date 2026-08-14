@@ -156,10 +156,10 @@ fn return_default_transaction_validity_epochs() -> u64 {
     3
 }
 
-/// The network's `max_transaction_validity_epochs` at the time of writing. The wallet does not
-/// depend on the consensus crate, so it cannot read the live value and treats this only as the
-/// threshold for warning an operator that their window looks implausible — never as a hard limit,
-/// which would wrongly refuse to start against a network configured with a larger ceiling.
+/// Mirrors `ConsensusConstants::max_transaction_validity_epochs`. The wallet binary does not carry
+/// the consensus crate, so the value is duplicated here and pinned to the real one by a test; it is
+/// used only to warn an operator that their configured window looks implausible, never as a hard
+/// limit, which would wrongly refuse to start against a network with a larger ceiling.
 const IMPLAUSIBLE_TRANSACTION_VALIDITY_EPOCHS: u64 = 2160;
 
 const LOG_TARGET: &str = "tari::ootle::wallet_daemon::config";
@@ -262,5 +262,41 @@ impl FromStr for WalletDaemonAuth {
             "webauthn" => Ok(WalletDaemonAuth::WebAuthn),
             _ => Err(anyhow!("Invalid authentication method: {}", s)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tari_consensus::consensus_constants::ConsensusConstants;
+
+    use super::*;
+
+    /// The warning threshold is only useful while it tracks the rule it mirrors. If the consensus
+    /// ceiling is lowered and this is not, the wallet keeps accepting a window under which every
+    /// transaction it builds is unsequenceable.
+    #[test]
+    fn the_warning_threshold_tracks_the_consensus_ceiling() {
+        assert_eq!(
+            IMPLAUSIBLE_TRANSACTION_VALIDITY_EPOCHS,
+            ConsensusConstants::mainnet().max_transaction_validity_epochs
+        );
+    }
+
+    #[test]
+    fn a_zero_validity_window_is_refused() {
+        let config = WalletDaemonConfig {
+            default_transaction_validity_epochs: 0,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn a_window_at_the_ceiling_is_accepted() {
+        let config = WalletDaemonConfig {
+            default_transaction_validity_epochs: IMPLAUSIBLE_TRANSACTION_VALIDITY_EPOCHS,
+            ..Default::default()
+        };
+        config.validate().unwrap();
     }
 }

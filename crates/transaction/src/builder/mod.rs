@@ -94,6 +94,13 @@ impl TransactionBuilder<MainIntent> {
     }
 
     pub fn with_unsigned_transaction<T: Into<UnsignedTransaction>>(self, unsigned_transaction: T) -> Self {
+        Self::from_unsigned(unsigned_transaction)
+    }
+
+    /// Starts from a complete unsigned transaction, taking its network and `max_epoch` from the
+    /// transaction itself. Nothing about the caller's transaction is chosen here, so this needs no
+    /// prior builder and — unlike [`Transaction::builder`] — no `max_epoch` decided up front.
+    pub fn from_unsigned<T: Into<UnsignedTransaction>>(unsigned_transaction: T) -> Self {
         let unsigned_transaction = unsigned_transaction.into();
         Self {
             fee_instruction_builder: Some(Box::new(Self::new_fee_builder(
