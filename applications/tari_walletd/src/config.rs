@@ -121,17 +121,17 @@ impl WalletDaemonConfig {
     /// that decides, and this process cannot read it.
     pub fn validate(&self) -> Result<(), anyhow::Error> {
         if self.default_transaction_validity_epochs == 0 {
-            return Err(
-                anyhow::anyhow!(
-                    "default_transaction_validity_epochs must be at least 1: a zero window expires transactions in \
-                     the                  epoch they are built in"
-                ),
-            );
+            return Err(anyhow::anyhow!(
+                "default_transaction_validity_epochs must be at least 1: a zero window expires transactions in the \
+                 epoch they are built in"
+            ));
         }
         if self.default_transaction_validity_epochs > IMPLAUSIBLE_TRANSACTION_VALIDITY_EPOCHS {
             log::warn!(
                 target: LOG_TARGET,
-                "default_transaction_validity_epochs ({}) is beyond the network transaction validity ceiling known to                  this build ({}). If the network enforces that ceiling, every transaction this wallet builds will be                  refused as out of range.",
+                "default_transaction_validity_epochs ({}) is beyond the transaction validity ceiling known to this \
+                 build ({}). If the network enforces that ceiling, every transaction this wallet builds will be \
+                 refused as out of range.",
                 self.default_transaction_validity_epochs,
                 IMPLAUSIBLE_TRANSACTION_VALIDITY_EPOCHS,
             );
