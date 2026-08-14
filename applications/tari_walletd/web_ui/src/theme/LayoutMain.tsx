@@ -25,6 +25,7 @@ import "@tari-project/ootle-web-ui-theming/overrides.ts";
 import { breadcrumbRoutes } from "@/App";
 import Logo from "@assets/Logo";
 import Breadcrumbs from "@components/Breadcrumbs";
+import IndexerLivenessPill from "@components/IndexerLivenessPill";
 import MenuItems from "@components/MenuItems";
 import { Check } from "@mui/icons-material";
 import MenuOpenOutlinedIcon from "@mui/icons-material/MenuOpenOutlined";
@@ -112,10 +113,13 @@ export default function Layout() {
   const setAdvancedUiFeatures = useSettingsStore((s) => s.setAdvancedUiFeatures);
 
   useEffect(() => {
+    if (!loggedIn) {
+      return;
+    }
     settingsGet().then((res) => {
       setAdvancedUiFeatures(res.advanced_ui_features);
     });
-  }, [setAdvancedUiFeatures]);
+  }, [loggedIn, setAdvancedUiFeatures]);
 
   const handleClose = () => {
     setPopup({ visible: false });
@@ -179,6 +183,7 @@ export default function Layout() {
               >
                 <Logo fill={theme.palette.text.primary} />
               </Link>
+              <IndexerLivenessPill />
               {/*<Stack direction="row" spacing={1}>*/}
               {/*  {loggedIn ? <WalletConnectLink /> : null}*/}
               {/*</Stack>*/}
