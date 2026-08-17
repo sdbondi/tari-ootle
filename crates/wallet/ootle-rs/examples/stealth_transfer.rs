@@ -1,6 +1,8 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
+use std::num::NonZeroU64;
+
 use ootle_rs::{
     ToAccountAddress,
     TransactionRequest,
@@ -23,6 +25,7 @@ use tari_ootle_common_types::engine_types::transaction_receipt::TransactionRecei
 use tari_ootle_transaction::{Epoch, Transaction};
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() {
     // env_logger::builder()
     //     .filter_level(tracing::log::LevelFilter::Debug)
@@ -75,7 +78,10 @@ async fn main() {
     // The revealed amount each transaction reserves to pay its fee. It is deliberately generous rather than fitted to
     // a dry-run estimate: the budget is part of the transfer statement, so spending an estimate would change the
     // transaction it was estimated from. Whatever is not charged is refunded (see the receipt's overcharge line).
-    const FEE_BUDGET: u64 = 20_000;
+    //
+    // It has to cover the second transfer's sixteen outputs, whose aggregated range proof alone prices at roughly
+    // 98,000 µT under the testnet schedule (~6,000 µT per output plus the fixed per-statement cost).
+    const FEE_BUDGET: u64 = 250_000;
     const FIRST_INPUT_AMOUNT: u64 = 6 * TARI;
     const SECOND_INPUT_AMOUNT: u64 = 10 * TARI + FEE_BUDGET - FIRST_INPUT_AMOUNT;
     // // This builder creates a stealth transfer statement (spend proof). This is added to the transaction later.
@@ -123,7 +129,20 @@ async fn main() {
 
     // Then we'll send it to the recipient
     // This builder creates a stealth transfer statement (spend proof). This is added to the transaction later.
-    let (transfer, required_signers) = StealthTransfer::new(tari_token, &provider)
+    //
+    // One statement may carry up to 16 stealth outputs, and all of them share a single aggregated range proof. That
+    // is what makes fanning out inside one statement cheaper than splitting the same outputs across several
+    // transfers, each of which would pay the fixed per-statement cost and need its own change output. Here the
+    // budget goes to two outputs worth spending plus fourteen dust ones.
+    const DUST_OUTPUT_COUNT: u64 = 14;
+    // Dust in the literal sense: each of these holds 1 µT while costing ~6,000 µT of range-proof verification to
+    // create. Fine for showing the fan-out, ruinous as a spending habit.
+    const DUST_AMOUNT: u64 = 1;
+    const RECIPIENT_AMOUNT: u64 = 8 * TARI;
+    // The change absorbs the dust so that ∑inputs == ∑outputs still holds.
+    const CHANGE_AMOUNT: u64 = 2 * TARI - DUST_OUTPUT_COUNT * DUST_AMOUNT;
+
+    let transfer_builder = StealthTransfer::new(tari_token, &provider)
         // Spend both existing stealth inputs that are controlled by the sender address.
         // Together these are worth 10 TARI plus the second transaction's fee budget.
         .spend_stealth_input(sender_address.clone(), inputs_to_spend[0].commitment())
@@ -132,16 +151,25 @@ async fn main() {
         .to_revealed_output(FEE_BUDGET)
         // Spend to a new output (8 TARI) that we'll generate for the recipient address.
         .to_stealth_output(
-            Output::new(recipient, tari_token, const_nonzero_u64!(8 * TARI))
+            Output::new(recipient, tari_token, const_nonzero_u64!(RECIPIENT_AMOUNT))
                 // NOTE: this memo is stored on-chain, and longer memos increase fees. It is encrypted so that only the recipient can read it.
                 .with_memo_message("transfer from ootle-rs!")
         )
-        // Send some change (2 TARI) back to ourselves (NOTE once this example exits, we'll lose the keys for this output!)
-        .to_stealth_output(Output::new(sender_address, tari_token, const_nonzero_u64!(2*TARI)))
-        // Load the inputs from the provider to build the transfer statement. NOTE: this will error if the total input amounts != total output amounts.
-        .prepare()
-        .await
-        .unwrap();
+        // Send the change back to ourselves (NOTE once this example exits, we'll lose the keys for this output!)
+        .to_stealth_output(Output::new(sender_address.clone(), tari_token, const_nonzero_u64!(CHANGE_AMOUNT)));
+
+    // Fan the rest of the statement out into dust, taking the output count up to the per-statement maximum.
+    let transfer_builder = (0..DUST_OUTPUT_COUNT).fold(transfer_builder, |builder, _| {
+        builder.to_stealth_output(Output::new(
+            sender_address.clone(),
+            tari_token,
+            NonZeroU64::new(DUST_AMOUNT).expect("DUST_AMOUNT is non-zero"),
+        ))
+    });
+
+    // Load the inputs from the provider to build the transfer statement. NOTE: this will error if the total input
+    // amounts != total output amounts.
+    let (transfer, required_signers) = transfer_builder.prepare().await.unwrap();
 
     // We'll generate an unsigned transaction directly using the Transaction builder. In future, we may make this
     // easier.
