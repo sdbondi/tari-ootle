@@ -486,32 +486,28 @@ fn many_outputs_in_one_transfer() {
     use std::{iter, time::Instant};
 
     use tari_engine_types::limits;
-    let outputs = [1000];
-    let mint = stealth::generate_mint_statement(outputs, 0u64, None);
+    // The whole minted amount is spent into equal outputs, so it must divide exactly by the output count or the
+    // balance proof will not sum.
+    const VALUE_PER_OUTPUT: u64 = 125;
+    let max_outputs = limits::STEALTH_LIMITS.max_outputs;
+    let total = VALUE_PER_OUTPUT * u64::try_from(max_outputs).unwrap();
+    let mint = stealth::generate_mint_statement([total], 0u64, None);
     let (_faucet, faucet_resx) = setup(&mut test, &mint, None);
 
     let timer = Instant::now();
 
-    assert_eq!(
-        1000 % limits::STEALTH_LIMITS.max_outputs,
-        0,
-        "Balance proof will fail due to rounding. Adjust the test amount to be a multiple of the limit"
-    );
     let transfer_from_faucet = stealth::generate_transfer_data(
         [MaskAndValue {
             mask: mint.output_masks[0].clone(),
-            value: 1000,
+            value: total,
         }],
         0u64,
-        iter::repeat_n(
-            u64::try_from(1000 / limits::STEALTH_LIMITS.max_outputs).unwrap(),
-            limits::STEALTH_LIMITS.max_outputs,
-        ),
+        iter::repeat_n(VALUE_PER_OUTPUT, max_outputs),
         0,
     );
 
-    // Release mode: ± 23s on M1 Mac, 3.7s on Ryzen 5950x (single thread, total test time 6.1s) for 500 outputs. Current
-    // limit is 8 TODO: verification time (depending on hardware) of 2-10+ seconds is still a problem, determine
+    // Release mode: ± 23s on M1 Mac, 3.7s on Ryzen 5950x (single thread, total test time 6.1s) for 500 outputs.
+    // TODO: verification time (depending on hardware) of 2-10+ seconds is still a problem, determine
     // what the upper bound for utxos should be. Parts of the verification could be parallelized (helps, assuming
     // some minimum CPU spec for a VN). Note that generation in Debug mode took 16 minutes on Ryzen 5950x !
     eprintln!("Generated transfer in {:.2?}", timer.elapsed());
@@ -530,7 +526,7 @@ fn many_outputs_in_one_transfer() {
         .up_iter()
         .filter_map(|(_, substate)| substate.substate_value().as_utxo())
         .collect::<Vec<_>>();
-    assert_eq!(utxos.len(), 8);
+    assert_eq!(utxos.len(), max_outputs);
 }
 
 pub fn try_brute_force_stealth_balance<L>(

@@ -87,7 +87,7 @@ const NATIVE_TRIALS: usize = 100;
 
 /// Output counts the per-output marginal is fitted over. Powers of two so an aggregated bulletproof
 /// never pays a padding step mid-range.
-const OUTPUT_COUNTS: [usize; 4] = [1, 2, 4, 8];
+const OUTPUT_COUNTS: [usize; 5] = [1, 2, 4, 8, 16];
 /// Input counts for the per-input marginal.
 const INPUT_COUNTS: [usize; 2] = [100, 1000];
 
