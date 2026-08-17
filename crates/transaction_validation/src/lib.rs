@@ -36,9 +36,6 @@ pub use template_exists::*;
 mod weight;
 pub use weight::*;
 
-mod noop;
-pub use noop::*;
-
 mod with_context;
 pub use with_context::*;
 

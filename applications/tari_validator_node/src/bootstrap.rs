@@ -82,7 +82,6 @@ use tari_ootle_transaction_validation::{
     BasicValidations,
     BlobReferenceValidator,
     EpochRangeValidator,
-    NoopValidator,
     PublishTemplateLimitValidator,
     SignatureLimitValidator,
     StealthTransactionLimitsValidator,
@@ -94,6 +93,7 @@ use tari_ootle_transaction_validation::{
     TransactionValidityWindowValidator,
     TransactionWeightValidator,
     Validator,
+    WithContext,
 };
 use tari_rpc_framework::RpcServer;
 use tari_shutdown::ShutdownSignal;
@@ -365,8 +365,7 @@ pub async fn spawn_services(
     let transaction_executor = TariBlockTransactionExecutor::new(transaction_processor, consensus_constants.clone());
 
     let transaction_validator = TariBlockTransactionValidator::new(
-        create_structural_transaction_validator(config.network, template_provider.clone(), &consensus_constants)
-            .boxed(),
+        create_node_transaction_validator(config.network, template_provider.clone(), &consensus_constants).boxed(),
         EpochRangeValidator::new().boxed(),
     );
 
@@ -520,7 +519,12 @@ async fn spawn_p2p_rpc<TStateStore: StateStore + Clone + Send + Sync + 'static>(
     Ok(handle)
 }
 
-pub fn create_structural_transaction_validator<TProvider: TemplateProvider>(
+/// Builds every validation a validator node applies without an epoch: the structural checks plus the
+/// node-local ones.
+///
+/// `TemplateExistsValidator` depends on lagging local state and can false-reject, so this chain is node-local
+/// rather than structural — `TemplateNotFound` is correspondingly not sender fault.
+pub fn create_node_transaction_validator<TProvider: TemplateProvider>(
     network: Network,
     template_manager: TProvider,
     constants: &ConsensusConstants,
@@ -548,10 +552,10 @@ pub fn create_mempool_transaction_validator<TProvider: TemplateProvider>(
     template_manager: TProvider,
     constants: &ConsensusConstants,
 ) -> impl Validator<Transaction, Context = Epoch, Error = TransactionValidationError> + use<TProvider> {
-    NoopValidator::<Epoch, TransactionValidationError>::new()
+    WithContext::<Epoch, Transaction, TransactionValidationError>::new()
         .map_context(
             |_| (),
-            create_structural_transaction_validator(network, template_manager, constants),
+            create_node_transaction_validator(network, template_manager, constants),
         )
         .and_then(EpochRangeValidator::new())
         .and_then(TransactionValidityWindowValidator::new(
