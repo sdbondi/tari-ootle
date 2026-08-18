@@ -126,7 +126,6 @@ export function TransferNftDialog(props: TransferNftDialogProps) {
     setTransferFormState,
     setValidity,
     setTransferResult,
-    setAutoCloseTimeoutId,
     resetState,
   } = useNftTransferStore();
 
@@ -272,12 +271,6 @@ export function TransferNftDialog(props: TransferNftDialogProps) {
           success: true,
           message: "Your NFT has been successfully transferred!",
         });
-
-        // Auto-close after 10 seconds
-        const timeoutId = setTimeout(() => {
-          handleAutoCloseAfterSuccess();
-        }, 10000);
-        setAutoCloseTimeoutId(timeoutId);
       } else {
         setTransferResult({
           success: false,
@@ -295,18 +288,12 @@ export function TransferNftDialog(props: TransferNftDialogProps) {
   };
 
   const handleClose = () => {
-    resetState(preSelectedNftId, preSelectedResourceAddress);
-    if (transferResult?.success) {
-      props.onSendComplete?.();
-    } else {
-      props.handleClose?.();
-    }
-  };
-
-  const handleAutoCloseAfterSuccess = () => {
+    const wasSuccessful = transferResult?.success;
     resetState(preSelectedNftId, preSelectedResourceAddress);
     props.handleClose?.();
-    props.onSendComplete?.();
+    if (wasSuccessful) {
+      props.onSendComplete?.();
+    }
   };
 
   const handleNftsChange = (event: SelectChangeEvent<string[]>) => {
@@ -362,28 +349,23 @@ export function TransferNftDialog(props: TransferNftDialogProps) {
     }
   }, [loadedNfts]);
 
+  // Seed the form from the props captured when the dialog opened. The NFT props are derived from the account's
+  // NFT list, which the transfer invalidates, so re-seeding on their identity would wipe the result step out
+  // from under the user the moment the refreshed list arrives.
   useEffect(() => {
-    if (props.open && account) {
-      // When dialog opens, always reset to ensure clean state
-      resetState(preSelectedNftId, preSelectedResourceAddress, substateIdToString(account.component_address));
-
-      // If batch-selected NFTs are provided, pre-fill the form
-      if (hasBatchSelection) {
-        setTransferFormState({
-          nfts: preSelectedNfts.map((nft) => nft.nft_id),
-          resourceAddress: preSelectedNfts[0].resource_address,
-        });
-        setValidity({ nfts: true });
-      }
+    if (!props.open || !account) {
+      return;
     }
-  }, [
-    props.open,
-    preSelectedNftId,
-    preSelectedResourceAddress,
-    account?.component_address,
-    hasBatchSelection,
-    preSelectedNfts,
-  ]);
+    resetState(preSelectedNftId, preSelectedResourceAddress, substateIdToString(account.component_address));
+
+    if (hasBatchSelection) {
+      setTransferFormState({
+        nfts: preSelectedNfts.map((nft) => nft.nft_id),
+        resourceAddress: preSelectedNfts[0].resource_address,
+      });
+      setValidity({ nfts: true });
+    }
+  }, [props.open, account?.component_address]);
 
   return (
     <Dialog open={props.open} onClose={handleClose} maxWidth="sm" fullWidth>

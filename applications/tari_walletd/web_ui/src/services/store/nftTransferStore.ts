@@ -60,9 +60,6 @@ interface NftTransferState {
   // Result state
   transferResult: TransferResult | null;
 
-  // Auto-close state
-  autoCloseTimeoutId: NodeJS.Timeout | null;
-
   // Actions
   setCurrentStep: (step: DialogStep) => void;
   setDisabled: (disabled: boolean) => void;
@@ -71,7 +68,6 @@ interface NftTransferState {
   setEstimatedFee: (fee: number | null) => void;
   setIsEstimatingFee: (estimating: boolean) => void;
   setTransferResult: (result: TransferResult | null) => void;
-  setAutoCloseTimeoutId: (timeoutId: NodeJS.Timeout | null) => void;
 
   // Complex actions
   updateFormValue: (name: string, value: string, isValid?: boolean) => void;
@@ -115,7 +111,6 @@ export const useNftTransferStore = create<NftTransferState>((set, get) => ({
   estimatedFee: null,
   isEstimatingFee: false,
   transferResult: null,
-  autoCloseTimeoutId: null,
 
   // Simple setters
   setCurrentStep: (step) => set({ currentStep: step }),
@@ -131,7 +126,6 @@ export const useNftTransferStore = create<NftTransferState>((set, get) => ({
   setEstimatedFee: (fee) => set({ estimatedFee: fee }),
   setIsEstimatingFee: (estimating) => set({ isEstimatingFee: estimating }),
   setTransferResult: (result) => set({ transferResult: result }),
-  setAutoCloseTimeoutId: (timeoutId) => set({ autoCloseTimeoutId: timeoutId }),
 
   // Complex actions
   updateFormValue: (name, value, isValid) => {
@@ -151,13 +145,6 @@ export const useNftTransferStore = create<NftTransferState>((set, get) => ({
   },
 
   resetState: (preSelectedNftId, preSelectedResourceAddress, accountAddress) => {
-    const { autoCloseTimeoutId } = get();
-
-    // Clear any active timeout
-    if (autoCloseTimeoutId) {
-      clearTimeout(autoCloseTimeoutId);
-    }
-
     set({
       currentStep: "form",
       disabled: false,
@@ -166,7 +153,6 @@ export const useNftTransferStore = create<NftTransferState>((set, get) => ({
       estimatedFee: null,
       isEstimatingFee: false,
       transferResult: null,
-      autoCloseTimeoutId: null,
     });
   },
 
