@@ -49,7 +49,7 @@ ended on, and the validator is still paid for the work it did.
   <text x="44" y="174" fill="#388bfd" font-size="14" font-weight="bold">1 · Fee intent</text>
   <text x="44" y="196" fill="#8b949e" font-size="12">The fee instructions run: withdraw, claim a Minotari burn, swap, reveal.</text>
   <text x="44" y="214" fill="#8b949e" font-size="12">Charges accrue per host call, template load and signature check.</text>
-  <text x="44" y="232" fill="#8b949e" font-size="12">Compute allowance = what is paid so far + 32M free grace points.</text>
+  <text x="44" y="232" fill="#8b949e" font-size="12">Compute allowance = a flat 32M credit, whatever has been paid.</text>
   <text x="44" y="250" fill="#8b949e" font-size="12">pay_fee records a payment — TARI only, and never zero.</text>
   <line x1="284" y1="258" x2="284" y2="290" stroke="#484f58" stroke-width="2" marker-end="url(#feeArrow)"/>
 
@@ -75,7 +75,7 @@ ended on, and the validator is still paid for the work it did.
   <text x="44" y="470" fill="#388bfd" font-size="14" font-weight="bold">3 · Main intent</text>
   <text x="44" y="492" fill="#8b949e" font-size="12">The main instructions run against the checkpointed state.</text>
   <text x="44" y="510" fill="#8b949e" font-size="12">Compute allowance = the part of the payment the charges have not spent.</text>
-  <text x="44" y="528" fill="#8b949e" font-size="12">The grace credit is gone; a further pay_fee is rejected here.</text>
+  <text x="44" y="528" fill="#8b949e" font-size="12">The flat credit is gone; a further pay_fee is rejected here.</text>
   <text x="44" y="546" fill="#8b949e" font-size="12">Charges keep accruing per host call and per verification.</text>
   <line x1="544" y1="499" x2="576" y2="499" stroke="#f0883e" stroke-width="2" marker-end="url(#feeArrow)"/>
 
@@ -180,10 +180,17 @@ Rules and checks applied to a payment:
 - Metering points accumulate for WASM and native crypto, but are not priced until finalisation.
 
 **Compute on credit.** A transaction cannot pay before it has sourced its funds, so the fee intent
-runs with a credit of `FREE_COMPUTE_GRACE_POINTS` (32,000,000 points) on top of whatever its payments
-already fund. That is roughly 3× the most expensive legitimate fee-sourcing flow. Exhaust it without
-paying and execution traps out of gas — it is the hard bound on free compute a non-paying transaction
-can extract from a validator.
+runs on a credit of `FREE_COMPUTE_GRACE_POINTS` (32,000,000 points) — roughly 3× the most expensive
+legitimate fee-sourcing flow. Exhaust it and execution traps out of gas, reported as
+`FeeIntentComputeExceeded`. It is the hard bound on free compute a transaction can extract from a
+validator.
+
+**The credit is flat: paying does not raise it.** A fee intent that fails leaves no checkpoint to
+fall back to, so the transaction settles as a rejection that collects nothing — compute funded by a
+payment here would be work done and never paid for, repeatably, with the same funds. That would also
+make the main intent pointless: identical work, free when it fails. Anything needing more than the
+credit belongs in the main instructions, where the fee already paid funds it and a failure still
+commits the fee intent.
 
 ---
 
@@ -223,7 +230,7 @@ The main instructions run against the post-checkpoint state and keep accruing `R
 allowance = points_funded_by( spendable(payments) − charges_so_far )
 ```
 
-The free grace credit is gone — sourcing the fee was its only purpose, and that is done. Funding
+The flat credit is gone — sourcing the fee was its only purpose, and that is done. Funding
 compute from the *unspent* part of the payment (rather than from the whole of it) is what keeps a
 transaction from spending its entire payment on execution and then being unable to afford even its
 own fee-intent fallback, which would settle as a rejection that collects nothing.
@@ -233,6 +240,7 @@ Three ceilings apply on top of each other:
 | Bound | Value | Effect when hit |
 |---|---|---|
 | Payment-funded allowance | derived, see above | out-of-gas reported as `InsufficientFeesForCompute` |
+| Fee-intent credit (stage 1 only) | 32,000,000 points, flat | out-of-gas reported as `FeeIntentComputeExceeded` |
 | `MAX_WASM_POINTS_PER_TRANSACTION` | 100,000,000 | out-of-gas, hard cap |
 | `MAX_NATIVE_POINTS_PER_TRANSACTION` | 2,400,000,000 | `MaxNativeExecutionPointsExceeded` |
 
