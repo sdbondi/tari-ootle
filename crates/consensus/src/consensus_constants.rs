@@ -119,10 +119,9 @@ pub struct ConsensusConstants {
 
 impl ConsensusConstants {
     /// Committee size used when `TARI_DEVNET_COMMITTEE_SIZE` is unset, and the size [`Self::DEVNET`]
-    /// is const-evaluated at.
+    /// is built at.
     pub const DEFAULT_DEVNET_COMMITTEE_SIZE: u32 = 7;
-    /// Const-evaluates [`Self::devnet`], so every shipped network's constants are checked at compile
-    /// time whether they are a const item or a const function of one argument.
+    /// Devnet at the default committee size.
     pub const DEVNET: Self = Self::devnet(Self::DEFAULT_DEVNET_COMMITTEE_SIZE);
     pub const ESMERALDA: Self = Self {
         base_layer_confirmations: 100,
@@ -300,17 +299,20 @@ impl ConsensusConstants {
     }
 }
 
+/// Forces [`ConsensusConstants::DEVNET`] to be evaluated, and with it `devnet`'s body. The other
+/// networks are const items their constructors return, so they are evaluated wherever they are
+/// built; `devnet` takes an argument and builds inline, so nothing else reaches it at compile time.
+const _: ConsensusConstants = ConsensusConstants::DEVNET;
+
 impl From<Network> for ConsensusConstants {
     fn from(network: Network) -> Self {
         match network {
             Network::MainNet => Self::mainnet(),
             // Allow committee size to be overridden for LocalNet
-            Network::LocalNet => Self::devnet(
-                env::var("TARI_DEVNET_COMMITTEE_SIZE")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(Self::DEFAULT_DEVNET_COMMITTEE_SIZE),
-            ),
+            Network::LocalNet => env::var("TARI_DEVNET_COMMITTEE_SIZE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .map_or(Self::DEVNET, Self::devnet),
             Network::Esmeralda => Self::esmeralda(),
             Network::StageNet | Network::NextNet | Network::Igor => Self::testnet(),
         }
