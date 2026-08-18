@@ -48,22 +48,20 @@ pub const MAX_WASM_POINTS_PER_TRANSACTION: u64 = 100_000_000;
 /// admit can trip this one. Tightening it means tightening those caps first.
 pub const MAX_NATIVE_POINTS_PER_TRANSACTION: u64 = 2_400_000_000;
 
-/// Execution metering points a transaction may consume *before* its fee payments cover them. A
-/// transaction sources its fee in the fee intent (withdraw, claim-burn, AMM swap to TARI, stealth
-/// transfer, …) and only then calls `pay_fee`, so it must be allowed to run some compute on credit;
-/// this bounds that credit. Beyond it, each WASM call's metering allowance is capped to the points
-/// the fees paid so far can cover (`WasmProcess::invoke`), and native verification pre-charges its
-/// point cost against the same allowance, so a transaction that does not pay traps out-of-gas here
-/// rather than consuming the full [`MAX_WASM_POINTS_PER_TRANSACTION`] (or unmetered native crypto)
-/// for free. This is the bound on total free compute — WASM and native — a non-paying transaction
-/// can extract from a validator. Payments raise the allowance above this value proportionally to
-/// the WASM fee rate.
+/// Execution metering points the fee intent may consume, whatever it has paid. A transaction sources
+/// its fee in the fee intent (withdraw, claim-burn, AMM swap to TARI, stealth transfer, …) and only
+/// then calls `pay_fee`, so it must be allowed to run some compute on credit; this bounds that
+/// credit. Each WASM call's metering allowance is capped to what remains of it
+/// (`WasmProcess::invoke`), and native verification pre-charges its point cost against the same
+/// figure, so a fee intent that exceeds it traps out-of-gas rather than consuming the full
+/// [`MAX_WASM_POINTS_PER_TRANSACTION`] (or unmetered native crypto). This is the bound on total free
+/// compute — WASM and native — a transaction can extract from a validator.
 ///
-/// The credit applies to the fee intent only. Sourcing a fee is the whole reason a transaction may
-/// run anything before paying, so once the fee checkpoint is taken the credit ends and the remaining
-/// instructions are funded by the payment alone (`StateTracker::wasm_point_allowance`). Extending it
-/// past the checkpoint would hand every transaction this many points of compute it never pays for,
-/// on top of what it bought.
+/// The credit is flat: a payment does not raise it. A fee intent that fails leaves no checkpoint to
+/// fall back to, so the transaction settles as a rejection that collects nothing — compute funded by
+/// a payment there would be work done and never paid for, repeatably, with the same funds. Anything
+/// needing more than the credit belongs in the main instructions, where the fee already paid funds
+/// it (`StateTracker::compute_allowance`) and a failure still commits the fee intent.
 ///
 /// Sized at ~3x the most expensive legitimate fee-sourcing flow: paying a fee from stealth UTXOs
 /// (one transfer: fixed cost + 1 stealth change output + up to 64 dust inputs ≈ 10.8M points at

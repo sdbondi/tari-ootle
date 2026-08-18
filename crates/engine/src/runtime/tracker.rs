@@ -102,6 +102,25 @@ impl<TStore> FinalizedState<TStore> {
     }
 }
 
+/// The compute a transaction may still consume, and what authorizes it.
+#[derive(Debug, Clone, Copy)]
+pub struct ComputeAllowance {
+    /// Metering points, counting WASM execution and native verification together.
+    pub points: u64,
+    pub funding: ComputeFunding,
+}
+
+/// What is paying for the compute an allowance authorizes. Which one binds decides what a
+/// transaction that exceeds it is told: a payment-funded allowance rises with the fee, the fee
+/// intent's credit does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComputeFunding {
+    /// The flat credit the fee intent runs on, sized to source a fee and nothing more.
+    FeeIntentCredit,
+    /// What the payment has left after the charges standing against it.
+    Payment,
+}
+
 #[derive(Debug)]
 pub struct StateTracker<TStore> {
     working_state: Option<WorkingState<TStore>>,
@@ -148,24 +167,25 @@ impl<TStore: StateReader> StateTracker<TStore> {
         self.transaction_weight
     }
 
-    /// The maximum WASM metering points this transaction may consume given the fees it has paid so
-    /// far, used by `WasmProcess::invoke` to cap each call's metering allowance. Returns `None` when
-    /// no payment-funded bound applies (WASM execution is not priced, or this is a dry run) — only
-    /// the per-transaction hard cap then constrains compute.
+    /// The compute this transaction may still consume, and what authorizes it. `None` when no bound
+    /// applies beyond the per-transaction hard cap — WASM execution is not priced, or this is a dry
+    /// run. Used by `WasmProcess::invoke` to cap each call's metering allowance, and by native
+    /// verification to pre-charge against the same figure.
     ///
-    /// Within the fee intent the allowance is the points the fees paid can cover plus
-    /// [`limits::FREE_COMPUTE_GRACE_POINTS`] of credit, so a transaction can run its fee-sourcing
-    /// instructions before it pays, while a transaction that never pays cannot consume more than the
-    /// grace. Past the fee checkpoint the credit no longer applies: the transaction has paid what its
-    /// fee intent charged, and the compute it may still run is funded by that payment alone.
+    /// The fee intent runs on a flat [`limits::FREE_COMPUTE_GRACE_POINTS`] of credit, whatever it
+    /// has paid. Sourcing a fee is the whole reason a transaction may run anything before paying,
+    /// and that is all the credit is sized for. Letting a payment raise this allowance would make
+    /// the fee intent the only place worth executing anything: a failure there leaves no checkpoint
+    /// to fall back to, so the transaction settles as a rejection that collects nothing, and the
+    /// work would be done and never paid for — repeatably, with the same funds. Work that needs
+    /// more than the credit belongs in the main intent, where the fee already paid funds it and a
+    /// failure still commits the fee intent.
     ///
-    /// Compute is funded by what the payment has *left*, not by the whole of it. A transaction that
-    /// cannot pay for the state it commits commits only its fee intent, and that state was priced
-    /// onto the charges when the checkpoint was taken — so the charges standing here already
-    /// include what the fallback costs, bar the compute being authorized. Funding compute out of the
-    /// full payment instead would let a transaction spend the whole of it on execution and leave its
-    /// own fee-intent commit unaffordable, which settles as a rejection that collects nothing: the
-    /// work would be done and never paid for.
+    /// Past the checkpoint the credit ends and compute is funded by what the payment has *left*,
+    /// not by the whole of it. The charges standing at the checkpoint are what the fallback commit
+    /// costs, so funding compute out of the full payment would let a transaction spend the lot on
+    /// execution and leave its own fee-intent commit unaffordable — a rejection that again collects
+    /// nothing.
     ///
     /// This is measured against the charges *standing when it is asked*. Anything charged after the
     /// last call — a host call inside the final invocation — is outside the figure, so it bounds the
@@ -173,24 +193,26 @@ impl<TStore: StateReader> StateTracker<TStore> {
     ///
     /// The exhaust burn is taken over whatever the charges come to, so the charges themselves can
     /// only spend the payment net of it.
-    pub fn wasm_point_allowance(&self) -> Option<u64> {
+    pub fn compute_allowance(&self) -> Option<ComputeAllowance> {
         let rate = self.wasm_metering_rate;
-        // The credit exists only so a transaction can source its fee before paying. Taking the fee
-        // checkpoint is precisely the point at which that need has been met, so the credit ends there.
         let is_fee_intent = self.fee_checkpoint.is_none();
         self.read_with(|state| {
             let fee_state = state.fee_state();
-            if fee_state.is_dry_run() {
+            if fee_state.is_dry_run() || !rate.prices_execution() {
                 return None;
+            }
+            if is_fee_intent {
+                return Some(ComputeAllowance {
+                    points: limits::FREE_COMPUTE_GRACE_POINTS,
+                    funding: ComputeFunding::FeeIntentCredit,
+                });
             }
             let unspent = spendable_on_charges(fee_state.total_payments(), fee_state.burn_rate_bps())
                 .saturating_sub(fee_state.total_charges());
-            let funded = rate.points_funded_by(unspent)?;
-            if is_fee_intent {
-                Some(funded.saturating_add(limits::FREE_COMPUTE_GRACE_POINTS))
-            } else {
-                Some(funded)
-            }
+            Some(ComputeAllowance {
+                points: rate.points_funded_by(unspent)?,
+                funding: ComputeFunding::Payment,
+            })
         })
     }
 
@@ -388,15 +410,22 @@ impl<TStore: StateReader> StateTracker<TStore> {
                 max_points: limits::MAX_NATIVE_POINTS_PER_TRANSACTION,
             });
         }
-        if let Some(allowance) = self.wasm_point_allowance() {
+        if let Some(allowance) = self.compute_allowance() {
             let consumed = self
                 .accumulated_wasm_points()
                 .saturating_add(self.accumulated_native_points());
-            if consumed.saturating_add(points) > allowance {
+            if consumed.saturating_add(points) > allowance.points {
+                if allowance.funding == ComputeFunding::FeeIntentCredit {
+                    return Err(RuntimeError::FeeIntentComputeExceeded {
+                        required_points: points,
+                        consumed_points: consumed,
+                        credit_points: allowance.points,
+                    });
+                }
                 return Err(RuntimeError::InsufficientFeesForNativeExecution {
                     required_points: points,
                     consumed_points: consumed,
-                    allowance,
+                    allowance: allowance.points,
                 });
             }
         }

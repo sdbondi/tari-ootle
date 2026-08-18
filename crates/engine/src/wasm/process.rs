@@ -48,7 +48,7 @@ use wasmer::{AsStoreMut, Function, FunctionEnv, FunctionEnvMut, Instance, Store,
 use wasmer_middlewares::metering::{MeteringPoints, get_remaining_points, set_remaining_points};
 
 use crate::{
-    runtime::Runtime,
+    runtime::{ComputeFunding, Runtime},
     traits::Invokable,
     wasm::{
         LoadedWasmTemplate,
@@ -374,20 +374,22 @@ impl Invokable<Store> for WasmProcess {
         // The allowance is shared with native verification (which pre-charges its point cost), so
         // it is reduced by the combined consumption; the hard cap above bounds WASM work only.
         let native_consumed = self.env.state().interface().native_points_consumed();
-        let paid_allowance_remaining = self
-            .env
-            .state()
-            .interface()
-            .wasm_point_allowance()
-            .map(|allowance| allowance.saturating_sub(consumed.saturating_add(native_consumed)));
-        let points_before = match paid_allowance_remaining {
+        let allowance = self.env.state().interface().compute_allowance();
+        let allowance_remaining = allowance.map(|allowance| {
+            allowance
+                .points
+                .saturating_sub(consumed.saturating_add(native_consumed))
+        });
+        let points_before = match allowance_remaining {
             Some(remaining) => per_call_cap.min(budget_remaining).min(remaining),
             None => per_call_cap.min(budget_remaining),
         };
-        // Whether the paid-fee allowance — not the per-transaction hard cap — is what bounds this
-        // call. Used to report an out-of-gas trap here as insufficient fees rather than a hit cap.
-        let fee_allowance_is_binding =
-            paid_allowance_remaining.is_some_and(|remaining| remaining < budget_remaining && remaining <= per_call_cap);
+        // Whether the fee allowance — not the per-transaction hard cap — is what bounds this call.
+        // Used to report an out-of-gas trap here against what authorized the allowance rather than
+        // as a hit cap.
+        let binding_funding = allowance_remaining
+            .is_some_and(|remaining| remaining < budget_remaining && remaining <= per_call_cap)
+            .then(|| allowance.expect("BUG: allowance_remaining is Some").funding);
         set_remaining_points(store, &self.instance, points_before);
         // Expose the in-flight meter to host calls: consumption inside this invocation must be
         // visible to budget/allowance checks made mid-call (native verification pre-charges,
@@ -446,10 +448,21 @@ impl Invokable<Store> for WasmProcess {
                         runtime_error: err,
                     });
                 }
-                if exhausted && fee_allowance_is_binding {
-                    return Err(WasmExecutionError::InsufficientFeesForCompute {
-                        consumed_points: consumed.saturating_add(points_consumed),
-                    });
+                if exhausted {
+                    match binding_funding {
+                        Some(ComputeFunding::FeeIntentCredit) => {
+                            return Err(WasmExecutionError::FeeIntentComputeExceeded {
+                                consumed_points: consumed.saturating_add(points_consumed),
+                                credit_points: limits::FREE_COMPUTE_GRACE_POINTS,
+                            });
+                        },
+                        Some(ComputeFunding::Payment) => {
+                            return Err(WasmExecutionError::InsufficientFeesForCompute {
+                                consumed_points: consumed.saturating_add(points_consumed),
+                            });
+                        },
+                        None => {},
+                    }
                 }
                 error!(target: LOG_TARGET, "Error calling function: {}", err);
                 Err(err.into())

@@ -226,6 +226,16 @@ pub enum RuntimeError {
     #[error("Insufficient fees paid: required {required_fee}, paid {fees_paid}")]
     InsufficientFeesPaid { required_fee: u64, fees_paid: u64 },
     #[error(
+        "Native verification requiring {required_points} points exceeds the fee intent's {credit_points} points of \
+         compute credit: {consumed_points} already consumed. The credit is a flat allowance for sourcing a fee and \
+         does not rise with the fee paid — move this work to the main instructions."
+    )]
+    FeeIntentComputeExceeded {
+        required_points: u64,
+        consumed_points: u64,
+        credit_points: u64,
+    },
+    #[error(
         "Insufficient fees to fund native verification requiring {required_points} points: {consumed_points} of \
          {allowance} allowance points already consumed"
     )]

@@ -110,7 +110,7 @@ use tari_template_lib::{
         stealth::StealthTransferStatement,
     },
 };
-pub use tracker::{FinalizedState, StateTracker};
+pub use tracker::{ComputeAllowance, ComputeFunding, FinalizedState, StateTracker};
 pub use working_state::ChargeableState;
 
 use crate::runtime::{locking::LockedSubstate, scope::PushCallFrame};
@@ -284,7 +284,7 @@ pub trait RuntimeInterface {
     /// The maximum Wasmer metering points the transaction may consume given the fees paid so far,
     /// used by `WasmProcess::invoke` to cap each call's allowance so unpaid compute cannot exceed
     /// the grace. `None` means no payment-funded bound applies (only the per-transaction hard cap).
-    fn wasm_point_allowance(&self) -> Option<u64>;
+    fn compute_allowance(&self) -> Option<ComputeAllowance>;
 
     fn resolve_args(
         &self,

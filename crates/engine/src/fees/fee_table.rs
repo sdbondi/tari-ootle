@@ -217,6 +217,12 @@ impl WasmMeteringRate {
         }
     }
 
+    /// Whether this rate prices WASM execution at all. A rate that does not carries no compute
+    /// bound beyond the per-transaction hard cap, since there is nothing for a payment to fund.
+    pub fn prices_execution(&self) -> bool {
+        self.per_point_cost > 0
+    }
+
     /// The WASM metering points that `fees_paid` microtari pre-fund: the inverse of the fee module's
     /// charge (`points / divisor * per_point_cost`). `None` when WASM execution is not priced
     /// (`per_point_cost == 0`) — payment cannot fund what is not charged, so no payment-derived

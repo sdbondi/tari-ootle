@@ -118,10 +118,10 @@ fn enable_point_priced_fees(test: &mut TemplateTest) {
     test.enable_fees();
 }
 
-/// A non-paying transaction whose fee intent carries a statement priced above the grace is rejected
-/// by the allowance pre-charge — before any of its crypto runs. The statement's range proof is
+/// A transaction whose fee intent carries a statement priced above the credit is rejected by the
+/// allowance pre-charge — before any of its crypto runs. The statement's range proof is
 /// deliberately corrupted: were the verification performed, the failure would be a range-proof
-/// error, so the insufficient-fees rejection proves the charge fired first.
+/// error, so the credit rejection proves the charge fired first.
 #[test]
 fn unpaid_native_verification_traps_before_the_crypto_runs() {
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
@@ -142,7 +142,7 @@ fn unpaid_native_verification_traps_before_the_crypto_runs() {
         vec![],
     );
 
-    assert_reject_reason(reason, "Insufficient fees to fund native verification");
+    assert_reject_reason(reason, "points of compute credit");
 }
 
 /// Revealed-only statements (no stealth/confidential inputs or outputs) short-circuit every
@@ -230,7 +230,7 @@ fn in_flight_wasm_counts_toward_the_native_allowance() {
         vec![],
     );
 
-    assert_reject_reason(reason, "Insufficient fees to fund native verification");
+    assert_reject_reason(reason, "points of compute credit");
 }
 
 /// A paying transaction's native verification is charged under `FeeSource::NativeExecution` at the

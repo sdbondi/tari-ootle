@@ -1,12 +1,13 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-//! The per-transaction WASM compute budget is bounded by the fees paid. A transaction may run up to
-//! `FREE_COMPUTE_GRACE_POINTS` of compute on credit — enough to source its fee (withdraw, claim-burn,
-//! AMM swap, …) before it calls `pay_fee` — and beyond that each WASM call's metering allowance is
-//! capped to the points the fees paid so far can cover. These tests prove a transaction cannot
-//! extract more than the grace of unpaid compute, that paying more raises the allowance, and that
-//! fee-sourcing compute within the grace is allowed in the fee intent.
+//! The per-transaction WASM compute budget is bounded by the fees paid, except in the fee intent,
+//! which runs on a flat `FREE_COMPUTE_GRACE_POINTS` of credit — enough to source its fee (withdraw,
+//! claim-burn, AMM swap, …) before it calls `pay_fee`. Past the fee checkpoint each WASM call's
+//! metering allowance is capped to the points the fees paid so far can cover. These tests prove a
+//! transaction cannot extract more than the credit of unpaid compute, that paying more raises the
+//! allowance in the main instructions but not in the fee intent, and that fee-sourcing compute
+//! within the credit is allowed.
 
 use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_engine::fees::FeeTable;
@@ -80,6 +81,13 @@ fn assert_insufficient_fees(reason: &RejectReason) {
     assert!(
         matches!(reason, RejectReason::ExecutionFailure(msg) if msg.contains("Insufficient fees")),
         "expected an insufficient-fees-for-compute failure, got {reason:?}",
+    );
+}
+
+fn assert_fee_intent_credit_exceeded(reason: &RejectReason) {
+    assert!(
+        matches!(reason, RejectReason::ExecutionFailure(msg) if msg.contains("compute credit")),
+        "expected the fee intent's compute credit to be the binding limit, got {reason:?}",
     );
 }
 
@@ -236,5 +244,40 @@ fn fee_intent_cannot_exceed_grace_compute() {
         .build_and_seal(&key);
 
     let reason = test.execute_expect_failure(tx, vec![owner]);
-    assert_insufficient_fees(&reason);
+    assert_fee_intent_credit_exceeded(&reason);
+}
+
+/// The fee intent's credit is flat: paying first does not buy more compute inside it. A payment
+/// that comfortably funds the call in the main instructions still leaves it trapped when the call
+/// runs in the fee intent.
+///
+/// Without this, the fee intent would be the only place worth executing anything. A failure there
+/// leaves no checkpoint to fall back to, so the transaction settles as a rejection that collects
+/// nothing — the same work in the main instructions falls back to a fee-intent commit and is paid
+/// for.
+#[test]
+fn paying_first_does_not_raise_the_fee_intents_allowance() {
+    let Harness {
+        mut test,
+        bench,
+        account,
+        owner,
+        key,
+        per_round,
+    } = setup();
+
+    let rounds = ABOVE_GRACE_POINTS / per_round;
+    // The payment `paying_more_raises_the_compute_allowance` proves is enough to run this call in
+    // the main instructions.
+    let fee_payment = ABOVE_GRACE_POINTS + 10_000_000;
+    let tx = Transaction::builder_localnet(Epoch(1))
+        .with_fee_instructions_builder(|builder| {
+            builder
+                .pay_fee_from_component(account, fee_payment)
+                .call_function(bench, "bench_div_u64", args![rounds])
+        })
+        .build_and_seal(&key);
+
+    let reason = test.execute_expect_failure(tx, vec![owner]);
+    assert_fee_intent_credit_exceeded(&reason);
 }

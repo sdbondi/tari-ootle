@@ -28,6 +28,12 @@ pub enum WasmExecutionError {
          the paid fees cover. Increase the transaction fee."
     )]
     InsufficientFeesForCompute { consumed_points: u64 },
+    #[error(
+        "The fee intent exceeded its {credit_points} points of compute credit after consuming {consumed_points} WASM \
+         metering points. The credit is a flat allowance for sourcing a fee and does not rise with the fee paid — \
+         move this work to the main instructions."
+    )]
+    FeeIntentComputeExceeded { consumed_points: u64, credit_points: u64 },
     #[error("Expected function {function} to return a pointer")]
     ExpectedPointerReturn { function: String },
     #[error("Memory access error: {0}")]

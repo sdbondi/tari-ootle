@@ -169,7 +169,7 @@ use crate::{
         locking::{LockError, LockedSubstate},
         pay_fee::PayFee,
         scope::PushCallFrame,
-        tracker::{FinalizedState, StateTracker},
+        tracker::{ComputeAllowance, FinalizedState, StateTracker},
     },
     state_store::StateReader,
     template::LoadedTemplate,
@@ -4009,8 +4009,8 @@ where
         self.tracker.accumulated_native_points()
     }
 
-    fn wasm_point_allowance(&self) -> Option<u64> {
-        self.tracker.wasm_point_allowance()
+    fn compute_allowance(&self) -> Option<ComputeAllowance> {
+        self.tracker.compute_allowance()
     }
 
     fn resolve_args(
