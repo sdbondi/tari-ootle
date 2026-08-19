@@ -345,9 +345,7 @@ pub fn resolve_handler_error(answer_id: axum_jrpc::Id, e: &HandlerError) -> Json
 }
 
 fn resolve_any_error(answer_id: axum_jrpc::Id, e: &anyhow::Error) -> JsonRpcResponse {
-    // `{:#}` renders the whole context chain. `{}` prints only the outermost, so every handler that
-    // adds context with `.context(…)` would report the context and drop the cause under it.
-    warn!(target: LOG_TARGET, "🌐 JSON-RPC error: {:#}", e);
+    warn!(target: LOG_TARGET, "🌐 JSON-RPC error: {}", e);
     if let Some(handler_err) = e.downcast_ref::<HandlerError>() {
         return resolve_handler_error(answer_id, handler_err);
     }
@@ -373,9 +371,7 @@ fn resolve_any_error(answer_id: axum_jrpc::Id, e: &anyhow::Error) -> JsonRpcResp
             answer_id,
             JsonRpcError::new(
                 JsonRpcErrorReason::ApplicationError(ApplicationErrorCode::GeneralError as i32),
-                // The whole chain, for the same reason as the log above: a caller needs the cause,
-                // not just the context the handler wrapped it in.
-                format!("{e:#}"),
+                e.to_string(),
                 json!({}),
             ),
         )

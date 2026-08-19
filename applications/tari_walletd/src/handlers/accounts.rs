@@ -3,7 +3,7 @@
 
 use std::{collections::HashSet, iter, path::Path, time::Duration};
 
-use anyhow::{Context, anyhow};
+use anyhow::anyhow;
 use axum_extra::headers::authorization::Bearer;
 use indexmap::{IndexMap, IndexSet};
 use log::*;
@@ -1322,10 +1322,12 @@ pub async fn handle_stealth_transfer(
             // Only an estimate names a round, and only an estimate raises the fee between builds:
             // a later round widens the selection target to `amount + max_fee`, so it can exhaust an
             // account that funded the earlier one, and the failure needs to say which fee did it.
+            // The cause is interpolated rather than added as context: `anyhow::Error` renders only
+            // its outermost layer under `{}`, which is what the caller and the log see.
             let (lock, transfer) = if req.dry_run {
-                build.with_context(|| {
-                    format!(
-                        "building the transfer at a max fee of {max_fee_this_round} (fee estimate round {})",
+                build.map_err(|e| {
+                    anyhow!(
+                        "building the transfer at a max fee of {max_fee_this_round} (fee estimate round {}): {e}",
                         rounds + 1
                     )
                 })?
@@ -1407,7 +1409,7 @@ pub async fn handle_stealth_transfer(
                     Some(lock.id()),
                 )
                 .await
-                .context("Transaction failed to submit")?;
+                .map_err(|e| anyhow!("Transaction failed to submit: {e}"))?;
 
             // Transaction submitted, we're home free, make sure to allow the lock to persist past this call.
             // The wallet will monitor the transaction and release the lock when it's finalized.
@@ -1999,7 +2001,9 @@ mod fee_estimate_step_tests {
     /// a build at what that shape reported.
     #[test]
     fn the_cap_leaves_room_for_the_common_case() {
-        assert!(MAX_FEE_ESTIMATE_ROUNDS >= 3);
+        const {
+            assert!(MAX_FEE_ESTIMATE_ROUNDS >= 3);
+        }
     }
 }
 
