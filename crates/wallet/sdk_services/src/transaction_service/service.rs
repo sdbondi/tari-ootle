@@ -124,12 +124,19 @@ where
                     .send(self.handle_submit_transaction(transaction, context, lock_id).await)
                     .map_err(|_| TransactionServiceError::ServiceShutdown)?;
             },
-            TransactionServiceRequest::SubmitDryRunTransaction { transaction, reply } => {
+            TransactionServiceRequest::SubmitDryRunTransaction {
+                transaction,
+                settled_fee,
+                reply,
+            } => {
                 let transaction_id = transaction.calculate_id();
                 let transaction_api = self.wallet_sdk.transaction_api();
                 // Unlock all locks related to the transaction immediately since this is a dry run
                 transaction_api.release_all_locks_for_transaction(transaction_id)?;
-                match transaction_api.submit_dry_run_transaction(transaction).await {
+                match transaction_api
+                    .submit_dry_run_transaction(transaction, settled_fee)
+                    .await
+                {
                     Ok(finalized_transaction) => {
                         let finalize =
                             finalized_transaction

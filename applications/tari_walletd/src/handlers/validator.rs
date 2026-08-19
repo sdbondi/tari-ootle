@@ -217,7 +217,10 @@ pub async fn handle_claim_validator_fees(
 
     // send the transaction
     if req.dry_run {
-        let transaction = sdk.transaction_api().submit_dry_run_transaction(transaction).await?;
+        let transaction = sdk
+            .transaction_api()
+            .submit_dry_run_transaction(transaction, None)
+            .await?;
         return Ok(ClaimValidatorFeesResponse {
             transaction_id: transaction.id,
             // Dry-run forces a minimal max_fee so the call doesn't require funded vaults, which clamps

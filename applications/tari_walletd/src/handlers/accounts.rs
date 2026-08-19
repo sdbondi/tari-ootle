@@ -1364,31 +1364,43 @@ pub async fn handle_stealth_transfer(
             let transaction = sdk.signer_api().sign(transfer.main_signer.key_id, transaction)?;
 
             if req.dry_run {
-                // Price the shape this build produced before spending a round trip on it. An
-                // estimate above the fee the build was made at says the shape cannot pay for itself,
-                // so the next build selects differently and dry-running this one would measure a
-                // transaction that is about to change. Rebuilding costs local proof generation and
-                // nothing else.
+                // Price the shape this build produced and rebuild until the price agrees with the
+                // fee the build was made at. Rebuilding costs local proof generation and nothing
+                // else, so the fixed point is reached without a round trip.
+                //
+                // Both directions matter. An estimate above the fee says the shape cannot pay for
+                // itself, so the next build selects differently and dry-running this one would
+                // measure a transaction that is about to change. An estimate below it says the
+                // caller's `max_fee` is a ceiling rather than a price, and answering with the
+                // ceiling would have them reveal — unrefundably — far more than the transfer costs.
                 let mut settled_locally = false;
                 if let Some(shape) = transfer.statically_priced_shape {
                     let estimate = shape
                         .with_transaction_weight(transaction.calculate_transaction_weight().as_u64())
                         .estimate_fee(&fee_rates)
                         .saturating_add(FEE_ESTIMATE_ALLOWANCE);
-                    if estimate > params.max_fee && local_rounds < MAX_LOCAL_SETTLE_ROUNDS {
+                    if estimate != params.max_fee && local_rounds < MAX_LOCAL_SETTLE_ROUNDS {
                         params.max_fee = estimate;
                         local_rounds += 1;
                         lock.release();
                         continue;
                     }
+                    // Out of local rounds without agreement, the fee still stands if it covers the
+                    // estimate; if it does not, the rounds below settle it over the wire.
                     settled_locally = estimate <= params.max_fee;
                 }
 
                 // Release the lock immediately as dry run does not submit the transaction
                 // TODO: maybe transfer() should not lock the outputs if it's a dry run
                 lock.release();
+                // A locally settled fee is the figure to report, not the lower one the run turns out
+                // to need: input selection targets `amount + max_fee`, so a submission at anything
+                // other than a fee some build was made at picks a different set of UTXOs and prices
+                // a different transaction. The difference is the estimate's own margin, single-digit
+                // microtari, and it is what buys the settlement in a single round trip.
+                let settled_fee = settled_locally.then_some(params.max_fee);
                 let result = transaction_service
-                    .submit_dry_run_transaction(transaction)
+                    .submit_dry_run_transaction_settled_at(transaction, settled_fee)
                     .await
                     .map_err(|e| {
                         anyhow::anyhow!(
@@ -1417,18 +1429,9 @@ pub async fn handle_stealth_transfer(
                     rounds,
                 ) {
                     FeeEstimateStep::Settle => {
-                        if let Some(candidate) = candidate {
-                            return Ok(candidate);
-                        }
-                        // No candidate, so the fee was settled locally and this round confirmed it.
-                        // Report the fee the round was built at rather than the lower figure it
-                        // turned out to need: input selection targets `amount + max_fee`, so a
-                        // submission at anything else picks a different set of UTXOs and prices a
-                        // different transaction. The difference is the estimate's own margin, a few
-                        // microtari, and it is what buys the settlement in a single round trip.
-                        sdk.transaction_api()
-                            .set_dry_run_submit_fee(response.transaction_id, params.max_fee)?;
-                        return Ok(response);
+                        // Without a candidate the fee was settled locally, and this round is the one
+                        // that confirmed it, so its own response is the answer.
+                        return Ok(candidate.unwrap_or(response));
                     },
                     FeeEstimateStep::GiveUp => {
                         warn!(
@@ -1472,10 +1475,11 @@ pub async fn handle_stealth_transfer(
 }
 
 /// How many times the static estimate may rebuild before giving up on settling locally and letting
-/// the dry-run rounds do it. Two settle the common case — the caller's guessed fee, and the shape
-/// that fee produced — and the third is headroom for a selection that keeps growing as the fee
-/// rises. Reaching the bound costs nothing but the local builds; the wire loop below still settles.
-const MAX_LOCAL_SETTLE_ROUNDS: usize = 3;
+/// the dry-run rounds do it. Two reach the fixed point in the common case — a build at the caller's
+/// fee, then a build at what that shape prices — and the rest is headroom for a selection that keeps
+/// moving as the fee does. Reaching the bound costs nothing but the local builds; the wire loop
+/// below still settles.
+const MAX_LOCAL_SETTLE_ROUNDS: usize = 4;
 
 /// How many times a dry run may build before answering with whatever figure it reached. Three
 /// settle the common case — the caller's guessed fee, the shape that fee produces, and a build at

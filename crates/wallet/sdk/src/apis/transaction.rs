@@ -121,9 +121,18 @@ where
         Ok(true)
     }
 
+    /// Executes `transaction` as a dry run and records what it cost.
+    ///
+    /// `settled_fee` is the fee to record as the one to submit with, for a caller that chose a
+    /// figure and is only having the run confirm it. `None` records `required_fees` — what the run
+    /// cost plus the allowance for the metering a wider `max_fee` causes — which is the right answer
+    /// wherever the fee does not feed back into the transaction. Where it does, it is not: stealth
+    /// input selection targets `amount + max_fee`, so submitting at any figure other than one a
+    /// build was made at selects different inputs and prices a different transaction.
     pub async fn submit_dry_run_transaction(
         &self,
         transaction: Transaction,
+        settled_fee: Option<u64>,
     ) -> Result<WalletTransaction, TransactionApiError> {
         if !transaction.is_dry_run() {
             return Err(TransactionApiError::DryRunMismatchError {
@@ -168,7 +177,8 @@ where
                         warn!(target: LOG_TARGET, "⚠️ Transaction ID mismatch in dry run response. Expected {}, got {}. Updating transaction status to DryRunFailed.", tx_id, query.transaction_id);
                     }
 
-                    let final_fee = execution_result.as_ref().map(|e| e.finalize.required_fees());
+                    let final_fee =
+                        settled_fee.or_else(|| execution_result.as_ref().map(|e| e.finalize.required_fees()));
 
                     self.store.with_write_tx(|tx| {
                         tx.transactions_update(
@@ -195,22 +205,6 @@ where
         let transaction = self.store.with_read_tx(|tx| tx.transactions_get(tx_id))?;
 
         Ok(transaction)
-    }
-
-    /// Records the fee a dry-run transaction should be submitted with, replacing the figure the run
-    /// itself reported.
-    ///
-    /// A dry run's `final_fee` is what a caller submits with, and for most transactions
-    /// `required_fees` — what the run cost plus the allowance for the metering a wider `max_fee`
-    /// causes — is the right answer. It is not, for a transaction whose *shape* follows its fee.
-    /// Stealth input selection targets `amount + max_fee`, so submitting at any figure other than
-    /// one a build was made at selects different inputs and prices a different transaction. For
-    /// those, the caller settles on a figure, has a run confirm it, and records it here.
-    pub fn set_dry_run_submit_fee(&self, tx_id: TransactionId, fee: u64) -> Result<(), TransactionApiError> {
-        self.store.with_write_tx(|tx| {
-            tx.transactions_update(WalletTransactionUpdate::new(tx_id).with_final_fee(Some(fee)))
-        })?;
-        Ok(())
     }
 
     pub fn fetch_all(
