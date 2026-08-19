@@ -14,10 +14,16 @@ use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_engine::fees::FeeTable;
 use tari_engine_types::{
     fees::{ExhaustBurnRate, FeeRates, FeeReceipt},
-    stealth::MergedStealthTransferShape,
+    stealth::{MergedStealthTransferShape, persisted_utxo_bytes},
 };
 use tari_ootle_transaction::{Epoch, Transaction};
-use tari_template_lib::types::{Amount, ComponentAddress, NonFungibleAddress, constants::TARI_TOKEN};
+use tari_template_lib::types::{
+    Amount,
+    ComponentAddress,
+    NonFungibleAddress,
+    constants::TARI_TOKEN,
+    stealth::StealthTransferStatement,
+};
 use tari_template_test_tooling::{
     TemplateTest,
     support::stealth::{self, StealthSecretTransferData},
@@ -111,24 +117,12 @@ fn estimate_then_execute(
     harness.test.enable_fees();
     harness.test.set_burn_rate_bps(BURN_RATE_BPS);
 
-    // Weight follows the statement's input count and witnesses, never the amounts it carries, so a
-    // statement built at a placeholder fee weighs exactly what the real one will.
-    let weight = build(harness, minted, num_inputs, num_outputs, PLACEHOLDER_FEE)
-        .calculate_transaction_weight()
-        .as_u64();
+    // Neither the weight nor the outputs' stored size follows the amounts a statement carries, only
+    // its shape, so a build at a placeholder fee measures both for the real one.
+    let probe = build(harness, minted, num_inputs, num_outputs, PLACEHOLDER_FEE);
+    let shape = shape_of(&probe, num_inputs, num_outputs);
 
-    let shape = MergedStealthTransferShape {
-        num_inputs,
-        num_outputs,
-        // The wallet attaches no memo here, so every output carries the minimum payload.
-        extra_encrypted_data_bytes: 0,
-        // TARI is the only resource a fee can be paid in, and it carries no view key.
-        has_view_key: false,
-        transaction_weight: weight,
-        num_runtime_calls: MERGED_TRANSFER_RUNTIME_CALLS,
-    };
-
-    let tx = build(
+    let settled = build(
         harness,
         minted,
         num_inputs,
@@ -136,13 +130,37 @@ fn estimate_then_execute(
         shape.estimate_fee(&rates(harness, BURN_RATE_BPS)),
     );
     assert_eq!(
-        tx.calculate_transaction_weight().as_u64(),
-        weight,
-        "the fee a statement reveals must not move the weight it is priced at",
+        shape_of(&settled, num_inputs, num_outputs),
+        shape,
+        "the fee a statement reveals must not move the shape it is priced at",
     );
 
-    let result = harness.test.execute_expect_success(tx, vec![]);
+    let result = harness.test.execute_expect_success(settled.transaction, vec![]);
     (result.finalize.fee_receipt, shape)
+}
+
+/// The shape a build presents to the estimator: counts from the transfer, stored size from the
+/// outputs it generated, weight from the sealed transaction.
+fn shape_of(build: &Build, num_inputs: usize, num_outputs: usize) -> MergedStealthTransferShape {
+    MergedStealthTransferShape {
+        num_inputs,
+        num_outputs,
+        persisted_output_bytes: build
+            .statement
+            .outputs_statement
+            .outputs
+            .iter()
+            .map(persisted_utxo_bytes)
+            .sum(),
+        // TARI is the only resource a fee can be paid in, and it carries no view key.
+        has_view_key: false,
+        transaction_weight: build.transaction.calculate_transaction_weight().as_u64(),
+    }
+}
+
+struct Build {
+    transaction: Transaction,
+    statement: StealthTransferStatement,
 }
 
 /// Builds the transaction a wallet builds for the common send: one stealth transfer statement in the
@@ -153,7 +171,7 @@ fn build(
     num_inputs: usize,
     num_outputs: usize,
     revealed_fee: u64,
-) -> Transaction {
+) -> Build {
     let inputs = (0..num_inputs)
         .map(|i| MaskAndValue {
             mask: minted.output_masks[i].clone(),
@@ -170,7 +188,7 @@ fn build(
 
     let transfer = stealth::generate_transfer_data(inputs, Amount::zero(), outputs, Amount::from(revealed_fee));
 
-    (0..num_inputs)
+    let transaction = (0..num_inputs)
         .fold(
             Transaction::builder_localnet(Epoch(1))
                 .with_fee_instructions_builder(|builder| {
@@ -182,23 +200,22 @@ fn build(
                 .finish(),
             |tx, i| tx.add_signer(&harness.test.to_public_key_bytes(), &minted.output_masks[i]),
         )
-        .seal(harness.test.secret_key())
+        .seal(harness.test.secret_key());
+
+    Build {
+        transaction,
+        statement: transfer.statement,
+    }
 }
 
 /// Stands in for the fee while the statement is built only to be weighed. Any figure the inputs
 /// cover gives the same weight.
 const PLACEHOLDER_FEE: u64 = 1_000_000;
 
-/// Host calls the merged instruction sequence makes: the transfer, the workspace put and the fee
-/// payment. `the_runtime_call_count_matches_the_instruction_sequence` holds this to what the engine
-/// counts.
-const MERGED_TRANSFER_RUNTIME_CALLS: u64 = 3;
-
-/// The margin the estimate may carry over the real charge, as a share of that charge. The estimate
-/// rounds every variable-width field to its widest and prices an output's authorization at its
-/// largest variant, so a gap is expected — but the gap is paid and not refunded, so it has to stay
-/// small. The shapes here sit around a third of it.
-const MAX_OVERSHOOT_PERCENT: u64 = 1;
+/// The margin the estimate may carry over the real charge. Measuring the outputs a build generated
+/// leaves the receipt's epoch as the only field still priced at a stand-in width, so what remains is
+/// a handful of microtari — and it is paid and not refunded, so it has to stay that way.
+const MAX_OVERSHOOT: u64 = 12;
 
 fn assert_bounds(receipt: &FeeReceipt, shape: &MergedStealthTransferShape) {
     // Reaching here at all is the lower bound: an estimate under the charge leaves an unpaid debt,
@@ -209,11 +226,11 @@ fn assert_bounds(receipt: &FeeReceipt, shape: &MergedStealthTransferShape) {
         receipt.unpaid_debt()
     );
 
-    let charged = receipt.total_fees_charged();
     let overshoot = receipt.total_fee_overcharge();
     assert!(
-        overshoot * 100 <= charged * MAX_OVERSHOOT_PERCENT,
-        "{shape:?} was charged {charged} and overpaid {overshoot}, which it cannot get back",
+        overshoot <= MAX_OVERSHOOT,
+        "{shape:?} was charged {} and overpaid {overshoot}, which it cannot get back",
+        receipt.total_fees_charged(),
     );
 }
 
@@ -273,7 +290,7 @@ fn the_runtime_call_count_matches_the_instruction_sequence() {
     let result = harness.test.execute_expect_success(tx, vec![]);
     assert_eq!(
         result.finalize.fee_receipt.fee_breakdown().get(FeeSource::RuntimeCall),
-        MERGED_TRANSFER_RUNTIME_CALLS,
+        MergedStealthTransferShape::RUNTIME_CALLS,
     );
 }
 
@@ -287,23 +304,14 @@ fn revealing_under_the_charge_is_rejected() {
     harness.test.enable_fees();
     harness.test.set_burn_rate_bps(BURN_RATE_BPS);
 
-    let shape = MergedStealthTransferShape {
-        num_inputs: 1,
-        num_outputs: 1,
-        extra_encrypted_data_bytes: 0,
-        has_view_key: false,
-        transaction_weight: build(&harness, &minted, 1, 1, PLACEHOLDER_FEE)
-            .calculate_transaction_weight()
-            .as_u64(),
-        num_runtime_calls: MERGED_TRANSFER_RUNTIME_CALLS,
-    };
+    let shape = shape_of(&build(&harness, &minted, 1, 1, PLACEHOLDER_FEE), 1, 1);
 
-    // Half the estimate is under the charge whatever the estimate's margin, since the margin is
-    // bounded by MAX_OVERSHOOT_PERCENT.
+    // Half the estimate is under the charge whatever the estimate's margin, which MAX_OVERSHOOT
+    // bounds to a few microtari.
     let too_little = shape.estimate_fee(&rates(&harness, BURN_RATE_BPS)) / 2;
     let result = harness
         .test
-        .try_execute(build(&harness, &minted, 1, 1, too_little), vec![])
+        .try_execute(build(&harness, &minted, 1, 1, too_little).transaction, vec![])
         .unwrap();
 
     assert!(

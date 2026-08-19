@@ -197,6 +197,22 @@ where
         Ok(transaction)
     }
 
+    /// Records the fee a dry-run transaction should be submitted with, replacing the figure the run
+    /// itself reported.
+    ///
+    /// A dry run's `final_fee` is what a caller submits with, and for most transactions
+    /// `required_fees` — what the run cost plus the allowance for the metering a wider `max_fee`
+    /// causes — is the right answer. It is not, for a transaction whose *shape* follows its fee.
+    /// Stealth input selection targets `amount + max_fee`, so submitting at any figure other than
+    /// one a build was made at selects different inputs and prices a different transaction. For
+    /// those, the caller settles on a figure, has a run confirm it, and records it here.
+    pub fn set_dry_run_submit_fee(&self, tx_id: TransactionId, fee: u64) -> Result<(), TransactionApiError> {
+        self.store.with_write_tx(|tx| {
+            tx.transactions_update(WalletTransactionUpdate::new(tx_id).with_final_fee(Some(fee)))
+        })?;
+        Ok(())
+    }
+
     pub fn fetch_all(
         &self,
         status: Option<TransactionStatus>,

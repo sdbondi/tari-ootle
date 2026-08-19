@@ -134,16 +134,16 @@ impl FeeTable {
     /// The burn rate is not part of this table. It is a consensus constant resolved per epoch, so
     /// the caller supplies the rate in force for the epoch it is pricing.
     pub fn to_rates(&self, exhaust_burn_rate: ExhaustBurnRate) -> FeeRates {
-        FeeRates::new(
-            self.per_transaction_weight_cost(),
-            self.per_module_call_cost(),
-            self.per_byte_storage_cost(),
-            self.per_substate_create_cost(),
-            self.per_wasm_point_cost(),
-            self.storage_cost_divisor(),
-            self.wasm_points_cost_divisor(),
+        FeeRates {
+            per_transaction_weight_cost: self.per_transaction_weight_cost(),
+            per_module_call_cost: self.per_module_call_cost(),
+            per_byte_storage_cost: self.per_byte_storage_cost(),
+            per_substate_create_cost: self.per_substate_create_cost(),
+            per_wasm_point_cost: self.per_wasm_point_cost(),
+            storage_cost_divisor: self.storage_cost_divisor(),
+            wasm_points_cost_divisor: self.wasm_points_cost_divisor(),
             exhaust_burn_rate,
-        )
+        }
     }
 
     pub fn per_transaction_weight_cost(&self) -> u64 {

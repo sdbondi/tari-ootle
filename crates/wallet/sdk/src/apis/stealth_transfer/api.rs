@@ -9,7 +9,7 @@ use ootle_network::Network;
 use tari_crypto::ristretto::RistrettoPublicKey;
 use tari_engine_types::{
     limits::FREE_COMPUTE_GRACE_POINTS,
-    stealth::transfer_native_points_for_shape,
+    stealth::{persisted_utxo_bytes, transfer_native_points_for_shape},
     substate::SubstateId,
 };
 use tari_ootle_address::{OotleAddress, RistrettoOotleAddress};
@@ -34,7 +34,7 @@ use super::{
     TransferFeeParams,
     error::StealthTransferApiError,
     params::StealthTransferParams,
-    types::{InputsToSpend, StealthOutputToCreate, StealthTransferOutput},
+    types::{InputsToSpend, StaticallyPricedShape, StealthOutputToCreate, StealthTransferOutput},
 };
 use crate::{
     WalletSdkSpec,
@@ -513,6 +513,7 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
                 param: "resource_view_key",
                 reason: format!("Invalid resource view key: {e}"),
             })?;
+        let resource_has_view_key = resource_view_key.is_some();
 
         // Critical section - TODO: use a DB transaction
         let _permit = self.semaphore.acquire().await.expect("semaphore is never closed");
@@ -785,6 +786,29 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
                 })
                 .collect();
 
+            // Only the shape the static fee estimate models: merged, so the statement itself
+            // reveals the fee, and free of anything that would add an instruction the estimate does
+            // not price. A badge proof, a withdraw of revealed inputs and a revealed payout each
+            // call into a template, bringing a template load and WASM execution with them.
+            let statically_priced_shape = (is_merged &&
+                params.badge_usage.is_none() &&
+                inputs_to_spend.revealed.is_zero() &&
+                params.total_revealed_output_amount().is_zero() &&
+                !transfer_statement.outputs_statement.outputs.is_empty())
+            .then(|| {
+                StaticallyPricedShape::new(
+                    inputs_to_spend.inputs.len(),
+                    transfer_statement.outputs_statement.outputs.len(),
+                    transfer_statement
+                        .outputs_statement
+                        .outputs
+                        .iter()
+                        .map(persisted_utxo_bytes)
+                        .sum(),
+                    resource_has_view_key,
+                )
+            });
+
             let transaction = self.generate_transfer_transaction(
                 network,
                 &owner_account,
@@ -801,6 +825,7 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
                 utxo_spend_keys,
                 additional_signer: main_intent_signer,
                 main_signer: fee_signer,
+                statically_priced_shape,
             }))
         })
     }

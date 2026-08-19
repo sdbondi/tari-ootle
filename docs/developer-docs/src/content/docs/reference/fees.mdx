@@ -379,9 +379,25 @@ An estimate describes the transaction it was metered on, which matters wherever 
 into the transaction's shape. Stealth input selection targets `amount + max_fee`, so the fee decides
 which UTXOs are spent and whether any change is left over — and a change output is another stealth
 output to verify. A figure taken at a guessed fee therefore prices a shape the real submission need
-not have, so it has to be re-derived at the fee it reports until it settles. The wallet daemon's
+not have, so it has to be re-derived until a build at it pays for itself. The wallet daemon's
 `accounts.stealth_transfer` does that internally for its dry runs; `accounts.confidential_transfer`
 answers from a single round and carries the same caveat.
+
+Where the shape allows, that settling is arithmetic rather than round trips.
+`MergedStealthTransferShape::estimate_fee` prices the shape of an ordinary send — one stealth
+transfer statement that both moves the funds and reveals the fee — from its input and output counts,
+its outputs' stored size and its transaction weight. The wallet daemon rebuilds locally until the
+estimate no longer exceeds the fee the build was made at, then spends one dry run confirming it. A
+shape carrying anything the estimate does not price (a badge proof, a withdraw of revealed funds, a
+recipient owed revealed funds, a fee sourced by a statement of its own) settles over the wire as
+before.
+
+Selection is what forces the figure that gets reported. It is branch-and-bound over the *total value*
+selected, not the input count, so a target one microtari lower can pick a different and larger set —
+a different transaction at a different price. A fee is therefore only safe to report if some build
+was actually made at it, which is why a settled estimate answers with the fee its confirming run was
+built at rather than the lower figure that run turned out to need. The difference is the estimate's
+own margin, single-digit microtari.
 
 The one bound a dry run *does* enforce is the fee intent's compute credit. It is a flat figure rather
 than one derived from a payment, so it is the same for an estimate as for a real run — a fee intent
@@ -391,7 +407,8 @@ where the only remedy is to restructure the transaction.
 <Aside type="tip">
   `required_fees()` is a floor, not a recommendation. Overpayment returns to the paying vault, so a
   caller paying from an account loses nothing by submitting above it. A caller paying from a bucket
-  has no refund path and should sit closer to the floor.
+  has no refund path and should sit closer to the floor — but not *below* a figure a build was made
+  at, where the fee feeds back into the shape.
 </Aside>
 
 Note that `FeeReceipt::required_fees()` reads only what *that receipt* was charged — on an
