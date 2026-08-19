@@ -1319,7 +1319,10 @@ pub async fn handle_stealth_transfer(
         let fee_rates = fee_rates_by_network(network);
         let mut candidate: Option<StealthTransferResponse> = None;
         let mut rounds = 0usize;
-        let mut local_rounds = 0usize;
+        let mut static_rounds = 0usize;
+        // Whether the static estimate is still in play. It is dropped for good the first time a dry
+        // run disagrees with it, so the two ways of settling never share a request.
+        let mut settle_statically = true;
 
         loop {
             let max_fee_this_round = params.max_fee;
@@ -1373,32 +1376,32 @@ pub async fn handle_stealth_transfer(
                 // measure a transaction that is about to change. An estimate below it says the
                 // caller's `max_fee` is a ceiling rather than a price, and answering with the
                 // ceiling would have them reveal — unrefundably — far more than the transfer costs.
-                let mut settled_locally = false;
-                if let Some(shape) = transfer.statically_priced_shape {
+                let mut settled_statically = false;
+                if let Some(shape) = transfer.statically_priced_shape.filter(|_| settle_statically) {
                     let estimate = shape
                         .with_transaction_weight(transaction.calculate_transaction_weight().as_u64())
                         .estimate_fee(&fee_rates)
                         .saturating_add(FEE_ESTIMATE_ALLOWANCE);
-                    if estimate != params.max_fee && local_rounds < MAX_LOCAL_SETTLE_ROUNDS {
+                    if estimate != params.max_fee && static_rounds < MAX_STATIC_SETTLE_ROUNDS {
                         params.max_fee = estimate;
-                        local_rounds += 1;
+                        static_rounds += 1;
                         lock.release();
                         continue;
                     }
                     // Out of local rounds without agreement, the fee still stands if it covers the
                     // estimate; if it does not, the rounds below settle it over the wire.
-                    settled_locally = estimate <= params.max_fee;
+                    settled_statically = estimate <= params.max_fee;
                 }
 
                 // Release the lock immediately as dry run does not submit the transaction
                 // TODO: maybe transfer() should not lock the outputs if it's a dry run
                 lock.release();
-                // A locally settled fee is the figure to report, not the lower one the run turns out
-                // to need: input selection targets `amount + max_fee`, so a submission at anything
-                // other than a fee some build was made at picks a different set of UTXOs and prices
-                // a different transaction. The difference is the estimate's own margin, single-digit
-                // microtari, and it is what buys the settlement in a single round trip.
-                let settled_fee = settled_locally.then_some(params.max_fee);
+                // A statically settled fee is the figure to report, not the lower one the run turns
+                // out to need: input selection targets `amount + max_fee`, so a submission at
+                // anything other than a fee some build was made at picks a different set of UTXOs
+                // and prices a different transaction. The difference is the estimate's own margin,
+                // single-digit microtari, and it is what buys the settlement in a single round trip.
+                let settled_fee = settled_statically.then_some(params.max_fee);
                 let result = transaction_service
                     .submit_dry_run_transaction_settled_at(transaction, settled_fee)
                     .await
@@ -1425,7 +1428,7 @@ pub async fn handle_stealth_transfer(
                     params.max_fee,
                     charged,
                     required_fees,
-                    candidate.is_some() || settled_locally,
+                    candidate.is_some() || settled_statically,
                     rounds,
                 ) {
                     FeeEstimateStep::Settle => {
@@ -1440,11 +1443,25 @@ pub async fn handle_stealth_transfer(
                              at {} but cost {charged})",
                             params.max_fee
                         );
+                        // Reachable only after `MAX_FEE_ESTIMATE_ROUNDS` rounds, by which point a
+                        // retry has dropped the static path, so this response records
+                        // `required_fees` — a figure above what the round cost — rather than a
+                        // settled fee the round disagreed with.
                         return Ok(response);
                     },
                     FeeEstimateStep::Retry { max_fee } => {
                         params.max_fee = max_fee;
-                        candidate = Some(response);
+                        if settled_statically {
+                            // The estimate said this fee covered the shape and the run disagreed, so
+                            // the static path is done for this request. This response is not the
+                            // candidate either: the wire rounds answer with the round that named the
+                            // fee the next round is built at, and this one names a figure the run
+                            // has just shown insufficient.
+                            settle_statically = false;
+                            candidate = None;
+                        } else {
+                            candidate = Some(response);
+                        }
                         continue;
                     },
                 }
@@ -1474,12 +1491,16 @@ pub async fn handle_stealth_transfer(
     .await?
 }
 
-/// How many times the static estimate may rebuild before giving up on settling locally and letting
-/// the dry-run rounds do it. Two reach the fixed point in the common case — a build at the caller's
-/// fee, then a build at what that shape prices — and the rest is headroom for a selection that keeps
-/// moving as the fee does. Reaching the bound costs nothing but the local builds; the wire loop
-/// below still settles.
-const MAX_LOCAL_SETTLE_ROUNDS: usize = 4;
+/// How many times the static estimate may rebuild before giving up and letting the dry-run rounds
+/// settle the fee instead.
+///
+/// Two reach the fixed point in the common case — a build at the caller's fee, then a build at what
+/// that shape prices. The rest is headroom, and a bound on a fixed point that need not exist:
+/// selection is branch-and-bound over the total value selected, so the price of the shape a fee
+/// produces does not move monotonically with that fee, and two fees can each price to the other.
+/// Such a cycle costs the whole allowance of rebuilds — tens of milliseconds of range-proof
+/// generation, still well inside a single round trip — and then settles over the wire as before.
+const MAX_STATIC_SETTLE_ROUNDS: usize = 4;
 
 /// How many times a dry run may build before answering with whatever figure it reached. Three
 /// settle the common case — the caller's guessed fee, the shape that fee produces, and a build at
