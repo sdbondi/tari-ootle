@@ -16,7 +16,7 @@ use crate::apis::{
     stealth_transfer::{StealthOutputToCreate, StealthTransferApiError},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StealthTransferParams {
     /// Parameters related to fee payment
     pub fee_params: TransferFeeParams,

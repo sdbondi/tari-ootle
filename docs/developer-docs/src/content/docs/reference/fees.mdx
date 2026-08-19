@@ -362,11 +362,6 @@ Submit a transaction as a **dry run** and the engine meters it exactly as it wou
 aborts for insufficient payment. Read `FinalizeResult::required_fees()` from the result and use it as
 the `max_fee`.
 
-The one bound a dry run *does* enforce is the fee intent's compute credit. It is a flat figure rather
-than one derived from a payment, so it is the same for an estimate as for a real run — a fee intent
-above it fails estimation with `FeeIntentComputeExceeded` instead of first surfacing at submission,
-where the only remedy is to restructure the transaction.
-
 That figure is `total_fees_required + FEE_ESTIMATE_ALLOWANCE` (25 µT). The allowance exists because
 `max_fee` is itself an input to the cost, so the real run meters *slightly* differently from the dry
 run that estimated it:
@@ -379,6 +374,18 @@ run that estimated it:
 
 The allowance bounds the pair in both directions at any exhaust burn rate up to
 `MAX_EXHAUST_BURN_RATE_BPS`.
+
+An estimate describes the transaction it was metered on, which matters wherever the fee feeds back
+into the transaction's shape. Stealth input selection targets `amount + max_fee`, so the fee decides
+which UTXOs are spent and whether any change is left over — and a change output is another stealth
+output to verify. A figure taken at a guessed fee therefore prices a shape the real submission need
+not have, so it has to be re-derived at the fee it reports until it settles. The wallet daemon does
+that internally for its dry runs.
+
+The one bound a dry run *does* enforce is the fee intent's compute credit. It is a flat figure rather
+than one derived from a payment, so it is the same for an estimate as for a real run — a fee intent
+above it fails estimation with `FeeIntentComputeExceeded` instead of first surfacing at submission,
+where the only remedy is to restructure the transaction.
 
 <Aside type="tip">
   `required_fees()` is a floor, not a recommendation. Overpayment returns to the paying vault, so a

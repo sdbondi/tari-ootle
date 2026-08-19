@@ -1283,7 +1283,7 @@ pub async fn handle_stealth_transfer(
         })
         .collect::<anyhow::Result<_>>()?;
 
-    let params = StealthTransferParams {
+    let mut params = StealthTransferParams {
         max_epoch: context.transaction_max_epoch().await?,
         fee_params: req.fee_params,
         input_selection: req.input_selection,
@@ -1302,63 +1302,116 @@ pub async fn handle_stealth_transfer(
     // Spawn here is to prevent the async block from being aborted if the caller aborts the request early as this can
     // cause funds to remain locked indefinitely.
     task::spawn(async move {
-        let (lock, transfer) = sdk.stealth_transfer_api().transfer(owner_account, params).await?;
+        // A dry run's estimate is only worth anything if it describes the transaction that will be
+        // submitted, and the fee is an input to that: input selection targets `amount + max_fee`, so
+        // the fee decides which UTXOs are spent and whether any change is left over. A change output
+        // is another stealth output, and another output is another `PER_OUTPUT` of verification —
+        // enough that an estimate taken at the caller's guessed fee prices a shape the real
+        // submission will not have. Rebuild at each figure reported until building at it needs no
+        // more than it, then answer with the run that named it, which is a figure the caller can
+        // submit at.
+        let mut verified_estimate: Option<StealthTransferResponse> = None;
+        let mut rounds = 0usize;
 
-        let transaction = transfer.transaction;
-        let main_pk = transfer.main_signer.public_key().to_byte_type();
+        loop {
+            let (lock, transfer) = sdk
+                .stealth_transfer_api()
+                .transfer(owner_account.clone(), params.clone())
+                .await?;
 
-        // Signer api which sign transaction types that require the seal signer public key
-        let main_signer = sdk.signer_api().with_context(&main_pk);
-        // Add additional signature if needed
-        let transaction = match transfer.additional_signer.as_ref() {
-            Some(s) => main_signer.sign(s.key_id, transaction)?,
-            None => transaction.finish(),
-        };
+            let transaction = transfer.transaction;
+            let main_pk = transfer.main_signer.public_key().to_byte_type();
 
-        // Add required UTXO spend key signatures
-        let transaction = transfer
-            .utxo_spend_keys
-            .iter()
-            .try_fold(transaction, |tx, key| main_signer.sign_with_stealth_key(key, tx))?;
-
-        // Sign and seal the final transaction
-        let transaction = sdk.signer_api().sign(transfer.main_signer.key_id, transaction)?;
-
-        if req.dry_run {
-            // Release the lock immediately as dry run does not submit the transaction
-            // TODO: maybe transfer() should not lock the outputs if it's a dry run
-            lock.release();
-            let result = transaction_service.submit_dry_run_transaction(transaction).await;
-            return match result {
-                Ok(res) => Ok(StealthTransferResponse {
-                    transaction_id: res.finalize.transaction_hash.into(),
-                }),
-                Err(e) => Err(anyhow::anyhow!("Dry run transaction failed: {}", e)),
+            // Signer api which sign transaction types that require the seal signer public key
+            let main_signer = sdk.signer_api().with_context(&main_pk);
+            // Add additional signature if needed
+            let transaction = match transfer.additional_signer.as_ref() {
+                Some(s) => main_signer.sign(s.key_id, transaction)?,
+                None => transaction.finish(),
             };
+
+            // Add required UTXO spend key signatures
+            let transaction = transfer
+                .utxo_spend_keys
+                .iter()
+                .try_fold(transaction, |tx, key| main_signer.sign_with_stealth_key(key, tx))?;
+
+            // Sign and seal the final transaction
+            let transaction = sdk.signer_api().sign(transfer.main_signer.key_id, transaction)?;
+
+            if req.dry_run {
+                // Release the lock immediately as dry run does not submit the transaction
+                // TODO: maybe transfer() should not lock the outputs if it's a dry run
+                lock.release();
+                let result = transaction_service
+                    .submit_dry_run_transaction(transaction)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Dry run transaction failed: {}", e))?;
+
+                let required_fees = result.finalize.required_fees();
+                // What this round's shape actually costs, without the estimate allowance that
+                // `required_fees` carries on top. That allowance is the caller's margin against the
+                // metering drift a wider `max_fee` causes; testing against it here would treat a fee
+                // that pays in full as insufficient and spend another round chasing it.
+                let charged = result.finalize.total_fees_required;
+                let response = StealthTransferResponse {
+                    transaction_id: result.finalize.transaction_hash.into(),
+                };
+                rounds += 1;
+
+                // `verified_estimate` reported the fee this round was built at, so this round is what
+                // establishes that a transaction built at that fee pays for itself.
+                if charged <= params.max_fee &&
+                    let Some(verified) = verified_estimate
+                {
+                    return Ok(verified);
+                }
+                if rounds >= MAX_FEE_ESTIMATE_ROUNDS {
+                    // Out of rounds: answer with the highest figure reached rather than one nothing
+                    // has been built at, since an estimate below the cost cannot be submitted at all.
+                    warn!(
+                        target: LOG_TARGET,
+                        "Stealth transfer fee estimate did not settle in {MAX_FEE_ESTIMATE_ROUNDS} rounds (a max fee \
+                         of {} was charged {charged})",
+                        params.max_fee
+                    );
+                    return Ok(response);
+                }
+
+                params.max_fee = required_fees;
+                verified_estimate = Some(response);
+                continue;
+            }
+
+            let tx_id = transaction_service
+                .submit_transaction_with_opts(
+                    transaction,
+                    Some(TransactionContext::with_accounts(linked_accounts)),
+                    Some(lock.id()),
+                )
+                .await
+                .context("Transaction failed to submit")?;
+
+            // Transaction submitted, we're home free, make sure to allow the lock to persist past this call.
+            // The wallet will monitor the transaction and release the lock when it's finalized.
+            lock.keep_locked();
+
+            notifier.notify(TransactionSubmittedEvent {
+                transaction_id: tx_id,
+                context: None,
+            });
+
+            return Ok(StealthTransferResponse { transaction_id: tx_id });
         }
-
-        let tx_id = transaction_service
-            .submit_transaction_with_opts(
-                transaction,
-                Some(TransactionContext::with_accounts(linked_accounts)),
-                Some(lock.id()),
-            )
-            .await
-            .context("Transaction failed to submit")?;
-
-        // Transaction submitted, we're home free, make sure to allow the lock to persist past this call.
-        // The wallet will monitor the transaction and release the lock when it's finalized.
-        lock.keep_locked();
-
-        notifier.notify(TransactionSubmittedEvent {
-            transaction_id: tx_id,
-            context: None,
-        });
-
-        Ok(StealthTransferResponse { transaction_id: tx_id })
     })
     .await?
 }
+
+/// How many times a dry run may rebuild at the fee it last reported before answering with whatever
+/// it reached. Two rounds settle the common case — the caller's guessed fee, then the shape that
+/// fee produces — and the third confirms it; the rest is headroom for a selection that keeps
+/// growing.
+const MAX_FEE_ESTIMATE_ROUNDS: usize = 4;
 
 #[allow(clippy::too_many_lines)]
 pub async fn handle_create_stealth_transfer_statement(

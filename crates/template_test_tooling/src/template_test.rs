@@ -302,8 +302,6 @@ impl TemplateTest {
         template_addr
     }
 
-    /// Enables fee charging for subsequent transaction executions.
-    /// By default, fees are disabled in tests.
     /// Executes subsequent transactions as a dry run: fees are metered but not settled, as the
     /// indexer's fee estimation does.
     pub fn set_dry_run(&mut self, dry_run: bool) -> &mut Self {
@@ -311,6 +309,8 @@ impl TemplateTest {
         self
     }
 
+    /// Enables fee charging for subsequent transaction executions.
+    /// By default, fees are disabled in tests.
     pub fn enable_fees(&mut self) -> &mut Self {
         self.enable_fees = true;
         self
