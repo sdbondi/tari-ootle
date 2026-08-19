@@ -71,7 +71,7 @@ jobs:
         with:
           context: .
           file: ./docker/ootle.Dockerfile
-          target: chef
+          target: ci
           platforms: linux/amd64
           push: true
           provenance: false

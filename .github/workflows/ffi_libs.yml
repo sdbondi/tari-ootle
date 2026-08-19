@@ -79,7 +79,7 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # master (no version tag)
         with:
-          toolchain: ${{ matrix.platform == 'windows-x64' && 'stable-x86_64-pc-windows-gnu' || 'stable' }}
+          toolchain: ${{ matrix.platform == 'windows-x64' && '1.97.1-x86_64-pc-windows-gnu' || '1.97.1' }}
           targets: ${{ matrix.target }}
 
       - name: Build + stage native libs

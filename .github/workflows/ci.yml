@@ -26,7 +26,7 @@ concurrency:
 
 env:
   nightly_toolchain: nightly-2025-12-05
-  stable_toolchain: stable
+  rust_toolchain: 1.97.1
   CARGO_HTTP_MULTIPLEXING: false
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
@@ -162,9 +162,9 @@ jobs:
         uses: actions/checkout@v7.0.1
 
       - name: toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # master (no version tag)
         with:
-          toolchain: ${{ env.stable_toolchain }}
+          toolchain: ${{ env.rust_toolchain }}
           components: clippy
 
       - uses: ./.github/actions/rust-cache
@@ -199,9 +199,9 @@ jobs:
         uses: actions/checkout@v7.0.1
 
       - name: toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # master (no version tag)
         with:
-          toolchain: ${{ env.stable_toolchain }}
+          toolchain: ${{ env.rust_toolchain }}
           components: clippy, rustfmt
 
       - uses: ./.github/actions/rust-cache
@@ -279,9 +279,9 @@ jobs:
         uses: actions/checkout@v7.0.1
 
       - name: toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # master (no version tag)
         with:
-          toolchain: ${{ env.stable_toolchain }}
+          toolchain: ${{ env.rust_toolchain }}
 
       - uses: ./.github/actions/rust-cache
         with:
@@ -368,9 +368,9 @@ jobs:
         uses: actions/checkout@v7.0.1
 
       - name: toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # master (no version tag)
         with:
-          toolchain: ${{ env.stable_toolchain }}
+          toolchain: ${{ env.rust_toolchain }}
 
       - uses: ./.github/actions/rust-cache
 
