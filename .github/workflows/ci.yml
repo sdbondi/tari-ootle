@@ -144,7 +144,7 @@ jobs:
 
   clippy:
     name: clippy
-    runs-on: [ ubuntu-latest ]
+    runs-on: [ self-hosted, ubuntu-high-cpu ]
 
     steps:
       - name: checkout
@@ -181,7 +181,7 @@ jobs:
   machete:
     # Checks for unused dependencies.
     name: machete
-    runs-on: [ ubuntu-latest ]
+    runs-on: [ self-hosted, ubuntu-high-cpu ]
 
     steps:
       - name: checkout
@@ -311,7 +311,7 @@ jobs:
     # `cancel-in-progress` must leave this check cancelled rather than failed.
     if: ${{ !cancelled() }}
     needs: [ test-shards ]
-    runs-on: [ ubuntu-latest ]
+    runs-on: [ self-hosted, ubuntu-high-cpu ]
     steps:
       - name: check shard results
         run: |
@@ -348,7 +348,7 @@ jobs:
 
   integration-test:
     name: integration test
-    runs-on: [ ubuntu-latest ]
+    runs-on: [ self-hosted, ubuntu-high-cpu ]
 
     steps:
       - name: checkout
