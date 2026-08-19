@@ -155,7 +155,10 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     env:
-      RUSTFLAGS: -C link-arg=-fuse-ld=mold
+      # Host-scoped, not RUSTFLAGS: template_builtin's build.rs shells out to
+      # `cargo build --target wasm32-unknown-unknown`, and rust-lld rejects
+      # `-fuse-ld`.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C link-arg=-fuse-ld=mold
 
     steps:
       - name: checkout
@@ -192,7 +195,10 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     env:
-      RUSTFLAGS: -C link-arg=-fuse-ld=mold
+      # Host-scoped, not RUSTFLAGS: template_builtin's build.rs shells out to
+      # `cargo build --target wasm32-unknown-unknown`, and rust-lld rejects
+      # `-fuse-ld`.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C link-arg=-fuse-ld=mold
 
     steps:
       - name: checkout
@@ -269,7 +275,10 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     env:
-      RUSTFLAGS: -C link-arg=-fuse-ld=mold
+      # Host-scoped, not RUSTFLAGS: template_builtin's build.rs shells out to
+      # `cargo build --target wasm32-unknown-unknown`, and rust-lld rejects
+      # `-fuse-ld`.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C link-arg=-fuse-ld=mold
     strategy:
       matrix:
         partition: ["1/3", "2/3", "3/3"]
@@ -361,7 +370,10 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     env:
-      RUSTFLAGS: -C link-arg=-fuse-ld=mold
+      # Host-scoped, not RUSTFLAGS: template_builtin's build.rs shells out to
+      # `cargo build --target wasm32-unknown-unknown`, and rust-lld rejects
+      # `-fuse-ld`.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C link-arg=-fuse-ld=mold
 
     steps:
       - name: checkout
