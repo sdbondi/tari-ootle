@@ -186,8 +186,8 @@ pub const fn get_fee_table_by_network(network: Network) -> &'static FeeTable {
 ///
 /// Restated rather than read from `ConsensusConstants::exhaust_burn_rate`, which lives in
 /// `tari_consensus` — a crate that carries the whole consensus engine, and one a wallet must not
-/// link just to price a transaction. `the_burn_rate_matches_consensus` holds the restatement to the
-/// constant it mirrors.
+/// link just to price a transaction. `the_burn_rate_matches_consensus_across_epochs` holds the
+/// restatement to the constant it mirrors.
 pub const fn exhaust_burn_rate_by_network(network: Network) -> ExhaustBurnRate {
     match network {
         Network::LocalNet |
@@ -223,11 +223,14 @@ mod tests {
 
     /// An estimate priced under the burn a network actually charges comes in under what that network
     /// costs, and a submission built from it is rejected as underpaid — with the revealed fee
-    /// unrecoverable. The restatement carries no epoch, so the epochs are swept rather than sampled:
-    /// a rate that starts varying by epoch has to fail here rather than pass at whichever epoch this
-    /// happened to check.
+    /// unrecoverable.
+    ///
+    /// The rate does not vary by epoch today; if it starts to, the restatement needs an epoch of its
+    /// own rather than a looser assertion here, since `exhaust_burn_rate_by_network` takes only a
+    /// `Network`. The epochs below are sampled, not swept — enough to catch a rate that splits at
+    /// one of them, not a proof that none exists.
     #[test]
-    fn the_burn_rate_matches_consensus_at_every_epoch() {
+    fn the_burn_rate_matches_consensus_across_epochs() {
         for network in NETWORKS {
             let consensus = tari_consensus::consensus_constants::ConsensusConstants::from(network);
             for epoch in [0, 1, 2, 100, 10_000, 1_000_000, u64::MAX] {
