@@ -3,12 +3,14 @@
 
 mod condition_structure;
 mod condition_tree;
+mod fee_estimate;
 mod hashlock;
 mod outputs;
 mod transfer;
 
 pub use condition_structure::*;
 pub use condition_tree::*;
+pub use fee_estimate::*;
 pub use hashlock::*;
 pub use outputs::*;
 pub use transfer::*;

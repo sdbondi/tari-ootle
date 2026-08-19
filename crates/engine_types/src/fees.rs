@@ -57,6 +57,106 @@ impl ExhaustBurnRate {
 /// network at `MAX_EXHAUST_BURN_RATE_BPS`.
 pub const FEE_ESTIMATE_ALLOWANCE: u64 = 25;
 
+/// The rates a transaction's fee charges are computed from, as a fee estimator needs them.
+///
+/// `FeeTable` is the authority on these rates, but it lives in `tari_engine` — which pulls in a
+/// WASM runtime — and cannot move here, because its `fee_estimate_allowance` reads
+/// `LITERAL_BYTE_DIVISOR` from `tari_ootle_transaction`, a crate downstream of this one. A wallet
+/// estimating a fee needs the rates without either dependency, so `FeeTable::to_rates` projects
+/// them onto this type and the estimator takes only this.
+///
+/// The divisors are held non-zero by [`Self::new`], matching how `FeeTable` reads a zero divisor
+/// as `1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeeRates {
+    per_transaction_weight_cost: u64,
+    per_module_call_cost: u64,
+    per_byte_storage_cost: u64,
+    per_substate_create_cost: u64,
+    per_wasm_point_cost: u64,
+    storage_cost_divisor: u64,
+    wasm_points_cost_divisor: u64,
+    exhaust_burn_rate_bps: u16,
+}
+
+impl FeeRates {
+    #[allow(clippy::too_many_arguments)]
+    pub const fn new(
+        per_transaction_weight_cost: u64,
+        per_module_call_cost: u64,
+        per_byte_storage_cost: u64,
+        per_substate_create_cost: u64,
+        per_wasm_point_cost: u64,
+        storage_cost_divisor: u64,
+        wasm_points_cost_divisor: u64,
+        exhaust_burn_rate: ExhaustBurnRate,
+    ) -> Self {
+        Self {
+            per_transaction_weight_cost,
+            per_module_call_cost,
+            per_byte_storage_cost,
+            per_substate_create_cost,
+            per_wasm_point_cost,
+            storage_cost_divisor: non_zero(storage_cost_divisor),
+            wasm_points_cost_divisor: non_zero(wasm_points_cost_divisor),
+            exhaust_burn_rate_bps: exhaust_burn_rate.as_bps(),
+        }
+    }
+
+    pub const fn per_transaction_weight_cost(&self) -> u64 {
+        self.per_transaction_weight_cost
+    }
+
+    pub const fn per_module_call_cost(&self) -> u64 {
+        self.per_module_call_cost
+    }
+
+    pub const fn per_byte_storage_cost(&self) -> u64 {
+        self.per_byte_storage_cost
+    }
+
+    pub const fn per_substate_create_cost(&self) -> u64 {
+        self.per_substate_create_cost
+    }
+
+    pub const fn per_wasm_point_cost(&self) -> u64 {
+        self.per_wasm_point_cost
+    }
+
+    pub const fn storage_cost_divisor(&self) -> u64 {
+        self.storage_cost_divisor
+    }
+
+    pub const fn wasm_points_cost_divisor(&self) -> u64 {
+        self.wasm_points_cost_divisor
+    }
+
+    pub const fn exhaust_burn_rate_bps(&self) -> u16 {
+        self.exhaust_burn_rate_bps
+    }
+
+    /// The storage charge for `bytes` of persisted state.
+    pub fn storage_cost(&self, bytes: u64) -> u64 {
+        self.per_byte_storage_cost.saturating_mul(bytes) / self.storage_cost_divisor
+    }
+
+    /// The execution charge for `points` of metering, priced the same whether the points came from
+    /// WASM or from native verification.
+    pub fn execution_cost(&self, points: u64) -> u64 {
+        (points / self.wasm_points_cost_divisor).saturating_mul(self.per_wasm_point_cost)
+    }
+
+    /// The exhaust burn taken over `base_fees`, which is the total of every other charge.
+    pub fn exhaust_burn(&self, base_fees: u64) -> u64 {
+        let burn = u128::from(base_fees) * u128::from(self.exhaust_burn_rate_bps) / 10_000;
+        u64::try_from(burn).unwrap_or(u64::MAX)
+    }
+}
+
+const fn non_zero(divisor: u64) -> u64 {
+    if divisor == 0 { 1 } else { divisor }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct FeeReceiptBuilder {
     /// The total amount of the fee payment(s)

@@ -1,6 +1,7 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
+use tari_engine_types::fees::{ExhaustBurnRate, FeeRates};
 use tari_ootle_transaction::LITERAL_BYTE_DIVISOR;
 
 /// The narrowest `max_fee` a run can meter at is `1`, which a dry run clamps to. `Amount` encodes as
@@ -123,6 +124,26 @@ impl FeeTable {
         drift
             .saturating_add(drift.saturating_mul(burn_rate_bps as u64) / 10_000)
             .saturating_add(1)
+    }
+
+    /// The rates a fee estimator needs, projected onto a type it can see. `FeeRates` lives in
+    /// `tari_engine_types` because an estimator (a wallet, say) must price a transaction without
+    /// depending on the execution engine, and this table cannot move there — `fee_estimate_allowance`
+    /// reads `LITERAL_BYTE_DIVISOR` from a crate downstream of it.
+    ///
+    /// The burn rate is not part of this table. It is a consensus constant resolved per epoch, so
+    /// the caller supplies the rate in force for the epoch it is pricing.
+    pub fn to_rates(&self, exhaust_burn_rate: ExhaustBurnRate) -> FeeRates {
+        FeeRates::new(
+            self.per_transaction_weight_cost(),
+            self.per_module_call_cost(),
+            self.per_byte_storage_cost(),
+            self.per_substate_create_cost(),
+            self.per_wasm_point_cost(),
+            self.storage_cost_divisor(),
+            self.wasm_points_cost_divisor(),
+            exhaust_burn_rate,
+        )
     }
 
     pub fn per_transaction_weight_cost(&self) -> u64 {
