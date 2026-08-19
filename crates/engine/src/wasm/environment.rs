@@ -160,15 +160,6 @@ impl<T> WasmEnv<T> {
         self.last_panic = Some(message);
     }
 
-    pub(super) fn alloc<S: AsStoreMut>(&self, store: &mut S, len: u32) -> Result<WasmPtr<u8>, WasmExecutionError> {
-        let ptr = self.mem_alloc_func()?.call(store, len)?;
-        if ptr.is_null() {
-            return Err(WasmExecutionError::MemoryAllocationFailed);
-        }
-
-        Ok(ptr)
-    }
-
     /// Hands out the template's `tari_alloc` as an owned handle, for callers that must let go of
     /// their borrow of this environment before calling it. `tari_alloc` is template code, and
     /// template code can call `tari_engine`, which takes its own `&mut` to this environment.

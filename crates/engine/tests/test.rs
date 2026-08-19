@@ -287,6 +287,20 @@ fn test_engine_call_in_tari_alloc() {
     });
 }
 
+/// The third place the engine drives template code: `handle` writes every engine-call response
+/// through the template's own `tari_alloc`, which runs *during* an invocation. Left open, a
+/// `tari_alloc` that calls the engine cycles host -> WASM -> host once per response and aborts the
+/// process on native stack exhaustion — `max_call_depth` never sees it (one call frame) and the
+/// per-call metering ceiling permits far more rounds than the stack survives.
+#[test]
+fn test_engine_call_in_response_alloc() {
+    let reason = execute_buggy_main("engine_call_in_response_alloc");
+
+    assert_reject_reason(reason, RuntimeError::EngineCallOutsideInvocation {
+        op: EngineOp::EmitLog,
+    });
+}
+
 fn execute_buggy_main(feature: &'static str) -> RejectReason {
     let mut test = TemplateTest::new_builtin_only();
     let template_addr = test.compile_new_template(
