@@ -301,7 +301,10 @@ impl ConsensusConstants {
 
 /// Forces [`ConsensusConstants::DEVNET`] to be evaluated, and with it `devnet`'s body. The other
 /// networks are const items their constructors return, so they are evaluated wherever they are
-/// built; `devnet` takes an argument and builds inline, so nothing else reaches it at compile time.
+/// built; `devnet` takes an argument and builds inline. The runtime reference in `From<Network>`
+/// below does not force the evaluation — a const whose initializer is a `const fn` call is only
+/// evaluated by a const context such as this one. It pins `devnet` at the default committee size,
+/// which covers the whole body: nothing in it varies with the argument beyond the field it sets.
 const _: ConsensusConstants = ConsensusConstants::DEVNET;
 
 impl From<Network> for ConsensusConstants {

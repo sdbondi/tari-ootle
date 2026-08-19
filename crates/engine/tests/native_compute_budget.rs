@@ -145,6 +145,39 @@ fn unpaid_native_verification_traps_before_the_crypto_runs() {
     assert_reject_reason(reason, "points of compute credit");
 }
 
+/// Paying first does not buy more native verification inside the fee intent. The credit is flat, so
+/// a payment that would fund the statement several times over past the checkpoint still leaves it
+/// rejected by the pre-charge — with the same corrupted proof, so the rejection again proves the
+/// charge fired before any crypto ran.
+#[test]
+fn paying_first_does_not_raise_the_fee_intents_native_allowance() {
+    let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
+    let mint = stealth::generate_mint_statement([100, 1000], 0u64, None);
+    let (_faucet, faucet_resx) = setup_faucet(&mut test, &mint, None);
+    let (account, owner, key) = test.create_funded_account();
+    enable_point_priced_fees(&mut test);
+
+    // 8 outputs price above the 32M credit (fixed + 8 × per-output ≈ 50M points).
+    let mut garbage = stealth::generate_mint_statement(vec![100u64; 8], 0u64, None);
+    let mut rp = garbage.statement.outputs_statement.agg_range_proof.clone().into_vec();
+    rp[100] ^= 0xFF;
+    garbage.statement.outputs_statement.agg_range_proof = rp.try_into().unwrap();
+
+    // 1 fee unit per point, so this funds the statement's ~50M points four times over.
+    let reason = test.execute_expect_failure(
+        Transaction::builder_localnet(Epoch(1))
+            .with_fee_instructions_builder(|builder| {
+                builder
+                    .pay_fee_from_component(account, 200_000_000u64)
+                    .stealth_transfer(faucet_resx, garbage.statement)
+            })
+            .build_and_seal(&key),
+        vec![owner],
+    );
+
+    assert_reject_reason(reason, "points of compute credit");
+}
+
 /// Revealed-only statements (no stealth/confidential inputs or outputs) short-circuit every
 /// verifier — no balance proof, no range proof — so they must price at zero: free-coins claims and
 /// revealed→revealed transfers keep their pre-metering fees.

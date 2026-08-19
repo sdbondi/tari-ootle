@@ -187,30 +187,39 @@ impl<TStore: StateReader> StateTracker<TStore> {
     /// execution and leave its own fee-intent commit unaffordable — a rejection that again collects
     /// nothing.
     ///
-    /// This is measured against the charges *standing when it is asked*. Anything charged after the
-    /// last call — a host call inside the final invocation — is outside the figure, so it bounds the
-    /// unpaid work rather than reducing it to zero.
-    ///
-    /// The exhaust burn is taken over whatever the charges come to, so the charges themselves can
-    /// only spend the payment net of it.
+    /// That payment-funded figure is measured against the charges *standing when it is asked*.
+    /// Anything charged after the last call — a host call inside the final invocation — is outside
+    /// it, so it bounds the unpaid work rather than reducing it to zero. The exhaust burn is taken
+    /// over whatever the charges come to, so the charges themselves can only spend the payment net
+    /// of it.
     pub fn compute_allowance(&self) -> Option<ComputeAllowance> {
         let rate = self.wasm_metering_rate;
         let is_fee_intent = self.fee_checkpoint.is_none();
         self.read_with(|state| {
-            let fee_state = state.fee_state();
-            if fee_state.is_dry_run() || !rate.prices_execution() {
+            if !rate.prices_execution() {
                 return None;
             }
+            let fee_state = state.fee_state();
             if is_fee_intent {
+                // The credit binds a dry run as it binds a real one. It is the same figure either
+                // way, so estimating against it costs no accuracy and is where a wallet finds out
+                // that the work has to move to the main instructions.
                 return Some(ComputeAllowance {
                     points: limits::FREE_COMPUTE_GRACE_POINTS,
                     funding: ComputeFunding::FeeIntentCredit,
                 });
             }
+            // A dry run is metered at whatever `max_fee` the caller submitted, so past the
+            // checkpoint there is no payment to derive a bound from.
+            if fee_state.is_dry_run() {
+                return None;
+            }
             let unspent = spendable_on_charges(fee_state.total_payments(), fee_state.burn_rate_bps())
                 .saturating_sub(fee_state.total_charges());
             Some(ComputeAllowance {
-                points: rate.points_funded_by(unspent)?,
+                // `prices_execution` above is the only case that yields no figure, so nothing here
+                // may widen the allowance by failing to produce one.
+                points: rate.points_funded_by(unspent).unwrap_or(0),
                 funding: ComputeFunding::Payment,
             })
         })
