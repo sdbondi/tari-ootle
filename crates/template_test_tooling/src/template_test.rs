@@ -111,6 +111,7 @@ pub struct TemplateTest {
     name_to_template: HashMap<String, TemplateAddress>,
     state_store: MemoryStateStore,
     enable_fees: bool,
+    dry_run: bool,
     fee_table: FeeTable,
     burn_rate_bps: u16,
     virtual_substates: HashMap<VirtualSubstateId, VirtualSubstate>,
@@ -239,6 +240,7 @@ impl TemplateTest {
             virtual_substates,
             transaction_seq: Cell::new(0),
             enable_fees: false,
+            dry_run: false,
             fee_table: FeeTable {
                 per_transaction_weight_cost: 1,
                 per_module_call_cost: 1,
@@ -302,6 +304,13 @@ impl TemplateTest {
 
     /// Enables fee charging for subsequent transaction executions.
     /// By default, fees are disabled in tests.
+    /// Executes subsequent transactions as a dry run: fees are metered but not settled, as the
+    /// indexer's fee estimation does.
+    pub fn set_dry_run(&mut self, dry_run: bool) -> &mut Self {
+        self.dry_run = dry_run;
+        self
+    }
+
     pub fn enable_fees(&mut self) -> &mut Self {
         self.enable_fees = true;
         self
@@ -748,7 +757,7 @@ impl TemplateTest {
             Arc::new(AlwaysPassesProofVerifier),
             wasm_metering_rate,
             self.burn_rate_bps,
-            false,
+            self.dry_run,
         );
 
         let mut wrapped_transaction = WrappedTransaction::new(transaction);

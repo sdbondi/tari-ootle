@@ -404,11 +404,13 @@ impl<TStore: StateReader> StateTracker<TStore> {
         self.read_with(|state| state.fee_state().accumulated_native_points())
     }
 
-    /// Charges native verification work (priced in WASM-point equivalents) against the
-    /// payment-funded compute allowance, *before* the work is performed. Errors when the charge
-    /// would exceed the allowance, so a non-paying transaction traps here — having done none of the
-    /// priced crypto — rather than extracting it for free. No allowance applies (dry runs, unpriced
-    /// WASM execution) ⇒ the charge only accumulates, so dry-run fee estimates stay accurate.
+    /// Charges native verification work (priced in WASM-point equivalents) against the compute
+    /// allowance, *before* the work is performed. Errors when the charge would exceed the
+    /// allowance, so a transaction that cannot cover it traps here — having done none of the priced
+    /// crypto — rather than extracting it for free. Where no allowance applies — unpriced WASM
+    /// execution, or a dry run past the fee checkpoint — the charge only accumulates, so those
+    /// estimates stay accurate. A dry run's fee intent is bound by the credit as a real one is,
+    /// since the credit is the same figure either way.
     pub fn charge_native_execution(&mut self, points: u64) -> Result<(), RuntimeError> {
         // Hard per-transaction ceiling, independent of what the transaction pays: it bounds how far a block may
         // overshoot the propose-time execution budget, which the validation budget has to leave room for.

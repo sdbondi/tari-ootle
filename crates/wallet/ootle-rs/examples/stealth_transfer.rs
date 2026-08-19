@@ -32,7 +32,7 @@ async fn main() {
     //     .init();
 
     // This is the address that we will transfer to (Feel free to change this another address!)
-    let recipient = address!( "otl_loc_1c62vh8e5cx3uwyypdp2gsxvywa97vy26z3mk4337ajhqw5fhqgm0cwcc07fn6gs34sqkeddzhcjwnsc6g3eeeyhv5heatuwg8l7lzmsk2kzfy" );
+    let recipient = address!( "otl_loc_162dtv4375eg54pn2g7c3tgu7j89e96hes5hvrxac4qxex6g4v3q7fsantdmgrs7mlg3hc9v4kdaktkp5l8t495fmkdvgpyz4whe6qvckjl8v6" );
 
     let indexer_api_url = default_indexer_url(recipient.network());
 

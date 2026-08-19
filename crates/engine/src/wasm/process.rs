@@ -385,9 +385,9 @@ impl Invokable<Store> for WasmProcess {
             Some((_, remaining)) => per_call_cap.min(budget_remaining).min(remaining),
             None => per_call_cap.min(budget_remaining),
         };
-        // The allowance when it — not the per-transaction hard cap — is what bounds this call. Used
-        // to report an out-of-gas trap here against what authorized the allowance rather than as a
-        // hit cap.
+        // The allowance, kept when it — rather than the per-transaction hard cap — is what bounds
+        // this call, so an out-of-gas trap here is reported against whatever authorized it rather
+        // than as a hit cap.
         let binding_allowance = allowance_remaining
             .filter(|(_, remaining)| *remaining < budget_remaining && *remaining <= per_call_cap)
             .map(|(allowance, _)| allowance);

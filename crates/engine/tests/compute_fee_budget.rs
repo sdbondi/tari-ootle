@@ -281,3 +281,31 @@ fn paying_first_does_not_raise_the_fee_intents_allowance() {
     let reason = test.execute_expect_failure(tx, vec![owner]);
     assert_fee_intent_credit_exceeded(&reason);
 }
+
+/// The credit binds a dry run as it binds a real run, so an above-credit fee intent fails
+/// estimation instead of first appearing at submission — where the sender has no remediation
+/// beyond restructuring the transaction.
+#[test]
+fn a_dry_run_is_bound_by_the_fee_intents_credit() {
+    let Harness {
+        mut test,
+        bench,
+        account,
+        owner,
+        key,
+        per_round,
+    } = setup();
+
+    let rounds = ABOVE_GRACE_POINTS / per_round;
+    let tx = Transaction::builder_localnet(Epoch(1))
+        .with_fee_instructions_builder(|builder| {
+            builder
+                .call_function(bench, "bench_div_u64", args![rounds])
+                .pay_fee_from_component(account, 50_000_000u64)
+        })
+        .build_and_seal(&key);
+
+    test.set_dry_run(true);
+    let reason = test.execute_expect_failure(tx, vec![owner]);
+    assert_fee_intent_credit_exceeded(&reason);
+}
