@@ -1320,8 +1320,8 @@ pub async fn handle_stealth_transfer(
         let mut candidate: Option<StealthTransferResponse> = None;
         let mut rounds = 0usize;
         let mut static_rounds = 0usize;
-        // Whether the static estimate is still in play. It is dropped for good the first time a dry
-        // run disagrees with it, so the two ways of settling never share a request.
+        // Whether the static estimate is still trusted for this request. It is dropped for good the
+        // first time a dry run disagrees with it: past that the wire rounds settle the fee alone.
         let mut settle_statically = true;
 
         loop {
@@ -1385,10 +1385,13 @@ pub async fn handle_stealth_transfer(
                     if estimate != params.max_fee && static_rounds < MAX_STATIC_SETTLE_ROUNDS {
                         params.max_fee = estimate;
                         static_rounds += 1;
+                        // No round named this fee, so an earlier round's answer no longer describes
+                        // the build about to be made at it.
+                        candidate = None;
                         lock.release();
                         continue;
                     }
-                    // Out of local rounds without agreement, the fee still stands if it covers the
+                    // Out of static rounds without agreement, the fee still stands if it covers the
                     // estimate; if it does not, the rounds below settle it over the wire.
                     settled_statically = estimate <= params.max_fee;
                 }
@@ -1424,6 +1427,24 @@ pub async fn handle_stealth_transfer(
                 };
                 rounds += 1;
 
+                // The estimator priced under the engine — the one thing `stealth_fee_estimate.rs`
+                // exists to prevent. This round's row records the fee it was built at, which the run
+                // has just shown insufficient, so that row must not become the answer: drop the
+                // static estimate for the rest of the request and let the wire rounds settle, as
+                // they did before there was an estimate.
+                if settled_statically && charged > params.max_fee {
+                    warn!(
+                        target: LOG_TARGET,
+                        "❗️ Static stealth fee estimate came in under the charge (built at {} but cost {charged}); \
+                         settling over the wire",
+                        params.max_fee
+                    );
+                    settle_statically = false;
+                    candidate = None;
+                    params.max_fee = required_fees;
+                    continue;
+                }
+
                 match next_fee_estimate_step(
                     params.max_fee,
                     charged,
@@ -1432,9 +1453,13 @@ pub async fn handle_stealth_transfer(
                     rounds,
                 ) {
                     FeeEstimateStep::Settle => {
-                        // Without a candidate the fee was settled locally, and this round is the one
-                        // that confirmed it, so its own response is the answer.
-                        return Ok(candidate.unwrap_or(response));
+                        // A statically settled fee was confirmed by this very round, so this round's
+                        // response is the one that names it. Otherwise the answer is the round that
+                        // named the fee this one was built at.
+                        if settled_statically {
+                            return Ok(response);
+                        }
+                        return Ok(candidate.expect("BUG: Settle needs a candidate or a static settle"));
                     },
                     FeeEstimateStep::GiveUp => {
                         warn!(
@@ -1443,25 +1468,14 @@ pub async fn handle_stealth_transfer(
                              at {} but cost {charged})",
                             params.max_fee
                         );
-                        // Reachable only after `MAX_FEE_ESTIMATE_ROUNDS` rounds, by which point a
-                        // retry has dropped the static path, so this response records
-                        // `required_fees` — a figure above what the round cost — rather than a
-                        // settled fee the round disagreed with.
+                        // A statically settled round either settles or is diverted above, so this
+                        // response records `required_fees` — a figure above what the round cost —
+                        // rather than a settled fee the run disagreed with.
                         return Ok(response);
                     },
                     FeeEstimateStep::Retry { max_fee } => {
                         params.max_fee = max_fee;
-                        if settled_statically {
-                            // The estimate said this fee covered the shape and the run disagreed, so
-                            // the static path is done for this request. This response is not the
-                            // candidate either: the wire rounds answer with the round that named the
-                            // fee the next round is built at, and this one names a figure the run
-                            // has just shown insufficient.
-                            settle_statically = false;
-                            candidate = None;
-                        } else {
-                            candidate = Some(response);
-                        }
+                        candidate = Some(response);
                         continue;
                     },
                 }
