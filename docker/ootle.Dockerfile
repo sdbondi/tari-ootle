@@ -5,7 +5,9 @@
 # See docs/docker-build-pipeline.md for an architecture overview.
 #
 # Stages:
-#   chef    - base toolchain: rust + system deps + node + pnpm + cargo-chef
+#   sysdeps - rust toolchain + the system libraries every build links against
+#   ci      - sysdeps, published as the image the CI jobs run inside
+#   chef    - sysdeps + node + pnpm + cargo-chef
 #   planner - emits cargo-chef recipe (dependency graph snapshot)
 #   builder - cooks Rust deps, installs JS deps, builds binaries
 #   runtime - minimal Debian 13 with tini and the compiled binaries
@@ -16,20 +18,17 @@
 # Run:
 #   docker run --rm ootle:local tari_validator_node --help
 
-ARG RUST_VERSION=1.95
+ARG RUST_VERSION=1.97.1
 ARG DEBIAN_VERSION=trixie
 ARG NODE_MAJOR=24
 ARG PNPM_VERSION=9
 
 
 # ---------------------------------------------------------------------------
-# chef: shared base for planner and builder
+# sysdeps: rust toolchain and the system libraries every build links against
 # ---------------------------------------------------------------------------
 # Note: Docker Hub uses `<rust>-slim-<distro>` tag ordering (slim before distro).
-FROM rust:${RUST_VERSION}-slim-${DEBIAN_VERSION} AS chef
-
-ARG NODE_MAJOR
-ARG PNPM_VERSION
+FROM rust:${RUST_VERSION}-slim-${DEBIAN_VERSION} AS sysdeps
 
 ENV DEBIAN_FRONTEND=noninteractive \
     CARGO_HTTP_MULTIPLEXING=false
@@ -42,7 +41,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
 #   - libudev, libhidapi, libdbus (for ledger HW wallet support in wallet_cli)
 #   - protobuf-compiler (for prost-build)
 #   - git (for cargo to fetch git deps)
-#   - curl, ca-certificates, gnupg (bootstrap for NodeSource)
+#   - curl, ca-certificates, gnupg (bootstrap for NodeSource in the chef stage)
+#   - mold, the linker the CI jobs select via `-fuse-ld=mold`
+#   - sudo, so that CI actions which install to system paths work when a job
+#     runs inside this image (see .github/workflows/ci_base_image.yml)
 #
 # If you add a binary that needs more system deps, add them here. The repo's
 # scripts/install_ubuntu_dependencies.sh is the source of truth for dev setup;
@@ -73,24 +75,47 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       libssl-dev \
       libudev-dev \
       make \
+      mold \
       openssl \
       pkg-config \
-      protobuf-compiler && \
+      protobuf-compiler \
+      sudo
+
+# RUST_VERSION must match the channel pinned in the repo's rust-toolchain.toml.
+# When they agree, rustup resolves the workspace's toolchain to the one already
+# in the base image and installs nothing further.
+#
+# Wasm32 target is required: tari_template_builtin compiles its WASM
+# templates via build.rs (`cargo build --target wasm32-unknown-unknown`).
+RUN rustup target add wasm32-unknown-unknown
+
+
+# ---------------------------------------------------------------------------
+# ci: the image the CI jobs run inside
+# ---------------------------------------------------------------------------
+# Deliberately stops at sysdeps. The CI jobs compile and test the Rust
+# workspace; node, pnpm and cargo-chef are build-pipeline tools they never
+# invoke, and every megabyte here is pulled again on every job because the
+# runners are ephemeral.
+FROM sysdeps AS ci
+
+WORKDIR /base
+
+
+# ---------------------------------------------------------------------------
+# chef: sysdeps plus the JS toolchain and cargo-chef, for the binary build
+# ---------------------------------------------------------------------------
+FROM sysdeps AS chef
+
+ARG NODE_MAJOR
+ARG PNPM_VERSION
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     corepack enable && \
     corepack prepare "pnpm@${PNPM_VERSION}" --activate
-
-# The repo's rust-toolchain.toml pins channel = "stable", which rustup
-# treats as a distinct toolchain from the pre-installed `1.95.0` shipped
-# in the rust:* base image. Switch the default to `stable` first so any
-# `rustup target add` (and subsequent cargo invocations) target the
-# toolchain that the workspace will actually use.
-#
-# Wasm32 target is required: tari_template_builtin compiles its WASM
-# templates via build.rs (`cargo build --target wasm32-unknown-unknown`).
-RUN rustup default stable && \
-    rustup target add wasm32-unknown-unknown
 
 # cargo-chef for Rust dependency prewarming.
 RUN cargo install cargo-chef --locked

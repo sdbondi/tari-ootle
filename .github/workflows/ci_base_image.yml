@@ -1,0 +1,95 @@
+---
+name: Build CI base image
+
+# The `chef` stage of the application Dockerfile already carries everything CI needs to compile the
+# workspace: the Rust toolchain with the wasm32 target, the system libraries the native crates link
+# against, and node/pnpm for the web UIs. Publishing that stage lets the CI jobs run inside it
+# instead of installing the same packages on every runner, every run.
+
+'on':
+  push:
+    branches:
+      - development
+    paths:
+      - 'docker/ootle.Dockerfile'
+      - '.github/workflows/ci_base_image.yml'
+  pull_request:
+    paths:
+      - 'docker/ootle.Dockerfile'
+      - '.github/workflows/ci_base_image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/development' }}
+
+env:
+  IMAGE_NAME: ootle-ci
+
+jobs:
+  build:
+    name: Build and push CI base image (linux/amd64)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha
+          labels: |
+            org.opencontainers.image.vendor=Tari Labs
+            org.opencontainers.image.title=${{ env.IMAGE_NAME }}
+            org.opencontainers.image.description=Build environment for Tari Ootle CI jobs
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ./docker/ootle.Dockerfile
+          target: ci
+          platforms: linux/amd64
+          # A pull_request build validates the Dockerfile only. Pushing needs a
+          # token with `packages: write`, which fork PRs are never issued.
+          push: ${{ github.event_name != 'pull_request' }}
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Summary
+        if: ${{ github.event_name != 'pull_request' }}
+        run: |
+          echo "## CI base image" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Digest:** \`${{ steps.build.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Tags:**" >> "$GITHUB_STEP_SUMMARY"
+          echo '${{ steps.meta.outputs.tags }}' | while read -r tag; do
+            echo "- \`${tag}\`" >> "$GITHUB_STEP_SUMMARY"
+          done

@@ -21,10 +21,14 @@
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #![allow(non_snake_case)]
 
-// The `engine_call_outside_invocation` variants supply their own `tari_alloc`/`tari_free` pair, so
+// The `engine_call_in_alloc_or_free` variants supply their own `tari_alloc`/`tari_free` pair, so
 // they must not link `tari_template_abi`: that crate exports `tari_free` under the same
 // `#[no_mangle]` symbol.
-#[cfg(not(any(feature = "engine_call_in_alloc", feature = "engine_call_in_free")))]
+#[cfg(not(any(
+    feature = "engine_call_in_alloc",
+    feature = "engine_call_in_free",
+    feature = "engine_call_in_response_alloc"
+)))]
 pub use tari_template_abi::tari_alloc;
 
 #[global_allocator]
@@ -48,14 +52,19 @@ pub static _ABI_TEMPLATE_DEF: [u8; 4] = [4, 0, 0, 0];
     feature = "return_null_abi",
     feature = "no_template_def",
     feature = "engine_call_in_alloc",
-    feature = "engine_call_in_free"
+    feature = "engine_call_in_free",
+    feature = "engine_call_in_response_alloc"
 )))]
 #[unsafe(no_mangle)]
 pub static _ABI_TEMPLATE_DEF: [u8; 16] = [
     16, 0, 0, 0, 130, 0, 129, 131, 101, 66, 117, 103, 103, 121, 0, 128,
 ];
 
-#[cfg(not(any(feature = "engine_call_in_alloc", feature = "engine_call_in_free")))]
+#[cfg(not(any(
+    feature = "engine_call_in_alloc",
+    feature = "engine_call_in_free",
+    feature = "engine_call_in_response_alloc"
+)))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Buggy_main(_call_info: *mut u8, _call_info_len: usize) -> *mut u8 {
     core::ptr::null_mut()
@@ -76,18 +85,25 @@ pub extern "C" fn i_shouldnt_be_here() -> *mut u8 {
 
 /// A template that re-enters the engine from `tari_alloc` or `tari_free`.
 ///
-/// The engine drives both of those itself — `tari_alloc` to stage the `CallInfo` before the
-/// invocation, `tari_free` on the pointer the template function returned after it — so they run
-/// template code outside any invocation. An engine call made from either must be refused, and
-/// refusing it must fail the transaction even though this template ignores the null pointer it
-/// gets back.
+/// The engine drives both of those itself, at three points: `tari_alloc` to stage the `CallInfo`
+/// before the invocation, `tari_alloc` again to write each engine call's response during it, and
+/// `tari_free` on the pointer the template function returned after it. All three run template code
+/// the engine called. An engine call from any of them must be refused, and refusing it must fail
+/// the transaction even though this template ignores the null pointer it gets back.
+///
+/// The response allocation is the dangerous one: left open it cycles host -> WASM -> host once per
+/// response and exhausts the native stack.
 ///
 /// The memory layout mirrors `tari_template_abi`: an allocation is `[usize length prefix][payload]`
 /// and the pointer handed to the engine points at the payload. It is reimplemented here rather
 /// than reused so these variants do not link `tari_template_abi`, whose `tari_free` would collide
 /// with the one below.
-#[cfg(any(feature = "engine_call_in_alloc", feature = "engine_call_in_free"))]
-mod engine_call_outside_invocation {
+#[cfg(any(
+    feature = "engine_call_in_alloc",
+    feature = "engine_call_in_free",
+    feature = "engine_call_in_response_alloc"
+))]
+mod engine_call_in_alloc_or_free {
     use std::alloc::{Layout, alloc, dealloc};
 
     use super::tari_engine;
@@ -120,8 +136,17 @@ mod engine_call_outside_invocation {
     pub extern "C" fn tari_alloc(size: usize) -> *mut u8 {
         #[cfg(feature = "engine_call_in_alloc")]
         call_engine();
+        // Skipping the `CallInfo` allocation, which is refused before the invocation begins, leaves
+        // the response allocation as the one that runs while an invocation is in flight.
+        #[cfg(feature = "engine_call_in_response_alloc")]
+        if unsafe { core::ptr::read_volatile(&raw const IN_INVOCATION) } {
+            call_engine();
+        }
         internal_alloc(size)
     }
+
+    #[cfg(feature = "engine_call_in_response_alloc")]
+    static mut IN_INVOCATION: bool = false;
 
     /// # Safety
     /// `ptr` must point at the payload of an allocation made by [`tari_alloc`].
@@ -148,6 +173,14 @@ mod engine_call_outside_invocation {
 
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn Buggy_main(_call_info: *mut u8, _call_info_len: usize) -> *mut u8 {
+        #[cfg(feature = "engine_call_in_response_alloc")]
+        {
+            unsafe { core::ptr::write_volatile(&raw mut IN_INVOCATION, true) };
+            // The response to this call is written through `tari_alloc` above, which calls the
+            // engine again.
+            call_engine();
+            unsafe { core::ptr::write_volatile(&raw mut IN_INVOCATION, false) };
+        }
         let ptr = internal_alloc(ENCODED_UNIT.len());
         unsafe { ptr.copy_from_nonoverlapping(ENCODED_UNIT.as_ptr(), ENCODED_UNIT.len()) };
         ptr
