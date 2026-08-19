@@ -379,8 +379,9 @@ An estimate describes the transaction it was metered on, which matters wherever 
 into the transaction's shape. Stealth input selection targets `amount + max_fee`, so the fee decides
 which UTXOs are spent and whether any change is left over — and a change output is another stealth
 output to verify. A figure taken at a guessed fee therefore prices a shape the real submission need
-not have, so it has to be re-derived at the fee it reports until it settles. The wallet daemon does
-that internally for its dry runs.
+not have, so it has to be re-derived at the fee it reports until it settles. The wallet daemon's
+`accounts.stealth_transfer` does that internally for its dry runs; `accounts.confidential_transfer`
+answers from a single round and carries the same caveat.
 
 The one bound a dry run *does* enforce is the fee intent's compute credit. It is a flat figure rather
 than one derived from a payment, so it is the same for an estimate as for a real run — a fee intent

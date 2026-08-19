@@ -221,15 +221,19 @@ impl FinalizeResult {
         self
     }
 
-    /// The minimum `max_fee` a resubmission of this transaction has to carry.
+    /// What committing this transaction costs, with no estimate allowance on top.
     ///
     /// Falls back to what the receipt was charged. `total_fees_required` is additive on the wire, so
-    /// a payload from a peer that predates it decodes as zero — reading it raw would answer a fee
-    /// estimate with the allowance alone.
+    /// a payload from a peer that predates it decodes as zero — reading it raw would price a
+    /// transaction at nothing.
+    pub fn charged_fees(&self) -> u64 {
+        self.total_fees_required.max(self.fee_receipt.total_fees_charged())
+    }
+
+    /// The minimum `max_fee` a resubmission of this transaction has to carry: [`Self::charged_fees`]
+    /// plus the allowance covering the metering drift a different `max_fee` causes.
     pub fn required_fees(&self) -> u64 {
-        self.total_fees_required
-            .max(self.fee_receipt.total_fees_charged())
-            .saturating_add(FEE_ESTIMATE_ALLOWANCE)
+        self.charged_fees().saturating_add(FEE_ESTIMATE_ALLOWANCE)
     }
 
     pub fn new_rejected(transaction_hash: Hash32, reason: RejectReason) -> Self {
@@ -583,6 +587,9 @@ mod tests {
         let mut result = result_charged(5_000);
         result.total_fees_required = 0;
         assert!(result.required_fees() > 5_000);
+        // The same fallback, for a caller that wants the cost without the allowance on top: reading
+        // the raw field would price this transaction at nothing.
+        assert_eq!(result.charged_fees(), 5_000);
     }
 
     /// When the two differ, the gating figure is the one a resubmission has to clear.
