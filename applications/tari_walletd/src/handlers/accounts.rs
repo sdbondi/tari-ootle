@@ -1315,16 +1315,23 @@ pub async fn handle_stealth_transfer(
 
         loop {
             let max_fee_this_round = params.max_fee;
-            let (lock, transfer) = sdk
+            let build = sdk
                 .stealth_transfer_api()
                 .transfer(owner_account.clone(), params.clone())
-                .await
-                .with_context(|| {
+                .await;
+            // Only an estimate names a round, and only an estimate raises the fee between builds:
+            // a later round widens the selection target to `amount + max_fee`, so it can exhaust an
+            // account that funded the earlier one, and the failure needs to say which fee did it.
+            let (lock, transfer) = if req.dry_run {
+                build.with_context(|| {
                     format!(
-                        "building the transfer at a max fee of {max_fee_this_round} (round {})",
+                        "building the transfer at a max fee of {max_fee_this_round} (fee estimate round {})",
                         rounds + 1
                     )
-                })?;
+                })?
+            } else {
+                build?
+            };
 
             let transaction = transfer.transaction;
             let main_pk = transfer.main_signer.public_key().to_byte_type();
@@ -1353,7 +1360,13 @@ pub async fn handle_stealth_transfer(
                 let result = transaction_service
                     .submit_dry_run_transaction(transaction)
                     .await
-                    .map_err(|e| anyhow::anyhow!("Dry run transaction failed: {}", e))?;
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "Dry run transaction failed at a max fee of {max_fee_this_round} (fee estimate round {}): \
+                             {e}",
+                            rounds + 1
+                        )
+                    })?;
 
                 let required_fees = result.finalize.required_fees();
                 // What this round's shape actually costs, without the estimate allowance that
@@ -1944,8 +1957,11 @@ mod fee_estimate_step_tests {
 
     /// The caller's guessed fee has nothing behind it, so a round that covers itself with no
     /// candidate still has to be built at the figure it reports before that figure can be answered
-    /// with. This is what stops a legacy payload — whose cost decodes as zero — settling on the
-    /// guess.
+    /// with.
+    ///
+    /// This delays a cost of zero by one round rather than rejecting it: a second round does hold a
+    /// candidate, and `0 <= built_at`, so it would settle. What keeps a zero out of here is
+    /// `FinalizeResult::charged_fees`, which falls back to what the receipt was charged.
     #[test]
     fn does_not_settle_on_the_callers_guess() {
         assert_eq!(next_fee_estimate_step(1, 0, 9_354, false, 1), FeeEstimateStep::Retry {
