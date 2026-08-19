@@ -43,6 +43,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 #   - protobuf-compiler (for prost-build)
 #   - git (for cargo to fetch git deps)
 #   - curl, ca-certificates, gnupg (bootstrap for NodeSource)
+#   - mold, the linker the CI jobs select via `-fuse-ld=mold`
 #   - sudo, so that CI actions which install to system paths work when a job
 #     runs inside this image (see .github/workflows/ci_base_image.yml)
 #
@@ -75,6 +76,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       libssl-dev \
       libudev-dev \
       make \
+      mold \
       openssl \
       pkg-config \
       protobuf-compiler \
