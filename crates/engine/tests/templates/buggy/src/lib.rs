@@ -21,10 +21,14 @@
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #![allow(non_snake_case)]
 
-// The `engine_call_outside_invocation` variants supply their own `tari_alloc`/`tari_free` pair, so
+// The `engine_call_in_alloc_or_free` variants supply their own `tari_alloc`/`tari_free` pair, so
 // they must not link `tari_template_abi`: that crate exports `tari_free` under the same
 // `#[no_mangle]` symbol.
-#[cfg(not(any(feature = "engine_call_in_alloc", feature = "engine_call_in_free", feature = "engine_call_in_response_alloc")))]
+#[cfg(not(any(
+    feature = "engine_call_in_alloc",
+    feature = "engine_call_in_free",
+    feature = "engine_call_in_response_alloc"
+)))]
 pub use tari_template_abi::tari_alloc;
 
 #[global_allocator]
@@ -56,7 +60,11 @@ pub static _ABI_TEMPLATE_DEF: [u8; 16] = [
     16, 0, 0, 0, 130, 0, 129, 131, 101, 66, 117, 103, 103, 121, 0, 128,
 ];
 
-#[cfg(not(any(feature = "engine_call_in_alloc", feature = "engine_call_in_free", feature = "engine_call_in_response_alloc")))]
+#[cfg(not(any(
+    feature = "engine_call_in_alloc",
+    feature = "engine_call_in_free",
+    feature = "engine_call_in_response_alloc"
+)))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Buggy_main(_call_info: *mut u8, _call_info_len: usize) -> *mut u8 {
     core::ptr::null_mut()
@@ -90,8 +98,12 @@ pub extern "C" fn i_shouldnt_be_here() -> *mut u8 {
 /// and the pointer handed to the engine points at the payload. It is reimplemented here rather
 /// than reused so these variants do not link `tari_template_abi`, whose `tari_free` would collide
 /// with the one below.
-#[cfg(any(feature = "engine_call_in_alloc", feature = "engine_call_in_free", feature = "engine_call_in_response_alloc"))]
-mod engine_call_outside_invocation {
+#[cfg(any(
+    feature = "engine_call_in_alloc",
+    feature = "engine_call_in_free",
+    feature = "engine_call_in_response_alloc"
+))]
+mod engine_call_in_alloc_or_free {
     use std::alloc::{Layout, alloc, dealloc};
 
     use super::tari_engine;

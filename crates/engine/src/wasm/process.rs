@@ -358,7 +358,7 @@ impl WasmProcess {
         })
     }
 
-    pub fn handle<T, U, E>(
+    fn handle<T, U, E>(
         env: &mut FunctionEnvMut<WasmEnv<Runtime>>,
         arg_ptr: WasmPtr<u8>,
         arg_len: u32,
@@ -409,9 +409,9 @@ impl WasmProcess {
         let len = u32::try_from(len).map_err(|_| WasmExecutionError::MemoryAllocationTooLarge)?;
         let alloc_fn = env.data().mem_alloc_func()?;
 
-        env.data_mut().exit_template_invocation();
+        let was_open = env.data_mut().suspend_template_invocation();
         let result = alloc_fn.call(&mut *env, len);
-        env.data_mut().enter_template_invocation();
+        env.data_mut().restore_template_invocation(was_open);
 
         take_refused_engine_call(env.data_mut())?;
         let ptr = result?;
@@ -505,14 +505,16 @@ impl Invokable<Store> for WasmProcess {
             .interface_mut()
             .record_wasm_execution(points_consumed.saturating_sub(already_synced))?;
 
-        // A refusal or engine error recorded during the invocation fails the call on both paths.
-        // `tari_engine_entrypoint` can only answer a refused or failed call with a null pointer,
-        // and a template is free to ignore that and return normally, so the trap path alone is not
-        // enough to catch it.
-        take_refused_engine_call(self.env_mut(store))?;
+        // An engine error recorded during the invocation fails the call on both paths.
+        // `tari_engine_entrypoint` can only answer a failed call with a null pointer, and a
+        // template is free to ignore that and return normally, so the trap path alone is not enough
+        // to catch it.
         if let Some(err) = self.env_mut(store).take_last_engine_error() {
             return Err(WasmExecutionError::RuntimeError(err));
         }
+        // Every site that closes the window drains its own refusal before returning, so this
+        // catches only a site that is later added without one.
+        take_refused_engine_call(self.env_mut(store))?;
 
         match res {
             Ok(return_ptr) => {

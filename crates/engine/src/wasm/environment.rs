@@ -104,6 +104,19 @@ impl<T> WasmEnv<T> {
         self.in_template_invocation = false;
     }
 
+    /// Closes the window for a call into template code the engine drives from inside an invocation,
+    /// returning its previous state. Pair with [`Self::restore_template_invocation`] so the window
+    /// is put back as it was rather than opened.
+    pub(super) fn suspend_template_invocation(&mut self) -> bool {
+        let was_open = self.in_template_invocation;
+        self.in_template_invocation = false;
+        was_open
+    }
+
+    pub(super) fn restore_template_invocation(&mut self, was_open: bool) {
+        self.in_template_invocation = was_open;
+    }
+
     pub(super) fn is_in_template_invocation(&self) -> bool {
         self.in_template_invocation
     }
