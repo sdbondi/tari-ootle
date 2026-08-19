@@ -75,8 +75,14 @@ fn main() -> anyhow::Result<()> {
 fn compile_template<P: AsRef<Path>>(package_dir: P) -> io::Result<()> {
     let args = ["build", "--target", "wasm32-unknown-unknown", "--release"];
 
+    // The template compiles to wasm32, whose linker is rust-lld. Cargo hands this build script
+    // the host rustflags in CARGO_ENCODED_RUSTFLAGS, and that variable applies to every target,
+    // so anything host-specific in it (a `-fuse-ld`, a `-C target-cpu`) would reach the wasm link
+    // and be rejected.
     let output = Command::new("cargo")
         .current_dir(package_dir.as_ref())
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("RUSTFLAGS")
         .args(args)
         .output()?;
 
