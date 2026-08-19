@@ -73,7 +73,9 @@ jobs:
           file: ./docker/ootle.Dockerfile
           target: ci
           platforms: linux/amd64
-          push: true
+          # A pull_request build validates the Dockerfile only. Pushing needs a
+          # token with `packages: write`, which fork PRs are never issued.
+          push: ${{ github.event_name != 'pull_request' }}
           provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -81,6 +83,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
       - name: Summary
+        if: ${{ github.event_name != 'pull_request' }}
         run: |
           echo "## CI base image" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
