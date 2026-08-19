@@ -15,6 +15,10 @@ name: CI
       - synchronize
   merge_group:
 
+permissions:
+  contents: read
+  packages: read
+
 concurrency:
   # https://docs.github.com/en/actions/examples/using-concurrency-expressions-and-a-test-matrix
   group: '${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}'
@@ -145,6 +149,11 @@ jobs:
   clippy:
     name: clippy
     runs-on: [ self-hosted, ubuntu-high-cpu ]
+    container:
+      image: ghcr.io/tari-project/ootle-ci:development
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: checkout
@@ -157,11 +166,6 @@ jobs:
           components: clippy
 
       - uses: ./.github/actions/rust-cache
-
-      - name: ubuntu dependencies
-        run: |
-          sudo apt-get update
-          sudo bash scripts/install_ubuntu_dependencies.sh
 
       - uses: rui314/setup-mold@v1
 
@@ -182,6 +186,11 @@ jobs:
     # Checks for unused dependencies.
     name: machete
     runs-on: [ self-hosted, ubuntu-high-cpu ]
+    container:
+      image: ghcr.io/tari-project/ootle-ci:development
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: checkout
@@ -194,11 +203,6 @@ jobs:
           components: clippy, rustfmt
 
       - uses: ./.github/actions/rust-cache
-
-      - name: ubuntu dependencies
-        run: |
-          sudo apt-get update
-          sudo bash scripts/install_ubuntu_dependencies.sh
 
       - name: cargo machete
         run: |
@@ -257,6 +261,11 @@ jobs:
   test-shards:
     name: test (${{ matrix.partition }})
     runs-on: [ self-hosted, ubuntu-high-cpu ]
+    container:
+      image: ghcr.io/tari-project/ootle-ci:development
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     strategy:
       matrix:
         partition: ["1/3", "2/3", "3/3"]
@@ -273,11 +282,6 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           save-if: ${{ matrix.partition == '1/3' }}
-
-      - name: ubuntu dependencies
-        run: |
-          sudo apt-get update
-          sudo bash scripts/install_ubuntu_dependencies.sh
 
       - uses: rui314/setup-mold@v1
 
@@ -349,6 +353,11 @@ jobs:
   integration-test:
     name: integration test
     runs-on: [ self-hosted, ubuntu-high-cpu ]
+    container:
+      image: ghcr.io/tari-project/ootle-ci:development
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: checkout
@@ -360,11 +369,6 @@ jobs:
           toolchain: ${{ env.stable_toolchain }}
 
       - uses: ./.github/actions/rust-cache
-
-      - name: ubuntu dependencies
-        run: |
-          sudo apt-get update
-          sudo bash scripts/install_ubuntu_dependencies.sh
 
       - uses: rui314/setup-mold@v1
 

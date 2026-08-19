@@ -43,6 +43,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 #   - protobuf-compiler (for prost-build)
 #   - git (for cargo to fetch git deps)
 #   - curl, ca-certificates, gnupg (bootstrap for NodeSource)
+#   - sudo, so that CI actions which install to system paths work when a job
+#     runs inside this image (see .github/workflows/ci_base_image.yml)
 #
 # If you add a binary that needs more system deps, add them here. The repo's
 # scripts/install_ubuntu_dependencies.sh is the source of truth for dev setup;
@@ -75,7 +77,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       make \
       openssl \
       pkg-config \
-      protobuf-compiler && \
+      protobuf-compiler \
+      sudo && \
     curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     corepack enable && \
