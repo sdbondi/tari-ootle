@@ -32,15 +32,13 @@ import urllib.error
 # (crate_name, crate_directory, tier)
 CRATES = [
     ("tari_bor", "crates/tari_bor", 1),
+    ("ootle_serde", "crates/ootle_serde", 1),
     ("ootle-network", "crates/ootle_network", 1),
     ("tari_template_abi", "crates/template_abi", 2),
     ("tari_template_lib_types", "crates/template_lib_types", 2),
     ("ootle_byte_type", "crates/ootle_byte_type", 1),
     ("tari_template_macros", "crates/template_macros", 2),
     ("tari_template_lib", "crates/template_lib", 2),
-    # ootle_serde has a dev-dependency on tari_template_lib, so it must be
-    # published after tari_template_lib even though it's a stable/foundational crate.
-    ("ootle_serde", "crates/ootle_serde", 1),
     ("tari_ootle_template_metadata", "crates/template_metadata", 2),
     ("tari_ootle_template_build", "crates/template_build", 2),
     ("tari_engine_types", "crates/engine_types", 3),
@@ -94,6 +92,36 @@ def get_local_version(crate_name: str, crate_dir: str) -> str:
         if pkg["name"] == crate_name:
             return pkg["version"]
     raise RuntimeError(f"Package {crate_name} not found in cargo metadata")
+
+
+def check_order() -> list:
+    """Return (dependent, dependency) pairs whose normal dep is published too late.
+
+    CRATES is hand-maintained, so a newly added dependency edge can silently
+    invalidate the order. Only normal (and build) deps constrain it. Dev-dep
+    cycles are tolerated, but only when the dev-dependency is declared path-only
+    (no version), as tari_engine does for tari_template_test_tooling — cargo
+    resolves versioned dev-deps against the index when packaging, so a versioned
+    one in a cycle fails the publish.
+    """
+    result = subprocess.run(
+        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"cargo metadata failed: {result.stderr}")
+
+    position = {name: i for i, (name, _, _) in enumerate(CRATES)}
+    violations = []
+    for pkg in json.loads(result.stdout)["packages"]:
+        if pkg["name"] not in position:
+            continue
+        for dep in pkg["dependencies"]:
+            if dep["name"] not in position or (dep.get("kind") or "normal") == "dev":
+                continue
+            if position[dep["name"]] > position[pkg["name"]]:
+                violations.append((pkg["name"], dep["name"]))
+    return sorted(violations)
 
 
 def crate_index_path(name: str) -> str:
@@ -165,6 +193,14 @@ def main():
         help="Print the publish order and exit.",
     )
     args = parser.parse_args()
+
+    violations = check_order()
+    if violations:
+        print(f"{RED}Error: publish order in CRATES is stale — "
+              f"these crates are listed before a dependency:{NC}")
+        for dependent, dep in violations:
+            print(f"  {dependent} needs {dep} published first")
+        sys.exit(1)
 
     # --list mode
     if args.list:

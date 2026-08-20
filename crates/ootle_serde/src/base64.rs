@@ -43,23 +43,23 @@ where
 #[cfg(test)]
 mod tests {
     use serde::Serialize;
-    use tari_template_lib::types::Hash32;
 
     use super::*;
+    use crate::test_fixtures::Bytes32;
 
     #[derive(Deserialize, Serialize, PartialEq, Debug)]
     struct SampleData {
         #[serde(with = "super")]
         data: Vec<u8>,
         #[serde(with = "super")]
-        hash: Hash32,
+        hash: Bytes32,
     }
 
     #[test]
     fn it_encodes_and_decodes_from_base64() {
         let original = SampleData {
             data: vec![1, 2, 3, 4, 5],
-            hash: Hash32::from_array([123u8; 32]),
+            hash: Bytes32::new([123u8; 32]),
         };
 
         // Serialize to JSON (human-readable)

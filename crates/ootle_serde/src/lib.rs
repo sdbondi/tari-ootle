@@ -16,3 +16,6 @@ pub mod map;
 pub mod str_number;
 pub mod string;
 pub mod visitor;
+
+#[cfg(test)]
+mod test_fixtures;

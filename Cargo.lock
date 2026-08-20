@@ -7859,7 +7859,6 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "tari_bor",
- "tari_template_lib",
 ]
 
 [[package]]

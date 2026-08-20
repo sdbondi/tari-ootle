@@ -112,9 +112,9 @@ pub mod option {
 #[cfg(test)]
 mod tests {
     use serde::Serialize;
-    use tari_template_lib::types::Hash32;
 
     use super::*;
+    use crate::test_fixtures::Bytes32;
 
     #[derive(Serialize, Deserialize)]
     struct TestCase {
@@ -123,7 +123,7 @@ mod tests {
         #[serde(with = "super")]
         vec: Vec<u8>,
         #[serde(with = "super")]
-        hash: Hash32,
+        hash: Bytes32,
     }
 
     // Test it
@@ -132,7 +132,7 @@ mod tests {
         let data = TestCase {
             fixed: [1; 32],
             vec: vec![5; 100],
-            hash: Hash32::from_array([2; 32]),
+            hash: Bytes32::new([2; 32]),
         };
         let serialized = serde_json::to_vec(&data).unwrap();
         let deserialized: TestCase = serde_json::from_slice(&serialized).unwrap();
