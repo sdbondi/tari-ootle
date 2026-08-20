@@ -74,8 +74,7 @@ jobs:
           echo "TARI_VERSION=${VER}" >> "$GITHUB_OUTPUT"
 
       # Windows: install the GNU host toolchain (bundles its own mingw linker) so the .a is the
-      # GNU-ABI lib cgo links against — not the MSVC .lib. Setting it as the toolchain (rather than
-      # a later `rustup default`) avoids the action's RUSTUP_TOOLCHAIN override winning.
+      # GNU-ABI lib cgo links against — not the MSVC .lib.
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # master (no version tag)
         with:
@@ -83,6 +82,13 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build + stage native libs
+        env:
+          # The action installs the toolchain above and makes it the rustup DEFAULT, but
+          # rust-toolchain.toml outranks the default — so on Windows the build would silently run on
+          # the MSVC host toolchain, which carries no std for x86_64-pc-windows-gnu ("can't find
+          # crate for `core`"). RUSTUP_TOOLCHAIN outranks rust-toolchain.toml, so pin it here. Keep
+          # it in step with the `toolchain:` input above.
+          RUSTUP_TOOLCHAIN: ${{ matrix.platform == 'windows-x64' && '1.97.1-x86_64-pc-windows-gnu' || '1.97.1' }}
         run: |
           scripts/build_ffi_lib.sh \
             --platform "${{ matrix.platform }}" \
