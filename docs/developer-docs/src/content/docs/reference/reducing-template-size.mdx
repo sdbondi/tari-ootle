@@ -1,0 +1,357 @@
+---
+title: Reducing Template Size
+description: How to make a published template's WASM binary smaller — the release profile, wasm-opt, no_std, and the code-level habits that cost the most bytes.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+import { basePath } from '../../../helpers/path';
+
+A template's compiled WASM is stored permanently on the network and shipped to every validator in the
+committee. Size is therefore priced twice: once when you publish, and again — for your users — on
+every transaction that calls the template.
+
+Everything on this page was measured against the same ~85 line `state` template using the current
+testnet fee table. Your numbers will differ, but the ratios hold.
+
+---
+
+## Why size matters
+
+**There is a hard cap.** `ENGINE_LIMITS.max_template_binary_size_bytes` is **1.5 MiB**. A larger
+binary is rejected at publish time, and a transaction may publish at most one template.
+
+**Publishing is priced quadratically above 96 KiB.** The publish charge is a flat
+250,000 µT, plus the first 96 KiB at the per-byte storage rate, plus `100 µT × units²` for every
+whole KiB beyond that allowance:
+
+| Binary size | Publish charge (testnet) | `TemplateLoad` charged to each caller |
+|---|---|---|
+| 72 KiB | ~0.32 tTARI | 240 µT |
+| 96 KiB | ~0.35 tTARI | 320 µT |
+| 128 KiB | ~0.45 tTARI | 430 µT |
+| 256 KiB | ~2.9 tTARI | 870 µT |
+| 512 KiB | ~17.7 tTARI | 1,740 µT |
+| 1.5 MiB | ~208 tTARI | 5,240 µT |
+
+The 96 KiB allowance is deliberately set just above the floor for a minimal component template, so
+the premium prices *your* code rather than the fixed `tari_template_lib` machinery. A template that
+stays under it pays the same as ordinary storage.
+
+**Your users pay for size on every call.** `TemplateLoad` is charged at 10 µT per 3 KB the first
+time each template is loaded in a transaction — a cost carried by whoever calls your template, not
+by you. Halving your binary halves that line item forever.
+
+<Aside type="note">
+  See <a href={basePath("/reference/fees/")}>Fees</a> for the full fee model, including the storage
+  and execution charges that component state and logic incur separately from binary size.
+</Aside>
+
+---
+
+## Start with the release profile
+
+The single highest-leverage change is the `[profile.release]` section of your template's
+`Cargo.toml`. The default `cargo build --release` profile is tuned for native speed, not for WASM
+size.
+
+```toml
+[profile.release]
+opt-level = 's'     # Optimize for size ('z' is more aggressive — measure both)
+lto = true          # Link-time optimization: drops unreachable library code
+codegen-units = 1   # One unit lets LTO see the whole crate graph
+panic = 'abort'     # Unwinding tables are dead weight on wasm32
+strip = true        # Drop the `name`, `producers` and `target_features` sections
+```
+
+Measured on the `state` template (sizes after the same `wasm-opt` pass the walletd applies):
+
+| Build | Raw `.wasm` | After `wasm-opt` |
+|---|---|---|
+| Default `--release` | 138 KiB | 95 KiB |
+| Profile above | 88 KiB | 78 KiB |
+| Profile above + `no_std` | 75 KiB | 67 KiB |
+| Profile above + [immediate-abort panics](#dropping-panic-messages-entirely) | 68 KiB | 60 KiB |
+| All three together | 63 KiB | 55 KiB |
+
+A few things worth knowing about those knobs:
+
+- **`lto` and `codegen-units = 1` do the heavy lifting.** They are also what makes `opt-level` pay
+off: on its own, `opt-level = 's'` or `'z'` actually produced a *larger* binary than the default
+`opt-level = 3`. Only in combination with LTO did the size profile win.
+- **`'s'` is not always beaten by `'z'`.** In the measurement above `'s'` came out ~1.5 KiB smaller
+than `'z'` after `wasm-opt`. Try both; it costs one rebuild.
+- **`panic = 'abort'` is near-free either way.** `wasm32-unknown-unknown` has no unwinder, so this
+changed the binary by under 100 bytes. Keep it for correctness of intent, not for the savings.
+- **`strip = true` is about more than bytes.** The engine rejects a published template carrying any
+custom section other than `tari_tdef`, and the toolchain emits `name`, `producers` and
+`target_features` by default. `strip = true` removes exactly those three and leaves `tari_tdef`
+intact.
+
+<Aside type="tip">
+  Keep the `[profile.dev.package.*]` entries from the
+  <a href={basePath("/guides/build-a-guessing-game/#speeding-up-template-tests")}> guessing game guide</a> as
+  well — they speed up template *tests* and have no effect on the published release binary.
+</Aside>
+
+---
+
+## `wasm-opt` — the walletd already runs it
+
+[Binaryen](https://github.com/WebAssembly/binaryen)'s `wasm-opt` rewrites an existing binary to be
+smaller. **You do not need to run it before publishing:** the wallet daemon optimizes every binary
+it receives, on both the fee-estimate path and the publish path, before the transaction is built.
+That applies to the wallet web UI, `tari publish`, and any direct JSON-RPC call.
+
+The walletd's pass is equivalent to:
+
+```bash
+wasm-opt -Os \
+  --enable-bulk-memory --enable-reference-types \
+  --strip-debug --strip-producers --strip-target-features \
+  template.wasm -o template.optimized.wasm
+```
+
+On an unoptimized default-profile build that pass alone recovered ~31% (138 KiB → 95 KiB). On a
+binary already built with the size profile it still recovered ~12%.
+
+Running it yourself is still useful when you want to know the *published* size before you publish —
+to check it against the 96 KiB allowance in CI, for example. Install it with
+`cargo install wasm-opt` or from the [Binaryen releases](https://github.com/WebAssembly/binaryen/releases).
+
+<Aside type="caution">
+  Do not add extra `wasm-opt` passes that rewrite custom sections or enable SIMD. The engine rejects
+  binaries carrying custom sections other than `tari_tdef`, and the walletd's pass explicitly
+  disables SIMD and relaxed-SIMD.
+</Aside>
+
+---
+
+## Going `no_std`
+
+`tari_template_lib` supports `no_std`. Dropping `std` removed a further ~11 KiB (~14%) from the
+optimized `state` binary, most of it Rust's standard-library startup, panic-unwinding and allocator
+machinery.
+
+```toml
+[dependencies]
+tari_template_lib = { version = "*", default-features = false, features = ["macro", "alloc"] }
+
+# A small allocator. `talc` is what the engine's own no_std test template uses.
+talc = { version = "5.0.3", default-features = false }
+```
+
+```rust
+#![no_std]
+
+extern crate alloc;
+
+#[cfg(target_arch = "wasm32")]
+#[global_allocator]
+static TALC: talc::wasm::WasmDynamicTalc = talc::wasm::new_wasm_dynamic_allocator();
+
+use tari_template_lib::prelude::*;
+
+#[template]
+mod counter {
+    use alloc::{format, string::String};
+
+    use super::*;
+    // ...
+}
+```
+
+What changes in practice:
+
+- **You must supply a global allocator.** Templates allocate — every `String`, `Vec` and CBOR
+decode does. `talc` is the recommended choice. Avoid `wee_alloc`, which is
+[unmaintained and leaks](https://github.com/rustwasm/wee_alloc/issues/106).
+- **`std` and `alloc` are mutually exclusive.** Enabling both (or neither) on `wasm32` is a compile
+error from `tari_template_lib`, so you will find out immediately.
+- **Imports move to `alloc`.** `use alloc::{string::String, vec::Vec, format, collections::BTreeMap}`
+inside your template module.
+- **Panic messages still work.** `tari_template_lib` installs a `#[panic_handler]` for `no_std`
+WASM that forwards the message, line and column to the engine, so a failed template still
+produces a readable reject reason.
+
+`no_std` is the right call for a template you expect to publish once and have called often. For a
+template you are still iterating on, the release profile plus `wasm-opt` gets you most of the way
+with none of the friction.
+
+---
+
+## Dropping panic messages entirely
+
+Most of what remains in a small binary is panic and formatting machinery: the code that builds a
+message, and the message text itself. Rust's `immediate-abort` panic strategy replaces every panic
+site with a bare trap, and the optimizer then deletes the messages and the formatting code that fed
+them. On the measured template it removed a further **23%** (78 KiB → 60 KiB), shrinking the data
+section from ~8.8 KiB to ~2.8 KiB.
+
+It needs a nightly toolchain with the `rust-src` component, because the standard library has to be
+rebuilt with the strategy:
+
+```bash
+rustup toolchain install nightly
+rustup component add rust-src --toolchain nightly
+
+RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort" \
+  cargo +nightly build --target wasm32-unknown-unknown --release \
+  -Z build-std=std,panic_abort
+```
+
+For a `no_std` template, build `core` instead: `-Z build-std=core,alloc,panic_abort`.
+
+<Aside type="caution">
+  **You lose every panic message.** Normally a failed template produces
+  `Panic! <your message>` in the reject reason, with the source line and column logged by the
+  validator — `tari_template_lib` forwards them through the engine's `on_panic` host call. Under
+  `immediate-abort` that call never happens, and the failure surfaces as a bare WASM trap with no
+  message, no line and no column. Every `expect`, `assert!` and arithmetic-overflow message becomes
+  indistinguishable from every other.
+</Aside>
+
+Because of that, prefer the `RUSTFLAGS` form above over baking it into `[profile.release]`: it is
+opt-in per build, so your `cargo test` runs and your debugging builds keep their messages and only
+the binary you publish is stripped of them. Confirm the template behaves identically before and
+after — semantics do not change (a trap still aborts execution and rejects the transaction), but
+your ability to diagnose a failure in production does.
+
+<Aside type="note">
+  This is unstable and the interface has changed: on older nightlies the equivalent is
+  `-Z build-std-features=panic_immediate_abort`, and it can also be enabled as
+  `panic = "immediate-abort"` in `[profile.release]` together with
+  `cargo-features = ["panic-immediate-abort"]` at the top of `Cargo.toml`.
+</Aside>
+
+---
+
+## Code-level habits that cost the most
+
+### Strings and formatting
+
+Every string literal lands verbatim in the binary's data section, and every `format!`, `debug!`,
+`panic!` or `assert!` message drags in `core::fmt` code for the types it formats. In a minimal
+template the data section is already ~9 KiB, most of it CBOR and `core` error text you have no
+control over — what you write is added on top of that.
+
+- A single `debug!("Changing value from {:?} to {}", self, value)` cost **1.7 KiB** in the measured
+build. Formatting is not free; treat log lines as a debugging tool you remove before publishing,
+or gate them.
+- Prefer short, fixed messages: `expect("no vault")` over
+`unwrap_or_else(|| panic!("no vault for resource {resource} in component {addr}"))`.
+- Reuse one message rather than writing five near-identical ones — each distinct literal is
+separate bytes.
+- Prefer `&'static str` over `String` for constants, and return `&str` where you can.
+- Logs are also charged a runtime fee per 64 bytes, so short messages save twice.
+
+### `Debug` and `Display`
+
+A derived `Debug` impl is only dead weight if something actually formats it — with LTO enabled,
+removing `#[derive(Debug)]` *after* removing the last `{:?}` use changed the binary by **zero
+bytes**. The rule is therefore about the call site, not the derive:
+
+- Remove the formatting, and the derive costs nothing.
+- Never derive `Debug` on a type just to `{:?}` it in a log line you plan to keep.
+- Hand-writing `Display` to emit a fixed `&'static str` is smaller than deriving `Debug` on a large
+enum you format.
+
+### Dependencies
+
+A single carelessly chosen crate can dwarf everything else on this page.
+
+- Audit with `cargo tree --target wasm32-unknown-unknown`. Anything you do not recognise is a
+candidate for removal.
+- Avoid the usual heavyweights: `serde_json`, `regex`, `chrono`, `num-bigint`. Most have no meaning
+on-chain anyway — a clock, for instance, is `Consensus::current_epoch()`.
+- An RNG crate such as `rand` is not an option at all: it cannot work inside a template, and adding
+one only costs you bytes. Use `tari_template_lib::rand` and read
+<a href={basePath("/guides/randomness/")}>Randomness in Templates</a> first.
+- Depend on crates that are `no_std`-capable and default-features-off wherever possible.
+- Do not enable `tari_template_lib` features you are not using — `extra-maps` pulls in `indexmap`
+and `xxhash-rust`, and `precision`, `extra-arith`, `serde`, `borsh` and `ts` all add code. The
+last three exist for host-side tooling, not for templates.
+- `dev-dependencies` (such as `tari_template_test_tooling`) and `#[cfg(test)]` code are never
+compiled into the `cdylib`, so tests cost you nothing on-chain.
+
+### Generics and duplication
+
+Monomorphisation duplicates a function's body for every type it is instantiated with. When a
+generic function is large, keep the generic part thin:
+
+```rust
+pub fn transfer<A: Into<Amount>>(&mut self, amount: A) {
+  self.transfer_inner(amount.into()); // one instantiation of the big body
+}
+
+  fn transfer_inner(&mut self, amount: Amount) { /* ... */}
+  ```
+
+  The same applies to macro-generated code and to copy-pasted method bodies — factor the shared part
+  into one non-generic function.
+
+  ### Collections
+
+  Prefer `Vec` and `BTreeMap` over `HashMap` in component state: the standard hasher brings machinery
+  you are paying for in bytes, and ordered collections give you a deterministic encoding for free.
+  Reach for `extra-maps`' `IndexMap` only when you genuinely need insertion order plus lookup.
+
+  ### Share code across templates instead of duplicating it
+
+  Templates can call other templates. If several of your templates share a body of logic, publishing
+  it once and calling it with `TemplateManager::get(address).call(...)` beats compiling it into each
+  binary — you pay the publish premium once instead of N times.
+
+  ---
+
+  ## Measuring what is actually big
+
+  Guessing is a waste of time; both of these take seconds.
+
+  **Per-function sizes**, from Binaryen:
+
+  ```bash
+  wasm-opt --func-metrics target/wasm32-unknown-unknown/release/my_template.wasm -o /dev/null
+  ```
+
+  **A ranked breakdown**, from [twiggy](https://github.com/rustwasm/twiggy):
+
+  ```bash
+  cargo install twiggy
+  twiggy top -n 20 target/wasm32-unknown-unknown/release/my_template.wasm
+  ```
+
+  <Aside type="note">
+    Both tools report readable function names only if the `name` section is present — build with
+    `strip = "debuginfo"` (or no `strip` at all) while profiling, then switch back to `strip = true`
+    for the build you publish.
+  </Aside>
+
+  ---
+
+  ## Conclusion
+
+  Applied together, these steps took the measured template from the 95 KiB (just using `cargo build --release`)
+  down to 55 KiB — a 42% smaller binary running the same logic.
+
+  ---
+
+  ## Checklist
+
+  1. Add the `[profile.release]` block above; try `opt-level = 's'` and `'z'` and keep the winner.
+  2. Build with `cargo build --target wasm32-unknown-unknown --release`.
+  3. Check the published size with `wasm-opt -Os ...` — the walletd will apply the same pass.
+  4. If you are over the 96 KiB allowance, run `twiggy top` before changing any code.
+  5. Remove or shorten log and panic formatting; drop dependencies you do not need.
+  6. If it still matters, switch to `no_std` + `alloc` with a `talc` global allocator.
+  7. As a last resort, build the published binary with `immediate-abort` panics — and accept that a
+  production failure will no longer tell you what went wrong.
+
+  ---
+
+  ## See also
+
+  - <a href={basePath("/reference/fees/")}>Fees</a> — the full fee model, including the publish premium and
+  `TemplateLoad`
+  - <a href={basePath("/guides/publishing-templates/")}>Publishing Templates</a> — compiling and publishing a template
+  - <a href={basePath("/guides/template-overview/")}>Templates Overview</a> — the `#[template]` macro and component
+  state

@@ -3,10 +3,13 @@ title: Randomness in Templates
 description: How pseudorandom values are produced in Tari Ootle, what guarantees they carry, and when you must not rely on them.
 ---
 
+import { Aside } from "@astrojs/starlight/components";
+
 ### Covered in this guide
 
 In this guide, you will:
 - Learn which randomness APIs templates can call.
+- Understand why `rand`, `getrandom` and other OS-backed RNGs cannot be used.
 - Understand how those values are derived and why they are deterministic across shards.
 - See exactly which adversarial properties the current randomness does and does not provide.
 - Learn which contract patterns are safe to build on it and which are not.
@@ -31,6 +34,28 @@ use tari_template_lib::consensus::Consensus;
 
 let epoch_hash: Hash = Consensus::current_epoch_hash();
 ```
+
+### Why you cannot use `rand` or `getrandom`
+
+**Randomness doesn't work on a blockchain.** Validators have to agree on state transitions
+deterministically, so no local source of entropy works: whatever each validator drew on its own,
+they would no longer agree, and the transaction could not commit. This is not particular to Ootle —
+no smart-contract platform exposes a true RNG to contract code, and the workarounds are the same
+everywhere: derive from data consensus already agrees on (what `random_bytes` and the epoch hash do
+here), run a commit-reveal among participants, or defer to an external VRF or oracle.
+
+**There is also no entropy to draw on.** Templates compile to `wasm32-unknown-unknown`, a target
+with no operating system behind it, and the engine gives a template exactly three host functions:
+`tari_engine`, `tari_debug` and `on_panic`. `getrandom` — which every RNG in the Rust ecosystem
+calls for its seed — has no backend available to it, and a template importing anything the engine
+does not provide is rejected when it is published.
+
+<Aside type="caution">
+  `getrandom` can technically be pointed at a custom backend, and you could implement that backend
+  on top of `random_bytes`. Doing so does not give you secure randomness: every `rand` consumer in
+  your dependency tree silently inherits the grinding weaknesses described under
+  [Adversarial properties](#adversarial-properties), while looking like a CSPRNG at the call site.
+</Aside>
 
 ### How randomness is derived
 

@@ -32,6 +32,14 @@ cargo build --target wasm32-unknown-unknown --release
   file you will publish to the Tari Ootle network.
 </Aside>
 
+The size of that binary is capped at 1.5 MiB, and it is priced twice: once in the publish fee, which
+rises quadratically above a 96 KiB allowance, and again in the `TemplateLoad` fee that every caller
+of your template pays. A few lines in your `Cargo.toml` typically cut it by a third — see
+<a href={basePath("/reference/reducing-template-size/")}>Reducing Template Size</a>.
+
+The wallet daemon runs `wasm-opt` over the binary for you before it estimates the fee or publishes,
+so you do not need to optimize it yourself.
+
 ### Publishing Your Template
 
 To publish your template, you need to create a transaction that includes the `PublishTemplate` instruction.
@@ -72,5 +80,6 @@ Now that your template is published, it's ready to be used in transactions!
 
 ### Next Steps
 
+- Learn how to <a href={basePath("/reference/reducing-template-size/")}>reduce your template's size</a> to publish it more cheaply.
 - Learn some basics about <a href={basePath("/guides/transaction-overview/")}>Ootle transactions</a>.
 - Learn how to programmatically <a href={basePath("/guides/play-the-guessing-game/")}>interact with the guessing game template</a>.
