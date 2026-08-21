@@ -35,10 +35,7 @@ use wasmer::{
     WasmPtr,
 };
 
-use crate::{
-    runtime::RuntimeError,
-    wasm::{WasmExecutionError, mem_writer::MemWriter},
-};
+use crate::wasm::{WasmExecutionError, mem_writer::MemWriter};
 
 pub(crate) type WasmAllocFn = TypedFunction<u32, WasmPtr<u8>>;
 pub(crate) type WasmFreeFn = TypedFunction<WasmPtr<u8>, ()>;
@@ -52,7 +49,7 @@ pub struct WasmEnv<T> {
     mem_alloc: Option<WasmAllocFn>,
     mem_free: Option<WasmFreeFn>,
     last_panic: Option<String>,
-    last_engine_error: Option<RuntimeError>,
+    last_engine_error: Option<WasmExecutionError>,
     invocation_meter: Option<InvocationMeter>,
     in_template_invocation: bool,
     refused_engine_call: Option<EngineOp>,
@@ -194,11 +191,17 @@ impl<T> WasmEnv<T> {
         self.last_panic.take()
     }
 
-    pub(super) fn set_last_engine_error(&mut self, error: RuntimeError) {
-        self.last_engine_error = Some(error);
+    /// Records why an engine call could not be answered. `tari_engine_entrypoint` can only reply to
+    /// the WASM with a null pointer, which carries no reason and which a template is free to
+    /// ignore, so the reason is left here for `WasmProcess::invoke` to fail the call with.
+    ///
+    /// Every path that answers null must record one, or the failure reaches the transaction as
+    /// whatever the template panicked with on the null instead.
+    pub(super) fn set_last_engine_error<E: Into<WasmExecutionError>>(&mut self, error: E) {
+        self.last_engine_error = Some(error.into());
     }
 
-    pub(super) fn take_last_engine_error(&mut self) -> Option<RuntimeError> {
+    pub(super) fn take_last_engine_error(&mut self) -> Option<WasmExecutionError> {
         self.last_engine_error.take()
     }
 

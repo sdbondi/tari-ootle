@@ -8,6 +8,9 @@ edition = "2024"
 
 [dependencies]
 tari_template_lib = { path = "../../../../template_lib" }
+# Used to reach the raw `tari_engine` import, so a test can make an engine call the way a broken or
+# hostile template would: with an op the engine cannot map, or arguments it cannot decode.
+tari_template_abi = { path = "../../../../template_abi", default-features = false }
 
 
 [lib]

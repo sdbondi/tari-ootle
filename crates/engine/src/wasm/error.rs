@@ -52,6 +52,13 @@ pub enum WasmExecutionError {
     MissingAbiFunction { function: &'static str },
     #[error("Engine call size limit of {limit} bytes exceeded")]
     CallSizeLimitExceeded { limit: usize },
+    /// The argument buffer a template passed to an engine call. Distinct from
+    /// [`Self::CallSizeLimitExceeded`], which bounds the arguments passed the other way, into a
+    /// template function.
+    #[error("Engine call argument size limit of {limit} bytes exceeded: {size} bytes")]
+    EngineCallArgSizeExceeded { limit: usize, size: usize },
+    #[error("Invalid engine op {op}")]
+    InvalidEngineOp { op: i32 },
     #[error("Runtime error: {0}")]
     RuntimeError(#[from] RuntimeError),
     #[error("Failed to decode argument for engine call: {0:?}")]

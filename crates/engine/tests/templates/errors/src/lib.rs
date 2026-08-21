@@ -41,5 +41,28 @@ mod template {
             // Cannot create a vault for a resource that doesnt exist
             let vault = Vault::new_empty(resource_addr);
         }
+
+        /// Calls the engine with an op no `EngineOp` maps to, and carries on as if it had worked.
+        /// The entrypoint can only answer with a null pointer, and this ignores it: the refusal has
+        /// to fail the transaction on the engine's side alone.
+        pub fn ignore_refused_engine_call() {
+            let arg = [0u8; 1];
+            unsafe {
+                tari_template_abi::tari_engine(i32::MAX, arg.as_ptr(), arg.len());
+            }
+        }
+
+        /// As above, but with a valid op and an argument the engine cannot decode.
+        pub fn ignore_undecodable_engine_call() {
+            // 0xff is a CBOR break byte, which is not a value.
+            let arg = [0xffu8; 8];
+            unsafe {
+                tari_template_abi::tari_engine(
+                    tari_template_abi::EngineOp::EmitLog.as_i32(),
+                    arg.as_ptr(),
+                    arg.len(),
+                );
+            }
+        }
     }
 }

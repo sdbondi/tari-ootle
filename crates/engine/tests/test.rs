@@ -469,6 +469,42 @@ mod errors {
         }
     }
 
+    /// A refusal must fail the transaction even when the template ignores the null pointer it is
+    /// answered with, which is only true if the engine records why it refused.
+    #[test]
+    fn a_refused_engine_call_fails_the_transaction() {
+        let mut test = TemplateTest::new(CRATE_PATH, vec!["tests/templates/errors"]);
+
+        let reason = test.execute_expect_failure(
+            test.transaction()
+                .call_function(
+                    test.get_template_address("Errors"),
+                    "ignore_refused_engine_call",
+                    args![],
+                )
+                .build_and_seal(test.secret_key()),
+            vec![],
+        );
+        assert_reject_reason(reason, format!("Invalid engine op {}", i32::MAX));
+    }
+
+    #[test]
+    fn an_undecodable_engine_call_fails_the_transaction() {
+        let mut test = TemplateTest::new(CRATE_PATH, vec!["tests/templates/errors"]);
+
+        let reason = test.execute_expect_failure(
+            test.transaction()
+                .call_function(
+                    test.get_template_address("Errors"),
+                    "ignore_undecodable_engine_call",
+                    args![],
+                )
+                .build_and_seal(test.secret_key()),
+            vec![],
+        );
+        assert_reject_reason(reason, "Failed to decode argument for engine call");
+    }
+
     #[test]
     fn invalid_tuple_arg() {
         let mut test = TemplateTest::new(CRATE_PATH, vec!["tests/templates/tuples"]);
