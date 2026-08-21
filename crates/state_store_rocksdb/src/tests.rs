@@ -18,12 +18,13 @@ use crate::{
 pub fn create_rocksdb(cf_names: impl IntoIterator<Item = &'static str>) -> (TransactionDB<SingleThreaded>, TempDir) {
     let temp_dir = tempfile::Builder::new().disable_cleanup(false).tempdir().unwrap();
     let path = temp_dir.path().join("rocksdb");
-    let mut db_opts = rocksdb::Options::default();
-    db_opts.set_error_if_exists(false);
-    db_opts.create_if_missing(true);
-    db_opts.create_missing_column_families(true);
+    // Use the production options so that tests exercise the prefix extractor and memtable prefix bloom
+    let db_opts = crate::store::build_default_store_opts();
     let tx_opts = rocksdb::TransactionDBOptions::default();
-    let db = TransactionDB::open_cf(&db_opts, &tx_opts, path, cf_names)
+    let cf_descriptors = cf_names
+        .into_iter()
+        .map(|name| rocksdb::ColumnFamilyDescriptor::new(name, db_opts.clone()));
+    let db = TransactionDB::open_cf_descriptors(&db_opts, &tx_opts, path, cf_descriptors)
         .map_err(|e| StorageError::ConnectionError {
             reason: e.into_string(),
         })
@@ -257,13 +258,20 @@ fn end_range_iterator_does_not_read_the_preceding_prefix() {
     seed_shared_prefixed_cf(&ctx);
 
     let query = ctx.cf(UpperByEpochQuery).unwrap();
+
     let epochs = query
         .query_end_range_iterator(Ordering::Ascending, &Epoch(3))
         .map(|res| res.map(|((epoch, _), ())| epoch))
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-
     assert_eq!(epochs, vec![Epoch(0), Epoch(1), Epoch(2)]);
+
+    let epochs = query
+        .query_end_range_key_iterator(Ordering::Descending, &Epoch(3))
+        .map(|res| res.map(|(epoch, _)| epoch))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(epochs, vec![Epoch(2), Epoch(1), Epoch(0)]);
 }
 
 #[test]
@@ -274,11 +282,31 @@ fn start_range_iterator_does_not_read_the_following_prefix() {
     seed_shared_prefixed_cf(&ctx);
 
     let query = ctx.cf(LowerByEpochQuery).unwrap();
+
     let epochs = query
         .query_start_range_iterator(Ordering::Ascending, &Epoch(3))
         .map(|res| res.map(|((epoch, _), ())| epoch))
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-
     assert_eq!(epochs, vec![Epoch(3), Epoch(4)]);
+
+    let epochs = query
+        .query_start_range_key_iterator(Ordering::Descending, &Epoch(3))
+        .map(|res| res.map(|(epoch, _)| epoch))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(epochs, vec![Epoch(4), Epoch(3)]);
+}
+
+#[test]
+fn query_last_does_not_read_the_following_prefix() {
+    const OP: &str = "query_last_does_not_read_the_following_prefix";
+    let (db, _tmp) = create_rocksdb([SHARED_CF]);
+    let tx = db.transaction();
+    let ctx = ctx(&db, &tx);
+    seed_shared_prefixed_cf(&ctx);
+
+    let ((epoch, block_id), ()) = ctx.cf(LowerByEpochQuery).unwrap().query_last(OP).unwrap();
+    assert_eq!(epoch, Epoch(4));
+    assert_eq!(block_id, block_id_from_seed(4));
 }

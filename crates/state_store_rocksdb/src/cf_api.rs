@@ -586,18 +586,19 @@ impl<'db, TQuery: QueryCf, DB: RocksReader> CfContext<'db, DB, TQuery> {
         >(ordering, TableBounds::for_cf::<TQuery::Cf>(None, Some(key)))
     }
 
+    /// Returns the last key/value in the logical table.
     pub fn query_last(&self, operation: &'static str) -> Result<QueryCfKv<TQuery>, RocksDbStorageError> {
-        let mut iter = self.db.iterator_cf(self.handle, IteratorMode::End);
-        let result = iter.next().ok_or_else(|| RocksDbStorageError::QueryError {
+        let mut iter = self.range_iterator_with_codecs::<
+            PrefixedCodec<TQuery::Cf>,
+            <TQuery::Cf as Cf>::Key,
+            <TQuery::Cf as Cf>::ValueCodec,
+            <TQuery::Cf as Cf>::Value,
+        >(Ordering::Descending, TableBounds::for_cf::<TQuery::Cf>(None, None));
+
+        iter.next().transpose()?.ok_or_else(|| RocksDbStorageError::QueryError {
             operation,
             details: format!("No values in TQuery {}", TQuery::name()),
-        })?;
-        let key_codec = TQuery::make_cf_key_codec();
-        let value_codec = TQuery::make_cf_value_codec();
-        let (key, value) = result.map_err(|e| RocksDbStorageError::RocksDbError { operation, source: e })?;
-        let key = key_codec.decode_exact(&key)?;
-        let value = value_codec.decode_exact(&value)?;
-        Ok((key, value))
+        })
     }
 }
 
