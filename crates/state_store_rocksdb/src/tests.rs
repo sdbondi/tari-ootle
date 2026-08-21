@@ -11,7 +11,7 @@ use tempfile::TempDir;
 
 use crate::{
     cf_api::DbContext,
-    codecs::{BlockIdCodec, BytesCodec, EpochCodec, NumberCodec, UnitCodec},
+    codecs::{BlockIdCodec, BytesCodec, EpochCodec, NumberCodec, Prefixed, UnitCodec},
     traits::{Cf, QueryCf},
 };
 
@@ -95,6 +95,69 @@ impl QueryCf for ByEpochQuery {
     type KeyCodec = EpochCodec;
 }
 
+/// Two logical tables that share one physical column family, separated only by their key prefix byte.
+const SHARED_CF: &str = "shared_prefixed";
+
+pub struct LowerPrefix;
+
+impl Prefixed for LowerPrefix {
+    fn prefix() -> Option<u8> {
+        Some(1)
+    }
+}
+
+pub struct UpperPrefix;
+
+impl Prefixed for UpperPrefix {
+    fn prefix() -> Option<u8> {
+        Some(2)
+    }
+}
+
+pub struct LowerEpochBlockCf;
+
+impl Cf for LowerEpochBlockCf {
+    type Key = (Epoch, BlockId);
+    type KeyCodec = (EpochCodec, BlockIdCodec);
+    type Prefix = LowerPrefix;
+    type Value = ();
+    type ValueCodec = UnitCodec;
+
+    fn name() -> &'static str {
+        SHARED_CF
+    }
+}
+
+pub struct LowerByEpochQuery;
+
+impl QueryCf for LowerByEpochQuery {
+    type Cf = LowerEpochBlockCf;
+    type Key = Epoch;
+    type KeyCodec = EpochCodec;
+}
+
+pub struct UpperEpochBlockCf;
+
+impl Cf for UpperEpochBlockCf {
+    type Key = (Epoch, BlockId);
+    type KeyCodec = (EpochCodec, BlockIdCodec);
+    type Prefix = UpperPrefix;
+    type Value = ();
+    type ValueCodec = UnitCodec;
+
+    fn name() -> &'static str {
+        SHARED_CF
+    }
+}
+
+pub struct UpperByEpochQuery;
+
+impl QueryCf for UpperByEpochQuery {
+    type Cf = UpperEpochBlockCf;
+    type Key = Epoch;
+    type KeyCodec = EpochCodec;
+}
+
 #[test]
 fn it_puts_and_retrieves() {
     const OP: &str = "it_puts_and_retrieves_in_single_transaction";
@@ -174,4 +237,48 @@ fn it_iterates_over_epoch_heights_ordering() {
         assert_eq!(epoch, Epoch(0));
         assert_eq!(height, NodeHeight(i));
     }
+}
+
+fn seed_shared_prefixed_cf(ctx: &DbContext<'_, Transaction<'_, TransactionDB<SingleThreaded>>>) {
+    const OP: &str = "seed_shared_prefixed_cf";
+    let lower = ctx.cf(LowerEpochBlockCf).unwrap();
+    let upper = ctx.cf(UpperEpochBlockCf).unwrap();
+    for i in 0..5u64 {
+        lower.put(&(Epoch(i), block_id_from_seed(i)), &(), OP).unwrap();
+        upper.put(&(Epoch(i), block_id_from_seed(i)), &(), OP).unwrap();
+    }
+}
+
+#[test]
+fn end_range_iterator_does_not_read_the_preceding_prefix() {
+    let (db, _tmp) = create_rocksdb([SHARED_CF]);
+    let tx = db.transaction();
+    let ctx = ctx(&db, &tx);
+    seed_shared_prefixed_cf(&ctx);
+
+    let query = ctx.cf(UpperByEpochQuery).unwrap();
+    let epochs = query
+        .query_end_range_iterator(Ordering::Ascending, &Epoch(3))
+        .map(|res| res.map(|((epoch, _), ())| epoch))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert_eq!(epochs, vec![Epoch(0), Epoch(1), Epoch(2)]);
+}
+
+#[test]
+fn start_range_iterator_does_not_read_the_following_prefix() {
+    let (db, _tmp) = create_rocksdb([SHARED_CF]);
+    let tx = db.transaction();
+    let ctx = ctx(&db, &tx);
+    seed_shared_prefixed_cf(&ctx);
+
+    let query = ctx.cf(LowerByEpochQuery).unwrap();
+    let epochs = query
+        .query_start_range_iterator(Ordering::Ascending, &Epoch(3))
+        .map(|res| res.map(|((epoch, _), ())| epoch))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert_eq!(epochs, vec![Epoch(3), Epoch(4)]);
 }
