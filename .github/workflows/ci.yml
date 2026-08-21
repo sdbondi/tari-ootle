@@ -186,40 +186,23 @@ jobs:
         run: du -sh target/ 2>/dev/null || true
 
   machete:
-    # Checks for unused dependencies.
+    # Checks for unused dependencies. Machete reads the manifests and scans the sources for each
+    # dependency's name — it compiles nothing, so it needs neither a build container, a toolchain,
+    # a target dir nor the cache the compiling jobs share.
     name: machete
-    runs-on: [ self-hosted, ubuntu-high-cpu ]
-    container:
-      image: ghcr.io/tari-project/ootle-ci:development
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    env:
-      # Host-scoped, not RUSTFLAGS: template_builtin's build.rs shells out to
-      # `cargo build --target wasm32-unknown-unknown`, and rust-lld rejects
-      # `-fuse-ld`.
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C link-arg=-fuse-ld=mold
+    runs-on: [ ubuntu-latest ]
 
     steps:
       - name: checkout
         uses: actions/checkout@v7.0.1
 
-      - name: toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # master (no version tag)
+      - name: Install cargo-machete
+        uses: taiki-e/install-action@v2.85.13
         with:
-          toolchain: ${{ env.rust_toolchain }}
-          components: clippy, rustfmt
-
-      - uses: ./.github/actions/rust-cache
+          tool: cargo-machete
 
       - name: cargo machete
-        run: |
-          cargo install cargo-machete
-          cargo machete
-
-      - name: target dir size
-        if: always()
-        run: du -sh target/ 2>/dev/null || true
+        run: cargo machete
 
   licenses:
     name: file licenses
