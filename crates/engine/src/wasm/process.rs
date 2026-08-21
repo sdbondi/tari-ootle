@@ -50,7 +50,7 @@ use tari_template_lib::{
         SpendContextInvokeArg,
         VaultInvokeArg,
     },
-    types::{LogLevel, engine_args::SignatureInvokeArg},
+    types::engine_args::SignatureInvokeArg,
 };
 use wasmer::{AsStoreMut, AsStoreRef, Function, FunctionEnv, FunctionEnvMut, Instance, Store, WasmPtr, imports};
 use wasmer_middlewares::metering::{MeteringPoints, get_remaining_points, set_remaining_points};
@@ -359,15 +359,8 @@ impl WasmProcess {
         };
 
         result.unwrap_or_else(|err| {
-            if let Err(err) = env
-                .data_mut()
-                .state_mut()
-                .interface_mut()
-                .emit_log(LogLevel::Error, format!("Execution error: {}", err))
-            {
-                log::error!(target: LOG_TARGET, "Error emitting log: {}", err);
-            }
-
+            // The recorded error is what reaches the transaction, as its reject reason. This line is
+            // the validator's own record of it.
             log::error!(target: LOG_TARGET, "{}", err);
             env.data_mut().set_last_engine_error(err);
             WasmPtr::null()
