@@ -264,7 +264,7 @@ jobs:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C link-arg=-fuse-ld=mold
     strategy:
       matrix:
-        partition: ["1/3", "2/3", "3/3"]
+        partition: [ "1/3", "2/3", "3/3" ]
 
     steps:
       - name: checkout
@@ -346,7 +346,7 @@ jobs:
 
   integration-test:
     name: integration test
-    runs-on: [ self-hosted, ubuntu-high-cpu ]
+    runs-on: [ ubuntu-latest ]
     container:
       image: ghcr.io/tari-project/ootle-ci:development
       credentials:

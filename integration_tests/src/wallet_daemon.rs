@@ -100,7 +100,7 @@ pub async fn spawn_wallet_daemon(world: &mut TariWorld, wallet_daemon_name: Stri
     let handle = task::spawn(run_tari_ootle_walletd(config, None, shutdown_signal));
 
     // Wait for node to start up
-    let handle = wait_listener_on_local_port(handle, json_rpc_port).await;
+    let handle = wait_listener_on_local_port("WalletDaemon", handle, json_rpc_port).await;
     // Check if the task errored/panicked
     let _handle = check_join_handle(&wallet_daemon_name, handle).await;
 

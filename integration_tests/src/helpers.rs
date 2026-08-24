@@ -22,37 +22,47 @@ pub fn get_os_assigned_ports() -> (u16, u16) {
     (get_os_assigned_port(), get_os_assigned_port())
 }
 pub async fn wait_listener_on_local_port_os_thread<T, E: Debug>(
+    name: &'static str,
     handle: std::thread::JoinHandle<Result<T, E>>,
     port: u16,
 ) -> std::thread::JoinHandle<Result<T, E>> {
     let mut i = 0;
-    while let Err(e) = tokio::net::TcpSocket::new_v4()
-        .unwrap()
-        .connect(([127u8, 0, 0, 1], port).into())
-        .await
-    {
-        if handle.is_finished() {
-            handle
-                .join()
-                .expect("Node exited panicked")
-                .expect("Node exited unexpectedly");
-            panic!("Node exited cleanly unexpectedly");
+    loop {
+        match tokio::net::TcpSocket::new_v4()
+            .unwrap()
+            .connect(([127u8, 0, 0, 1], port).into())
+            .await
+        {
+            Ok(mut sock) => {
+                sock.shutdown().await.unwrap();
+                break;
+            },
+            Err(e) => {
+                if handle.is_finished() {
+                    handle
+                        .join()
+                        .expect("Node exited panicked")
+                        .expect("Node exited unexpectedly");
+                    panic!("{name} exited cleanly unexpectedly");
+                }
+                // cucumber_log!("Waiting for base node to start listening on port {}. {}", port, e);
+                if i >= 40 {
+                    // cucumber_log!("Node failed to start listening on port {} within 10s", port);
+                    panic!(
+                        "{name} failed to start listening on port {} within 20s (err: {})",
+                        port, e
+                    );
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                i += 1;
+            },
         }
-        // cucumber_log!("Waiting for base node to start listening on port {}. {}", port, e);
-        if i >= 20 {
-            // cucumber_log!("Node failed to start listening on port {} within 10s", port);
-            panic!(
-                "Node failed to start listening on port {} within 20s (err: {})",
-                port, e
-            );
-        }
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        i += 1;
     }
     handle
 }
 
 pub async fn wait_listener_on_local_port<T, E: Debug>(
+    name: &'static str,
     handle: JoinHandle<Result<T, E>>,
     port: u16,
 ) -> JoinHandle<Result<T, E>> {
@@ -70,12 +80,12 @@ pub async fn wait_listener_on_local_port<T, E: Debug>(
             Err(e) => {
                 if handle.is_finished() {
                     match handle.await {
-                        Ok(Ok(_)) => panic!("Node exited cleanly unexpectedly"),
-                        Ok(Err(e)) => panic!("Node exited with error: {:?}", e),
+                        Ok(Ok(_)) => panic!("{name} exited cleanly unexpectedly"),
+                        Ok(Err(e)) => panic!("{name} exited with error: {:?}", e),
                         Err(e) => {
                             let panic = e.into_panic();
                             panic!(
-                                "Node panicked {:?}",
+                                "{name} panicked {:?}",
                                 panic
                                     .downcast_ref::<&str>()
                                     .copied()
@@ -86,10 +96,10 @@ pub async fn wait_listener_on_local_port<T, E: Debug>(
                     }
                 }
                 // cucumber_log!("Waiting for base node to start listening on port {}. {}", port, e);
-                if i >= 20 {
-                    // cucumber_log!("Node failed to start listening on port {} within 10s", port);
+                if i >= 40 {
+                    // cucumber_log!("{name} failed to start listening on port {} within 10s", port);
                     panic!(
-                        "Node failed to start listening on port {} within 20s (err: {})",
+                        "{name} failed to start listening on port {} within 20s (err: {})",
                         port, e
                     );
                 }

@@ -244,7 +244,7 @@ async fn spawn_validator_node_process(spawn: ValidatorSpawn) -> ValidatorNodePro
         }
     });
 
-    let handle = wait_listener_on_local_port(handle, json_rpc_port).await;
+    let handle = wait_listener_on_local_port("Validator", handle, json_rpc_port).await;
     let handle = check_join_handle(&name, handle).await;
     let public_key = get_vn_identity(json_rpc_port).await;
 

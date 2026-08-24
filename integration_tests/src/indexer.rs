@@ -212,7 +212,7 @@ pub async fn spawn_indexer(world: &mut TariWorld, indexer_name: String, base_nod
     });
 
     // Wait for node to start up
-    let handle = wait_listener_on_local_port(handle, api_port).await;
+    let handle = wait_listener_on_local_port("Indexer", handle, api_port).await;
     // Check if the task errored/panicked
     let handle = check_join_handle(&name, handle).await;
 

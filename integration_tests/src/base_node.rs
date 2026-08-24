@@ -155,7 +155,7 @@ pub async fn spawn_base_node(world: &mut TariWorld, bn_name: String) {
     });
 
     // Wait for node to start up (TCP port open)
-    let handle = wait_listener_on_local_port(handle, grpc_port).await;
+    let handle = wait_listener_on_local_port("Minotari Node", handle, grpc_port).await;
 
     // Wait for gRPC service to be fully ready (not just the readiness server)
     let mut grpc_client = get_base_node_client(grpc_port);

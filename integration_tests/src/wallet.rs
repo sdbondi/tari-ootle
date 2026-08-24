@@ -179,7 +179,7 @@ pub async fn spawn_minotari_wallet(world: &mut TariWorld, wallet_name: String, b
     });
 
     // Wait for node to start up
-    let handle = wait_listener_on_local_port_os_thread(handle, grpc_port).await;
+    let handle = wait_listener_on_local_port_os_thread("MinotariWallet", handle, grpc_port).await;
 
     // make the new wallet able to be referenced by other processes
     let wallet_process = WalletProcess {
