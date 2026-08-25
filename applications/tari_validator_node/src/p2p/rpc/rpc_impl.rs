@@ -39,7 +39,6 @@ use tari_ootle_common_types::{
     SubstateRequirement,
     displayable::Displayable,
     optional::Optional,
-    shard::Shard,
 };
 use tari_ootle_p2p::{
     PeerAddress,
@@ -90,7 +89,10 @@ use tokio::{sync::mpsc, task};
 use crate::{
     consensus::ConsensusHandle,
     p2p::{
-        rpc::{block_sync_task::BlockSyncTask, state_sync_task::StateSyncTask},
+        rpc::{
+            block_sync_task::BlockSyncTask,
+            state_sync_task::{ShardCursor, StateSyncTask},
+        },
         services::mempool::MempoolHandle,
     },
 };
@@ -478,19 +480,9 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
 
         let (sender, receiver) = mpsc::channel(10);
 
-        let shard = Shard::from_u32(req.shard);
-        if shard > NumPreshards::MAX_SHARD {
-            return Err(RpcStatus::bad_request(format!(
-                "Shard {} out of range. Maximum shard is {}",
-                shard,
-                NumPreshards::MAX_SHARD
-            )));
-        }
+        let cursors = ShardCursor::validate_all(req.cursors)?;
 
         let end_epoch = req.until_epoch.map(Epoch::from);
-        if req.start_state_version == 0 {
-            return Err(RpcStatus::bad_request("start_state_version must be greater than 0"));
-        }
 
         let value_filter_flags = SubstateValueFilterFlags::from_bits_truncate(req.value_filters);
         if value_filter_flags.is_empty() {
@@ -501,9 +493,10 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
 
         debug!(
             target: LOG_TARGET,
-            "🌍 peer initiated sync with this node (start: v{}, {}) to {} (values: {:?})",
-            req.start_state_version,
-            shard,
+            "🌍 peer initiated sync with this node for {} shard(s) ({} to {}) to {} (values: {:?})",
+            cursors.len(),
+            cursors.first().expect("validate_all rejects an empty list").shard,
+            cursors.last().expect("validate_all rejects an empty list").shard,
             end_epoch.display(),
             value_filter_flags
         );
@@ -512,8 +505,7 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
             StateSyncTask::new(
                 self.state_store.clone(),
                 sender,
-                shard,
-                req.start_state_version,
+                cursors,
                 end_epoch,
                 self.consensus.current_epoch(),
                 STATE_SYNC_MAX_BATCH_SIZE

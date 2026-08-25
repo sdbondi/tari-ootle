@@ -229,9 +229,16 @@ message TreeRootSummary {
   uint64 state_version = 2;
 }
 
+// A per-shard resume point. State versions are assigned per shard and only advance when that shard
+// changes, so a shard range cannot share a single start version - each shard carries its own.
+message ShardCursor {
+  uint32 shard = 1;
+  // Must be greater than zero. Genesis is committed at version 0 and is never synced.
+  uint64 start_state_version = 2;
+}
+
 message SyncStateRequest {
-  uint64 start_state_version = 1;
-  uint32 shard = 2;
+  reserved 1, 2;
   // Optional - If not provided, state will be streamed until the current epoch
   tari.ootle.common.Epoch until_epoch = 3;
   // Bitflags representing which substates to return.
@@ -259,6 +266,10 @@ message SyncStateRequest {
   //  TemplateMetadata = 0x0200;
   //}
   uint32 value_filters = 4;
+  // The shards to stream, each with its own resume point. Must be non-empty, free of duplicates and
+  // ordered by ascending shard - the responder streams them in this order and the caller relies on a
+  // shard's updates being contiguous.
+  repeated ShardCursor cursors = 5;
 }
 
 message SyncStateResponse {
@@ -268,23 +279,28 @@ message SyncStateResponse {
   }
 }
 
-// A batch of substate updates at a single state version. A state version whose updates exceed the
-// stream batch size is split into multiple batches, all but the last carrying has_more = true.
+// A batch of substate updates at a single state version of a single shard. A state version whose
+// updates exceed the stream batch size is split into multiple batches, all but the last carrying
+// has_more = true.
 message SubstateBatch {
   uint64 state_version = 1;
   repeated SubstateUpdate updates = 2;
   bool has_more = 3;
   tari.ootle.common.Epoch epoch = 4;
+  uint32 shard = 5;
 }
 
-// Terminal message of every sync_state stream, stating the version the shard is now synced to.
-// For an unbounded (sync-to-tip) request this is the committed state-tree tip and is authoritative
-// for the client's cursor - it advances the client over trailing versions that streamed no updates
-// (filtered out, or tree-only bumps). For a bounded (checkpoint) request the client verifies against
-// its own checkpoint, so this carries the producer's last streamed version.
+// Emitted once per requested cursor, after that shard's last batch, stating the version the shard is
+// now synced to. The message for the final cursor carries is_final = true and terminates the stream.
+// For an unbounded (sync-to-tip) request synced_to_version is the committed state-tree tip and is
+// authoritative for the client's cursor - it advances the client over trailing versions that streamed
+// no updates (filtered out, or tree-only bumps). For a bounded (checkpoint) request the client
+// verifies against its own checkpoint, so this carries the producer's last streamed version.
 message SyncComplete {
   uint64 synced_to_version = 1;
   tari.ootle.common.Epoch epoch = 2;
+  uint32 shard = 3;
+  bool is_final = 4;
 }
 
 enum TemplateType {

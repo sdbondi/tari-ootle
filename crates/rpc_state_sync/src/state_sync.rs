@@ -30,6 +30,7 @@ use tari_ootle_p2p::{
         GetCheckpointsRequest,
         GetCheckpointsResponse,
         GetHighQcRequest,
+        ShardCursor,
         SyncStateRequest,
         sync_state_response,
     },
@@ -186,8 +187,10 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
         self.stats.total_requests += 1;
         let mut state_stream = client
             .sync_state(SyncStateRequest {
-                start_state_version,
-                shard: shard.as_u32(),
+                cursors: vec![ShardCursor {
+                    shard: shard.as_u32(),
+                    start_state_version,
+                }],
                 until_epoch: Some(checkpoint.epoch().into()),
                 value_filters: SubstateValueFilterFlags::all_substates().bits(),
             })
@@ -203,6 +206,12 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
             let batch = match msg.response {
                 Some(sync_state_response::Response::Batch(batch)) => batch,
                 Some(sync_state_response::Response::Complete(complete)) => {
+                    if complete.shard != shard.as_u32() {
+                        return Err(RpcStateSyncError::InvalidResponse(anyhow!(
+                            "Received completion marker for shard {} but requested {shard}",
+                            complete.shard,
+                        )));
+                    }
                     // The stream always terminates with a completion marker. Verify the synced shard
                     // root against the trusted checkpoint at our last committed version: the producer
                     // streamed every transition up to the checkpoint epoch, so any gap to
@@ -244,6 +253,12 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
                 },
             };
 
+            if batch.shard != shard.as_u32() {
+                return Err(RpcStateSyncError::InvalidResponse(anyhow!(
+                    "Received batch for shard {} but requested {shard}",
+                    batch.shard,
+                )));
+            }
             if batch.updates.is_empty() {
                 return Err(RpcStateSyncError::InvalidResponse(anyhow!(
                     "Received empty state transition batch."

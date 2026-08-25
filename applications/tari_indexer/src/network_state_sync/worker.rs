@@ -20,15 +20,7 @@ use tari_epoch_manager::{EpochManagerEvent, EpochManagerReader, service::EpochMa
 use tari_indexer_client::event::{IndexerEvent, NewEpochEvent, TransactionEvent, TransactionFinalizedEvent};
 use tari_indexer_lib::substate_versions::SubstateVersionTracker;
 use tari_networking::NetworkingHandle;
-use tari_ootle_common_types::{
-    Epoch,
-    ShardGroup,
-    StateVersion,
-    VotePower,
-    displayable::Displayable,
-    optional::Optional,
-    shard::Shard,
-};
+use tari_ootle_common_types::{Epoch, ShardGroup, StateVersion, VotePower, optional::Optional, shard::Shard};
 use tari_ootle_p2p::{PeerAddress, TariMessagingSpec, proto::rpc};
 use tari_ootle_storage::{
     StorageError,
@@ -393,17 +385,11 @@ impl NetworkWideStateSync {
 
     async fn sync_state(&mut self, sync_plan_mut: &mut SyncPlan) -> Result<(), NetworkStateSyncError> {
         let committee_pools = sync_plan_mut.committee_pools().clone();
-        let mut update_buf = Vec::new();
-        let mut utxos_buf = Vec::new();
-        let mut transactions_buf = Vec::new();
-        let mut validator_fee_pools_buf = Vec::new();
-        let mut template_catalogue_buf: Vec<(TemplateAddress, PublishedTemplateMetadata)> = Vec::new();
 
         let mut has_synced_global_shard = false;
 
         for (shard_group, mut pool) in committee_pools {
             // TODO: consider syncing shards in epoch chunks rather than one after another
-            // TODO: consider parallelizing shard syncs within a shard group
             let mut session = match pool.new_session().await {
                 Ok(s) => s,
                 Err(e) => {
@@ -426,36 +412,80 @@ impl NetworkWideStateSync {
                     continue;
                 },
             }
-            if !has_synced_global_shard {
-                self.sync_shard_state(
-                    Shard::global(),
-                    sync_plan_mut,
-                    &mut update_buf,
-                    &mut utxos_buf,
-                    &mut transactions_buf,
-                    &mut validator_fee_pools_buf,
-                    &mut template_catalogue_buf,
-                    shard_group,
-                    &mut session,
-                )
-                .await?;
-                has_synced_global_shard = true;
-            }
 
-            for shard in shard_group.shard_iter() {
-                self.sync_shard_state(
-                    shard,
-                    sync_plan_mut,
-                    &mut update_buf,
-                    &mut utxos_buf,
-                    &mut transactions_buf,
-                    &mut validator_fee_pools_buf,
-                    &mut template_catalogue_buf,
-                    shard_group,
-                    &mut session,
-                )
+            // Every committee holds the global shard, so it is synced once per round from whichever
+            // committee is reached first. Shard 0 sorts before every preshard, which keeps the cursor
+            // list ascending as the responder requires.
+            let shards = (!has_synced_global_shard)
+                .then_some(Shard::global())
+                .into_iter()
+                .chain(shard_group.shard_iter());
+
+            self.sync_shard_group_state(shards, sync_plan_mut, shard_group, &mut session)
                 .await?;
+            has_synced_global_shard = true;
+        }
+
+        Ok(())
+    }
+
+    /// Syncs every given shard from `session`, which serves them all over a single stream.
+    ///
+    /// A shard that has never been synced wants only the current head state rather than its full
+    /// history, which is expressed by the `UP_ONLY` filter. Filters apply to the whole request, so
+    /// such shards are streamed separately from the ones being caught up incrementally: two streams
+    /// per shard group at most, and one in the steady state.
+    async fn sync_shard_group_state(
+        &mut self,
+        shards: impl Iterator<Item = Shard>,
+        sync_plan_mut: &mut SyncPlan,
+        shard_group: ShardGroup,
+        session: &mut ValidatorRpcSession,
+    ) -> Result<(), NetworkStateSyncError> {
+        let value_filters = SubstateValueFilterFlags::UTXO |
+            SubstateValueFilterFlags::VALIDATOR_FEE_POOL |
+            SubstateValueFilterFlags::CLAIMED_OUTPUT_TOMBSTONE |
+            SubstateValueFilterFlags::TRANSACTION_RECEIPT |
+            SubstateValueFilterFlags::TEMPLATE_METADATA;
+
+        let mut from_scratch = Vec::new();
+        let mut incremental = Vec::new();
+        for shard in shards {
+            let prev_version = sync_plan_mut
+                .sync_progress()
+                .last_state_versions
+                .get(&shard)
+                .map_or(0, |(v, _)| v.as_u64());
+            let cursor = rpc::ShardCursor {
+                shard: shard.as_u32(),
+                start_state_version: prev_version + 1,
+            };
+            if prev_version == 0 {
+                from_scratch.push(cursor);
+            } else {
+                incremental.push(cursor);
             }
+        }
+
+        if !from_scratch.is_empty() {
+            info!(
+                target: LOG_TARGET,
+                "🌍️ Syncing {} shard(s) in shard group {shard_group} from scratch. Only fetching the head state.",
+                from_scratch.len()
+            );
+            self.stream_shard_state(
+                from_scratch,
+                value_filters | SubstateValueFilterFlags::UP_ONLY,
+                sync_plan_mut,
+                shard_group,
+                session,
+            )
+            .await?;
+        }
+
+        if !incremental.is_empty() {
+            self.stream_shard_state(incremental, value_filters, sync_plan_mut, shard_group, session)
+                .await?;
         }
 
         Ok(())
@@ -489,113 +519,116 @@ impl NetworkWideStateSync {
         Ok(())
     }
 
+    /// Consumes a single `sync_state` stream covering `cursors`.
+    ///
+    /// The responder streams each shard's updates contiguously and closes it off with a completion
+    /// marker, so progress is recorded per shard as the stream advances - an interrupted stream keeps
+    /// everything already committed and simply resumes from the recorded cursors next round.
     #[expect(clippy::too_many_lines)]
-    async fn sync_shard_state(
+    async fn stream_shard_state(
         &mut self,
-        shard: Shard,
+        cursors: Vec<rpc::ShardCursor>,
+        value_filters: SubstateValueFilterFlags,
         sync_plan_mut: &mut SyncPlan,
-        update_buf: &mut Vec<(Epoch, SubstateUpdateProof)>,
-        utxos_buf: &mut Vec<UtxoUpdateRecord>,
-        transactions_buf: &mut Vec<(TransactionReceiptAddress, TransactionReceipt)>,
-        validator_fee_pools_buf: &mut Vec<SubstateData>,
-        template_catalogue_buf: &mut Vec<(TemplateAddress, PublishedTemplateMetadata)>,
         shard_group: ShardGroup,
         session: &mut ValidatorRpcSession,
     ) -> Result<(), NetworkStateSyncError> {
-        // Perform sync operations using the pool and state
-        let (prev_version, prev_epoch) = sync_plan_mut
-            .sync_progress()
-            .last_state_versions
-            .get(&shard)
-            .map(|(v, e)| (v.as_u64(), *e))
-            .unwrap_or_else(|| (0, Epoch::zero()));
-        let from_version = prev_version + 1;
+        let requested = cursors.iter().map(|c| Shard::from(c.shard)).collect::<HashSet<_>>();
 
-        info!(target: LOG_TARGET, "🌍️ Starting state sync for shard {shard} from version {from_version}");
-        let mut value_filters = SubstateValueFilterFlags::UTXO |
-            SubstateValueFilterFlags::VALIDATOR_FEE_POOL |
-            SubstateValueFilterFlags::CLAIMED_OUTPUT_TOMBSTONE |
-            SubstateValueFilterFlags::TRANSACTION_RECEIPT |
-            SubstateValueFilterFlags::TEMPLATE_METADATA;
-
-        if prev_version == 0 {
-            info!(target: LOG_TARGET, "🌍️ Syncing shard {shard} in shard group {shard_group} from scratch (starting from version 0). Only fetching the head state.");
-            // If we are syncing from scratch, only get up states to reduce initial sync size
-            value_filters |= SubstateValueFilterFlags::UP_ONLY;
-        }
+        info!(
+            target: LOG_TARGET,
+            "🌍️ Starting state sync for {} shard(s) in shard group {shard_group} from peer {}",
+            cursors.len(),
+            session.peer_address()
+        );
 
         let mut stream = session
             .sync_state(rpc::SyncStateRequest {
-                start_state_version: from_version,
-                shard: shard.as_u32(),
+                cursors,
                 // Sync to latest epoch
                 until_epoch: None,
                 value_filters: value_filters.bits(),
             })
             .await?;
 
-        let mut is_first_iter = true;
+        // Buffers accumulate a single (shard, state version) at a time: the responder splits an
+        // oversized version into chunks flagged `has_more`, and the last chunk flushes them.
+        let mut update_buf = Vec::new();
+        let mut utxos_buf = Vec::new();
+        let mut transactions_buf = Vec::new();
+        let mut validator_fee_pools_buf = Vec::new();
+        let mut template_catalogue_buf: Vec<(TemplateAddress, PublishedTemplateMetadata)> = Vec::new();
         let mut xtr_claimed = Amount::zero();
         let mut xtr_fees = Amount::zero();
         let mut xtr_receipt_burn = Amount::zero();
-        let mut last_version = StateVersion::new(from_version);
-        let mut last_epoch = None;
+
+        let mut saw_final = false;
         while let Some(result) = stream.next().await {
-            if is_first_iter {
-                // Avoid log spam, only log once per stream
-                debug!(target: LOG_TARGET, "🌍️ Established stream for {shard} in shard group {shard_group} from peer {} (last sync: {prev_epoch} {prev_version})", session.peer_address());
-                is_first_iter = false;
-            }
             let msg = result?;
-            let batch =
-                match msg.response {
-                    Some(rpc::sync_state_response::Response::Batch(batch)) => batch,
-                    Some(rpc::sync_state_response::Response::Complete(complete)) => {
-                        // Terminal watermark: advance recorded progress to the version the producer is
-                        // synced to. This covers trailing versions that streamed no updates because their
-                        // substates are all filtered out for our subscription - without it we could never
-                        // observe that we have caught up to such a shard and would re-sync it from scratch
-                        // every round.
-                        let synced_to = StateVersion::new(complete.synced_to_version);
-                        let msg_epoch = complete.epoch.map(Epoch::from).ok_or_else(|| {
-                            NetworkStateSyncError::InvalidStateUpdate {
-                                details: "Received sync completion without epoch".to_string(),
-                            }
-                        })?;
-                        last_version = synced_to;
-                        last_epoch = Some(msg_epoch);
-                        // Only persist when the watermark advances - a caught-up shard re-sends the same
-                        // version every round, and we must not write on every empty round.
-                        let already_synced = sync_plan_mut
-                            .sync_progress()
-                            .last_state_versions
-                            .get(&shard)
-                            .is_some_and(|(v, _)| synced_to <= *v);
-                        if !already_synced {
-                            sync_plan_mut.add_state_sync_progress(shard, synced_to, msg_epoch);
-                            let sync_progress_snapshot = sync_plan_mut.sync_progress().clone();
-                            self.store
-                                .clone()
-                                .with_write_tx(move |tx| tx.key_value_set(Key::SyncProgress, sync_progress_snapshot))
-                                .await?;
-                        }
-                        break;
-                    },
-                    None => {
+            let batch = match msg.response {
+                Some(rpc::sync_state_response::Response::Batch(batch)) => batch,
+                Some(rpc::sync_state_response::Response::Complete(complete)) => {
+                    let shard = Shard::from(complete.shard);
+                    if !requested.contains(&shard) {
                         return Err(NetworkStateSyncError::InvalidStateUpdate {
-                            details: "Received sync state response with no variant set".to_string(),
+                            details: format!("Received completion marker for unrequested shard {shard}"),
                         });
-                    },
-                };
+                    }
+                    // Terminal watermark: advance recorded progress to the version the producer is
+                    // synced to. This covers trailing versions that streamed no updates because their
+                    // substates are all filtered out for our subscription - without it we could never
+                    // observe that we have caught up to such a shard and would re-sync it from scratch
+                    // every round.
+                    let synced_to = StateVersion::new(complete.synced_to_version);
+                    let msg_epoch =
+                        complete
+                            .epoch
+                            .map(Epoch::from)
+                            .ok_or_else(|| NetworkStateSyncError::InvalidStateUpdate {
+                                details: "Received sync completion without epoch".to_string(),
+                            })?;
+                    // Only persist when the watermark advances - a caught-up shard re-sends the same
+                    // version every round, and we must not write on every empty round.
+                    let already_synced = sync_plan_mut
+                        .sync_progress()
+                        .last_state_versions
+                        .get(&shard)
+                        .is_some_and(|(v, _)| synced_to <= *v);
+                    if !already_synced {
+                        sync_plan_mut.add_state_sync_progress(shard, synced_to, msg_epoch);
+                        let sync_progress_snapshot = sync_plan_mut.sync_progress().clone();
+                        self.store
+                            .clone()
+                            .with_write_tx(move |tx| tx.key_value_set(Key::SyncProgress, sync_progress_snapshot))
+                            .await?;
+                    }
+                    debug!(target: LOG_TARGET, "🌍️ Completed state sync for shard {shard} in shard group {shard_group} to epoch {msg_epoch} and state version {synced_to}");
+                    if complete.is_final {
+                        saw_final = true;
+                        break;
+                    }
+                    continue;
+                },
+                None => {
+                    return Err(NetworkStateSyncError::InvalidStateUpdate {
+                        details: "Received sync state response with no variant set".to_string(),
+                    });
+                },
+            };
+
+            let shard = Shard::from(batch.shard);
+            if !requested.contains(&shard) {
+                return Err(NetworkStateSyncError::InvalidStateUpdate {
+                    details: format!("Received batch for unrequested shard {shard}"),
+                });
+            }
             let msg_epoch = batch
                 .epoch
                 .map(Epoch::from)
                 .ok_or_else(|| NetworkStateSyncError::InvalidStateUpdate {
                     details: "Received state update without epoch".to_string(),
                 })?;
-            last_epoch = Some(msg_epoch);
             let state_version = StateVersion::new(batch.state_version);
-            last_version = state_version;
 
             for update in batch.updates {
                 let update =
@@ -609,11 +642,11 @@ impl NetworkWideStateSync {
                     state_version,
                     update,
                     msg_epoch,
-                    update_buf,
-                    utxos_buf,
-                    transactions_buf,
-                    validator_fee_pools_buf,
-                    template_catalogue_buf,
+                    &mut update_buf,
+                    &mut utxos_buf,
+                    &mut transactions_buf,
+                    &mut validator_fee_pools_buf,
+                    &mut template_catalogue_buf,
                     &mut xtr_claimed,
                     &mut xtr_fees,
                     &mut xtr_receipt_burn,
@@ -628,9 +661,9 @@ impl NetworkWideStateSync {
 
             self.stats.increase_state_updates(update_buf.len());
 
-            let updates = std::mem::take(update_buf);
-            let utxos = std::mem::take(utxos_buf);
-            let transactions = std::mem::take(transactions_buf);
+            let updates = std::mem::take(&mut update_buf);
+            let utxos = std::mem::take(&mut utxos_buf);
+            let transactions = std::mem::take(&mut transactions_buf);
 
             // Upping a substate is the point at which its previous version goes down, so this is the
             // substate cache's only signal that an entry it holds has been superseded.
@@ -640,8 +673,8 @@ impl NetworkWideStateSync {
                     .flat_map(|(_, receipt)| receipt.diff_summary().upped.iter())
                     .map(|up| (&up.substate_id, up.version)),
             );
-            let validator_fee_pools = std::mem::take(validator_fee_pools_buf);
-            let template_catalogue = std::mem::take(template_catalogue_buf);
+            let validator_fee_pools = std::mem::take(&mut validator_fee_pools_buf);
+            let template_catalogue = std::mem::take(&mut template_catalogue_buf);
 
             let updates_len = updates.len();
             let utxos_len = utxos.len();
@@ -712,7 +745,15 @@ impl NetworkWideStateSync {
                 });
             }
         }
-        info!(target: LOG_TARGET, "🌍️ Completed state sync for shard {shard} in shard group {shard_group} to epoch {} and state version {last_version}",last_epoch.display() );
+
+        if !saw_final {
+            return Err(NetworkStateSyncError::InvalidStateUpdate {
+                details: format!(
+                    "State sync stream for shard group {shard_group} ended without a final completion marker"
+                ),
+            });
+        }
+
         Ok(())
     }
 }
