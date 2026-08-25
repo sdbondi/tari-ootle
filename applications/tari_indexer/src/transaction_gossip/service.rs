@@ -46,6 +46,7 @@ pub struct TransactionGossipService<TStore, TValidator> {
     store: TStore,
     epoch_manager: EpochManagerHandle<PeerAddress>,
     validator: TValidator,
+    max_validity_epochs: u64,
     networking: NetworkingHandle<TariMessagingSpec>,
     rx_gossip: mpsc::Receiver<GossipMessage>,
     codec: TransactionGossipCodec,
@@ -63,6 +64,7 @@ where
         store: TStore,
         epoch_manager: EpochManagerHandle<PeerAddress>,
         validator: TValidator,
+        max_validity_epochs: u64,
         networking: NetworkingHandle<TariMessagingSpec>,
         rx_gossip: mpsc::Receiver<GossipMessage>,
         #[cfg(feature = "metrics")] metrics: TransactionGossipMetrics,
@@ -71,6 +73,7 @@ where
             store,
             epoch_manager,
             validator,
+            max_validity_epochs,
             networking,
             rx_gossip,
             codec: TransactionGossipCodec::new(),
@@ -189,13 +192,15 @@ where
 
         let batch = mem::take(&mut self.pending);
         let num_transactions = batch.len();
+        let retention_ceiling = self.retention_ceiling();
         // The write runs on a blocking thread that outlives this future, so the closure has to own
         // the batch rather than borrow it. Handing the buffer back on the way out keeps its
         // allocation across flushes.
         let result: Result<_, StorageError> = self
             .store
             .with_write_tx(move |tx| {
-                let num_inserted = tx.insert_batch_transactions(batch.iter(), TransactionSource::Gossip)?;
+                let num_inserted =
+                    tx.insert_batch_transactions(batch.iter(), TransactionSource::Gossip, retention_ceiling)?;
                 Ok((num_inserted, batch))
             })
             .await;
@@ -221,6 +226,17 @@ where
                 self.pending = Vec::with_capacity(BATCH_SIZE);
             },
         }
+    }
+
+    /// The furthest out a retention key can honestly sit: the last epoch a transaction admitted now
+    /// could still be sequenced in.
+    fn retention_ceiling(&self) -> Epoch {
+        Epoch(
+            self.epoch_manager
+                .get_current_epoch()
+                .as_u64()
+                .saturating_add(self.max_validity_epochs),
+        )
     }
 
     /// gossipsub withholds a message from the rest of the mesh until its verdict is reported, so

@@ -41,6 +41,7 @@ use crate::{
             UtxoRecordUpdate,
             UtxoUpdateRecord,
             VerifiedStateRoot,
+            encode_retention_epoch,
         },
         reader::SqliteStoreReadTransaction,
         serialization::{serialize_bincode, serialize_hex, serialize_json},
@@ -279,7 +280,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
             // max_epoch recorded at submission as the retention key. Most synced receipts belong to
             // transactions submitted elsewhere and match no local row.
             diesel::update(transactions::table.filter(transactions::transaction_id.eq(&receipt_addr_hex)))
-                .set(transactions::retention_epoch.eq(receipt.epoch.as_u64() as i64))
+                .set(transactions::retention_epoch.eq(encode_retention_epoch(receipt.epoch)))
                 .execute(self.connection())
                 .map_err(|e| StorageError::general(OPERATION, e))?;
 
@@ -320,11 +321,15 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
         Ok(inserted_events)
     }
 
-    fn upsert_submitted_transaction(&mut self, transaction: &Transaction) -> Result<(), StorageError> {
+    fn upsert_submitted_transaction(
+        &mut self,
+        transaction: &Transaction,
+        retention_ceiling: Epoch,
+    ) -> Result<(), StorageError> {
         use crate::storage_sqlite::schema::transactions;
 
         diesel::insert_into(transactions::table)
-            .values(NewTransaction::new(transaction, TransactionSource::Local)?)
+            .values(NewTransaction::new(transaction, TransactionSource::Local, retention_ceiling)?)
             .on_conflict(transactions::transaction_id)
             // Only the source: `retention_epoch` may already have been advanced to a synced
             // receipt's commit epoch, and the body is identical for a given transaction id.
@@ -342,6 +347,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
         &mut self,
         transactions: I,
         source: TransactionSource,
+        retention_ceiling: Epoch,
     ) -> Result<usize, StorageError> {
         use crate::storage_sqlite::schema::transactions as transactions_table;
 
@@ -350,13 +356,13 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
         // inserted one statement at a time. The batching that matters is the enclosing write
         // transaction: it takes SQLite's database-wide write lock once for the whole flush.
         for transaction in transactions {
-            let row = NewTransaction::new(transaction, source)?;
+            let row = NewTransaction::new(transaction, source, retention_ceiling)?;
             num_inserted += diesel::insert_into(transactions_table::table)
                 .values(row)
                 .on_conflict_do_nothing()
                 .execute(self.connection())
                 .map_err(|e| StorageError::QueryError {
-                    reason: format!("insert_gossiped_transactions: {e}"),
+                    reason: format!("insert_batch_transactions: {e}"),
                 })?;
         }
 
@@ -412,7 +418,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
         // finds nothing to prune.
         let ids = transactions::table
             .select(transactions::id)
-            .filter(transactions::retention_epoch.lt(cutoff.as_u64() as i64))
+            .filter(transactions::retention_epoch.lt(encode_retention_epoch(cutoff)))
             .order_by(transactions::retention_epoch.asc())
             .limit(limit as i64)
             .load::<i32>(self.connection())

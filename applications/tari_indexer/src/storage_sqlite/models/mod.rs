@@ -35,7 +35,7 @@ pub use key_value::*;
 pub use substate::*;
 pub use template_catalogue::TemplateCatalogueEntry;
 pub(crate) use template_catalogue::{NewTemplateCatalogueRow, TemplateCatalogueRow};
-pub(crate) use transaction::NewTransaction;
+pub(crate) use transaction::{NewTransaction, encode_retention_epoch};
 pub(crate) use utxo::*;
 pub(crate) use utxo_update::*;
 pub use verified_state_root::VerifiedStateRoot;

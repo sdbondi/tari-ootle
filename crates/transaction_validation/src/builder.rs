@@ -105,14 +105,17 @@ mod tests {
         ));
     }
 
-    /// An un-receipted row's retention key is the transaction's own `max_epoch`, so a transaction
-    /// declaring an arbitrarily distant window would be stored in a row no retention window ever
-    /// reaches. The ceiling is what closes that, and it is only in effect because this composition
-    /// includes it — the structural chain and the range rules both admit the transaction.
+    /// An un-receipted transaction is retained against its own `max_epoch`, so a distant window
+    /// keeps a record alive long past the point the transaction could have been sequenced. The
+    /// ceiling is what closes that, and it is only in effect because this composition includes it —
+    /// the structural chain and the range rules both admit the transaction.
+    ///
+    /// A modest overshoot is the case worth pinning. It is well inside every numeric bound, so
+    /// nothing else in the stack objects to it.
     #[test]
-    fn it_refuses_a_window_no_retention_period_would_reach() {
+    fn it_refuses_a_window_beyond_the_admission_ceiling() {
         assert!(matches!(
-            validate(Epoch(1), &transaction(Epoch(u64::MAX))),
+            validate(Epoch(1), &transaction(Epoch(1_000_000))),
             Err(TransactionValidationError::MaxEpochTooFarAhead { .. })
         ));
     }

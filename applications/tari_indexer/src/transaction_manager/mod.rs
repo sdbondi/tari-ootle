@@ -24,7 +24,7 @@ pub(crate) mod error;
 
 use tari_epoch_manager::EpochManagerReader;
 use tari_indexer_client::types::{IndexerTransactionFinalizedResult, TransactionEntry, TransactionSource};
-use tari_ootle_common_types::{NodeAddressable, ToSubstateAddress, optional::Optional};
+use tari_ootle_common_types::{Epoch, NodeAddressable, ToSubstateAddress, optional::Optional};
 use tari_ootle_transaction::{Network, Transaction, TransactionId};
 use tari_ootle_transaction_validation::{Validator, create_structural_transaction_validator};
 use tari_validator_node_rpc::client::{TransactionResultStatus, ValidatorNodeClientFactory, ValidatorNodeRpcClient};
@@ -41,6 +41,7 @@ pub struct TransactionManager<TEpochManager, TClientFactory, TStore> {
     store: TStore,
     network: Network,
     max_transaction_weight: u64,
+    max_transaction_validity_epochs: u64,
 }
 
 impl<TEpochManager, TClientFactory, TAddr, TStore> TransactionManager<TEpochManager, TClientFactory, TStore>
@@ -55,12 +56,14 @@ where
         store: TStore,
         network: Network,
         max_transaction_weight: u64,
+        max_transaction_validity_epochs: u64,
     ) -> Self {
         Self {
             network_client,
             store,
             network,
             max_transaction_weight,
+            max_transaction_validity_epochs,
         }
     }
 
@@ -79,9 +82,20 @@ where
                 details: err.to_string(),
             });
         }
+        // The row is written before the committee has accepted anything, so its retention key cannot
+        // be taken on trust from the transaction's own `max_epoch`: that would let any accepted
+        // request claim a row the pruner never reaches. Cap it at the last epoch a transaction
+        // admitted now could still be sequenced in.
+        let retention_ceiling = Epoch(
+            self.network_client
+                .current_epoch()
+                .await?
+                .as_u64()
+                .saturating_add(self.max_transaction_validity_epochs),
+        );
         let transaction_for_db = transaction.clone();
         self.store
-            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction_for_db))
+            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction_for_db, retention_ceiling))
             .await?;
         match self.network_client.submit_transaction(transaction).await {
             Ok(id) => {

@@ -9,7 +9,14 @@ use std::{
 use indexmap::IndexMap;
 use log::{info, warn};
 use tari_epoch_manager::{EpochManagerError, EpochManagerReader};
-use tari_ootle_common_types::{NodeAddressable, NumPreshards, ShardGroup, SubstateAddress, displayable::Displayable};
+use tari_ootle_common_types::{
+    Epoch,
+    NodeAddressable,
+    NumPreshards,
+    ShardGroup,
+    SubstateAddress,
+    displayable::Displayable,
+};
 use tari_ootle_transaction::{Transaction, TransactionId};
 use tari_rpc_framework::RpcStatusCode;
 use tari_validator_node_rpc::{
@@ -38,6 +45,10 @@ where
             client_provider,
             num_preshards,
         }
+    }
+
+    pub async fn current_epoch(&self) -> Result<Epoch, NetworkClientError> {
+        Ok(self.epoch_manager.current_epoch().await?)
     }
 
     pub async fn submit_transaction(&self, transaction: Transaction) -> Result<TransactionId, NetworkClientError> {

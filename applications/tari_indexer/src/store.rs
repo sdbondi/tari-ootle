@@ -279,13 +279,21 @@ pub trait IndexerStoreWriteTransaction {
     /// upgraded to [`TransactionSource::Local`]: the network gossips a submission straight back, and
     /// which of the two writes lands first is a race that must not decide the recorded source. Only
     /// the source is updated — `retention_epoch` may already carry a synced receipt's commit epoch.
-    fn upsert_submitted_transaction(&mut self, transaction: &Transaction) -> Result<(), StorageError>;
-    /// Records transactions in the batch, ignoring those already stored,
-    /// and returns the number of rows inserted.
+    ///
+    /// `retention_ceiling` caps the retention epoch recorded for a new row, so that a transaction
+    /// declaring a distant `max_epoch` cannot claim a row the pruner never reaches.
+    fn upsert_submitted_transaction(
+        &mut self,
+        transaction: &Transaction,
+        retention_ceiling: Epoch,
+    ) -> Result<(), StorageError>;
+    /// Records transactions in the batch, ignoring those already stored, and returns the number of
+    /// rows inserted. `retention_ceiling` is applied as in [`Self::upsert_submitted_transaction`].
     fn insert_batch_transactions<'a, I: IntoIterator<Item = &'a Transaction>>(
         &mut self,
         transactions: I,
         source: TransactionSource,
+        retention_ceiling: Epoch,
     ) -> Result<usize, StorageError>;
     /// Mark a stored transaction as rejected by mempool validation, recording the reason.
     fn set_transaction_rejected(&mut self, transaction_id: TransactionId, reason: &str) -> Result<(), StorageError>;

@@ -134,8 +134,8 @@ pub struct IndexerConfig {
     /// A transaction's terminal epoch is the epoch it committed in once its receipt has been
     /// indexed, and its `max_epoch` — the last epoch it could still be sequenced in — until then, so
     /// a transaction that is never sequenced ages out on the same schedule as one that commits.
-    /// `None` retains transactions forever, and `0` keeps only those that can still commit or
-    /// committed in the current epoch.
+    /// Write `"forever"` to retain transactions indefinitely; `0` keeps only those that can still
+    /// commit or committed in the current epoch.
     ///
     /// Applies to every stored transaction, whether submitted here or observed on the gossip topic.
     /// Only the transaction body and its locally recorded rejection reason are pruned; transaction
@@ -148,15 +148,19 @@ pub struct IndexerConfig {
     ///
     /// Pruning bounds database growth but does not return disk to the filesystem: SQLite reuses the
     /// freed pages rather than shrinking the file.
-    #[serde(default = "default_transaction_retention_epochs")]
+    #[serde(default = "default_transaction_retention_epochs", with = "retention_epochs")]
     pub transaction_retention_epochs: Option<u64>,
     /// Store transactions observed on the network-wide transaction gossip topic, not only those
     /// submitted directly to this indexer. When enabled the indexer joins the transaction mesh as a
     /// full participant: it validates what it receives and propagates it onward. Disabling it leaves
     /// the mesh entirely — no transaction is received, stored or forwarded.
     ///
-    /// The gossip topic carries the whole network's transaction volume, so leaving this on with
-    /// `transaction_retention_epochs` set to `None` grows the database without bound.
+    /// The gossip topic carries the whole network's transaction volume, so leaving this on while
+    /// retaining forever grows the database without bound. Size retention against an adversary
+    /// rather than against ordinary volume: validation deliberately omits the checks that depend on
+    /// this node's view of runtime state, so correctly signed transactions that no validator will
+    /// ever admit — an unknown template, a conflicting output — are still stored, and they are cheap
+    /// to mint.
     #[serde(default = "default_index_gossiped_transactions")]
     pub index_gossiped_transactions: bool,
     /// Maximum total size of inbound transaction gossip awaiting storage. The gossip service drains
@@ -226,6 +230,80 @@ impl From<&IndexerConfig> for PublishedIndexerConfig {
 
 fn default_transaction_retention_epochs() -> Option<u64> {
     Some(50)
+}
+
+mod retention_epochs {
+    //! `transaction_retention_epochs` accepts a number of epochs or the string `"forever"`. An
+    //! omitted key takes the default and TOML has no null literal, so without an explicit spelling
+    //! for it, retaining indefinitely would be unreachable from a config file.
+
+    use std::fmt;
+
+    use serde::{
+        Deserializer,
+        Serializer,
+        de::{self, Visitor},
+    };
+
+    const FOREVER: &str = "forever";
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+    where D: Deserializer<'de> {
+        deserializer.deserialize_any(RetentionEpochsVisitor)
+    }
+
+    pub fn serialize<S>(value: &Option<u64>, s: S) -> Result<S::Ok, S::Error>
+    where S: Serializer {
+        match value {
+            Some(epochs) => s.serialize_u64(*epochs),
+            None => s.serialize_str(FOREVER),
+        }
+    }
+
+    struct RetentionEpochsVisitor;
+
+    impl<'de> Visitor<'de> for RetentionEpochsVisitor {
+        type Value = Option<u64>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "a number of epochs or the string \"{FOREVER}\"")
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            u64::try_from(v)
+                .map(Some)
+                .map_err(|_| E::custom(format!("transaction_retention_epochs cannot be negative (got {v})")))
+        }
+
+        // The config layer hands every value through as a string, so a numeric literal in the file
+        // arrives here rather than at `visit_u64`.
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            if v.eq_ignore_ascii_case(FOREVER) {
+                return Ok(None);
+            }
+            v.parse::<u64>().map(Some).map_err(|_| {
+                E::custom(format!(
+                    "expected a number of epochs or \"{FOREVER}\" for transaction_retention_epochs, got '{v}'"
+                ))
+            })
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+            d.deserialize_any(self)
+        }
+    }
 }
 
 fn default_index_gossiped_transactions() -> bool {
@@ -329,6 +407,30 @@ impl Default for IndexerRateLimitsConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// TOML has no null literal and an omitted key takes the default, so `"forever"` is the only
+    /// way an operator can select unlimited retention. Losing it would strand anyone who relied on
+    /// the old default with no way back to it.
+    #[test]
+    fn retention_epochs_accepts_forever_and_epoch_counts() {
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            #[serde(default = "default_transaction_retention_epochs", with = "retention_epochs")]
+            transaction_retention_epochs: Option<u64>,
+        }
+
+        let parse = |toml: &str| toml::from_str::<Wrapper>(toml).map(|w| w.transaction_retention_epochs);
+
+        assert_eq!(parse("transaction_retention_epochs = 50").unwrap(), Some(50));
+        assert_eq!(parse("transaction_retention_epochs = 0").unwrap(), Some(0));
+        assert_eq!(parse(r#"transaction_retention_epochs = "forever""#).unwrap(), None);
+        assert_eq!(parse(r#"transaction_retention_epochs = "FOREVER""#).unwrap(), None);
+        // The config layer can hand a numeric literal through as a string.
+        assert_eq!(parse(r#"transaction_retention_epochs = "50""#).unwrap(), Some(50));
+        assert_eq!(parse("").unwrap(), default_transaction_retention_epochs());
+        assert!(parse("transaction_retention_epochs = -1").is_err());
+        assert!(parse(r#"transaction_retention_epochs = "never""#).is_err());
+    }
 
     #[test]
     fn no_event_filters_indexes_every_event() {

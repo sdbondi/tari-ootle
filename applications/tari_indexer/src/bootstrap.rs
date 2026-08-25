@@ -330,6 +330,19 @@ pub async fn spawn_services(
         consensus_constants.clone(),
     )?;
 
+    // Both of these have defaults that decide how much disk this node uses and what it deletes, so
+    // they are logged unconditionally: an operator who upgraded without touching their config should
+    // be able to see what changed underneath them in their own logs.
+    info!(
+        target: LOG_TARGET,
+        "⚙️ Transaction storage: gossip indexing {}, retention {}",
+        if config.indexer.index_gossiped_transactions { "ON" } else { "OFF" },
+        config
+            .indexer
+            .transaction_retention_epochs
+            .map_or_else(|| "forever".to_string(), |epochs| format!("{epochs} epoch(s)")),
+    );
+
     if let Some(retention_epochs) = config.indexer.transaction_retention_epochs {
         info!(
             target: LOG_TARGET,
@@ -356,6 +369,7 @@ pub async fn spawn_services(
                 consensus_constants.max_transaction_weight,
                 consensus_constants.max_transaction_validity_epochs,
             ),
+            consensus_constants.max_transaction_validity_epochs,
             networking.clone(),
             rx_transaction_gossip,
             #[cfg(feature = "metrics")]
@@ -369,6 +383,7 @@ pub async fn spawn_services(
         store.clone(),
         config.network,
         consensus_constants.max_transaction_weight,
+        consensus_constants.max_transaction_validity_epochs,
     );
 
     // Save final node identity after comms has initialized. This is required because the public_address can be

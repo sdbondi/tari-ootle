@@ -21,7 +21,7 @@
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import { ChevronRight } from "@mui/icons-material";
-import { Chip, Stack } from "@mui/material";
+import { Chip, Stack, ToggleButton, ToggleButtonGroup } from "@mui/material";
 import Fade from "@mui/material/Fade";
 import IconButton from "@mui/material/IconButton";
 import { useTheme } from "@mui/material/styles";
@@ -33,7 +33,7 @@ import TableHead from "@mui/material/TableHead";
 import TablePagination from "@mui/material/TablePagination";
 import TableRow from "@mui/material/TableRow";
 import useMediaQuery from "@mui/material/useMediaQuery";
-import { TransactionEntry } from "@tari-project/ootle-ts-bindings";
+import { TransactionEntry, TransactionSource } from "@tari-project/ootle-ts-bindings";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useListRecentTransactions } from "../../../api/hooks/useTransactions";
@@ -100,10 +100,14 @@ function RecentTransactions() {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [filteredTransactions, setFilteredTransactions] = useState<ExtendedTransactionEntry[]>([]);
+  // Defaults to this indexer's own submissions. With gossip indexing on, "all" is the whole
+  // network's throughput and would push an operator's own transactions off the first page.
+  const [source, setSource] = useState<TransactionSource | null>("local");
 
   const { data, isLoading, isError, error } = useListRecentTransactions({
     last_id: null,
     limit: 50,
+    source,
   });
 
   const transactions = useMemo(
@@ -129,6 +133,22 @@ function RecentTransactions() {
       errorMessage={error ? error.message : "Error fetching transaction details."}
     >
       <Stack spacing={1}>
+        <ToggleButtonGroup
+          exclusive
+          size="small"
+          value={source ?? "all"}
+          onChange={(_event, value) => {
+            if (value === null) {
+              return;
+            }
+            setSource(value === "all" ? null : (value as TransactionSource));
+            setPage(0);
+          }}
+        >
+          <ToggleButton value="local">Submitted here</ToggleButton>
+          <ToggleButton value="gossip">From gossip</ToggleButton>
+          <ToggleButton value="all">All</ToggleButton>
+        </ToggleButtonGroup>
         <TransactionFilter
           setPage={setPage}
           stateObject={transactions}

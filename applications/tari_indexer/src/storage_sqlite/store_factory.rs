@@ -170,6 +170,9 @@ mod tests {
         store::{IndexerStoreReadTransaction, IndexerStoreReader, IndexerStoreWriteTransaction},
     };
 
+    /// Well above every `max_epoch` the tests use, so the clamp is inert unless a test is about it.
+    const RETENTION_CEILING: Epoch = Epoch(1_000_000);
+
     fn shard_group() -> ShardGroup {
         ShardGroup::new_checked(1, 4).unwrap()
     }
@@ -342,7 +345,7 @@ mod tests {
         let transaction = Transaction::builder_localnet(Epoch(1)).build_and_seal(&PrivateKey::from(123u64));
         let tx_id = transaction.calculate_id();
         store
-            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction))
+            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction, RETENTION_CEILING))
             .await
             .unwrap();
 
@@ -541,7 +544,7 @@ mod tests {
         assert!(matches!(status, TransactionRejectionStatus::NotStored));
 
         store
-            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction))
+            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction, RETENTION_CEILING))
             .await
             .unwrap();
         let status = store
@@ -584,7 +587,7 @@ mod tests {
         let transaction = Transaction::builder_localnet(Epoch(1)).build_and_seal(&PrivateKey::from(11u64));
         let cursor = transaction.calculate_id();
         store
-            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction))
+            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction, RETENTION_CEILING))
             .await
             .unwrap();
 
@@ -615,17 +618,21 @@ mod tests {
 
         let gossiped = transaction.clone();
         store
-            .with_write_tx(move |tx| tx.insert_batch_transactions([&gossiped], TransactionSource::Gossip))
+            .with_write_tx(move |tx| {
+                tx.insert_batch_transactions([&gossiped], TransactionSource::Gossip, RETENTION_CEILING)
+            })
             .await
             .unwrap();
         let gossiped = transaction.clone();
         let num_inserted = store
-            .with_write_tx(move |tx| tx.insert_batch_transactions([&gossiped], TransactionSource::Gossip))
+            .with_write_tx(move |tx| {
+                tx.insert_batch_transactions([&gossiped], TransactionSource::Gossip, RETENTION_CEILING)
+            })
             .await
             .unwrap();
         assert_eq!(num_inserted, 0);
         store
-            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction))
+            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction, RETENTION_CEILING))
             .await
             .unwrap();
 
@@ -654,7 +661,9 @@ mod tests {
 
         let gossiped = transaction.clone();
         store
-            .with_write_tx(move |tx| tx.insert_batch_transactions([&gossiped], TransactionSource::Gossip))
+            .with_write_tx(move |tx| {
+                tx.insert_batch_transactions([&gossiped], TransactionSource::Gossip, RETENTION_CEILING)
+            })
             .await
             .unwrap();
         let entry = store
@@ -666,7 +675,7 @@ mod tests {
 
         let submitted = transaction.clone();
         store
-            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&submitted))
+            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&submitted, RETENTION_CEILING))
             .await
             .unwrap();
         let entry = store
@@ -679,7 +688,9 @@ mod tests {
         // The reverse order does not demote it: gossip never overwrites a stored row.
         let gossiped = transaction.clone();
         store
-            .with_write_tx(move |tx| tx.insert_batch_transactions([&gossiped], TransactionSource::Gossip))
+            .with_write_tx(move |tx| {
+                tx.insert_batch_transactions([&gossiped], TransactionSource::Gossip, RETENTION_CEILING)
+            })
             .await
             .unwrap();
         let entry = store
@@ -705,11 +716,13 @@ mod tests {
         let gossiped_id = gossiped.calculate_id();
 
         store
-            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&submitted))
+            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&submitted, RETENTION_CEILING))
             .await
             .unwrap();
         store
-            .with_write_tx(move |tx| tx.insert_batch_transactions([&gossiped], TransactionSource::Gossip))
+            .with_write_tx(move |tx| {
+                tx.insert_batch_transactions([&gossiped], TransactionSource::Gossip, RETENTION_CEILING)
+            })
             .await
             .unwrap();
 
@@ -750,7 +763,9 @@ mod tests {
         let current = Transaction::builder_localnet(Epoch(20)).build_and_seal(&PrivateKey::from(53u64));
         let current_id = current.calculate_id();
         store
-            .with_write_tx(move |tx| tx.insert_batch_transactions([&aged, &current], TransactionSource::Gossip))
+            .with_write_tx(move |tx| {
+                tx.insert_batch_transactions([&aged, &current], TransactionSource::Gossip, RETENTION_CEILING)
+            })
             .await
             .unwrap();
 
@@ -768,6 +783,101 @@ mod tests {
         assert_eq!(remaining[0].transaction_id, current_id);
     }
 
+    /// `max_epoch` is chosen by whoever authored the transaction and is the retention key until a
+    /// receipt supplies a commit epoch, so an unclamped one buys a row the pruner never reaches.
+    /// `i64::MAX` is the value that actually does it: the column is a signed SQL integer, so a
+    /// larger epoch reinterprets as negative and gets pruned immediately instead.
+    #[tokio::test]
+    async fn a_distant_max_epoch_is_clamped_to_the_retention_ceiling() {
+        use tari_common_types::types::PrivateKey;
+        use tari_ootle_transaction::Transaction;
+
+        use crate::store::IndexerStoreWriteTransaction;
+
+        let (_dir, store) = temp_store().await;
+
+        let ceiling = Epoch(500);
+        for (i, max_epoch) in [Epoch(i64::MAX as u64), Epoch(u64::MAX), Epoch(100_000)]
+            .into_iter()
+            .enumerate()
+        {
+            let transaction = Transaction::builder_localnet(max_epoch).build_and_seal(&PrivateKey::from(i as u64 + 61));
+            store
+                .with_write_tx(move |tx| {
+                    tx.insert_batch_transactions([&transaction], TransactionSource::Gossip, ceiling)
+                })
+                .await
+                .unwrap();
+        }
+
+        // Every row sits at the ceiling, so a pruner running one epoch past it reaches all of them.
+        let num_pruned = store
+            .with_write_tx(move |tx| tx.prune_transactions_before_epoch(Epoch(501), 100))
+            .await
+            .unwrap();
+        assert_eq!(num_pruned, 3);
+    }
+
+    /// A transaction still inside the ceiling keeps its own `max_epoch` — the clamp is a cap, not a
+    /// flat assignment, or every row would age out together regardless of its real window.
+    #[tokio::test]
+    async fn the_ceiling_does_not_move_a_transaction_that_is_already_under_it() {
+        use tari_common_types::types::PrivateKey;
+        use tari_ootle_transaction::Transaction;
+
+        use crate::store::IndexerStoreWriteTransaction;
+
+        let (_dir, store) = temp_store().await;
+
+        let transaction = Transaction::builder_localnet(Epoch(20)).build_and_seal(&PrivateKey::from(71u64));
+        store
+            .with_write_tx(move |tx| {
+                tx.insert_batch_transactions([&transaction], TransactionSource::Gossip, Epoch(500))
+            })
+            .await
+            .unwrap();
+
+        let num_pruned = store
+            .with_write_tx(move |tx| tx.prune_transactions_before_epoch(Epoch(21), 100))
+            .await
+            .unwrap();
+        assert_eq!(num_pruned, 1);
+    }
+
+    /// The `2026-08-25-000000_transaction_source` migration backfills `retention_epoch` from the
+    /// receipt via `json_extract(data, '$.epoch')`. If the receipt did not serialise its epoch as a
+    /// bare number at that path the backfill would silently resolve to NULL and fall through.
+    #[tokio::test]
+    async fn a_receipt_exposes_its_epoch_to_the_backfill_json_path() {
+        #[derive(diesel::QueryableByName)]
+        struct EpochRow {
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            epoch: i64,
+        }
+
+        let (_dir, store) = temp_store().await;
+
+        let receipt_address = TransactionId::default().into_receipt_address();
+        store
+            .with_write_tx(move |tx| {
+                tx.batch_insert_transaction_receipts([(receipt_address, receipt_at(Epoch(77)))], &[])
+            })
+            .await
+            .unwrap();
+
+        let rows = store
+            .with_read_tx(|tx| {
+                sql_query("select json_extract(data, '$.epoch') as epoch from transaction_receipts")
+                    .load::<EpochRow>(tx.connection())
+                    .map_err(|e| StorageError::general("json_extract epoch", e))
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].epoch, 77);
+    }
+
     /// The source filter pages backwards by id like the unfiltered listing does. Without a matching
     /// index it walks the whole gossip stream to collect a page of local rows.
     #[tokio::test]
@@ -782,9 +892,13 @@ mod tests {
 
         let plan = store
             .with_read_tx(|tx| {
+                // The projection and the receipts LEFT JOIN are what can push SQLite off the index
+                // onto the primary key plus a filter, so the plan has to be taken over the real
+                // query rather than a simplified stand-in.
                 sql_query(
-                    "explain query plan select body from transactions where source = 'local' and id < 100 order by id \
-                     desc limit 10",
+                    "explain query plan select t.body, t.created_at, t.rejected_reason, t.source, r.outcome, \
+                     r.total_fees_paid, r.created_at from transactions t left join transaction_receipts r on \
+                     r.address = t.transaction_id where t.id < 100 and t.source = 'local' order by t.id desc limit 10",
                 )
                 .load::<QueryPlanRow>(tx.connection())
                 .map_err(|e| StorageError::general("explain query plan", e))
@@ -810,7 +924,7 @@ mod tests {
             let transaction = Transaction::builder_localnet(*max_epoch).build_and_seal(&PrivateKey::from(i as u64));
             ids.push(transaction.calculate_id());
             store
-                .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction))
+                .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction, RETENTION_CEILING))
                 .await
                 .unwrap();
         }

@@ -7,7 +7,10 @@ use libp2p::gossipsub::MessageAcceptance;
 use prometheus_client::{
     collector::Collector,
     encoding::{DescriptorEncoder, EncodeMetric},
-    metrics::{counter::Counter, gauge::ConstGauge},
+    metrics::{
+        counter::{ConstCounter, Counter},
+        gauge::ConstGauge,
+    },
     registry::Registry,
 };
 use tari_networking::GossipQueueSender;
@@ -115,8 +118,10 @@ impl TransactionGossipQueueCollector {
 impl Collector for TransactionGossipQueueCollector {
     fn encode(&self, mut encoder: DescriptorEncoder) -> Result<(), fmt::Error> {
         // Units are carried in the metric names rather than passed to the encoder, which would
-        // append them a second time.
-        let readings: [(&str, &str, u64); 4] = [
+        // append them a second time; counter names omit `_total`, which prometheus-client appends
+        // itself. Both match the validator node's `InboundQueueCollector`, whose readings these
+        // mirror — the same alert ported between the two must match on both.
+        let gauges: [(&str, &str, u64); 3] = [
             (
                 "queued_bytes",
                 "Bytes currently held by messages awaiting processing",
@@ -132,17 +137,33 @@ impl Collector for TransactionGossipQueueCollector {
                 "Messages currently awaiting processing",
                 self.queue.queued_messages() as u64,
             ),
+        ];
+
+        for (name, help, value) in gauges {
+            let gauge = ConstGauge::<u64>::new(value);
+            let encoder = encoder.encode_descriptor(name, help, None, gauge.metric_type())?;
+            gauge.encode(encoder)?;
+        }
+
+        // Monotonic totals: a gauge here would make `rate()` and `increase()` read nothing and hide
+        // restarts, which for a drop count is the whole signal.
+        let counters: [(&str, &str, u64); 2] = [
             (
                 "dropped_messages",
                 "Messages discarded because the queue was full",
                 self.queue.dropped_messages(),
             ),
+            (
+                "dropped_bytes",
+                "Bytes discarded because the queue was full",
+                self.queue.dropped_bytes(),
+            ),
         ];
 
-        for (name, help, value) in readings {
-            let gauge = ConstGauge::<u64>::new(value);
-            let encoder = encoder.encode_descriptor(name, help, None, gauge.metric_type())?;
-            gauge.encode(encoder)?;
+        for (name, help, value) in counters {
+            let counter = ConstCounter::<u64>::new(value);
+            let encoder = encoder.encode_descriptor(name, help, None, counter.metric_type())?;
+            counter.encode(encoder)?;
         }
 
         Ok(())
