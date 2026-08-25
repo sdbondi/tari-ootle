@@ -141,7 +141,21 @@ pub async fn submit_transaction_dry_run(
     }))
 }
 
-#[utoipa::path(get, path = "/transactions/recent", description = "List recent transactions",
+#[utoipa::path(
+    get,
+    path = "/transactions/recent",
+    description = "List recent transactions, newest first.\n\n\
+        BEST EFFORT: this lists what this indexer happens to hold — transactions submitted through it, plus those it \
+        observed on the network gossip topic while it was running and subscribed. It is not a complete record of \
+        network activity and absence from this listing does not mean a transaction does not exist. An indexer misses \
+        a transaction if it was offline or still starting up when it was gossiped, if its inbound gossip queue was \
+        full, or if the transaction has since aged past its retention window (see `transaction_retention_epochs` on \
+        /info).\n\n\
+        Transaction receipts are different: they are synced from network state rather than gossip, are complete from \
+        genesis, and are recovered after downtime. A committed transaction whose gossip this indexer missed therefore \
+        has a receipt but no entry here — list it from /transaction-receipts instead. Transactions that never \
+        committed (mempool-rejected, aborted or expired) never get a receipt, so gossip is the only source for them \
+        and coverage is best effort with no fallback.",
     responses(
         (status = 200, description = "List of recent transactions", body = ListRecentTransactionsResponse),
         (status = BAD_REQUEST, description = "Invalid request parameters", body = ErrorResponse),
@@ -172,12 +186,16 @@ pub async fn list_recent_transactions(
     get,
     path = "/transactions/{transaction_id}",
     description = "Get a transaction (including its instructions, fee instructions and signatures) by transaction ID.\n\n\
-        NOTE: This reads the indexer's local transaction store, which holds transactions submitted through this \
-        indexer and — when gossip indexing is enabled, see `index_gossiped_transactions` on /info — those observed on \
-        the network transaction topic. A transaction the indexer never saw, or one that has aged past its retention \
-        window, returns 404 here even after it has been finalized. This differs from transaction receipts (see the \
-        /transaction-receipts endpoints), which are synced from the network. For the execution result of any \
-        transaction regardless of where it was submitted, use /transactions/{transaction_id}/result.",
+        BEST EFFORT: this reads the indexer's local transaction store, which holds transactions submitted through \
+        this indexer and — when gossip indexing is enabled, see `index_gossiped_transactions` on /info — those it \
+        observed on the network gossip topic. A 404 means this indexer has no body for the transaction, not that the \
+        transaction does not exist: it may have been gossiped while the indexer was offline, dropped from a full \
+        inbound queue, or pruned once past its retention window.\n\n\
+        Two endpoints answer authoritatively where this one cannot. \
+        /transactions/{transaction_id}/result queries the transaction's committee, so it resolves the outcome of any \
+        transaction regardless of where it was submitted. /transaction-receipts is synced from network state rather \
+        than gossip and is complete from genesis, so a committed transaction always has a receipt there even when its \
+        body is missing here.",
     responses(
         (status = 200, description = "Transaction found", body = GetTransactionResponse),
         (status = 404, description = "Transaction not known to this indexer", body = ErrorResponse),

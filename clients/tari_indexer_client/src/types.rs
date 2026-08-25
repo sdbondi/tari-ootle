@@ -755,6 +755,13 @@ pub struct GetIndexerInfoResponse {
     /// Whether this indexer stores transactions observed on the network gossip topic in addition to
     /// those submitted directly to it. When false, a transaction submitted elsewhere is unknown to
     /// this indexer until its receipt is synced.
+    ///
+    /// Even when true the stored set of transactions is best effort: an indexer misses whatever was
+    /// gossiped while it was offline or while its inbound queue was full, and there is no backfill.
+    /// Transaction receipts carry no such caveat — they are synced from network state and are
+    /// complete from genesis — so a committed transaction always has a receipt even when its body is
+    /// missing here. Transactions that never committed get no receipt, so gossip is the only source
+    /// for them.
     pub index_gossiped_transactions: bool,
     /// Whether substates served by this indexer are verified against a shard group committee proof
     /// before being returned. When false, values are served as fetched from a single validator and
