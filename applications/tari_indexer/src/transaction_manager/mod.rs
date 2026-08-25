@@ -85,7 +85,8 @@ where
         // The row is written before the committee has accepted anything, so its retention key cannot
         // be taken on trust from the transaction's own `max_epoch`: that would let any accepted
         // request claim a row the pruner never reaches. Cap it at the last epoch a transaction
-        // admitted now could still be sequenced in.
+        // admitted now could still be sequenced in. `current_epoch` waits out the epoch manager's
+        // initial scan, so this cannot cap against the zero the manager reports before then.
         let retention_ceiling = Epoch(
             self.network_client
                 .current_epoch()

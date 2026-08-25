@@ -47,7 +47,12 @@ where
         }
     }
 
+    /// The current epoch, once the epoch manager has completed its initial scan. The scan is waited
+    /// on because until it lands the epoch manager reports zero, and a caller deriving anything
+    /// durable from a zero epoch — a retention key, a validity window — writes a value the node
+    /// will disagree with seconds later.
     pub async fn current_epoch(&self) -> Result<Epoch, NetworkClientError> {
+        self.epoch_manager.wait_for_initial_scanning_to_complete().await?;
         Ok(self.epoch_manager.current_epoch().await?)
     }
 
