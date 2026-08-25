@@ -246,6 +246,15 @@ jobs:
           choco upgrade protoc -y
           rustup target add ${{ matrix.builds.target }}
 
+      # liblmdb-sys pulls in gcc 0.3.55, whose MSVC probe knows no aarch64 target and so falls back to a
+      # bare `cl.exe` that is not on PATH by default. Entering the cross developer environment puts the
+      # ARM64-targeting cl.exe on PATH, which is what that fallback needs to resolve.
+      - name: Enter MSVC ARM64 cross environment - Windows
+        if: ${{ matrix.builds.target == 'aarch64-pc-windows-msvc' }}
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: amd64_arm64
+
       - name: Install Dependencies - Node
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
