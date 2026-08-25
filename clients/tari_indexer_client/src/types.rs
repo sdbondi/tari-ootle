@@ -405,7 +405,7 @@ pub enum TransactionSource {
 }
 
 impl TransactionSource {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Local => "local",
             Self::Gossip => "gossip",

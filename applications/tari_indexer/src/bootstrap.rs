@@ -99,7 +99,7 @@ use crate::{
     substate_file_cache::SubstateFileCache,
     substate_manager::SubstateManager,
     template_manager::TemplateManager,
-    transaction_gossip::{self, TransactionGossipService},
+    transaction_gossip::TransactionGossipService,
     transaction_manager::TransactionManager,
     transaction_pruner::TransactionPruner,
 };
@@ -143,7 +143,7 @@ pub async fn spawn_services(
             config.indexer.max_transaction_gossip_queue_bytes,
         );
         #[cfg(feature = "metrics")]
-        transaction_gossip::TransactionGossipQueueCollector::new(tx_transaction_gossip.clone())
+        crate::transaction_gossip::TransactionGossipQueueCollector::new(tx_transaction_gossip.clone())
             .register(metrics_registry);
 
         let tx_gossip_messages_by_topic = HashMap::from([(TRANSACTION_TOPIC.to_string(), tx_transaction_gossip)]);
@@ -373,7 +373,7 @@ pub async fn spawn_services(
             networking.clone(),
             rx_transaction_gossip,
             #[cfg(feature = "metrics")]
-            transaction_gossip::TransactionGossipMetrics::register(metrics_registry),
+            crate::transaction_gossip::TransactionGossipMetrics::register(metrics_registry),
         )
         .spawn(shutdown.clone());
     }

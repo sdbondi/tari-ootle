@@ -209,7 +209,7 @@ where
             Ok((num_inserted, mut batch)) => {
                 batch.clear();
                 self.pending = batch;
-                debug!(
+                info!(
                     target: LOG_TARGET,
                     "📥 Stored {num_inserted} of {num_transactions} gossiped transaction(s)",
                 );

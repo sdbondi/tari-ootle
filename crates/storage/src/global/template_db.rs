@@ -154,7 +154,7 @@ impl FromStr for DbTemplateType {
 }
 
 impl DbTemplateType {
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             DbTemplateType::Wasm => "Wasm",
         }
@@ -212,7 +212,7 @@ impl FromStr for TemplateStatus {
 }
 
 impl TemplateStatus {
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             TemplateStatus::New => "New",
             TemplateStatus::Pending => "Pending",
