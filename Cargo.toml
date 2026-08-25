@@ -152,7 +152,7 @@ ootle-wasm-core = { path = "crates/ootle_wasm/core", version = "0.39" }
 ootle_sdk_core = { path = "crates/ootle_sdk_core", version = "0.39" }
 
 # external minotari/tari dependencies
-minotari_app_grpc = "5.6.0"
+minotari_app_grpc = { version = "5.6.0", default-features = false }
 minotari_app_utilities = "5.6.0"
 minotari_node_grpc_client = "5.6.0"
 minotari_wallet_grpc_client = "5.6.0"

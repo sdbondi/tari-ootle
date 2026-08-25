@@ -26,9 +26,8 @@ use futures_util::TryStreamExt;
 use log::*;
 use minotari_app_grpc::{
     tari_rpc,
-    tari_rpc::{self as grpc, GetValidatorNodeChangesRequest},
+    tari_rpc::{self as grpc, GetValidatorNodeChangesRequest, base_node_client::BaseNodeClient as BaseNodeGrpcClient},
 };
-use minotari_node_grpc_client::BaseNodeGrpcClient;
 use tari_common_types::types::FixedHash;
 use tari_node_components::blocks::BlockHeader;
 use tari_ootle_common_types::{Epoch, SubstateAddress};
