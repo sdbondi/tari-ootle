@@ -1,7 +1,12 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    fmt::{Display, Formatter},
+    str::FromStr,
+    time::Duration,
+};
 
 use bounded_vec::BoundedVec;
 use serde::{Deserialize, Serialize};
@@ -351,6 +356,10 @@ pub struct ListRecentTransactionsRequest {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(value_type = Option<String>))]
     pub last_id: Option<TransactionId>,
+    /// Restrict the listing to transactions from this source. Omitted, transactions from every
+    /// source are listed.
+    #[serde(default)]
+    pub source: Option<TransactionSource>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -378,7 +387,60 @@ pub struct TransactionEntry {
     /// Reason the transaction was rejected by mempool validation when it was submitted through
     /// this indexer. None if the transaction was not rejected at submission.
     pub rejected_reason: Option<String>,
+    /// Where this indexer learned of the transaction.
+    pub source: TransactionSource,
 }
+
+/// Where an indexer learned of a transaction it has stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "tari-indexer-client/"))]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum TransactionSource {
+    /// Submitted directly to this indexer. A transaction the indexer first saw on the gossip topic
+    /// and that was later submitted to it directly is recorded as local.
+    Local,
+    /// Observed on the network-wide transaction gossip topic.
+    Gossip,
+}
+
+impl TransactionSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Gossip => "gossip",
+        }
+    }
+}
+
+impl Display for TransactionSource {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl FromStr for TransactionSource {
+    type Err = UnknownTransactionSource;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "local" => Ok(Self::Local),
+            "gossip" => Ok(Self::Gossip),
+            _ => Err(UnknownTransactionSource(s.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UnknownTransactionSource(pub String);
+
+impl Display for UnknownTransactionSource {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Unknown transaction source '{}'", self.0)
+    }
+}
+
+impl std::error::Error for UnknownTransactionSource {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "tari-indexer-client/"))]
@@ -685,11 +747,15 @@ pub struct GetIndexerInfoResponse {
     /// without a second request.
     #[cfg_attr(feature = "utoipa", schema(value_type = u64))]
     pub current_epoch: Epoch,
-    /// How many epochs past its terminal epoch this indexer retains a transaction submitted through it
-    /// before pruning the record. `None` means transactions are retained indefinitely. Transaction
-    /// receipts are retained regardless of this setting. A client paginating transaction history hits
-    /// this floor rather than the start of the chain.
+    /// How many epochs past its terminal epoch this indexer retains a transaction before pruning the
+    /// record. `None` means transactions are retained indefinitely. Transaction receipts are retained
+    /// regardless of this setting. A client paginating transaction history hits this floor rather
+    /// than the start of the chain.
     pub transaction_retention_epochs: Option<u64>,
+    /// Whether this indexer stores transactions observed on the network gossip topic in addition to
+    /// those submitted directly to it. When false, a transaction submitted elsewhere is unknown to
+    /// this indexer until its receipt is synced.
+    pub index_gossiped_transactions: bool,
     /// Whether substates served by this indexer are verified against a shard group committee proof
     /// before being returned. When false, values are served as fetched from a single validator and
     /// carry no proof of correctness.

@@ -1,55 +1,30 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use libp2p::{PeerId, gossipsub};
+use libp2p::gossipsub;
 use log::*;
 use tari_networking::{GossipMessage, NetworkingHandle, NetworkingService};
-use tari_ootle_p2p::{NewTransactionMessage, PeerAddress, TariMessage, TariMessagingSpec, proto};
-use tari_swarm::messaging::{Codec, prost::ProstCodec};
+use tari_ootle_p2p::{
+    GossipValidation,
+    NewTransactionMessage,
+    PeerAddress,
+    TariMessage,
+    TariMessagingSpec,
+    TransactionGossipCodec,
+    transaction_topic,
+};
 use tokio::sync::mpsc;
 
 use crate::p2p::services::mempool::MempoolError;
 
 const LOG_TARGET: &str = "tari::validator_node::mempool::gossip";
 
-/// All transactions are gossiped on a single network-wide topic. Using one topic (rather than a topic per shard group)
-/// keeps the gossipsub mesh stable across epoch boundaries, since validators never need to unsubscribe and resubscribe
-/// when they are shuffled into a different shard group.
-pub const TOPIC_PREFIX: &str = "transactions";
-
-#[derive(Debug)]
-pub struct MempoolGossipCodec {
-    codec: ProstCodec<proto::network::TariMessage>,
-}
-
-impl MempoolGossipCodec {
-    pub fn new() -> Self {
-        Self {
-            codec: ProstCodec::default(),
-        }
-    }
-
-    pub async fn encode(&self, message: TariMessage) -> std::io::Result<Vec<u8>> {
-        let mut buf = Vec::with_capacity(1024);
-        let message = proto::network::TariMessage::from(&message);
-        self.codec.encode_to(&mut buf, message).await?;
-        Ok(buf)
-    }
-
-    pub async fn decode(&self, message: gossipsub::Message) -> std::io::Result<(usize, TariMessage)> {
-        let (length, message) = self.codec.decode_from(&mut message.data.as_slice()).await?;
-        let message = TariMessage::try_from(message).map_err(std::io::Error::other)?;
-
-        Ok((length, message))
-    }
-}
-
 #[derive(Debug)]
 pub(super) struct MempoolGossip {
     is_subscribed: bool,
     networking: NetworkingHandle<TariMessagingSpec>,
     rx_gossip: mpsc::Receiver<GossipMessage>,
-    codec: MempoolGossipCodec,
+    codec: TransactionGossipCodec,
 }
 
 impl MempoolGossip {
@@ -58,7 +33,7 @@ impl MempoolGossip {
             is_subscribed: false,
             networking,
             rx_gossip,
-            codec: MempoolGossipCodec::new(),
+            codec: TransactionGossipCodec::new(),
         }
     }
 
@@ -103,14 +78,14 @@ impl MempoolGossip {
             return Ok(());
         }
 
-        self.networking.subscribe_topic(topic()).await?;
+        self.networking.subscribe_topic(transaction_topic()).await?;
         self.is_subscribed = true;
         Ok(())
     }
 
     pub async fn unsubscribe(&mut self) -> Result<(), MempoolError> {
         if self.is_subscribed {
-            self.networking.unsubscribe_topic(topic()).await?;
+            self.networking.unsubscribe_topic(transaction_topic()).await?;
             self.is_subscribed = false;
         }
         Ok(())
@@ -124,20 +99,16 @@ impl MempoolGossip {
     /// topic, gossipsub delivers the transaction to every validator with one publish; replicas in the involved shard
     /// groups pick it up directly and no per-shard-group forwarding is required.
     pub async fn forward(&mut self, msg: NewTransactionMessage) -> Result<(), MempoolError> {
-        debug!(target: LOG_TARGET, "forward transaction on topic: {}", topic());
+        debug!(target: LOG_TARGET, "forward transaction on topic: {}", transaction_topic());
         let msg = self
             .codec
             .encode(msg.into())
             .await
             .map_err(|e| MempoolError::InvalidMessage(e.into()))?;
-        self.networking.publish_gossip(topic(), msg).await?;
+        self.networking.publish_gossip(transaction_topic(), msg).await?;
 
         Ok(())
     }
-}
-
-fn topic() -> String {
-    TOPIC_PREFIX.to_string()
 }
 
 pub struct IncomingMessage {
@@ -148,21 +119,4 @@ pub struct IncomingMessage {
     /// Identifies this message when reporting its validation verdict. Must be passed to
     /// [`MempoolGossip::report`] exactly once, or the message is never propagated onward.
     pub validation: GossipValidation,
-}
-
-/// Handle identifying one inbound gossip message for the purpose of reporting its validation
-/// verdict. Deliberately not `Clone`: a verdict is reported once per message.
-#[derive(Debug)]
-pub struct GossipValidation {
-    key: (gossipsub::MessageId, PeerId),
-}
-
-impl GossipValidation {
-    fn new(key: (gossipsub::MessageId, PeerId)) -> Self {
-        Self { key }
-    }
-
-    fn into_key(self) -> (gossipsub::MessageId, PeerId) {
-        self.key
-    }
 }

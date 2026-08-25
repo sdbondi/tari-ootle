@@ -21,3 +21,4 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 indexmap = { workspace = true }
+tari_common_types = { workspace = true }

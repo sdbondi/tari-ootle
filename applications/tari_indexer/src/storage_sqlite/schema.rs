@@ -96,6 +96,7 @@ diesel::table! {
         rejected_reason -> Nullable<Text>,
         rejected_at -> Nullable<Timestamp>,
         retention_epoch -> BigInt,
+        source -> Text,
     }
 }
 

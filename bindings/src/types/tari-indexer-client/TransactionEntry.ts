@@ -2,6 +2,7 @@
 import type { PrunedTransaction } from "../PrunedTransaction";
 import type { TransactionId } from "../TransactionId";
 import type { TransactionResultSummary } from "./TransactionResultSummary";
+import type { TransactionSource } from "./TransactionSource";
 
 export type TransactionEntry = {
   transaction_id: TransactionId;
@@ -21,4 +22,8 @@ export type TransactionEntry = {
    * this indexer. None if the transaction was not rejected at submission.
    */
   rejected_reason: string | null;
+  /**
+   * Where this indexer learned of the transaction.
+   */
+  source: TransactionSource;
 };

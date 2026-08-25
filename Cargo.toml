@@ -273,7 +273,7 @@ tempfile = "3.3.0"
 thiserror = "2.0.17"
 time = "0.3.47"
 tokio = { version = "1.49.0", default-features = false }
-tokio-stream = "0.1.17"
+tokio-stream = { version = "0.1.17", features = ["sync"] }
 async-stream = "0.3.6"
 tokio-util = "0.7.16"
 tonic = "0.13.1"

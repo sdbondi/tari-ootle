@@ -130,25 +130,43 @@ pub struct IndexerConfig {
     /// round trips on hot substates. Requests for a specific version are unaffected.
     #[serde(default = "default_latest_substate_cache_ttl", with = "serializers::seconds")]
     pub latest_substate_cache_ttl: Duration,
-    /// How many epochs past its terminal epoch a transaction submitted through this indexer is
-    /// retained before it is pruned. A transaction's terminal epoch is the epoch it committed in
-    /// once its receipt has been indexed, and its `max_epoch` — the last epoch it could still be
-    /// sequenced in — until then, so a transaction that is never sequenced ages out on the same
-    /// schedule as one that commits. `None` (the default) retains transactions forever, and `0`
-    /// keeps only those that can still commit or committed in the current epoch.
+    /// How many epochs past its terminal epoch a stored transaction is retained before it is pruned.
+    /// A transaction's terminal epoch is the epoch it committed in once its receipt has been
+    /// indexed, and its `max_epoch` — the last epoch it could still be sequenced in — until then, so
+    /// a transaction that is never sequenced ages out on the same schedule as one that commits.
+    /// `None` retains transactions forever, and `0` keeps only those that can still commit or
+    /// committed in the current epoch.
     ///
-    /// Only the submitted transaction body and its locally recorded rejection reason are pruned;
-    /// transaction receipts synced from the network are retained regardless, so a pruned transaction
-    /// still resolves to its receipt-backed outcome. Set this well above the longest a client may
-    /// take to poll for a result: once pruned, a transaction no longer appears in the
-    /// recent-transactions listing or single transaction lookup, and a mempool rejection reason
-    /// recorded for it is lost. Transactions stored before this indexer recorded a terminal epoch
-    /// carry epoch 0, so the first pass after enabling this prunes that entire backlog.
+    /// Applies to every stored transaction, whether submitted here or observed on the gossip topic.
+    /// Only the transaction body and its locally recorded rejection reason are pruned; transaction
+    /// receipts synced from the network are retained regardless, so a pruned transaction still
+    /// resolves to its receipt-backed outcome. Set this well above the longest a client may take to
+    /// poll for a result: once pruned, a transaction no longer appears in the recent-transactions
+    /// listing or single transaction lookup, and a mempool rejection reason recorded for it is lost.
+    /// Transactions stored before this indexer recorded a terminal epoch carry epoch 0, so the first
+    /// pass on an indexer upgraded from a build that retained everything prunes that entire backlog.
     ///
     /// Pruning bounds database growth but does not return disk to the filesystem: SQLite reuses the
     /// freed pages rather than shrinking the file.
-    #[serde(default)]
+    #[serde(default = "default_transaction_retention_epochs")]
     pub transaction_retention_epochs: Option<u64>,
+    /// Store transactions observed on the network-wide transaction gossip topic, not only those
+    /// submitted directly to this indexer. When enabled the indexer joins the transaction mesh as a
+    /// full participant: it validates what it receives and propagates it onward. Disabling it leaves
+    /// the mesh entirely — no transaction is received, stored or forwarded.
+    ///
+    /// The gossip topic carries the whole network's transaction volume, so leaving this on with
+    /// `transaction_retention_epochs` set to `None` grows the database without bound.
+    #[serde(default = "default_index_gossiped_transactions")]
+    pub index_gossiped_transactions: bool,
+    /// Maximum total size of inbound transaction gossip awaiting storage. The gossip service drains
+    /// this queue serially, so it absorbs bursts that arrive faster than validation and batched
+    /// writes; once it is full, further messages are dropped rather than queued without limit. Sized
+    /// in bytes because every message may be up to `gossip_sub_max_message_size`: at ordinary
+    /// transaction sizes this admits a very deep backlog, while capping a flood of maximum-size
+    /// messages.
+    #[serde(default = "default_max_transaction_gossip_queue_bytes")]
+    pub max_transaction_gossip_queue_bytes: usize,
     /// How long the transaction pruner idles between passes once it has nothing left to prune. While
     /// a backlog remains it drains in back-to-back batches rather than waiting out this interval.
     /// Only used when `transaction_retention_epochs` is set.
@@ -186,6 +204,7 @@ fn default_latest_substate_cache_ttl() -> Duration {
 pub struct PublishedIndexerConfig {
     pub sidechain_id: Option<RistrettoPublicKeyBytes>,
     pub transaction_retention_epochs: Option<u64>,
+    pub index_gossiped_transactions: bool,
     pub verify_substate_proofs: bool,
     pub latest_substate_cache_ttl: Duration,
     pub indexes_all_events: bool,
@@ -196,12 +215,25 @@ impl From<&IndexerConfig> for PublishedIndexerConfig {
         Self {
             sidechain_id: config.sidechain_id.as_ref().map(|pk| pk.to_byte_type()),
             transaction_retention_epochs: config.transaction_retention_epochs,
+            index_gossiped_transactions: config.index_gossiped_transactions,
             verify_substate_proofs: config.verify_substate_proofs,
             latest_substate_cache_ttl: config.latest_substate_cache_ttl,
             indexes_all_events: config.event_filters.is_empty() ||
                 config.event_filters.iter().any(EventFilter::is_match_all),
         }
     }
+}
+
+fn default_transaction_retention_epochs() -> Option<u64> {
+    Some(50)
+}
+
+fn default_index_gossiped_transactions() -> bool {
+    true
+}
+
+fn default_max_transaction_gossip_queue_bytes() -> usize {
+    128 * 1024 * 1024
 }
 
 fn default_transaction_prune_interval() -> Duration {
@@ -230,7 +262,9 @@ impl Default for IndexerConfig {
             sidechain_id: None,
             dry_run_cache_ttl: Duration::from_secs(10),
             latest_substate_cache_ttl: default_latest_substate_cache_ttl(),
-            transaction_retention_epochs: None,
+            transaction_retention_epochs: default_transaction_retention_epochs(),
+            index_gossiped_transactions: default_index_gossiped_transactions(),
+            max_transaction_gossip_queue_bytes: default_max_transaction_gossip_queue_bytes(),
             transaction_prune_interval: default_transaction_prune_interval(),
             event_filters: vec![],
             watched_templates: default_watched_templates(),

@@ -12,6 +12,7 @@ export * from "./types/tari-indexer-client/ValidatorConsensusState";
 export * from "./types/tari-indexer-client/StreamTransactionEventsRequest";
 export * from "./types/tari-indexer-client/QueryTransactionEventsRequest";
 export * from "./types/tari-indexer-client/TransactionEntry";
+export * from "./types/tari-indexer-client/TransactionSource";
 export * from "./types/tari-indexer-client/InspectSubstateRequest";
 export * from "./types/tari-indexer-client/ListSubstateItem";
 export * from "./types/tari-indexer-client/IndexerTransactionFinalizedResult";

@@ -47,6 +47,7 @@ mod store;
 mod substate_file_cache;
 mod substate_manager;
 mod template_manager;
+mod transaction_gossip;
 mod transaction_manager;
 mod transaction_pruner;
 

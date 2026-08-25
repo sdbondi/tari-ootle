@@ -30,6 +30,7 @@ use tari_indexer_client::types::{
     NonFungibleSubstate,
     TransactionEntry,
     TransactionResultSummary,
+    TransactionSource,
     UtxoStateUpdateSet,
 };
 use tari_ootle_common_types::{
@@ -88,6 +89,12 @@ fn map_receipt_summary(
         })?,
         total_fees_paid: total_fees_paid as u64,
         finalized_at,
+    })
+}
+
+fn parse_transaction_source(source: &str) -> Result<TransactionSource, StorageError> {
+    source.parse().map_err(|_| StorageError::DataInconsistency {
+        details: format!("Invalid source '{source}' in transactions"),
     })
 }
 
@@ -443,6 +450,7 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
         &mut self,
         last_transaction_id: Option<TransactionId>,
         limit: usize,
+        source: Option<TransactionSource>,
     ) -> Result<Vec<TransactionEntry>, StorageError> {
         use crate::storage_sqlite::schema::{transaction_receipts, transactions};
 
@@ -466,12 +474,13 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
             None => i32::MAX,
         };
 
-        let rows = transactions::table
+        let mut query = transactions::table
             .left_join(transaction_receipts::table.on(transaction_receipts::address.eq(transactions::transaction_id)))
             .select((
                 transactions::body,
                 transactions::created_at,
                 transactions::rejected_reason,
+                transactions::source,
                 (
                     transaction_receipts::outcome,
                     transaction_receipts::total_fees_paid,
@@ -480,6 +489,13 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
                     .nullable(),
             ))
             .filter(transactions::id.lt(start_id))
+            .into_boxed();
+
+        if let Some(source) = source {
+            query = query.filter(transactions::source.eq(source.as_str()));
+        }
+
+        let rows = query
             .order_by(transactions::id.desc())
             .limit(limit as i64)
             .load_iter(self.connection())
@@ -492,10 +508,11 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
                 reason: format!("list_recent_transactions: {}", e),
             })
             .and_then(
-                |(body, created_at, rejected_reason, receipt): (
+                |(body, created_at, rejected_reason, source, receipt): (
                     String,
                     PrimitiveDateTime,
                     Option<String>,
+                    String,
                     ReceiptSummaryRow,
                 )| {
                     let full: Transaction = deserialize_json(&body)?;
@@ -506,6 +523,7 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
                         transaction: full.into(),
                         summary: receipt.map(map_receipt_summary).transpose()?,
                         rejected_reason,
+                        source: parse_transaction_source(&source)?,
                     })
                 },
             )
@@ -522,6 +540,7 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
                 transactions::body,
                 transactions::created_at,
                 transactions::rejected_reason,
+                transactions::source,
                 (
                     transaction_receipts::outcome,
                     transaction_receipts::total_fees_paid,
@@ -530,13 +549,13 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
                     .nullable(),
             ))
             .filter(transactions::transaction_id.eq(serialize_hex(transaction_id)))
-            .first::<(String, PrimitiveDateTime, Option<String>, ReceiptSummaryRow)>(self.connection())
+            .first::<(String, PrimitiveDateTime, Option<String>, String, ReceiptSummaryRow)>(self.connection())
             .optional()
             .map_err(|e| StorageError::QueryError {
                 reason: format!("get_transaction: {e}"),
             })?;
 
-        row.map(|(body, created_at, rejected_reason, receipt)| {
+        row.map(|(body, created_at, rejected_reason, source, receipt)| {
             let full: Transaction = deserialize_json(&body)?;
             Ok(TransactionEntry {
                 // The row was looked up by this id, so it matches full.calculate_id() without recomputing it.
@@ -545,6 +564,7 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
                 transaction: full.into(),
                 summary: receipt.map(map_receipt_summary).transpose()?,
                 rejected_reason,
+                source: parse_transaction_source(&source)?,
             })
         })
         .transpose()

@@ -20,7 +20,13 @@
 //   WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use std::{collections::HashSet, fs, io, str::FromStr, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    io,
+    str::FromStr,
+    sync::Arc,
+};
 
 use anyhow::{Context, anyhow};
 use libp2p::identity;
@@ -47,7 +53,14 @@ use tari_epoch_oracles::{
 };
 use tari_indexer_client::event::{IndexerEvent, TransactionEvent};
 use tari_indexer_lib::substate_versions::SubstateVersionTracker;
-use tari_networking::{MessagingMode, NetworkingHandle, RelayCircuitLimits, RelayReservationLimits, SwarmConfig};
+use tari_networking::{
+    MessagingMode,
+    NetworkingHandle,
+    RelayCircuitLimits,
+    RelayReservationLimits,
+    SwarmConfig,
+    gossip_queue,
+};
 use tari_ootle_app_utilities::{
     claim_burn_proof_verifier::KnowledgeProofVerifier,
     configuration::convert_network_to_l1_network,
@@ -59,10 +72,11 @@ use tari_ootle_app_utilities::{
     shared_consts::TXTR_FAUCET_INITIAL_SUPPLY,
 };
 use tari_ootle_common_types::optional::Optional;
-use tari_ootle_p2p::{PeerAddress, TariMessagingSpec};
+use tari_ootle_p2p::{PeerAddress, TRANSACTION_TOPIC, TariMessagingSpec};
 use tari_ootle_storage::global::GlobalDb;
 use tari_ootle_storage_sqlite::global::SqliteGlobalDbAdapter;
 use tari_ootle_transaction::Network;
+use tari_ootle_transaction_validation::create_gossip_transaction_validator;
 use tari_shutdown::ShutdownSignal;
 use tari_template_builtin::all_builtin_templates;
 use tari_template_lib_types::{Amount, TemplateAddress, crypto::RistrettoPublicKeyBytes};
@@ -85,6 +99,7 @@ use crate::{
     substate_file_cache::SubstateFileCache,
     substate_manager::SubstateManager,
     template_manager::TemplateManager,
+    transaction_gossip::{self, TransactionGossipService},
     transaction_manager::TransactionManager,
     transaction_pruner::TransactionPruner,
 };
@@ -119,8 +134,31 @@ pub async fn spawn_services(
         })
         .collect();
 
+    // The indexer sends no direct messages and subscribes to one gossip topic. When gossip indexing
+    // is off it stays out of the mesh entirely rather than joining it and forwarding nothing.
+    let (messaging_mode, rx_transaction_gossip) = if config.indexer.index_gossiped_transactions {
+        const MAX_QUEUED_INBOUND_MESSAGES: usize = 100_000;
+        let (tx_transaction_gossip, rx_transaction_gossip) = gossip_queue(
+            MAX_QUEUED_INBOUND_MESSAGES,
+            config.indexer.max_transaction_gossip_queue_bytes,
+        );
+        #[cfg(feature = "metrics")]
+        transaction_gossip::TransactionGossipQueueCollector::new(tx_transaction_gossip.clone())
+            .register(metrics_registry);
+
+        let tx_gossip_messages_by_topic = HashMap::from([(TRANSACTION_TOPIC.to_string(), tx_transaction_gossip)]);
+        (
+            MessagingMode::GossipOnly {
+                tx_gossip_messages_by_topic,
+            },
+            Some(rx_transaction_gossip),
+        )
+    } else {
+        (MessagingMode::Disabled, None)
+    };
+
     let network_builder = tari_networking::Builder::<TariMessagingSpec>::new(identity)
-        .with_messaging_mode(MessagingMode::Disabled)
+        .with_messaging_mode(messaging_mode)
         .with_config(tari_networking::Config {
             // TODO: configurable
             listeners: vec![
@@ -138,6 +176,9 @@ pub async fn spawn_services(
                 user_agent: format!("/tari/indexer/{}", env!("CARGO_PKG_VERSION")),
                 enable_mdns: config.indexer.p2p.enable_mdns,
                 enable_relay: config.indexer.p2p.enable_relay,
+                // The indexer reports a `Reject` verdict for messages that fail to decode or fail
+                // validation, so it can score the peers that send them.
+                gossip_sub_scored_topics: vec![TRANSACTION_TOPIC.to_string()],
                 relay_circuit_limits: RelayCircuitLimits::high(),
                 relay_reservation_limits: RelayReservationLimits::high(),
                 rendezvous_server_enabled: config.indexer.p2p.enable_rendezvous,
@@ -301,6 +342,24 @@ pub async fn spawn_services(
             epoch_manager.clone(),
             retention_epochs,
             config.indexer.transaction_prune_interval,
+        )
+        .spawn(shutdown.clone());
+    }
+
+    if let Some(rx_transaction_gossip) = rx_transaction_gossip {
+        info!(target: LOG_TARGET, "📥 Indexing transactions from network gossip");
+        TransactionGossipService::new(
+            store.clone(),
+            epoch_manager.clone(),
+            create_gossip_transaction_validator(
+                config.network,
+                consensus_constants.max_transaction_weight,
+                consensus_constants.max_transaction_validity_epochs,
+            ),
+            networking.clone(),
+            rx_transaction_gossip,
+            #[cfg(feature = "metrics")]
+            transaction_gossip::TransactionGossipMetrics::register(metrics_registry),
         )
         .spawn(shutdown.clone());
     }

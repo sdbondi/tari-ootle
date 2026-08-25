@@ -4,11 +4,13 @@
 mod block_sync;
 mod conversions;
 mod encoding;
+mod gossip;
 mod message;
 mod message_spec;
 mod peer_address;
 pub mod proto;
 
+pub use gossip::*;
 pub use message::*;
 pub use message_spec::*;
 pub use peer_address::*;

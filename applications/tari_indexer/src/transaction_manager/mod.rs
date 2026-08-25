@@ -23,7 +23,7 @@
 pub(crate) mod error;
 
 use tari_epoch_manager::EpochManagerReader;
-use tari_indexer_client::types::{IndexerTransactionFinalizedResult, TransactionEntry};
+use tari_indexer_client::types::{IndexerTransactionFinalizedResult, TransactionEntry, TransactionSource};
 use tari_ootle_common_types::{NodeAddressable, ToSubstateAddress, optional::Optional};
 use tari_ootle_transaction::{Network, Transaction, TransactionId};
 use tari_ootle_transaction_validation::{Validator, create_structural_transaction_validator};
@@ -81,7 +81,7 @@ where
         }
         let transaction_for_db = transaction.clone();
         self.store
-            .with_write_tx(move |tx| tx.insert_or_ignore_transaction(&transaction_for_db))
+            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction_for_db))
             .await?;
         match self.network_client.submit_transaction(transaction).await {
             Ok(id) => {
@@ -190,10 +190,11 @@ where
         &self,
         last_id: Option<TransactionId>,
         limit: usize,
+        source: Option<TransactionSource>,
     ) -> Result<Vec<TransactionEntry>, TransactionManagerError> {
         let transactions = self
             .store
-            .with_read_tx(move |tx| tx.list_recent_transactions(last_id, limit))
+            .with_read_tx(move |tx| tx.list_recent_transactions(last_id, limit, source))
             .await?;
         Ok(transactions)
     }

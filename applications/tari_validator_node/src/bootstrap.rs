@@ -73,7 +73,7 @@ use tari_ootle_app_utilities::{
     transaction_executor::TariTransactionProcessor,
 };
 use tari_ootle_common_types::services::template_provider::TemplateProvider;
-use tari_ootle_p2p::{PeerAddress, TariMessagingSpec};
+use tari_ootle_p2p::{PeerAddress, TRANSACTION_TOPIC, TariMessagingSpec};
 use tari_ootle_storage::{StateStore, global::GlobalDb};
 use tari_ootle_storage_sqlite::global::SqliteGlobalDbAdapter;
 use tari_ootle_template_provider::MemoryCacheTemplateProvider;
@@ -178,7 +178,7 @@ pub async fn spawn_services(
     .register(metrics_registry);
 
     let mut tx_gossip_messages_by_topic = HashMap::new();
-    tx_gossip_messages_by_topic.insert(mempool::TOPIC_PREFIX.to_string(), tx_transaction_gossip_messages);
+    tx_gossip_messages_by_topic.insert(TRANSACTION_TOPIC.to_string(), tx_transaction_gossip_messages);
     tx_gossip_messages_by_topic.insert(consensus_gossip::TOPIC_PREFIX.to_string(), tx_consensus_gossip_messages);
 
     let identity = identity::Keypair::sr25519_from_bytes(keypair.secret_key().as_bytes().to_vec()).map_err(|e| {
@@ -224,7 +224,7 @@ pub async fn spawn_services(
                 // Both topics report a `Reject` verdict for messages that fail to decode or fail
                 // validation, so both can score the peers that send them.
                 gossip_sub_scored_topics: vec![
-                    mempool::TOPIC_PREFIX.to_string(),
+                    TRANSACTION_TOPIC.to_string(),
                     consensus_gossip::TOPIC_PREFIX.to_string(),
                 ],
                 // TODO: allow node operator to configure

@@ -28,7 +28,7 @@ use tari_consensus::hotstuff::HotstuffEvent;
 use tari_epoch_manager::{EpochManagerReader, service::EpochManagerHandle};
 use tari_networking::{GossipMessage, NetworkingHandle};
 use tari_ootle_common_types::{Epoch, optional::Optional};
-use tari_ootle_p2p::{NewTransactionMessage, PeerAddress, TariMessage, TariMessagingSpec};
+use tari_ootle_p2p::{GossipValidation, NewTransactionMessage, PeerAddress, TariMessage, TariMessagingSpec};
 use tari_ootle_storage::{StateStore, StateStoreReadTransaction, StorageError, consensus_models::TransactionRecord};
 use tari_ootle_transaction::{Transaction, TransactionId};
 use tari_ootle_transaction_validation::{TransactionValidationError, Validator};
@@ -40,7 +40,7 @@ use super::metrics::PrometheusMempoolMetrics;
 use crate::{
     consensus::ConsensusHandle,
     p2p::services::mempool::{
-        gossip::{GossipValidation, IncomingMessage, MempoolGossip},
+        gossip::{IncomingMessage, MempoolGossip},
         handle::MempoolRequest,
     },
 };

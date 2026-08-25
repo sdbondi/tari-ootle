@@ -63,6 +63,7 @@ pub async fn get_info(Extension(context): Extension<HandlerContext>) -> HandlerR
         sidechain_id: config.sidechain_id,
         current_epoch: context.epoch_manager().get_current_epoch(),
         transaction_retention_epochs: config.transaction_retention_epochs,
+        index_gossiped_transactions: config.index_gossiped_transactions,
         verify_substate_proofs: config.verify_substate_proofs,
         latest_substate_cache_ttl_secs: config.latest_substate_cache_ttl.as_secs(),
         indexes_all_events: config.indexes_all_events,

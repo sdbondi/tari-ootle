@@ -28,7 +28,6 @@ pub use initializer::spawn;
 
 mod error;
 mod gossip;
-pub use gossip::TOPIC_PREFIX;
 #[cfg(feature = "metrics")]
 mod metrics;
 mod service;

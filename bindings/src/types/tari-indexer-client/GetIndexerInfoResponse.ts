@@ -25,12 +25,18 @@ export type GetIndexerInfoResponse = {
    */
   current_epoch: Epoch;
   /**
-   * How many epochs past its terminal epoch this indexer retains a transaction submitted through it
-   * before pruning the record. `None` means transactions are retained indefinitely. Transaction
-   * receipts are retained regardless of this setting. A client paginating transaction history hits
-   * this floor rather than the start of the chain.
+   * How many epochs past its terminal epoch this indexer retains a transaction before pruning the
+   * record. `None` means transactions are retained indefinitely. Transaction receipts are retained
+   * regardless of this setting. A client paginating transaction history hits this floor rather
+   * than the start of the chain.
    */
   transaction_retention_epochs: bigint | null;
+  /**
+   * Whether this indexer stores transactions observed on the network gossip topic in addition to
+   * those submitted directly to it. When false, a transaction submitted elsewhere is unknown to
+   * this indexer until its receipt is synced.
+   */
+  index_gossiped_transactions: boolean;
   /**
    * Whether substates served by this indexer are verified against a shard group committee proof
    * before being returned. When false, values are served as fetched from a single validator and

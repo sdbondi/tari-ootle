@@ -11843,6 +11843,7 @@ name = "tari_ootle_p2p"
 version = "0.39.2"
 dependencies = [
  "anyhow",
+ "libp2p",
  "libp2p-identity 0.2.14",
  "prost 0.14.3",
  "proto_builder",
@@ -11858,6 +11859,7 @@ dependencies = [
  "tari_ootle_common_types",
  "tari_ootle_storage",
  "tari_ootle_transaction",
+ "tari_swarm",
  "tari_template_lib",
  "ts-rs",
 ]
@@ -11994,6 +11996,7 @@ dependencies = [
  "anyhow",
  "indexmap 2.13.0",
  "log",
+ "tari_common_types",
  "tari_engine_types",
  "tari_networking",
  "tari_ootle_common_types",

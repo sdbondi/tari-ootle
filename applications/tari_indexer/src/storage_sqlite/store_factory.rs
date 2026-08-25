@@ -160,6 +160,7 @@ mod tests {
         fees::FeeReceiptBuilder,
         transaction_receipt::{FinalizeOutcome, TransactionReceipt},
     };
+    use tari_indexer_client::types::TransactionSource;
     use tari_ootle_common_types::{Epoch, NodeHeight, ShardGroup};
     use tari_ootle_transaction::{Transaction, TransactionId};
 
@@ -341,13 +342,13 @@ mod tests {
         let transaction = Transaction::builder_localnet(Epoch(1)).build_and_seal(&PrivateKey::from(123u64));
         let tx_id = transaction.calculate_id();
         store
-            .with_write_tx(move |tx| tx.insert_or_ignore_transaction(&transaction))
+            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction))
             .await
             .unwrap();
 
         // No receipt indexed yet — the transaction lists without a summary.
         let entries = store
-            .with_read_tx(move |tx| tx.list_recent_transactions(None, 10))
+            .with_read_tx(move |tx| tx.list_recent_transactions(None, 10, None))
             .await
             .unwrap();
         assert_eq!(entries.len(), 1);
@@ -371,7 +372,7 @@ mod tests {
             .unwrap();
 
         let entries = store
-            .with_read_tx(move |tx| tx.list_recent_transactions(None, 10))
+            .with_read_tx(move |tx| tx.list_recent_transactions(None, 10, None))
             .await
             .unwrap();
         let summary = entries[0].summary.as_ref().unwrap();
@@ -409,7 +410,7 @@ mod tests {
         assert_eq!(num_pruned, 2);
 
         let remaining = store
-            .with_read_tx(move |tx| tx.list_recent_transactions(None, 10))
+            .with_read_tx(move |tx| tx.list_recent_transactions(None, 10, None))
             .await
             .unwrap();
         assert_eq!(remaining.len(), 1);
@@ -445,7 +446,7 @@ mod tests {
         assert_eq!(num_pruned, 1);
 
         let remaining = store
-            .with_read_tx(move |tx| tx.list_recent_transactions(None, 10))
+            .with_read_tx(move |tx| tx.list_recent_transactions(None, 10, None))
             .await
             .unwrap();
         assert_eq!(remaining.len(), 1);
@@ -540,7 +541,7 @@ mod tests {
         assert!(matches!(status, TransactionRejectionStatus::NotStored));
 
         store
-            .with_write_tx(move |tx| tx.insert_or_ignore_transaction(&transaction))
+            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction))
             .await
             .unwrap();
         let status = store
@@ -583,7 +584,7 @@ mod tests {
         let transaction = Transaction::builder_localnet(Epoch(1)).build_and_seal(&PrivateKey::from(11u64));
         let cursor = transaction.calculate_id();
         store
-            .with_write_tx(move |tx| tx.insert_or_ignore_transaction(&transaction))
+            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction))
             .await
             .unwrap();
 
@@ -593,11 +594,214 @@ mod tests {
             .unwrap();
 
         let page = store
-            .with_read_tx(move |tx| tx.list_recent_transactions(Some(cursor), 10))
+            .with_read_tx(move |tx| tx.list_recent_transactions(Some(cursor), 10, None))
             .await
             .unwrap();
         assert!(page.is_empty());
     }
+    /// The same transaction reaching the indexer twice — submitted here and gossiped back by the
+    /// network, or gossiped twice — must not produce a second row.
+    #[tokio::test]
+    async fn a_transaction_stored_twice_produces_one_row() {
+        use tari_common_types::types::PrivateKey;
+        use tari_ootle_transaction::Transaction;
+
+        use crate::store::IndexerStoreWriteTransaction;
+
+        let (_dir, store) = temp_store().await;
+
+        let transaction = Transaction::builder_localnet(Epoch(20)).build_and_seal(&PrivateKey::from(31u64));
+        let tx_id = transaction.calculate_id();
+
+        let gossiped = transaction.clone();
+        store
+            .with_write_tx(move |tx| tx.insert_batch_transactions([&gossiped], TransactionSource::Gossip))
+            .await
+            .unwrap();
+        let gossiped = transaction.clone();
+        let num_inserted = store
+            .with_write_tx(move |tx| tx.insert_batch_transactions([&gossiped], TransactionSource::Gossip))
+            .await
+            .unwrap();
+        assert_eq!(num_inserted, 0);
+        store
+            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction))
+            .await
+            .unwrap();
+
+        let entries = store
+            .with_read_tx(move |tx| tx.list_recent_transactions(None, 10, None))
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].transaction_id, tx_id);
+    }
+
+    /// The network gossips a submission straight back, so which write lands first is a race. A direct
+    /// submission must claim the row either way, or the recorded source answers "who won a race"
+    /// rather than "did this indexer's clients submit this".
+    #[tokio::test]
+    async fn a_direct_submission_claims_a_row_already_stored_from_gossip() {
+        use tari_common_types::types::PrivateKey;
+        use tari_ootle_transaction::Transaction;
+
+        use crate::store::IndexerStoreWriteTransaction;
+
+        let (_dir, store) = temp_store().await;
+
+        let transaction = Transaction::builder_localnet(Epoch(20)).build_and_seal(&PrivateKey::from(37u64));
+        let tx_id = transaction.calculate_id();
+
+        let gossiped = transaction.clone();
+        store
+            .with_write_tx(move |tx| tx.insert_batch_transactions([&gossiped], TransactionSource::Gossip))
+            .await
+            .unwrap();
+        let entry = store
+            .with_read_tx(move |tx| tx.get_transaction(tx_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.source, TransactionSource::Gossip);
+
+        let submitted = transaction.clone();
+        store
+            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&submitted))
+            .await
+            .unwrap();
+        let entry = store
+            .with_read_tx(move |tx| tx.get_transaction(tx_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.source, TransactionSource::Local);
+
+        // The reverse order does not demote it: gossip never overwrites a stored row.
+        let gossiped = transaction.clone();
+        store
+            .with_write_tx(move |tx| tx.insert_batch_transactions([&gossiped], TransactionSource::Gossip))
+            .await
+            .unwrap();
+        let entry = store
+            .with_read_tx(move |tx| tx.get_transaction(tx_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.source, TransactionSource::Local);
+    }
+
+    #[tokio::test]
+    async fn recent_transactions_filters_by_source() {
+        use tari_common_types::types::PrivateKey;
+        use tari_ootle_transaction::Transaction;
+
+        use crate::store::IndexerStoreWriteTransaction;
+
+        let (_dir, store) = temp_store().await;
+
+        let submitted = Transaction::builder_localnet(Epoch(20)).build_and_seal(&PrivateKey::from(41u64));
+        let submitted_id = submitted.calculate_id();
+        let gossiped = Transaction::builder_localnet(Epoch(20)).build_and_seal(&PrivateKey::from(43u64));
+        let gossiped_id = gossiped.calculate_id();
+
+        store
+            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&submitted))
+            .await
+            .unwrap();
+        store
+            .with_write_tx(move |tx| tx.insert_batch_transactions([&gossiped], TransactionSource::Gossip))
+            .await
+            .unwrap();
+
+        let all = store
+            .with_read_tx(move |tx| tx.list_recent_transactions(None, 10, None))
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 2);
+
+        let local = store
+            .with_read_tx(move |tx| tx.list_recent_transactions(None, 10, Some(TransactionSource::Local)))
+            .await
+            .unwrap();
+        assert_eq!(local.len(), 1);
+        assert_eq!(local[0].transaction_id, submitted_id);
+
+        let from_gossip = store
+            .with_read_tx(move |tx| tx.list_recent_transactions(None, 10, Some(TransactionSource::Gossip)))
+            .await
+            .unwrap();
+        assert_eq!(from_gossip.len(), 1);
+        assert_eq!(from_gossip[0].transaction_id, gossiped_id);
+    }
+
+    /// A gossiped transaction's retention key is its own `max_epoch`, so pruning must reach it on the
+    /// same schedule as a submitted one. An unprunable row is how the gossip firehose would grow the
+    /// database without bound.
+    #[tokio::test]
+    async fn pruning_reaches_gossiped_transactions() {
+        use tari_common_types::types::PrivateKey;
+        use tari_ootle_transaction::Transaction;
+
+        use crate::store::IndexerStoreWriteTransaction;
+
+        let (_dir, store) = temp_store().await;
+
+        let aged = Transaction::builder_localnet(Epoch(5)).build_and_seal(&PrivateKey::from(47u64));
+        let current = Transaction::builder_localnet(Epoch(20)).build_and_seal(&PrivateKey::from(53u64));
+        let current_id = current.calculate_id();
+        store
+            .with_write_tx(move |tx| tx.insert_batch_transactions([&aged, &current], TransactionSource::Gossip))
+            .await
+            .unwrap();
+
+        let num_pruned = store
+            .with_write_tx(move |tx| tx.prune_transactions_before_epoch(Epoch(10), 100))
+            .await
+            .unwrap();
+        assert_eq!(num_pruned, 1);
+
+        let remaining = store
+            .with_read_tx(move |tx| tx.list_recent_transactions(None, 10, None))
+            .await
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].transaction_id, current_id);
+    }
+
+    /// The source filter pages backwards by id like the unfiltered listing does. Without a matching
+    /// index it walks the whole gossip stream to collect a page of local rows.
+    #[tokio::test]
+    async fn the_source_filtered_listing_uses_the_source_index() {
+        #[derive(diesel::QueryableByName)]
+        struct QueryPlanRow {
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            detail: String,
+        }
+
+        let (_dir, store) = temp_store().await;
+
+        let plan = store
+            .with_read_tx(|tx| {
+                sql_query(
+                    "explain query plan select body from transactions where source = 'local' and id < 100 order by id \
+                     desc limit 10",
+                )
+                .load::<QueryPlanRow>(tx.connection())
+                .map_err(|e| StorageError::general("explain query plan", e))
+            })
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.detail)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            plan.contains("transactions_source_id_idx"),
+            "source filtered listing does not use the source index: {plan}"
+        );
+    }
+
     async fn insert_transactions(store: &SqliteIndexerStore, max_epochs: &[Epoch]) -> Vec<TransactionId> {
         use tari_common_types::types::PrivateKey;
 
@@ -606,7 +810,7 @@ mod tests {
             let transaction = Transaction::builder_localnet(*max_epoch).build_and_seal(&PrivateKey::from(i as u64));
             ids.push(transaction.calculate_id());
             store
-                .with_write_tx(move |tx| tx.insert_or_ignore_transaction(&transaction))
+                .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction))
                 .await
                 .unwrap();
         }

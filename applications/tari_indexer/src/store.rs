@@ -17,7 +17,13 @@ use tari_engine_types::{
     substate::{Substate, SubstateId},
     transaction_receipt::TransactionReceipt,
 };
-use tari_indexer_client::types::{ListSubstateItem, NonFungibleSubstate, TransactionEntry, UtxoStateUpdateSet};
+use tari_indexer_client::types::{
+    ListSubstateItem,
+    NonFungibleSubstate,
+    TransactionEntry,
+    TransactionSource,
+    UtxoStateUpdateSet,
+};
 use tari_ootle_common_types::{
     Epoch,
     ShardGroup,
@@ -126,14 +132,17 @@ pub trait IndexerStoreReadTransaction {
         limit: u32,
     ) -> Result<Vec<(i64, TransactionId, Event)>, StorageError>;
 
+    /// Lists stored transactions newest first, optionally restricted to a single source.
     fn list_recent_transactions(
         &mut self,
         last_transaction_id: Option<TransactionId>,
         limit: usize,
+        source: Option<TransactionSource>,
     ) -> Result<Vec<TransactionEntry>, StorageError>;
 
-    /// Fetch a single transaction (with its instructions) by ID. Returns `None` if the transaction
-    /// was not submitted through this indexer.
+    /// Fetch a single transaction (with its instructions) by ID. Returns `None` if this indexer has
+    /// no record of it: it was neither submitted here nor observed on the gossip topic, or it has
+    /// aged past the retention window.
     fn get_transaction(&mut self, transaction_id: TransactionId) -> Result<Option<TransactionEntry>, StorageError>;
 
     /// Fetch the locally recorded rejection state of a transaction. Distinguishing "no row" from
@@ -266,12 +275,23 @@ pub trait IndexerStoreWriteTransaction {
         receipts: I,
         event_filters: &[EventFilter],
     ) -> Result<Vec<InsertedEvent>, StorageError>;
-    fn insert_or_ignore_transaction(&mut self, transaction: &Transaction) -> Result<(), StorageError>;
+    /// Records a transaction submitted directly to this indexer. A row already stored from gossip is
+    /// upgraded to [`TransactionSource::Local`]: the network gossips a submission straight back, and
+    /// which of the two writes lands first is a race that must not decide the recorded source. Only
+    /// the source is updated — `retention_epoch` may already carry a synced receipt's commit epoch.
+    fn upsert_submitted_transaction(&mut self, transaction: &Transaction) -> Result<(), StorageError>;
+    /// Records transactions in the batch, ignoring those already stored,
+    /// and returns the number of rows inserted.
+    fn insert_batch_transactions<'a, I: IntoIterator<Item = &'a Transaction>>(
+        &mut self,
+        transactions: I,
+        source: TransactionSource,
+    ) -> Result<usize, StorageError>;
     /// Mark a stored transaction as rejected by mempool validation, recording the reason.
     fn set_transaction_rejected(&mut self, transaction_id: TransactionId, reason: &str) -> Result<(), StorageError>;
     /// Clear a previous rejection, e.g. when the same transaction is later resubmitted successfully.
     fn clear_transaction_rejection(&mut self, transaction_id: TransactionId) -> Result<(), StorageError>;
-    /// Deletes up to `limit` transactions created before `cutoff`, oldest first, returning the number
+    /// Deletes up to `limit` transactions retained past `cutoff`, oldest first, returning the number
     /// deleted. Transaction receipts are keyed independently of this table and are never removed here,
     /// so a pruned transaction still resolves to its receipt-backed outcome.
     fn prune_transactions_before_epoch(&mut self, cutoff: Epoch, limit: usize) -> Result<usize, StorageError>;
@@ -299,8 +319,8 @@ pub trait IndexerStoreWriteTransaction {
 /// The locally recorded rejection state of a transaction.
 #[derive(Debug, Clone)]
 pub enum TransactionRejectionStatus {
-    /// No row is stored for this transaction: it was never submitted through this indexer, or it has
-    /// aged past the configured retention window and been pruned.
+    /// No row is stored for this transaction: this indexer has never seen it, or it has aged past
+    /// the configured retention window and been pruned.
     NotStored,
     /// A row is stored, with no rejection recorded against it.
     NotRejected,

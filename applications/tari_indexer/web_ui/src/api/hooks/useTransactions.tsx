@@ -21,7 +21,7 @@
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import { useQuery } from "@tanstack/react-query";
-import type { IndexerGetTransactionResultResponse } from "@tari-project/ootle-ts-bindings";
+import type { IndexerGetTransactionResultResponse, TransactionSource } from "@tari-project/ootle-ts-bindings";
 import {
   listRecentTransactions,
   getTransaction,
@@ -38,16 +38,18 @@ const isSettledResult = (data: IndexerGetTransactionResultResponse | undefined):
 interface UseListRecentTransactionsProps {
   last_id: string | null;
   limit: number;
+  source?: TransactionSource | null;
 }
 
 export const useListRecentTransactions = ({
                                             last_id,
                                             limit,
+                                            source = null,
                                           }: UseListRecentTransactionsProps) => {
   return useQuery({
-    queryKey: ["recent_transactions"],
+    queryKey: ["recent_transactions", source],
     queryFn: () => {
-      return listRecentTransactions({ last_id, limit });
+      return listRecentTransactions({ last_id, limit, source });
     },
     refetchInterval: 30 * 1000,
   });

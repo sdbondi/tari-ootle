@@ -161,7 +161,7 @@ pub async fn list_recent_transactions(
 
     let transactions = context
         .transaction_manager()
-        .list_recent_transactions(req.last_id, limit as usize)
+        .list_recent_transactions(req.last_id, limit as usize, req.source)
         .await
         .map_err(ErrorResponse::anyhow)?;
 
@@ -172,14 +172,15 @@ pub async fn list_recent_transactions(
     get,
     path = "/transactions/{transaction_id}",
     description = "Get a transaction (including its instructions, fee instructions and signatures) by transaction ID.\n\n\
-        NOTE: This only returns transactions that were submitted through *this* indexer; it reads from the indexer's \
-        local transaction store and is not synced from the network. A transaction submitted via a different indexer or \
-        wallet will return 404 here even after it has been finalized. This differs from transaction receipts (see the \
+        NOTE: This reads the indexer's local transaction store, which holds transactions submitted through this \
+        indexer and — when gossip indexing is enabled, see `index_gossiped_transactions` on /info — those observed on \
+        the network transaction topic. A transaction the indexer never saw, or one that has aged past its retention \
+        window, returns 404 here even after it has been finalized. This differs from transaction receipts (see the \
         /transaction-receipts endpoints), which are synced from the network. For the execution result of any \
         transaction regardless of where it was submitted, use /transactions/{transaction_id}/result.",
     responses(
         (status = 200, description = "Transaction found", body = GetTransactionResponse),
-        (status = 404, description = "Transaction not found (not submitted through this indexer)", body = ErrorResponse),
+        (status = 404, description = "Transaction not known to this indexer", body = ErrorResponse),
         (status = INTERNAL_SERVER_ERROR, description = "Failed to fetch transaction", body = ErrorResponse),
     )
 )]
@@ -193,9 +194,7 @@ pub async fn get_transaction(
         .await
         .map_err(ErrorResponse::anyhow)?
         .ok_or_else(|| {
-            ErrorResponse::not_found(format!(
-                "Transaction {transaction_id} was not submitted through this indexer"
-            ))
+            ErrorResponse::not_found(format!("Transaction {transaction_id} is not known to this indexer"))
         })?;
 
     Ok(Json(GetTransactionResponse { transaction }))
