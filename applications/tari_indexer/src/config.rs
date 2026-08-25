@@ -282,7 +282,7 @@ impl Default for IndexerRateLimitsConfig {
             enabled: false,
             transactions_submit_rate: RefillRate::new(20.0, window).unwrap(),
             transactions_dry_run_submit_rate: RefillRate::new(20.0, window).unwrap(),
-            substates_rate: RefillRate::new(10.0, window).unwrap(),
+            substates_rate: RefillRate::new(20.0, Duration::from_secs(20)).unwrap(),
             utxos_fetch_rate: RefillRate::new(20.0, window).unwrap(),
             non_fungibles_rate: RefillRate::new(10.0, window).unwrap(),
             transactions_rate: RefillRate::new(5.0, window).unwrap(),
