@@ -5,7 +5,7 @@ import { useState } from "react";
 import { swarmRpc } from "../api/rpc";
 import { NodeCard } from "../components/NodeCard";
 import { useSwarm } from "../state/context";
-import { Empty, Field, Live, Panel, Tag } from "../ui";
+import { ActionButton, Empty, Field, Live, Panel, Tag } from "../ui";
 
 const ONE_TARI = 1_000_000;
 
@@ -39,14 +39,13 @@ function Miner() {
               onChange={(e) => setBlocks(Math.max(1, Number(e.target.value)))}
             />
           </Field>
-          <button
+          <ActionButton
             className="btn primary"
-            onClick={() =>
-              void swarm.act("Mine blocks", () => swarmRpc("mine", { num_blocks: blocks }))
-            }
+            busyTitle="Mining — the miner process runs until the blocks are found"
+            onAct={() => swarm.act("Mine blocks", () => swarmRpc("mine", { num_blocks: blocks }))}
           >
             Mine {blocks} {blocks === 1 ? "block" : "blocks"}
-          </button>
+          </ActionButton>
         </div>
 
         <div className="row" style={{ alignItems: "flex-end" }}>
@@ -59,24 +58,22 @@ function Miner() {
               onChange={(e) => setSeconds(Math.max(1, Number(e.target.value)))}
             />
           </Field>
-          <button
-            className="btn"
+          <ActionButton
             disabled={swarm.isMining}
-            onClick={() =>
-              void swarm.act("Start mining", () =>
+            onAct={() =>
+              swarm.act("Start mining", () =>
                 swarmRpc("start_mining", { interval_seconds: seconds }),
               )
             }
           >
             Start timer
-          </button>
-          <button
-            className="btn"
+          </ActionButton>
+          <ActionButton
             disabled={!swarm.isMining}
-            onClick={() => void swarm.act("Stop mining", () => swarmRpc("stop_mining", {}))}
+            onAct={() => swarm.act("Stop mining", () => swarmRpc("stop_mining", {}))}
           >
             Stop timer
-          </button>
+          </ActionButton>
         </div>
       </div>
     </Panel>
@@ -115,11 +112,11 @@ function BurnFunds({ walletInstanceId }: { walletInstanceId: number }) {
             onChange={(e) => setAccountName(e.target.value)}
           />
         </Field>
-        <button
-          className="btn"
+        <ActionButton
           disabled={!accountName}
-          onClick={() =>
-            void swarm.act("Burn funds", async () => {
+          busyTitle="Burning — this mines 10 blocks"
+          onAct={() =>
+            swarm.act("Burn funds", async () => {
               const resp = await swarmRpc("burn_funds", {
                 wallet_instance_id: walletInstanceId,
                 account_name: accountName,
@@ -130,7 +127,7 @@ function BurnFunds({ walletInstanceId }: { walletInstanceId: number }) {
           }
         >
           Burn funds
-        </button>
+        </ActionButton>
       </div>
       <span className="faint">{(amount / ONE_TARI).toLocaleString()} tTARI. This mines 10 blocks.</span>
       {claimUrl && (

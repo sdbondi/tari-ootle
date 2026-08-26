@@ -496,6 +496,34 @@ button {
   cursor: not-allowed;
 }
 
+/* A button waiting on its request is disabled but must stay readable. */
+.btn[aria-busy="true"]:disabled {
+  opacity: 0.8;
+  cursor: progress;
+}
+
+.spinner {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes spinner-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
 .btn.primary {
   background: var(--rail);
   border-color: var(--rail);
@@ -1100,6 +1128,15 @@ td.nowrap,
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  /* Progress feedback is functional, not decoration, so it survives — as a fade rather
+     than a rotation, which is the part that causes trouble. */
+  .spinner {
+    border-top-color: currentColor;
+    animation: spinner-pulse 1.4s ease-in-out infinite !important;
+    animation-duration: 1.4s !important;
+    animation-iteration-count: infinite !important;
   }
 }
 

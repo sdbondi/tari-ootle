@@ -5,37 +5,38 @@ import { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { swarmRpc } from "../api/rpc";
 import { InstanceLogs, useSwarm } from "../state/context";
-import { Tag } from "../ui";
+import { ActionButton, Tag } from "../ui";
 
 export function InstanceControls({ id, isRunning }: { id: number; isRunning: boolean }) {
   const swarm = useSwarm();
   return (
     <div className="controls">
-      <button
+      <ActionButton
         className="btn sm"
         disabled={isRunning}
-        onClick={() => void swarm.act("Start", () => swarmRpc("start_instance", { by_id: id }))}
+        busyTitle="Starting — this compiles the executable first if it is out of date"
+        onAct={() => swarm.act("Start", () => swarmRpc("start_instance", { by_id: id }))}
       >
         Start
-      </button>
-      <button
+      </ActionButton>
+      <ActionButton
         className="btn sm"
         disabled={!isRunning}
-        onClick={() => void swarm.act("Stop", () => swarmRpc("stop_instance", { by_id: id }))}
+        onAct={() => swarm.act("Stop", () => swarmRpc("stop_instance", { by_id: id }))}
       >
         Stop
-      </button>
-      <button
+      </ActionButton>
+      <ActionButton
         className="btn sm danger"
         title="Stops the instance and deletes its data directory"
-        onClick={() => {
+        onAct={async () => {
           if (window.confirm("Delete this instance's data? It will be stopped first.")) {
-            void swarm.act("Delete data", () => swarmRpc("delete_data", { by_id: id }));
+            await swarm.act("Delete data", () => swarmRpc("delete_data", { by_id: id }));
           }
         }}
       >
         Delete data
-      </button>
+      </ActionButton>
     </div>
   );
 }

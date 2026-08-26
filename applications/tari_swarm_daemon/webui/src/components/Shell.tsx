@@ -5,7 +5,7 @@ import { ReactNode, useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { swarmRpc } from "../api/rpc";
 import { useSwarm } from "../state/context";
-import { Live, Segmented, Tag } from "../ui";
+import { ActionButton, Live, Segmented, Tag } from "../ui";
 import { readChannels } from "../consensus";
 
 const RATES = [
@@ -125,12 +125,12 @@ export default function Shell() {
           </Tag>
 
           <div className="grow" />
-          <button
+          <ActionButton
             className="btn sm"
-            onClick={() => void swarm.act("Mine a block", () => swarmRpc("mine", { num_blocks: 1 }))}
+            onAct={() => swarm.act("Mine a block", () => swarmRpc("mine", { num_blocks: 1 }))}
           >
             Mine 1 block
-          </button>
+          </ActionButton>
           <button className="btn sm" onClick={swarm.refresh}>
             Refresh
           </button>

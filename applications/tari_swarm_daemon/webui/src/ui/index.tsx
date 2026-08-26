@@ -131,3 +131,60 @@ export function Field({ label, children }: { label: string; children: ReactNode 
     </label>
   );
 }
+
+/**
+ * A button for an action that blocks: starting an instance can take as long as a compile,
+ * and mining blocks waits on a miner process. Shows progress for as long as the request is
+ * in flight and refuses repeat clicks until it settles.
+ */
+export function ActionButton({
+  className = "btn",
+  disabled,
+  title,
+  busyTitle,
+  onAct,
+  children,
+}: {
+  className?: string;
+  disabled?: boolean;
+  title?: string;
+  busyTitle?: string;
+  onAct: () => Promise<unknown>;
+  children: ReactNode;
+}) {
+  const [busy, setBusy] = useState(false);
+  const mounted = useRef(true);
+
+  useEffect(
+    () => () => {
+      mounted.current = false;
+    },
+    [],
+  );
+
+  const run = async () => {
+    setBusy(true);
+    try {
+      await onAct();
+    } finally {
+      // The action may have removed this instance, taking the button with it.
+      if (mounted.current) {
+        setBusy(false);
+      }
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      className={className}
+      disabled={disabled || busy}
+      aria-busy={busy}
+      title={busy ? (busyTitle ?? title) : title}
+      onClick={() => void run()}
+    >
+      {busy && <i className="spinner" aria-hidden="true" />}
+      {children}
+    </button>
+  );
+}

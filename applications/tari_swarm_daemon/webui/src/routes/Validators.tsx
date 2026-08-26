@@ -8,7 +8,7 @@ import { readChannels } from "../consensus";
 import { distinguish } from "../names";
 import { InstanceControls, LogLinks, Running } from "../components/NodeCard";
 import { useSwarm } from "../state/context";
-import { Copyable, Empty, Live, Panel, Tag } from "../ui";
+import { ActionButton, Copyable, Empty, Live, Panel, Tag } from "../ui";
 
 function PoolTable({ validatorId }: { validatorId: number }) {
   const swarm = useSwarm();
@@ -70,16 +70,16 @@ export default function Validators() {
             <h1>Validators</h1>
             <p>No validators yet. Add one to start a committee.</p>
           </div>
-          <button
+          <ActionButton
             className="btn primary"
-            onClick={() =>
-              void swarm.act("Add validator", () =>
+            onAct={() =>
+              swarm.act("Add validator", () =>
                 swarmRpc("add_validator_node", { name: null, register: true, mine: false }),
               )
             }
           >
             Add validator
-          </button>
+          </ActionButton>
         </div>
       </div>
     );
@@ -100,16 +100,16 @@ export default function Validators() {
           <h1>Validators</h1>
           <p>Pick a validator to see its consensus state, identity and pool.</p>
         </div>
-        <button
+        <ActionButton
           className="btn primary"
-          onClick={() =>
-            void swarm.act("Add validator", () =>
+          onAct={() =>
+            swarm.act("Add validator", () =>
               swarmRpc("add_validator_node", { name: null, register: true, mine: false }),
             )
           }
         >
           Add validator
-        </button>
+        </ActionButton>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(200px, 260px) 1fr", gap: 14, alignItems: "start" }}>
@@ -140,7 +140,7 @@ export default function Validators() {
               actions={
                 <>
                   <Running isRunning={channel.vn.is_running} />
-                  <button
+                  <ActionButton
                     className="btn sm"
                     title={
                       !channel.vn.is_running
@@ -150,8 +150,8 @@ export default function Validators() {
                           : "Submit a registration for this validator. Mine a block to confirm it."
                     }
                     disabled={!channel.vn.is_running || isRegistered}
-                    onClick={() =>
-                      void swarm.act("Register validator", () =>
+                    onAct={() =>
+                      swarm.act("Register validator", () =>
                         swarmRpc("register_validator_node", {
                           instance_id: channel.vn.instance_id,
                           mine: false,
@@ -160,8 +160,8 @@ export default function Validators() {
                     }
                   >
                     Register
-                  </button>
-                  <button
+                  </ActionButton>
+                  <ActionButton
                     className="btn sm"
                     title={
                       !channel.vn.is_running
@@ -171,8 +171,8 @@ export default function Validators() {
                           : "This validator is not in the active set"
                     }
                     disabled={!channel.vn.is_running || !isRegistered}
-                    onClick={() =>
-                      void swarm.act("Submit exit", () =>
+                    onAct={() =>
+                      swarm.act("Submit exit", () =>
                         swarmRpc("exit_validator_node", {
                           instance_id: channel.vn.instance_id,
                           mine: false,
@@ -181,7 +181,7 @@ export default function Validators() {
                     }
                   >
                     Submit exit
-                  </button>
+                  </ActionButton>
                 </>
               }
             >

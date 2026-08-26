@@ -6,7 +6,7 @@ import ConsensusSpine from "../components/ConsensusSpine";
 import { readChannels } from "../consensus";
 import PoolMatrix from "../components/PoolMatrix";
 import { useSwarm } from "../state/context";
-import { Panel } from "../ui";
+import { ActionButton, Panel } from "../ui";
 
 export default function Overview() {
   const swarm = useSwarm();
@@ -30,36 +30,35 @@ export default function Overview() {
           <p>{headline}</p>
         </div>
         <div className="row">
-          <button
-            className="btn"
-            onClick={() =>
-              void swarm.act("Start all validators", () =>
+          <ActionButton
+            busyTitle="Starting — each validator compiles first if its executable is out of date"
+            onAct={() =>
+              swarm.act("Start all validators", () =>
                 swarmRpc("start_all", { instance_type: "TariValidatorNode" }),
               )
             }
           >
             Start all validators
-          </button>
-          <button
-            className="btn"
-            onClick={() =>
-              void swarm.act("Stop all validators", () =>
+          </ActionButton>
+          <ActionButton
+            onAct={() =>
+              swarm.act("Stop all validators", () =>
                 swarmRpc("stop_all", { instance_type: "TariValidatorNode" }),
               )
             }
           >
             Stop all validators
-          </button>
-          <button
+          </ActionButton>
+          <ActionButton
             className="btn primary"
-            onClick={() =>
-              void swarm.act("Add validator", () =>
+            onAct={() =>
+              swarm.act("Add validator", () =>
                 swarmRpc("add_validator_node", { name: null, register: true, mine: false }),
               )
             }
           >
             Add validator
-          </button>
+          </ActionButton>
         </div>
       </div>
 
