@@ -495,8 +495,8 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
             target: LOG_TARGET,
             "🌍 peer initiated sync with this node for {} shard(s) ({} to {}) to {} (values: {:?})",
             cursors.len(),
-            cursors.first().expect("validate_all rejects an empty list").shard,
-            cursors.last().expect("validate_all rejects an empty list").shard,
+            cursors.first().map(|c| c.shard).display(),
+            cursors.last().map(|c| c.shard).display(),
             end_epoch.display(),
             value_filter_flags
         );

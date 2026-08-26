@@ -109,7 +109,11 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
         // consumer can finalise a shard the moment its completion marker arrives.
         let cursors = std::mem::take(&mut self.cursors);
         let Some(last_index) = cursors.len().checked_sub(1) else {
-            return Ok(());
+            // Every stream must carry a final marker, so an empty request cannot be answered with an
+            // empty stream. `ShardCursor::validate_all` rejects one before it reaches here.
+            self.send(Err(RpcStatus::bad_request("No shard cursors were provided")))
+                .await?;
+            return Err(());
         };
         for (i, cursor) in cursors.into_iter().enumerate() {
             self.run_for_shard(&cursor, i == last_index).await?;

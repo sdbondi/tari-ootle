@@ -533,7 +533,7 @@ impl NetworkWideStateSync {
         shard_group: ShardGroup,
         session: &mut ValidatorRpcSession,
     ) -> Result<(), NetworkStateSyncError> {
-        let requested = cursors.iter().map(|c| Shard::from(c.shard)).collect::<HashSet<_>>();
+        let mut order = StreamOrder::new(&cursors);
 
         info!(
             target: LOG_TARGET,
@@ -569,11 +569,9 @@ impl NetworkWideStateSync {
                 Some(rpc::sync_state_response::Response::Batch(batch)) => batch,
                 Some(rpc::sync_state_response::Response::Complete(complete)) => {
                     let shard = Shard::from(complete.shard);
-                    if !requested.contains(&shard) {
-                        return Err(NetworkStateSyncError::InvalidStateUpdate {
-                            details: format!("Received completion marker for unrequested shard {shard}"),
-                        });
-                    }
+                    order
+                        .accept_marker(shard)
+                        .map_err(|details| NetworkStateSyncError::InvalidStateUpdate { details })?;
                     // Terminal watermark: advance recorded progress to the version the producer is
                     // synced to. This covers trailing versions that streamed no updates because their
                     // substates are all filtered out for our subscription - without it we could never
@@ -617,18 +615,16 @@ impl NetworkWideStateSync {
             };
 
             let shard = Shard::from(batch.shard);
-            if !requested.contains(&shard) {
-                return Err(NetworkStateSyncError::InvalidStateUpdate {
-                    details: format!("Received batch for unrequested shard {shard}"),
-                });
-            }
+            let state_version = StateVersion::new(batch.state_version);
+            order
+                .accept_batch(shard, state_version, batch.has_more)
+                .map_err(|details| NetworkStateSyncError::InvalidStateUpdate { details })?;
             let msg_epoch = batch
                 .epoch
                 .map(Epoch::from)
                 .ok_or_else(|| NetworkStateSyncError::InvalidStateUpdate {
                     details: "Received state update without epoch".to_string(),
                 })?;
-            let state_version = StateVersion::new(batch.state_version);
 
             for update in batch.updates {
                 let update =
@@ -754,6 +750,86 @@ impl NetworkWideStateSync {
             });
         }
 
+        Ok(())
+    }
+}
+
+/// Enforces the ordering a `sync_state` stream promises across the shards it carries: each shard is
+/// streamed contiguously, its versions strictly advance, and nothing for it follows its completion
+/// marker.
+///
+/// The consumer relies on all three. Its buffers hold one `(shard, state version)` at a time, so an
+/// interleaved shard would mix two shards' updates into one commit; and because the running economic
+/// totals are read-modify-write, re-applying a version already committed would double-count it.
+struct StreamOrder {
+    /// Highest version committed per requested shard, seeded from the cursor so a responder cannot
+    /// replay versions the caller already holds.
+    committed_versions: HashMap<Shard, StateVersion>,
+    completed: HashSet<Shard>,
+    /// Set while a version is split across chunks, until the chunk that flushes it.
+    pending_chunk: Option<(Shard, StateVersion)>,
+}
+
+impl StreamOrder {
+    fn new(cursors: &[rpc::ShardCursor]) -> Self {
+        Self {
+            committed_versions: cursors
+                .iter()
+                .map(|c| {
+                    (
+                        Shard::from(c.shard),
+                        StateVersion::new(c.start_state_version.saturating_sub(1)),
+                    )
+                })
+                .collect(),
+            completed: HashSet::new(),
+            pending_chunk: None,
+        }
+    }
+
+    fn accept_batch(&mut self, shard: Shard, state_version: StateVersion, has_more: bool) -> Result<(), String> {
+        let Some(committed_version) = self.committed_versions.get(&shard).copied() else {
+            return Err(format!("Received batch for unrequested shard {shard}"));
+        };
+        if self.completed.contains(&shard) {
+            return Err(format!("Received batch for shard {shard} after its completion marker"));
+        }
+        if state_version <= committed_version {
+            return Err(format!(
+                "Received v{state_version} for shard {shard}, which is not ahead of the committed v{committed_version}"
+            ));
+        }
+        if let Some(pending) = self.pending_chunk &&
+            pending != (shard, state_version)
+        {
+            return Err(format!(
+                "Received v{state_version} of shard {shard} while v{} of shard {} is still incomplete",
+                pending.1, pending.0
+            ));
+        }
+
+        if has_more {
+            self.pending_chunk = Some((shard, state_version));
+        } else {
+            self.pending_chunk = None;
+            self.committed_versions.insert(shard, state_version);
+        }
+        Ok(())
+    }
+
+    fn accept_marker(&mut self, shard: Shard) -> Result<(), String> {
+        if !self.committed_versions.contains_key(&shard) {
+            return Err(format!("Received completion marker for unrequested shard {shard}"));
+        }
+        if let Some((pending_shard, pending_version)) = self.pending_chunk {
+            return Err(format!(
+                "Received completion marker for shard {shard} while v{pending_version} of shard {pending_shard} is \
+                 still incomplete"
+            ));
+        }
+        if !self.completed.insert(shard) {
+            return Err(format!("Received a second completion marker for shard {shard}"));
+        }
         Ok(())
     }
 }
@@ -924,4 +1000,107 @@ fn extend_bufs_from_substate_update(
 
     update_buf.push((msg_epoch, update));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod stream_order {
+        use super::*;
+
+        const S1: Shard = Shard::from_u32(1);
+        const S2: Shard = Shard::from_u32(2);
+
+        fn order(cursors: &[(u32, u64)]) -> StreamOrder {
+            let cursors = cursors
+                .iter()
+                .map(|&(shard, start_state_version)| rpc::ShardCursor {
+                    shard,
+                    start_state_version,
+                })
+                .collect::<Vec<_>>();
+            StreamOrder::new(&cursors)
+        }
+
+        fn v(n: u64) -> StateVersion {
+            StateVersion::new(n)
+        }
+
+        #[test]
+        fn it_accepts_shards_streamed_one_after_another() {
+            let mut o = order(&[(1, 1), (2, 1)]);
+            o.accept_batch(S1, v(1), false).unwrap();
+            o.accept_batch(S1, v(4), false).unwrap();
+            o.accept_marker(S1).unwrap();
+            o.accept_batch(S2, v(7), false).unwrap();
+            o.accept_marker(S2).unwrap();
+        }
+
+        #[test]
+        fn it_accepts_a_version_split_across_chunks() {
+            let mut o = order(&[(1, 1)]);
+            o.accept_batch(S1, v(3), true).unwrap();
+            o.accept_batch(S1, v(3), true).unwrap();
+            o.accept_batch(S1, v(3), false).unwrap();
+            o.accept_marker(S1).unwrap();
+        }
+
+        #[test]
+        fn it_rejects_a_version_below_the_cursor() {
+            // A cursor of 5 asks to resume at v5, so v5 is wanted and everything under it is already held.
+            assert!(order(&[(1, 5)]).accept_batch(S1, v(3), false).is_err());
+            assert!(order(&[(1, 5)]).accept_batch(S1, v(4), false).is_err());
+            order(&[(1, 5)]).accept_batch(S1, v(5), false).unwrap();
+        }
+
+        #[test]
+        fn it_rejects_a_replayed_version() {
+            let mut o = order(&[(1, 1)]);
+            o.accept_batch(S1, v(9), false).unwrap();
+            assert!(o.accept_batch(S1, v(9), false).is_err());
+        }
+
+        #[test]
+        fn it_rejects_a_regressing_version() {
+            let mut o = order(&[(1, 1)]);
+            o.accept_batch(S1, v(9), false).unwrap();
+            assert!(o.accept_batch(S1, v(8), false).is_err());
+        }
+
+        #[test]
+        fn it_rejects_a_batch_after_the_shards_marker() {
+            let mut o = order(&[(1, 1)]);
+            o.accept_batch(S1, v(2), false).unwrap();
+            o.accept_marker(S1).unwrap();
+            assert!(o.accept_batch(S1, v(3), false).is_err());
+        }
+
+        #[test]
+        fn it_rejects_an_interleaved_shard_mid_version() {
+            let mut o = order(&[(1, 1), (2, 1)]);
+            o.accept_batch(S1, v(3), true).unwrap();
+            assert!(o.accept_batch(S2, v(1), false).is_err());
+        }
+
+        #[test]
+        fn it_rejects_a_marker_while_a_version_is_incomplete() {
+            let mut o = order(&[(1, 1)]);
+            o.accept_batch(S1, v(3), true).unwrap();
+            assert!(o.accept_marker(S1).is_err());
+        }
+
+        #[test]
+        fn it_rejects_a_second_marker_for_a_shard() {
+            let mut o = order(&[(1, 1)]);
+            o.accept_marker(S1).unwrap();
+            assert!(o.accept_marker(S1).is_err());
+        }
+
+        #[test]
+        fn it_rejects_unrequested_shards() {
+            assert!(order(&[(1, 1)]).accept_batch(S2, v(1), false).is_err());
+            assert!(order(&[(1, 1)]).accept_marker(S2).is_err());
+        }
+    }
 }
