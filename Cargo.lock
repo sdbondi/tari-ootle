@@ -12521,6 +12521,7 @@ dependencies = [
  "serde_json5",
  "slug",
  "tari_common_types",
+ "tari_consensus",
  "tari_crypto",
  "tari_ootle_app_utilities",
  "tari_ootle_common_types",

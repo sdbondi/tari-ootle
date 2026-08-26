@@ -12,6 +12,7 @@ use anyhow::{Context, anyhow};
 use futures::future::Either;
 use log::{debug, info};
 use minotari_wallet_grpc_client::grpc;
+use tari_consensus::consensus_constants::ConsensusConstants;
 use tari_ootle_app_utilities::configuration::convert_network_to_l1_network;
 use tari_ootle_wallet_sdk::Network;
 use tari_shutdown::ShutdownSignal;
@@ -31,6 +32,12 @@ use crate::{
         instances::InstanceManager,
     },
 };
+
+/// How long to wait for every validator to report itself active after mining to a candidate activation
+/// height. Must comfortably exceed the validators' base layer scanning interval.
+const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(90);
+/// How many epoch boundaries past the registration to try before giving up on activation.
+const MAX_ACTIVATION_EPOCHS: usize = 3;
 
 pub struct ProcessManager {
     executable_manager: ExecutableManager,
@@ -202,8 +209,7 @@ impl ProcessManager {
             self.wait_for_wallet_to_broadcast_transactions(transaction_ids).await?;
 
             // "Mine in" the validators and templates
-            // 10 for new epoch + 10 for BL scan lag
-            self.mine(20).await?;
+            self.mine_in_validator_registrations().await?;
         }
 
         Ok(())
@@ -714,6 +720,102 @@ impl ProcessManager {
         vn.prepare_exit_transaction().await?;
 
         Ok(())
+    }
+
+    /// Mines the submitted registrations in and stops as soon as the validators are active, without
+    /// advancing the base layer any further.
+    ///
+    /// A validator's epoch oracle reads the base layer at `tip - base_layer_confirmations`, so the tip must
+    /// reach `activation_epoch_start + base_layer_confirmations` before the validators see themselves in the
+    /// active set. Overshooting that height is what must be avoided: the oracle then reports an epoch whose
+    /// predecessor no committee ever ran, and every validator state-syncs indefinitely for a checkpoint that
+    /// can never be produced.
+    async fn mine_in_validator_registrations(&mut self) -> anyhow::Result<()> {
+        // The number of base layer blocks an epoch spans.
+        let epoch_length = NetworkConsensus::from(convert_network_to_l1_network(&self.network))
+            .create_consensus_constants()
+            .pop()
+            .ok_or_else(|| anyhow!("No layer one consensus constants for network {}", self.network))?
+            .epoch_length();
+        // Must match the validator's oracle lag (`height_lag`), which is set from this constant.
+        let confirmations = ConsensusConstants::from(self.network).base_layer_confirmations;
+
+        let tip = self.get_base_layer_tip_height().await?;
+        // The registrations are broadcast and confirm in the next block mined.
+        let registration_epoch = (tip + 1) / epoch_length;
+        // Registrations take effect at an epoch boundary. Which boundary is the base layer's rule, not ours,
+        // so start at the next one and advance an epoch at a time until the validators report themselves
+        // active. Each candidate lands the oracle exactly on a boundary, so no candidate can overshoot.
+        let mut target = (registration_epoch + 1) * epoch_length + confirmations;
+
+        for _ in 0..MAX_ACTIVATION_EPOCHS {
+            let tip = self.get_base_layer_tip_height().await?;
+            if let Some(blocks) = target.checked_sub(tip).filter(|b| *b > 0) {
+                info!("⛏️ Mining {blocks} block(s) to height {target} to activate the validator nodes");
+                self.mine(blocks as usize).await?;
+            }
+
+            if self.wait_for_validators_to_activate(ACTIVATION_TIMEOUT).await? {
+                info!("🟢 All validator nodes are active at base layer height {target}");
+                return Ok(());
+            }
+
+            log::warn!(
+                "Validator nodes are not active at height {target}. Advancing one epoch ({epoch_length} blocks)"
+            );
+            target += epoch_length;
+        }
+
+        Err(anyhow!(
+            "Validator nodes did not become active within {MAX_ACTIVATION_EPOCHS} epochs of their registration"
+        ))
+    }
+
+    /// Polls the running validators until every one of them reports itself in the active validator set, i.e.
+    /// its epoch oracle has scanned the epoch the registrations took effect in. Returns false on timeout.
+    async fn wait_for_validators_to_activate(&self, timeout: Duration) -> anyhow::Result<bool> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let mut num_inactive = 0usize;
+            for vn in self.instance_manager.validator_nodes() {
+                if !vn.instance().is_running() {
+                    continue;
+                }
+                let mut client = vn.connect_client()?;
+                match client.get_epoch_manager_stats().await {
+                    Ok(stats) if stats.is_valid => {},
+                    Ok(_) => num_inactive += 1,
+                    Err(err) => {
+                        debug!("Could not read epoch manager stats from {vn}: {err}");
+                        num_inactive += 1;
+                    },
+                }
+            }
+
+            if num_inactive == 0 {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+
+            info!("⏳ Waiting for {num_inactive} validator node(s) to become active");
+            sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    async fn get_base_layer_tip_height(&self) -> anyhow::Result<u64> {
+        // WARN: Assumes one node
+        let node = self
+            .instance_manager
+            .minotari_nodes()
+            .next()
+            .ok_or_else(|| anyhow!("No MinoTariNode instances found. Please start a base node before mining"))?;
+        let metadata = node
+            .get_chain_metadata()
+            .await?
+            .ok_or_else(|| anyhow!("Base node returned no chain metadata"))?;
+        Ok(metadata.best_block_height)
     }
 
     async fn mine(&mut self, blocks: usize) -> anyhow::Result<()> {
