@@ -88,6 +88,10 @@ export default function Validators() {
   const detail = channel ? swarm.details[channel.vn.instance_id] : undefined;
   const epoch = detail?.epoch;
   const committee = epoch?.committee_info;
+  // The epoch manager's own answer to "am I in the active set this epoch", which is what
+  // registration and exit gate on. Registration submitted but not yet activated reads as
+  // false, so Register stays available until the validator is actually in.
+  const isRegistered = epoch?.is_valid === true;
 
   return (
     <div className="stack">
@@ -138,7 +142,14 @@ export default function Validators() {
                   <Running isRunning={channel.vn.is_running} />
                   <button
                     className="btn sm"
-                    title="Submit a registration for this validator. Mine a block to confirm it."
+                    title={
+                      !channel.vn.is_running
+                        ? "Start the validator to submit a registration"
+                        : isRegistered
+                          ? "This validator is already in the active set"
+                          : "Submit a registration for this validator. Mine a block to confirm it."
+                    }
+                    disabled={!channel.vn.is_running || isRegistered}
                     onClick={() =>
                       void swarm.act("Register validator", () =>
                         swarmRpc("register_validator_node", {
@@ -152,8 +163,14 @@ export default function Validators() {
                   </button>
                   <button
                     className="btn sm"
-                    title="Submit an exit for this validator. Mine a block to confirm it."
-                    disabled={channel.state !== "Running"}
+                    title={
+                      !channel.vn.is_running
+                        ? "Start the validator to submit an exit"
+                        : isRegistered
+                          ? "Submit an exit for this validator. Mine a block to confirm it."
+                          : "This validator is not in the active set"
+                    }
+                    disabled={!channel.vn.is_running || !isRegistered}
                     onClick={() =>
                       void swarm.act("Submit exit", () =>
                         swarmRpc("exit_validator_node", {
