@@ -1,99 +1,1171 @@
-@font-face {
-  src: url("./fonts/AvenirLTStd-Book.otf");
-  font-family: "AvenirRegular";
+/*  Copyright 2024 The Tari Project
+    SPDX-License-Identifier: BSD-3-Clause */
+
+/* ============================================================== tokens == */
+
+:root {
+  --ground: #f6f6f8;
+  --panel: #ffffff;
+  --well: #edeef1;
+  --hover: rgba(16, 16, 20, 0.05);
+
+  --line: #dcdde3;
+  --line-strong: #b8bac4;
+
+  --ink: #101014;
+  --ink-2: #5b5d6e;
+  --ink-3: #8f91a1;
+
+  --rail: #9f42ff;
+  --rail-soft: rgba(159, 66, 255, 0.14);
+  --rail-text: #750ee2;
+
+  --up: #168552;
+  --up-soft: rgba(22, 133, 82, 0.12);
+  --lag: #c9591f;
+  --lag-soft: rgba(232, 143, 79, 0.18);
+  --down: #cf3527;
+  --down-soft: rgba(207, 53, 39, 0.12);
+  --off: #717286;
+  --off-soft: rgba(113, 114, 134, 0.13);
+
+  /* No licensed face is vendored, so the pairing is built from stacks that are always
+     present: the mono is the interface voice (headings, labels, controls, every value) and
+     the humanist sans carries prose only. */
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", "Cascadia Mono",
+    "Roboto Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  --r: 8px;
+  --r-lg: 12px;
+  --pill: 999px;
+  --lift: 0 1px 2px rgba(16, 16, 20, 0.06), 0 6px 20px rgba(16, 16, 20, 0.06);
+
+  --rail-w: 216px;
+  --bar-h: 52px;
+
+  color-scheme: light;
 }
 
-@font-face {
-  src: url("./fonts/AvenirLTStd-Medium.otf");
-  font-family: "AvenirMedium";
+:root[data-theme="dark"] {
+  --ground: #101014;
+  --panel: #17171c;
+  --well: #0b0b0e;
+  --hover: rgba(255, 255, 255, 0.06);
+
+  --line: #26262e;
+  --line-strong: #43434f;
+
+  --ink: #f2f2f5;
+  --ink-2: #a9abb8;
+  --ink-3: #74768a;
+
+  --rail: #b678ff;
+  --rail-soft: rgba(159, 66, 255, 0.2);
+  --rail-text: #d4acff;
+
+  --up: #5ecb92;
+  --up-soft: rgba(71, 192, 131, 0.16);
+  --lag: #eca86a;
+  --lag-soft: rgba(232, 143, 79, 0.16);
+  --down: #f87c71;
+  --down-soft: rgba(239, 82, 68, 0.16);
+  --off: #8f91a1;
+  --off-soft: rgba(255, 255, 255, 0.07);
+
+  --lift: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 20px rgba(0, 0, 0, 0.35);
+
+  color-scheme: dark;
 }
 
-@font-face {
-  src: url("./fonts/AvenirLTStd-Heavy.otf");
-  font-family: "AvenirHeavy";
+/* ================================================================ base == */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
 }
 
 body {
   margin: 0;
-  font-family: "AvenirMedium", sans-serif;
+  font-family: var(--sans);
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--ground);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: #f5f5f7;
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
+/* Headings are set in the mono voice: cut back in size, opened up in tracking, so the
+   page reads as one instrument rather than a document with a UI bolted on. */
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-family: var(--mono);
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
 }
 
-.add-confirm-form {
+h1 {
+  font-size: 18px;
+}
+
+h2 {
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
+h3 {
+  font-size: 12px;
+}
+
+a {
+  color: var(--rail-text);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+:focus-visible {
+  outline: 2px solid var(--rail);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: var(--pill);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Every live number is monospaced and tabular so digits do not reflow as they tick. */
+.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* An eyebrow marks a data group; it is never decorative. */
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.muted {
+  color: var(--ink-2);
+}
+
+.faint {
+  color: var(--ink-3);
+}
+
+.stack {
   display: flex;
   flex-direction: column;
-  align-content: center;
-  gap: 8px;
+  gap: 14px;
 }
 
-.flex-container {
+.row {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: stretch;
-  width: 100%;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
-.flex-container-vertical {
+.spread {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* =============================================================== shell == */
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail-w) 1fr;
+  height: 100%;
+}
+
+.sidebar {
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
 }
 
-.heading-menu {
+.brand {
   display: flex;
-  justify-content: flex-start;
+  align-items: baseline;
+  gap: 8px;
+  height: var(--bar-h);
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+
+.brand b {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: -0.02em;
+}
+
+.brand span {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--rail-text);
+}
+
+.nav {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.nav a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: var(--r);
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  border-left: 2px solid transparent;
+}
+
+.nav a:hover {
+  background: var(--hover);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.nav a.on {
+  background: var(--rail-soft);
+  border-left-color: var(--rail);
+  color: var(--rail-text);
+  font-weight: 700;
+}
+
+.nav .count {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.nav a.on .count {
+  color: var(--rail-text);
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sidebar-foot label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sidebar-foot .seg {
+  width: 100%;
+}
+
+.sidebar-foot .seg button {
+  flex: 1;
+}
+
+.viewport {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.topbar {
+  height: var(--bar-h);
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 18px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+.page {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px;
+}
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.page-head p {
+  margin: 4px 0 0;
+  max-width: 68ch;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+/* A readout is a labelled live value in the top bar. */
+.readout {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.15;
+}
+
+.readout .k {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.readout .v {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+}
+
+.divider-v {
+  width: 1px;
+  align-self: stretch;
+  margin: 12px 0;
+  background: var(--line);
+  flex: 0 0 auto;
+}
+
+/* ============================================================== panels == */
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--lift);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.panel-body {
+  padding: 14px;
+}
+
+.panel-body.flush {
+  padding: 0;
+}
+
+.grid {
+  display: grid;
+  gap: 14px;
+  /* Cards size to their own content rather than stretching to the tallest in the row. */
+  align-items: start;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+
+.prose {
+  margin: 0;
+  max-width: 68ch;
+  color: var(--ink-2);
+}
+
+/* Key/value pairs: labels in a fixed gutter so values align down the card. */
+.kv {
+  display: grid;
+  grid-template-columns: 104px 1fr;
+  gap: 5px 12px;
+  align-items: baseline;
+}
+
+.kv dt {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding-top: 2px;
+}
+
+.kv dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ============================================================ controls == */
+
+button {
+  font: inherit;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: var(--r);
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--ink-3);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn.primary {
+  background: var(--rail);
+  border-color: var(--rail);
+  color: #fff;
+  font-weight: 700;
+}
+
+.btn.primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+  background: var(--rail);
+}
+
+.btn.danger {
+  color: var(--down);
+  border-color: var(--down-soft);
+}
+
+.btn.danger:hover:not(:disabled) {
+  background: var(--down-soft);
+  border-color: var(--down);
+}
+
+.btn.ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-2);
+}
+
+.btn.ghost:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: transparent;
+  color: var(--ink);
+}
+
+.btn.sm {
+  padding: 3px 8px;
+  font-size: 11.5px;
+}
+
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+
+.seg button {
+  padding: 4px 10px;
+  border: 0;
+  background: var(--panel);
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.seg button + button {
+  border-left: 1px solid var(--line);
+}
+
+.seg button:hover {
+  background: var(--hover);
+}
+
+.seg button.on {
+  background: var(--rail-soft);
+  color: var(--rail-text);
+  font-weight: 700;
+}
+
+input,
+select {
+  font: inherit;
+  font-size: 12.5px;
+  padding: 5px 9px;
+  border-radius: var(--r);
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--ink);
+  min-width: 0;
+}
+
+input::placeholder {
+  color: var(--ink-3);
+}
+
+input[type="number"] {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  width: 92px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.field > span {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+/* ================================================================ tags == */
+
+.tag {
+  display: inline-flex;
   align-items: center;
   gap: 5px;
+  padding: 1px 8px;
+  border-radius: var(--pill);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  background: var(--off-soft);
+  color: var(--off);
 }
 
-.dialog-content {
-  width: 600px;
+.tag.up {
+  background: var(--up-soft);
+  color: var(--up);
 }
 
-@media screen and (max-width: 767px) {
-  .flex-container > * {
-    width: 100%;
+.tag.lag {
+  background: var(--lag-soft);
+  color: var(--lag);
+}
+
+.tag.down {
+  background: var(--down-soft);
+  color: var(--down);
+}
+
+.tag.rail {
+  background: var(--rail-soft);
+  color: var(--rail-text);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+
+.dot.pulse {
+  animation: pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.3;
   }
 }
 
-@media screen and (min-width: 768px) {
-  .add-confirm-form {
+/* =============================================================== table == */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th {
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+}
+
+td {
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+tbody tr:hover {
+  background: var(--hover);
+}
+
+td.num,
+th.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  text-align: right;
+}
+
+.scroll-x {
+  overflow-x: auto;
+}
+
+/* Table rows stay one line tall: a wrapping name or control set makes a long list
+   impossible to scan. */
+td.nowrap,
+.controls {
+  white-space: nowrap;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+/* ========================================================= sync spine == */
+/* The signature. Validators are channels on a shared rail placed at the quorum
+   height; agreement reads as a straight line and a lagging node visibly falls
+   off it, with the gap sized to how far behind it is. */
+
+.spine {
+  position: relative;
+  padding: 6px 14px 14px;
+}
+
+.spine-row {
+  display: grid;
+  grid-template-columns: 108px 84px 1fr 150px;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 0;
+  border-radius: var(--r);
+}
+
+.spine-row:hover {
+  background: var(--hover);
+}
+
+.spine-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.spine-name a {
+  color: inherit;
+}
+
+/* The track holds one channel line; the rail is drawn over all of them. */
+.spine-track {
+  position: relative;
+  height: 18px;
+}
+
+.spine-line {
+  position: absolute;
+  top: 50%;
+  height: 2px;
+  border-radius: var(--pill);
+  transform: translateY(-50%);
+  background: var(--line-strong);
+}
+
+.spine-line.up {
+  background: var(--up);
+}
+
+.spine-line.lag {
+  background: var(--lag);
+}
+
+.spine-line.down {
+  background: var(--down);
+}
+
+.spine-line.idle {
+  background: repeating-linear-gradient(90deg, var(--line-strong) 0 3px, transparent 3px 7px);
+}
+
+.spine-head {
+  position: absolute;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  border: 2px solid var(--panel);
+  box-shadow: 0 0 0 1px currentColor;
+  background: currentColor;
+}
+
+.spine-gap {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 2px;
+  border-top: 2px dotted var(--lag);
+}
+
+/* The rail: a per-row segment drawn at the tip position. Adjacent rows abut, so
+   the segments read as one continuous vertical line through every channel. */
+.spine-seg {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--rail);
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.spine-foot {
+  padding-top: 0;
+}
+
+.spine-foot:hover {
+  background: none;
+}
+
+.spine-foot .spine-track {
+  height: 14px;
+}
+
+.spine-foot span {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--rail-text);
+  white-space: nowrap;
+}
+
+.spine-legend {
+  display: flex;
+  gap: 14px;
+  padding: 10px 14px 0;
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--ink-3);
+  flex-wrap: wrap;
+}
+
+/* ========================================================= pool matrix == */
+
+.matrix td.cell {
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 5px 6px;
+}
+
+.matrix th.cell {
+  text-align: center;
+  padding: 8px 6px;
+}
+
+.cell-in {
+  color: var(--up);
+  font-weight: 800;
+}
+
+.cell-done {
+  color: var(--ink-3);
+}
+
+.cell-gone {
+  color: var(--down);
+  font-weight: 800;
+}
+
+/* ================================================================ logs == */
+
+.logbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+  background: var(--panel);
+}
+
+.logview {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--well);
+  padding: 10px 0;
+}
+
+.logline {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 10px;
+  padding: 1px 14px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.logline:hover {
+  background: var(--hover);
+}
+
+.logline > .lvl {
+  text-align: right;
+  font-weight: 700;
+  font-size: 10.5px;
+  padding-top: 2px;
+  letter-spacing: 0.04em;
+}
+
+.logline > .txt {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.logline.nowrap > .txt {
+  white-space: pre;
+}
+
+.lvl-ERROR {
+  color: var(--down);
+}
+
+.lvl-WARN {
+  color: var(--lag);
+}
+
+.lvl-INFO {
+  color: var(--up);
+}
+
+.lvl-DEBUG {
+  color: var(--ink-3);
+}
+
+.lvl-TRACE {
+  color: var(--ink-3);
+}
+
+.logline mark {
+  background: var(--rail-soft);
+  color: var(--rail-text);
+  border-radius: 2px;
+}
+
+.log-ts {
+  color: var(--ink-3);
+}
+
+.log-target {
+  color: var(--rail-text);
+}
+
+/* ============================================================== toasts == */
+
+.toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(420px, calc(100vw - 32px));
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--r);
+  border: 1px solid var(--down-soft);
+  border-left: 3px solid var(--down);
+  background: var(--panel);
+  box-shadow: var(--lift);
+  animation: rise 0.16s ease-out;
+}
+
+.toast .msg {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* ============================================================== misc == */
+
+.empty {
+  padding: 30px 14px;
+  text-align: center;
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+
+.copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.copy:hover {
+  color: var(--rail-text);
+}
+
+.copy .hint {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  opacity: 0;
+}
+
+.copy:hover .hint {
+  opacity: 1;
+}
+
+.copy .hint.said {
+  opacity: 1;
+  color: var(--up);
+}
+
+.ports {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.port {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 0 6px;
+  border-radius: var(--pill);
+  background: var(--well);
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.links {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+/* A changed live value flashes once, so a tick is visible without watching. */
+@keyframes tick {
+  from {
+    background: var(--rail-soft);
+  }
+}
+
+.tick {
+  animation: tick 0.6s ease-out;
+  border-radius: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Below the two-column breakpoint the sidebar becomes a nav strip above the content:
+   hiding it would leave no way to move between pages. */
+@media (max-width: 900px) {
+  .shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  .sidebar {
     flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding-right: 10px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    overflow-x: auto;
+    overflow-y: hidden;
   }
-  .flex-container {
+
+  .brand {
+    border-bottom: 0;
+    align-items: center;
+    flex: 0 0 auto;
+  }
+
+  .nav {
     flex-direction: row;
-    align-items: stretch;
+    padding: 0;
+    gap: 2px;
   }
-}
 
-.MuiDataGrid-columnHeaderTitle {
-  font-family: "AvenirHeavy", sans-serif;
-}
+  .nav a {
+    border-left: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: var(--r) var(--r) 0 0;
+    white-space: nowrap;
+  }
 
-@keyframes purple-flash {
-  0% {
-    background-color: rgb(159, 66, 255, 0);
+  .nav a.on {
+    border-left: 0;
+    border-bottom-color: var(--rail);
   }
-  25% {
-    background-color: rgb(159, 66, 255, 0.1);
-  }
-  75% {
-    background-color: rgb(159, 66, 255, 0.1);
-  }
-  100% {
-    background-color: rgb(159, 66, 255, 0);
-  }
-}
 
-.purple-flash {
-  animation: purple-flash 0.5s ease-in-out;
+  .sidebar-foot {
+    margin: 0 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    border-top: 0;
+    padding: 0;
+    flex: 0 0 auto;
+  }
+
+  .sidebar-foot label > .eyebrow {
+    display: none;
+  }
+
+  /* The name column keeps enough width for the validator index, which is the only
+     thing that tells one channel from another. */
+  .spine-row {
+    grid-template-columns: 96px 70px 1fr;
+  }
+
+  .spine-row > .spine-tail {
+    display: none;
+  }
 }
