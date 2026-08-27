@@ -287,11 +287,12 @@ pub async fn spawn_services(
     let substate_manager = substate_manager.with_metrics(metrics_registry);
 
     // Template manager
-    let wasm_cache_dir = config.indexer.data_dir.join("wasm_cache");
+    let wasm_cache_dir = config.to_data_dir().join("wasm_cache");
 
     let template_manager = task::spawn_blocking({
         let global_db = global_db.clone();
         let substate_manager = substate_manager.clone();
+        let wasm_cache_dir = wasm_cache_dir.clone();
         move || {
             let wasm_cache = WasmModuleCache::open(&wasm_cache_dir).map_err(|e| {
                 anyhow!(
@@ -319,7 +320,7 @@ pub async fn spawn_services(
         fee_table.clone(),
         epoch_manager.clone(),
         dry_run_substate_manager,
-        config.indexer.data_dir.join("wasm_cache"),
+        wasm_cache_dir,
         // We do not verify the kernel merkle proof, since that requires syncing L1 headers
         // TODO: maybe at least validate the well-formedness of the proof
         KnowledgeProofVerifier::new(
