@@ -190,7 +190,7 @@ impl<'store, TTx: StateStoreReadTransaction> ReadableSubstateStore for PendingSu
             return change
                 .up_substate()
                 .cloned()
-                .ok_or_else(|| SubstateStoreError::SubstateIsDown {
+                .ok_or_else(|| SubstateStoreError::SubstateNotFound {
                     id: change.versioned_substate_id().to_owned(),
                 });
         }
@@ -201,14 +201,14 @@ impl<'store, TTx: StateStoreReadTransaction> ReadableSubstateStore for PendingSu
         {
             return change
                 .into_up()
-                .ok_or_else(|| SubstateStoreError::SubstateIsDown { id: id.to_owned() });
+                .ok_or_else(|| SubstateStoreError::SubstateNotFound { id: id.to_owned() });
         }
 
         let Some(substate) = SubstateRecord::get(self.read_transaction(), &substate_addr).optional()? else {
             return Err(SubstateStoreError::SubstateNotFound { id: id.to_owned() });
         };
         if substate.is_destroyed() {
-            return Err(SubstateStoreError::SubstateIsDown { id: id.to_owned() });
+            return Err(SubstateStoreError::SubstateNotFound { id: id.to_owned() });
         }
         Ok(substate
             .into_substate()
@@ -287,9 +287,9 @@ impl<'a, TTx: StateStoreReadTransaction> WriteableSubstateStore for PendingSubst
                     }
                     Ok(())
                 },
-                // If the substate is down, we cannot withdraw from it
+                // Without a live version there is nothing to withdraw from
                 |maybe_id| match maybe_id {
-                    Some(id) => Err(SubstateStoreError::SubstateIsDown { id: id.to_owned() }),
+                    Some(id) => Err(SubstateStoreError::SubstateNotFound { id: id.to_owned() }),
                     None => Err(SubstateStoreError::SubstateNotFound {
                         id: VersionedSubstateId::new(id.clone(), 0),
                     }),
@@ -416,9 +416,7 @@ impl<'store, TTx: StateStoreReadTransaction> PendingSubstateStore<'store, TTx> {
                 Err(err) => {
                     let error = err.ok_lock_failed()?;
                     match error {
-                        err @ LockFailedError::SubstateIsUp { .. } |
-                        err @ LockFailedError::SubstateIsDown { .. } |
-                        err @ LockFailedError::SubstateNotFound { .. } => {
+                        err @ LockFailedError::SubstateIsUp { .. } | err @ LockFailedError::SubstateNotFound { .. } => {
                             // If the substate does not exist or is not UP (unversioned: previously DOWNed and never
                             // UPed), the transaction is invalid
                             let index = lock_status.add_failed(err);
@@ -752,7 +750,7 @@ impl<'store, TTx: StateStoreReadTransaction> PendingSubstateStore<'store, TTx> {
         );
         if let Some(change) = self.get_pending(&id.to_substate_address()) {
             if change.is_down() {
-                return Err(SubstateStoreError::SubstateIsDown { id: id.to_owned() });
+                return Err(SubstateStoreError::SubstateNotFound { id: id.to_owned() });
             }
             return Ok(());
         }
@@ -770,7 +768,7 @@ impl<'store, TTx: StateStoreReadTransaction> PendingSubstateStore<'store, TTx> {
             if change.is_up() {
                 return Ok(());
             }
-            return Err(SubstateStoreError::SubstateIsDown { id: id.to_owned() });
+            return Err(SubstateStoreError::SubstateNotFound { id: id.to_owned() });
         }
 
         trace!(
@@ -781,8 +779,7 @@ impl<'store, TTx: StateStoreReadTransaction> PendingSubstateStore<'store, TTx> {
 
         match SubstateRecord::substate_is_up(self.read_transaction(), &id.to_substate_address()).optional()? {
             Some(true) => Ok(()),
-            Some(false) => Err(SubstateStoreError::SubstateIsDown { id: id.to_owned() }),
-            None => Err(SubstateStoreError::SubstateNotFound { id: id.to_owned() }),
+            Some(false) | None => Err(SubstateStoreError::SubstateNotFound { id: id.to_owned() }),
         }
     }
 
@@ -790,7 +787,6 @@ impl<'store, TTx: StateStoreReadTransaction> PendingSubstateStore<'store, TTx> {
         match self.assert_is_up(id) {
             Ok(_) => Ok(()),
             // Converts a substate store error to a LockFailedError (TODO: improve)
-            Err(SubstateStoreError::SubstateIsDown { id }) => Err(LockFailedError::SubstateIsDown { id }.into()),
             Err(SubstateStoreError::SubstateNotFound { id }) => Err(LockFailedError::SubstateNotFound { id }.into()),
             Err(err) => Err(err),
         }

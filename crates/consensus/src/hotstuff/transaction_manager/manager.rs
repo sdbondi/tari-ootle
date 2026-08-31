@@ -209,7 +209,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
                 None => {
                     let latest = store.get_latest_version(input.substate_id())?;
                     if latest.is_down() {
-                        return Err(SubstateStoreError::SubstateIsDown {
+                        return Err(SubstateStoreError::SubstateNotFound {
                             id: input.with_version(latest.version()).to_owned(),
                         }
                         .into());
@@ -385,7 +385,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
             Err(err) => {
                 warn!(target: LOG_TARGET, "⚠️ PREPARE: failed to resolve local inputs: {err}");
                 // We only expect not found or down errors here. If we get any other error, this is fatal.
-                if !err.is_not_found_error() && !err.is_substate_down_error() {
+                if !err.is_not_found_error() {
                     return Err(err);
                 }
 
