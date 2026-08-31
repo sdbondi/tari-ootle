@@ -24,6 +24,7 @@ use tari_epoch_manager::{EpochManagerEvent, EpochManagerReader};
 use tari_ootle_common_types::{
     Epoch,
     NodeHeight,
+    ProtocolVersion,
     ShardGroup,
     VersionedSubstateId,
     displayable::Displayable,
@@ -1521,6 +1522,7 @@ impl<TConsensusSpec: ConsensusSpec> HotstuffWorker<TConsensusSpec> {
 
             let mut genesis = Block::genesis(
                 self.config.network,
+                ProtocolVersion::at(self.config.network, epoch),
                 epoch,
                 epoch_hash,
                 shard_group,
