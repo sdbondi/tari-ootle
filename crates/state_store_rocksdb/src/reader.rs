@@ -1758,9 +1758,10 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         for (rec, substate) in data.transitions.iter().zip(substates) {
             let update = match rec.transition {
                 StateTransitionType::Up => {
-                    if up_only && substate.substate_value.is_none() {
-                        // If the client only wants up transitions with values, and this up transition doesn't have a
-                        // value, skip it
+                    if up_only && substate.is_destroyed() {
+                        // The caller wants the set that is live now, so an up whose substate has since been
+                        // destroyed is skipped. Its down is skipped too (see below), so including it would
+                        // leave the caller holding a substate nothing later in the stream takes back down.
                         None
                     } else {
                         let metadata_mode = value_filter.contains(SubstateValueFilterFlags::TEMPLATE_METADATA);

@@ -11,7 +11,7 @@ use tari_ootle_storage::{
     StateStore,
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
-    consensus_models::{Block, SubstateValueFilterFlags},
+    consensus_models::{Block, SubstateDestroyed, SubstateValueFilterFlags},
 };
 use tari_ootle_transaction::Network;
 use tari_state_tree::Version;
@@ -75,4 +75,49 @@ fn rocksdb() {
             assert_eq!(transitions.updates.len(), *num_substates);
         }
     }
+}
+
+/// A destroyed substate keeps its value until epoch GC prunes it, so `UP_ONLY` must decide liveness by
+/// whether the substate is destroyed. Deciding it by value presence would return this up - and no down
+/// follows it under `UP_ONLY` - leaving the caller with a substate it believes is still live.
+#[test]
+fn up_only_skips_an_up_whose_substate_was_since_destroyed() {
+    let (db, _tmp) = create_rocksdb();
+    const EPOCH: Epoch = Epoch::zero();
+    let mut tx = db.create_write_tx().unwrap();
+    Block::zero_block(Network::LocalNet, num_preshards())
+        .insert(&mut tx)
+        .unwrap();
+
+    let mut substate = gen_substates_for_shards(EPOCH, 1, 0..1, 0).next().unwrap();
+    let shard = substate.shard();
+    tx.substates_commit_batch(create_substate_update_batch(EPOCH, [&substate]))
+        .unwrap();
+
+    // The up is streamed while the substate is live.
+    let up_only = SubstateValueFilterFlags::all_substates() | SubstateValueFilterFlags::UP_ONLY;
+    let transitions = tx.state_transitions_get_starting_at(shard, 1, up_only).unwrap();
+    assert_eq!(transitions.updates.len(), 1);
+
+    // Destroy it at v2. substates_commit_batch marks the record destroyed but retains its value, which is
+    // what epoch GC would later prune.
+    substate.set_destroyed(SubstateDestroyed {
+        at_epoch: EPOCH,
+        at_state_version: 2,
+    });
+    tx.substates_commit_batch(create_substate_update_batch(EPOCH, [&substate]))
+        .unwrap();
+
+    let transitions = tx.state_transitions_get_starting_at(shard, 1, up_only).unwrap();
+    assert!(
+        transitions.updates.is_empty(),
+        "UP_ONLY returned an up for a destroyed substate: {:?}",
+        transitions.updates
+    );
+
+    // Without UP_ONLY the same up is still streamed - the full transition log is unchanged.
+    let transitions = tx
+        .state_transitions_get_starting_at(shard, 1, SubstateValueFilterFlags::all_substates())
+        .unwrap();
+    assert_eq!(transitions.updates.len(), 1);
 }

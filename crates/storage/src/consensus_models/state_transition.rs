@@ -73,6 +73,14 @@ bitflags! {
         const TEMPLATE_METADATA = 0x0000_0200;
         /// Include all hashes for substates even if filtered out
         const ALL_HASHES = 0x1000_0000;
+        /// Return the substates that are live at the point the stream is taken, rather than the
+        /// transitions that produced them: ups whose substate is still live are sent, and ups whose
+        /// substate has since been destroyed are skipped along with every down.
+        ///
+        /// Liveness must be decided by whether the substate is destroyed, never by whether it still
+        /// holds a value. A destroyed substate keeps its value until epoch GC prunes it
+        /// (`substates_prune_downed_values`), so a value-based test would report everything destroyed
+        /// within the retention window as live, and no down follows to correct it.
         const UP_ONLY = 0x0100_0000;
     }
 }
