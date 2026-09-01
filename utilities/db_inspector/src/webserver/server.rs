@@ -15,9 +15,7 @@ use log::*;
 use tari_state_store_rocksdb::column_families;
 use tower_http::cors::CorsLayer;
 
-use crate::webserver::{context::HandlerContext, handlers, handlers::slugify_type_name};
-
-const LOG_TARGET: &str = "tari::ootle::swarm::webserver";
+use super::{LOG_TARGET, context::HandlerContext, handlers, handlers::slugify_type_name};
 
 macro_rules! add_cf_route {
     ($api:expr, $cf:expr) => {

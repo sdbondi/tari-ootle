@@ -31,9 +31,7 @@ use tari_ootle_app_utilities::tcp::try_bind_with_fallback;
 use tokio::fs;
 use tower_http::{cors::CorsLayer, services::ServeDir};
 
-use crate::webserver::{context::HandlerContext, error::HandlerError, handler::JrpcHandler, rpc};
-
-const LOG_TARGET: &str = "tari::ootle::swarm::webserver";
+use super::{LOG_TARGET, context::HandlerContext, error::HandlerError, handler::JrpcHandler, rpc};
 
 pub async fn run(context: HandlerContext) -> anyhow::Result<()> {
     let bind_address = context.config().webserver.bind_address;
@@ -116,8 +114,7 @@ async fn handler(
 }
 
 async fn json_rpc_handler(Extension(context): Extension<Arc<HandlerContext>>, value: JsonRpcExtractor) -> JrpcResult {
-    info!(target: LOG_TARGET, "🌐 JSON-RPC request: {}", value.method);
-    debug!(target: LOG_TARGET, "🌐 JSON-RPC request: {:?}", value);
+    debug!(target: LOG_TARGET, "🌐 JSON-RPC request: {} {:?}", value.method(), value.parsed);
 
     match value.method.as_str() {
         "ping" => Ok(JsonRpcResponse::success(value.get_answer_id(), "pong")),

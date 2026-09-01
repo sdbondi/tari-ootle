@@ -14,7 +14,7 @@ use tokio::task;
 
 use crate::config::Config;
 
-const LOG_TARGET: &str = "tari::ootle::swarm::webserver";
+const LOG_TARGET: &str = "tari::ootle::db::webserver";
 
 pub fn spawn<S>(config: Config, shutdown: S) -> task::JoinHandle<anyhow::Result<()>>
 where S: Future<Output = ()> + Send + 'static {
