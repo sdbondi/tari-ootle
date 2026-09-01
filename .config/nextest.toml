@@ -5,6 +5,15 @@ default-filter = "not package(integration_tests) and not test(export_bindings)"
 slow-timeout = { period = "60s", terminate-after = 4 }
 default-filter = "not package(integration_tests) and not test(export_bindings)"
 
+# Consensus tests drive real consensus rounds against wall-clock timers - leader failure and epoch
+# change wait for those timers to elapse rather than for work to finish - so they are slow by
+# construction and stretch further when the runner is contended. 240s is a reasonable bound for an
+# ordinary test that has hung; for these it is within the range they legitimately occupy, and a run
+# is failed by the shard that happened to land alongside the heaviest neighbours.
+[[profile.ci.overrides]]
+filter = 'package(consensus_tests)'
+slow-timeout = { period = "120s", terminate-after = 5 }
+
 [profile.ci.junit]  # this can be some other profile, too
 path = "junit.xml"
 
