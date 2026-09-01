@@ -338,14 +338,19 @@ pub trait IndexerStoreWriteTransaction {
 
     /// Records a substate's head version as fetched from a committee, unless a transition for it has
     /// been applied since `watermark` - in which case the fetch may have observed an older state than
-    /// the cache already knows about, and nothing it returned can be trusted as current. A version
-    /// below the cached head is likewise ignored, since it cannot be the head. Returns whether the
-    /// entry was written.
+    /// the cache already knows about, and nothing it returned can be trusted as current. Returns
+    /// whether the entry was written.
+    ///
+    /// A version below the cached head is ignored, since it cannot be the head - but only while that
+    /// head still has standing: `head_ttl` since it was recorded, and no proof behind the arriving
+    /// result that the head itself lacks. A head is retired by no transition below it, so without
+    /// those two escapes one recorded above the real version would stand until eviction.
     fn substate_cache_put(
         &mut self,
         substate_id: &SubstateId,
         entry: SubstateCacheEntryRef<'_>,
         watermark: FetchWatermark,
+        head_ttl: Duration,
     ) -> Result<bool, StorageError>;
 
     /// Retires the cached heads these transitions supersede or destroy, and journals each substate at

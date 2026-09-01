@@ -63,7 +63,9 @@ use crate::{
 
 const LOG_TARGET: &str = "tari::indexer::scanner";
 
-const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(900);
+/// Coarse staleness backstop for everything the cache holds. Correctness rests on invalidation from
+/// the transition stream, so this bounds only the cases that stream cannot correct.
+pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(900);
 
 /// A store of committee-validated shard-group state merkle roots that the read path consults to
 /// avoid re-validating a served commit proof's QC chain when its root is already trusted.

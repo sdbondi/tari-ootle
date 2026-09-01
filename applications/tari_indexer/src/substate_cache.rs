@@ -48,6 +48,10 @@ fn now_unix_secs() -> Result<u64, SubstateCacheError> {
 /// reached version `L` has versions `0..L` down for good. Unlike a claim about the current state,
 /// that conclusion cannot go stale: a head this indexer holds is a lower bound on the real one, so a
 /// stale `L` only makes it more certainly true.
+///
+/// What can be wrong is `L` itself, if it was recorded above any version the substate reached. No
+/// transition corrects that - every transition retires versions below the head, never above it - so
+/// `head_ttl` retires the head instead, and the next lookup replaces it.
 #[derive(Clone)]
 pub struct SqliteSubstateCache {
     store: SqliteIndexerStore,
@@ -55,6 +59,9 @@ pub struct SqliteSubstateCache {
     max_serve_lag: Duration,
     /// How long a substate stays journalled as recently changed. Only has to span a committee fetch.
     journal_retention: Duration,
+    /// How long a recorded head is treated as evidence. The backstop for a head no transition can
+    /// correct, which is one recorded above the version the substate actually reached.
+    head_ttl: Duration,
     max_entries: usize,
 }
 
@@ -62,6 +69,7 @@ impl std::fmt::Debug for SqliteSubstateCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SqliteSubstateCache")
             .field("max_serve_lag", &self.max_serve_lag)
+            .field("head_ttl", &self.head_ttl)
             .field("max_entries", &self.max_entries)
             .finish_non_exhaustive()
     }
@@ -73,6 +81,7 @@ impl SqliteSubstateCache {
         watermarks: Arc<ShardWatermarks>,
         max_serve_lag: Duration,
         journal_retention: Duration,
+        head_ttl: Duration,
         max_entries: usize,
     ) -> Self {
         Self {
@@ -80,6 +89,7 @@ impl SqliteSubstateCache {
             watermarks,
             max_serve_lag,
             journal_retention,
+            head_ttl,
             max_entries,
         }
     }
@@ -149,6 +159,11 @@ impl SubstateCache for SqliteSubstateCache {
         if let Some(version) = version &&
             version < entry.version
         {
+            // The conclusion does not age, but the head it rests on does: one recorded above the real
+            // version is retired by no transition, so it is aged out here instead.
+            if now_unix_secs()?.saturating_sub(entry.cached_at) > self.head_ttl.as_secs() {
+                return Ok(None);
+            }
             return Ok(Some(SubstateCacheEntry {
                 version,
                 substate_result: SubstateResult::Down { version },
@@ -181,6 +196,7 @@ impl SubstateCache for SqliteSubstateCache {
         watermark: FetchWatermark,
     ) -> Result<(), SubstateCacheError> {
         let id = id.clone();
+        let head_ttl = self.head_ttl;
         let substate_result = entry.substate_result.clone();
         let SubstateCacheEntryRef {
             version,
@@ -199,6 +215,7 @@ impl SubstateCache for SqliteSubstateCache {
                         verified,
                     },
                     watermark,
+                    head_ttl,
                 )
             })
             .await
@@ -215,6 +232,7 @@ mod tests {
     use crate::storage_sqlite::SqliteIndexerStore;
 
     const MAX_SERVE_LAG: Duration = Duration::from_secs(60);
+    const HEAD_TTL: Duration = Duration::from_secs(900);
 
     fn substate(n: u8) -> SubstateId {
         format!("component_{:064x}", n).parse().unwrap()
@@ -223,6 +241,7 @@ mod tests {
     async fn cache_with_head(
         version: u32,
         confirm_shard: bool,
+        head_age: Duration,
     ) -> (tempfile::TempDir, SqliteSubstateCache, SubstateId) {
         let dir = tempfile::tempdir().unwrap();
         let store = SqliteIndexerStore::try_create(dir.path().join("indexer.db")).unwrap();
@@ -231,7 +250,14 @@ mod tests {
         if confirm_shard {
             watermarks.confirm(SqliteSubstateCache::shard_of(&id), StateVersion::new(100));
         }
-        let cache = SqliteSubstateCache::new(store, watermarks, MAX_SERVE_LAG, Duration::from_secs(300), 1000);
+        let cache = SqliteSubstateCache::new(
+            store,
+            watermarks,
+            MAX_SERVE_LAG,
+            Duration::from_secs(300),
+            HEAD_TTL,
+            1000,
+        );
         // Whether the head itself is up or down is irrelevant to what it settles about lower versions.
         let result = SubstateResult::Down { version };
         cache
@@ -240,7 +266,7 @@ mod tests {
                 SubstateCacheEntryRef {
                     version,
                     substate_result: &result,
-                    cached_at: 0,
+                    cached_at: now_unix_secs().unwrap() - head_age.as_secs(),
                     verified: true,
                 },
                 FetchWatermark::new(100),
@@ -252,7 +278,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_version_below_the_head_is_reported_down_without_a_committee() {
-        let (_d, cache, id) = cache_with_head(6, true).await;
+        let (_d, cache, id) = cache_with_head(6, true, Duration::ZERO).await;
         let entry = cache.read(&id, Some(3)).await.unwrap().expect("no entry");
         assert_eq!(entry.version, 3);
         assert!(matches!(entry.substate_result, SubstateResult::Down { version: 3 }));
@@ -263,7 +289,7 @@ mod tests {
     /// stopped keeping up with still answers.
     #[tokio::test]
     async fn the_down_inference_needs_no_watermark() {
-        let (_d, cache, id) = cache_with_head(6, false).await;
+        let (_d, cache, id) = cache_with_head(6, false, Duration::ZERO).await;
         assert!(cache.read(&id, Some(3)).await.unwrap().is_some());
         // A claim about the substate's current state still needs one.
         assert!(cache.read(&id, None).await.unwrap().is_none());
@@ -272,15 +298,23 @@ mod tests {
 
     #[tokio::test]
     async fn the_head_answers_for_itself_and_for_an_unversioned_read() {
-        let (_d, cache, id) = cache_with_head(6, true).await;
+        let (_d, cache, id) = cache_with_head(6, true, Duration::ZERO).await;
         assert_eq!(cache.read(&id, None).await.unwrap().unwrap().version, 6);
         assert_eq!(cache.read(&id, Some(6)).await.unwrap().unwrap().version, 6);
+    }
+
+    /// A head recorded above any version the substate reached is retired by no transition, so the
+    /// conclusions drawn from it have to age out even though the conclusions themselves cannot.
+    #[tokio::test]
+    async fn the_inference_stops_once_the_head_ages_out() {
+        let (_d, cache, id) = cache_with_head(6, true, HEAD_TTL + Duration::from_secs(1)).await;
+        assert!(cache.read(&id, Some(3)).await.unwrap().is_none());
     }
 
     /// Above the head the cache knows nothing: this indexer is behind, or the substate never got there.
     #[tokio::test]
     async fn a_version_above_the_head_is_a_miss() {
-        let (_d, cache, id) = cache_with_head(6, true).await;
+        let (_d, cache, id) = cache_with_head(6, true, Duration::ZERO).await;
         assert!(cache.read(&id, Some(7)).await.unwrap().is_none());
     }
 }

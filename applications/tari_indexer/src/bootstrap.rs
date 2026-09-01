@@ -53,6 +53,7 @@ use tari_epoch_oracles::{
     store::EpochOracleStore,
 };
 use tari_indexer_client::event::{IndexerEvent, TransactionEvent};
+use tari_indexer_lib::cached_substate_manager::DEFAULT_CACHE_TTL;
 use tari_networking::{
     MessagingMode,
     NetworkingHandle,
@@ -292,6 +293,7 @@ pub async fn spawn_services(
         shard_watermarks,
         config.indexer.substate_cache_max_serve_lag,
         SUBSTATE_CACHE_JOURNAL_RETENTION,
+        DEFAULT_CACHE_TTL,
         config.indexer.substate_cache_max_entries,
     );
     substate_cache.spawn_pruner(SUBSTATE_CACHE_PRUNE_INTERVAL, shutdown.clone());

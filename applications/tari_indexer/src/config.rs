@@ -142,8 +142,8 @@ pub struct IndexerConfig {
     /// still served. Ordinary staleness is bounded by the sync round, not by this.
     #[serde(default = "default_substate_cache_max_serve_lag", with = "serializers::seconds")]
     pub substate_cache_max_serve_lag: Duration,
-    /// Maximum substate versions held in the cache. Beyond this the oldest are evicted, at the cost
-    /// of one validator round trip each to fetch again.
+    /// Maximum substates held in the cache - one entry each, its head version. Beyond this the oldest
+    /// are evicted, at the cost of one validator round trip each to fetch again.
     #[serde(default = "default_substate_cache_max_entries")]
     pub substate_cache_max_entries: usize,
     /// How many epochs past its terminal epoch a stored transaction is retained before it is pruned.

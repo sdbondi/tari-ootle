@@ -155,6 +155,8 @@ fn apply_pragmas(conn: &mut SqliteConnection) -> Result<(), diesel::result::Erro
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use tari_common_types::types::FixedHash;
     use tari_engine_types::{
         fees::FeeReceiptBuilder,
@@ -948,11 +950,25 @@ mod tests {
 
     // -------------------------------- Substate Cache -------------------------------- //
 
+    /// Matches the value bootstrap passes; the tests only need it to be well above their own offsets.
+    const HEAD_TTL: Duration = Duration::from_secs(900);
+
     fn substate(n: u8) -> SubstateId {
         format!("component_{:064x}", n).parse().unwrap()
     }
 
-    async fn put(store: &SqliteIndexerStore, id: &SubstateId, version: u32, watermark: u64) -> bool {
+    fn now_secs() -> u64 {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+    }
+
+    async fn put_entry(
+        store: &SqliteIndexerStore,
+        id: &SubstateId,
+        version: u32,
+        verified: bool,
+        cached_at: u64,
+        watermark: u64,
+    ) -> bool {
         let result = SubstateResult::Down { version };
         let id = id.clone();
         store
@@ -962,14 +978,19 @@ mod tests {
                     SubstateCacheEntryRef {
                         version,
                         substate_result: &result,
-                        cached_at: 0,
-                        verified: true,
+                        cached_at,
+                        verified,
                     },
                     FetchWatermark::new(watermark),
+                    HEAD_TTL,
                 )
             })
             .await
             .unwrap()
+    }
+
+    async fn put(store: &SqliteIndexerStore, id: &SubstateId, version: u32, watermark: u64) -> bool {
+        put_entry(store, id, version, true, now_secs(), watermark).await
     }
 
     async fn read(store: &SqliteIndexerStore, id: &SubstateId) -> Option<u32> {
@@ -1066,6 +1087,30 @@ mod tests {
         assert_eq!(read(&store, &id).await, Some(6));
     }
 
+    /// The batch RPC carries no proofs, so a single validator can park an unverified head above any
+    /// version the substate reached. No transition retires a version above the head, so without this
+    /// the proven head could never be written and the entry would be dead until eviction.
+    #[tokio::test]
+    async fn a_verified_result_displaces_an_unverified_head() {
+        let (_d, store) = temp_store().await;
+        let id = substate(1);
+        assert!(put_entry(&store, &id, 999, false, now_secs(), 100).await);
+        assert!(put_entry(&store, &id, 6, true, now_secs(), 100).await);
+        assert_eq!(read(&store, &id).await, Some(6));
+    }
+
+    /// With proof verification off nothing outranks anything, so ageing the head out is the only way a
+    /// wrong one is ever corrected.
+    #[tokio::test]
+    async fn a_stale_head_does_not_block_a_lower_version() {
+        let (_d, store) = temp_store().await;
+        let id = substate(1);
+        let stale = now_secs() - HEAD_TTL.as_secs() - 1;
+        assert!(put_entry(&store, &id, 999, false, stale, 100).await);
+        assert!(put_entry(&store, &id, 6, false, now_secs(), 100).await);
+        assert_eq!(read(&store, &id).await, Some(6));
+    }
+
     #[tokio::test]
     async fn a_write_is_vetoed_by_a_transition_that_landed_during_the_fetch() {
         let (_d, store) = temp_store().await;
@@ -1091,8 +1136,10 @@ mod tests {
     #[tokio::test]
     async fn pruning_evicts_down_to_the_cap_and_expires_the_journal() {
         let (_d, store) = temp_store().await;
+        // Descending `cached_at`, so the substates with the lowest n are the oldest and evicted first.
+        let now = now_secs();
         for n in 0..5u8 {
-            assert!(put(&store, &substate(n), u32::from(n) + 1, 100).await);
+            assert!(put_entry(&store, &substate(n), 1, true, now - u64::from(4 - n), 100).await);
         }
         invalidate(
             &store,
@@ -1109,13 +1156,13 @@ mod tests {
             .await
             .unwrap();
 
-        let mut remaining = 0;
+        let mut remaining = Vec::new();
         for n in 0..5u8 {
             if read(&store, &substate(n)).await.is_some() {
-                remaining += 1;
+                remaining.push(n);
             }
         }
-        assert_eq!(remaining, 2);
+        assert_eq!(remaining, vec![3, 4], "eviction did not take the oldest entries");
 
         // With the journal expired, a fetch that started before the transition is no longer vetoed.
         assert!(put(&store, &substate(9), 1, 100).await);

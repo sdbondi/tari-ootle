@@ -531,6 +531,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
         substate_id: &SubstateId,
         entry: SubstateCacheEntryRef<'_>,
         watermark: FetchWatermark,
+        head_ttl: Duration,
     ) -> Result<bool, StorageError> {
         const OPERATION: &str = "substate_cache_put";
         use crate::storage_sqlite::schema::{substate_cache, substate_cache_invalidations};
@@ -555,16 +556,27 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
             return Ok(false);
         }
 
-        // A committee member that is behind can answer with a version below the head already held.
-        let cached_version: Option<i32> = substate_cache::table
-            .select(substate_cache::version)
+        // A committee member that is behind can answer with a version below the head already held,
+        // which would walk the head backwards. A head holds that ground only while it is fresh and no
+        // less trustworthy than what is arriving: no transition retires a version above the real
+        // head, so a head recorded too high is corrected by nothing else.
+        let cached: Option<(i32, bool, i64)> = substate_cache::table
+            .select((
+                substate_cache::version,
+                substate_cache::verified,
+                substate_cache::cached_at,
+            ))
             .filter(substate_cache::substate_id.eq(&id))
             .first(self.connection())
             .optional()
             .map_err(|e| StorageError::general(OPERATION, e))?;
 
-        if cached_version.is_some_and(|v| v > entry.version as i32) {
-            return Ok(false);
+        if let Some((cached_version, cached_verified, cached_at)) = cached {
+            let is_stale = unix_timestamp().saturating_sub(cached_at) > head_ttl.as_secs() as i64;
+            let outranks = entry.verified && !cached_verified;
+            if cached_version > entry.version as i32 && !is_stale && !outranks {
+                return Ok(false);
+            }
         }
 
         let encoded = serialize_bincode(entry.substate_result)?;
