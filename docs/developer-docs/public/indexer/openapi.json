@@ -10,7 +10,7 @@
       "name": "BSD-3-Clause",
       "identifier": "BSD-3-Clause"
     },
-    "version": "0.39.2"
+    "version": "0.40.0"
   },
   "paths": {
     "/epoch-checkpoints": {
@@ -1463,7 +1463,7 @@
           "current_epoch",
           "index_gossiped_transactions",
           "verify_substate_proofs",
-          "latest_substate_cache_ttl_secs",
+          "substate_cache_max_serve_lag_secs",
           "indexes_all_events"
         ],
         "properties": {
@@ -1481,12 +1481,6 @@
             "type": "boolean",
             "description": "Whether this indexer stores every event on the network. When false it is configured with event\nfilters, so event queries answer over a subset and absence is not proof an event did not occur."
           },
-          "latest_substate_cache_ttl_secs": {
-            "type": "integer",
-            "format": "int64",
-            "description": "How long this indexer may serve a cached substate as the latest version of that substate, in\nseconds. A read of the latest version may be up to this stale; reads of a specific version are\nunaffected.",
-            "minimum": 0
-          },
           "network": {
             "type": "string"
           },
@@ -1501,6 +1495,12 @@
               "null"
             ],
             "description": "The sidechain this indexer follows, if it is configured for one."
+          },
+          "substate_cache_max_serve_lag_secs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long after a shard was last confirmed synced this indexer keeps serving cached substates\nfor it, in seconds. Cached values are invalidated by the state transitions this indexer syncs\nrather than expired on a timer, so a served value trails the chain by the sync interval rather\nthan by this bound - which is what stops a validator that has stopped serving transitions from\nholding a stale value open indefinitely.",
+            "minimum": 0
           },
           "transaction_retention_epochs": {
             "type": [
