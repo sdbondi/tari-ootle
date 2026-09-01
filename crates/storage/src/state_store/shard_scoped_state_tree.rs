@@ -59,7 +59,34 @@ impl<'a, TTx: StateStoreWriteTransaction> ShardScopedTreeStoreWriter<'a, TTx> {
         Self { shard, tx }
     }
 
-    pub fn set_state_version(&mut self, version: Version) -> Result<(), JmtStorageError> {
+    /// Advances the shard's committed tree version.
+    ///
+    /// JMT nodes are keyed by `(version, nibble_path)`, so a version may only ever be written once:
+    /// writing one a second time overwrites live nodes with keys that the same write records as stale,
+    /// and the stale-node GC then deletes them from under the current tree. Every production writer -
+    /// consensus block commit, state sync and genesis - funnels through here, so this is where that is
+    /// enforced. Rewinds reset the pointer through `state_tree_shard_versions_set` directly, after the
+    /// versions above the target no longer exist.
+    pub fn set_state_version(&mut self, version: Version) -> Result<(), JmtStorageError>
+    where
+        TTx: Deref,
+        TTx::Target: StateStoreReadTransaction,
+    {
+        let current_version = self
+            .tx
+            .state_tree_versions_get_latest(self.shard)
+            .map_err(|e| JmtStorageError::UnexpectedError(e.to_string()))?;
+
+        if let Some(current_version) = current_version &&
+            version <= current_version
+        {
+            return Err(JmtStorageError::UnexpectedError(format!(
+                "Refusing to write state tree version {version} for shard {} on top of committed version \
+                 {current_version}: the next version must be greater than the current version",
+                self.shard,
+            )));
+        }
+
         self.tx
             .state_tree_shard_versions_set(self.shard, version)
             .map_err(|e| JmtStorageError::UnexpectedError(e.to_string()))

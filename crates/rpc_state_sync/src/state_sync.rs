@@ -238,7 +238,8 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
                     if local_state_root != checkpoint_shard_root {
                         error!(
                             target: LOG_TARGET,
-                            "❌ State root mismatch for {shard}. Checkpoint {expected} but got {actual}. Rolling back.",
+                            "❌ State root mismatch for {shard}. Checkpoint {expected} but got {actual}. Everything \
+                             streamed so far is already committed; the next peer resumes after it.",
                             expected = checkpoint_shard_root,
                             actual = local_state_root,
                         );

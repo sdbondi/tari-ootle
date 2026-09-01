@@ -5,7 +5,13 @@ pub mod helpers;
 
 use helpers::assert_eq_debug;
 use tari_ootle_common_types::{ShardGroup, optional::Optional, shard::Shard};
-use tari_ootle_storage::{StateStore, StateStoreReadTransaction, StateStoreWriteTransaction, StorageError};
+use tari_ootle_storage::{
+    ShardScopedTreeStoreWriter,
+    StateStore,
+    StateStoreReadTransaction,
+    StateStoreWriteTransaction,
+    StorageError,
+};
 use tari_state_store_rocksdb::DatabaseOptions;
 use tari_state_tree::{NibblePath, Node, NodeKey, StaleTreeNode, StateTreePayload};
 use tari_validator_rollback::storage::state_tree_truncate_to_version;
@@ -256,6 +262,44 @@ fn truncate_to_version_zero_keeps_genesis_v0_pointer() {
             assert!(tx.state_tree_nodes_get(empty_shard, key).optional().unwrap().is_none());
         }
         assert_eq!(tx.state_tree_versions_get_latest(empty_shard).unwrap(), None);
+        Ok::<_, StorageError>(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn set_state_version_refuses_to_rewrite_a_committed_version() {
+    const SHARD: Shard = Shard::first();
+    let (db, _tmp) = create_rocksdb_with_opts(DatabaseOptions::default());
+
+    db.with_write_tx(|tx| {
+        let mut store = ShardScopedTreeStoreWriter::new(tx, SHARD);
+        store.set_state_version(1).unwrap();
+        Ok::<_, StorageError>(())
+    })
+    .unwrap();
+
+    // Writing v1 again would put new nodes on the keys the same write records as stale at v1, leaving
+    // the tree pointing at nodes the stale-node GC is free to delete.
+    db.with_write_tx(|tx| {
+        let mut store = ShardScopedTreeStoreWriter::new(tx, SHARD);
+        let err = store.set_state_version(1).unwrap_err();
+        assert!(
+            err.to_string().contains("must be greater than the current version"),
+            "{err}"
+        );
+        let err = store.set_state_version(0).unwrap_err();
+        assert!(
+            err.to_string().contains("must be greater than the current version"),
+            "{err}"
+        );
+        store.set_state_version(2).unwrap();
+        Ok::<_, StorageError>(())
+    })
+    .unwrap();
+
+    db.with_read_tx(|tx| {
+        assert_eq!(tx.state_tree_versions_get_latest(SHARD).unwrap(), Some(2));
         Ok::<_, StorageError>(())
     })
     .unwrap();

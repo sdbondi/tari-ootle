@@ -1,7 +1,7 @@
 //    Copyright 2024 The Tari Project
 //    SPDX-License-Identifier: BSD-3-Clause
 
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Deref};
 
 use indexmap::IndexMap;
 use log::*;
@@ -176,7 +176,11 @@ impl<TTx: StateStoreReadTransaction> ShardedStateTree<&TTx> {
     }
 }
 
-impl<TTx: StateStoreWriteTransaction> ShardedStateTree<&mut TTx> {
+impl<TTx> ShardedStateTree<&mut TTx>
+where
+    TTx: StateStoreWriteTransaction + Deref,
+    TTx::Target: StateStoreReadTransaction,
+{
     pub fn commit_diffs(
         &mut self,
         diffs: IndexMap<Shard, Vec<PendingShardStateTreeDiff>>,
