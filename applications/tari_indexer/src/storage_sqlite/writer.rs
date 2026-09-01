@@ -546,7 +546,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
             .optional()
             .map_err(|e| StorageError::general(OPERATION, e))?;
 
-        if invalidated_at_version.is_some_and(|v| v as u64 > watermark.0) {
+        if invalidated_at_version.is_some_and(|v| v as u64 > watermark.as_u64()) {
             debug!(
                 target: LOG_TARGET,
                 "Discarding cache write for {substate_id} v{}: its shard advanced past the fetch",
@@ -576,10 +576,21 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
             .execute(self.connection())
             .map_err(|e| StorageError::general(OPERATION, e))?;
 
-        // The claim is only ever set here, never cleared: a lookup that asked for this version
-        // specifically cannot say the version is the substate's latest, so it must leave a claim an
-        // unversioned lookup already made standing. Only a transition retracts one.
         if entry.is_latest {
+            // The lookup observed this version as the substate's latest, so every lower cached
+            // version is superseded. A higher one is left alone: the lookup may have been answered
+            // by a validator that is behind, and the read takes the highest claim regardless.
+            diesel::update(
+                substate_cache::table
+                    .filter(substate_cache::substate_id.eq(&id))
+                    .filter(substate_cache::version.lt(entry.version as i32)),
+            )
+            .set(substate_cache::is_latest.eq(false))
+            .execute(self.connection())
+            .map_err(|e| StorageError::general(OPERATION, e))?;
+
+            // The row may predate this write, put there by a lookup for this exact version, which
+            // cannot make the claim itself.
             diesel::update(
                 substate_cache::table
                     .filter(substate_cache::substate_id.eq(&id))

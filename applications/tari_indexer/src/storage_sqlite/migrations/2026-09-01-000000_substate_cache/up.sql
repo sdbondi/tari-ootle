@@ -4,7 +4,9 @@
 -- never be visible out of step.
 --
 -- A row is keyed by (substate_id, version) and its value never changes. `is_latest` is the only
--- claim that is ever retracted: it marks the row as the answer to an unversioned read.
+-- claim that is ever retracted: it marks a row as an answer to an unversioned read. More than one
+-- version can hold it at a time, so such a read takes the highest claiming version, which the
+-- primary key serves in descending order.
 create table substate_cache
 (
     substate_id      text    not null,
@@ -16,7 +18,6 @@ create table substate_cache
     primary key (substate_id, version)
 );
 
-create index idx_substate_cache_latest on substate_cache (substate_id) where is_latest;
 create index idx_substate_cache_evict on substate_cache (cached_at);
 
 -- Substates a synced transition has touched, retained only long enough to span a committee fetch.

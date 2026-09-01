@@ -37,7 +37,17 @@ pub struct SubstateCacheError(pub String);
 /// captured before a committee fetch and handed back to [`SubstateCache::write`], so a transition
 /// that arrived while the fetch was in flight can veto the write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct FetchWatermark(pub u64);
+pub struct FetchWatermark(u64);
+
+impl FetchWatermark {
+    pub const fn new(state_version: u64) -> Self {
+        Self(state_version)
+    }
+
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SubstateCacheEntry {

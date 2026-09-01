@@ -111,7 +111,7 @@ impl SubstateCache for SqliteSubstateCache {
         Ok(self
             .watermarks
             .get(Self::shard_of(id), self.max_serve_lag)
-            .map(|version| FetchWatermark(version.as_u64())))
+            .map(|version| FetchWatermark::new(version.as_u64())))
     }
 
     async fn read(

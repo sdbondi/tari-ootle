@@ -970,7 +970,7 @@ mod tests {
                         verified: true,
                         is_latest,
                     },
-                    FetchWatermark(watermark),
+                    FetchWatermark::new(watermark),
                 )
             })
             .await
@@ -1098,6 +1098,24 @@ mod tests {
         // And a versioned lookup after it does not take the claim back.
         assert!(put(&store, &id, 5, false, 100).await);
         assert_eq!(read(&store, &id, None).await, Some(5));
+    }
+
+    /// A lookup can observe a newer version before the transition that supersedes the cached one has
+    /// synced - `fetch_and_cache_substates` does not consult the cache at all - so two versions hold
+    /// the latest claim at once. An unversioned read must answer with the newer.
+    #[tokio::test]
+    async fn an_unversioned_read_takes_the_highest_claiming_version() {
+        let (_d, store) = temp_store().await;
+        let id = substate(1);
+        assert!(put(&store, &id, 5, true, 100).await);
+        assert!(put(&store, &id, 6, true, 100).await);
+        assert_eq!(read(&store, &id, None).await, Some(6));
+
+        // A validator that is behind can answer a later lookup with the older version. Its claim does
+        // not displace the newer one, and the older row still answers for itself.
+        assert!(put(&store, &id, 5, true, 100).await);
+        assert_eq!(read(&store, &id, None).await, Some(6));
+        assert_eq!(read(&store, &id, Some(5)).await, Some(5));
     }
 
     #[tokio::test]

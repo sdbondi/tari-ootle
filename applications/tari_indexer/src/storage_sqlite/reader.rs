@@ -1128,7 +1128,14 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
             .into_boxed();
         match version {
             Some(version) => query = query.filter(substate_cache::version.eq(version as i32)),
-            None => query = query.filter(substate_cache::is_latest.eq(true)),
+            // More than one version can hold the claim at once: a lookup that observed a newer
+            // version lands while an older row still claims it, and only a transition retires the
+            // older claim. The highest claiming version is the substate's latest known state.
+            None => {
+                query = query
+                    .filter(substate_cache::is_latest.eq(true))
+                    .order_by(substate_cache::version.desc())
+            },
         }
 
         let row: Option<SubstateCacheRow> =
