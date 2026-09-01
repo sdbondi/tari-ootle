@@ -140,10 +140,31 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    substate_cache (substate_id, version) {
+        substate_id -> Text,
+        version -> Integer,
+        is_latest -> Bool,
+        verified -> Bool,
+        substate_result -> Binary,
+        cached_at -> BigInt,
+    }
+}
+
+diesel::table! {
+    substate_cache_invalidations (substate_id) {
+        substate_id -> Text,
+        state_version -> BigInt,
+        invalidated_at -> BigInt,
+    }
+}
+
 diesel::allow_tables_to_appear_in_same_query!(
     epoch_checkpoints,
     events,
     key_values,
+    substate_cache,
+    substate_cache_invalidations,
     substate_transitions,
     substates,
     template_catalogue,

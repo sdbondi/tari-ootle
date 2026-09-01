@@ -1808,7 +1808,7 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
                         // A destroy carries no value, so `all_hashes` admits it at the cost of an id
                         // and a version: the only signal a subscriber has that a substate outside its
                         // value filter went down with no successor version.
-                        (value_filter.contains_substate(&substate.substate_id) || all_hashes).then(|| {
+                        (all_hashes || value_filter.contains_substate(&substate.substate_id)).then(|| {
                             SubstateUpdateProof::Destroy(SubstateDestroy {
                                 substate_id: substate.substate_id,
                                 version: substate.version,

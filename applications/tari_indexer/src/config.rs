@@ -130,11 +130,22 @@ pub struct IndexerConfig {
     /// indexer serves, so this exists only for a node whose state is being discarded.
     #[serde(default)]
     pub allow_past_protocol_activation: bool,
-    /// How long a cached substate may be served as the latest version of that substate. Raising it
-    /// trades a wider window for handing out an already-spent input version against fewer validator
-    /// round trips on hot substates. Requests for a specific version are unaffected.
-    #[serde(default = "default_latest_substate_cache_ttl", with = "serializers::seconds")]
-    pub latest_substate_cache_ttl: Duration,
+    /// How long after a shard was last confirmed level with its committee the substate cache keeps
+    /// serving entries for it. A cached substate is served on the argument that every commit which
+    /// could supersede or destroy it has already reached this indexer through that shard's transition
+    /// stream, which only holds while the stream is being kept up with.
+    ///
+    /// It must comfortably exceed a full sync round - `state_scanning_interval` plus however long it
+    /// takes to sync every shard group - or the cache closes between rounds and every read costs a
+    /// validator round trip. It is also the only bound on a validator that has stopped serving
+    /// transitions: until it expires, values that the withheld transitions would have retracted are
+    /// still served. Ordinary staleness is bounded by the sync round, not by this.
+    #[serde(default = "default_substate_cache_max_serve_lag", with = "serializers::seconds")]
+    pub substate_cache_max_serve_lag: Duration,
+    /// Maximum substate versions held in the cache. Beyond this the oldest are evicted, at the cost
+    /// of one validator round trip each to fetch again.
+    #[serde(default = "default_substate_cache_max_entries")]
+    pub substate_cache_max_entries: usize,
     /// How many epochs past its terminal epoch a stored transaction is retained before it is pruned.
     /// A transaction's terminal epoch is the epoch it committed in once its receipt has been
     /// indexed, and its `max_epoch` — the last epoch it could still be sequenced in — until then, so
@@ -202,8 +213,12 @@ fn default_verify_substate_proofs() -> bool {
     true
 }
 
-fn default_latest_substate_cache_ttl() -> Duration {
-    Duration::from_secs(2)
+fn default_substate_cache_max_serve_lag() -> Duration {
+    Duration::from_secs(300)
+}
+
+fn default_substate_cache_max_entries() -> usize {
+    100_000
 }
 
 /// The subset of an indexer's configuration that is published over its API, as it affects what
@@ -215,7 +230,7 @@ pub struct PublishedIndexerConfig {
     pub transaction_retention_epochs: Option<u64>,
     pub index_gossiped_transactions: bool,
     pub verify_substate_proofs: bool,
-    pub latest_substate_cache_ttl: Duration,
+    pub substate_cache_max_serve_lag: Duration,
     pub indexes_all_events: bool,
 }
 
@@ -226,7 +241,7 @@ impl From<&IndexerConfig> for PublishedIndexerConfig {
             transaction_retention_epochs: config.transaction_retention_epochs,
             index_gossiped_transactions: config.index_gossiped_transactions,
             verify_substate_proofs: config.verify_substate_proofs,
-            latest_substate_cache_ttl: config.latest_substate_cache_ttl,
+            substate_cache_max_serve_lag: config.substate_cache_max_serve_lag,
             indexes_all_events: config.event_filters.is_empty() ||
                 config.event_filters.iter().any(EventFilter::is_match_all),
         }
@@ -345,7 +360,8 @@ impl Default for IndexerConfig {
             sidechain_id: None,
             dry_run_cache_ttl: Duration::from_secs(10),
             allow_past_protocol_activation: false,
-            latest_substate_cache_ttl: default_latest_substate_cache_ttl(),
+            substate_cache_max_serve_lag: default_substate_cache_max_serve_lag(),
+            substate_cache_max_entries: default_substate_cache_max_entries(),
             transaction_retention_epochs: default_transaction_retention_epochs(),
             index_gossiped_transactions: default_index_gossiped_transactions(),
             max_transaction_gossip_queue_bytes: default_max_transaction_gossip_queue_bytes(),

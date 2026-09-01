@@ -22,7 +22,6 @@
 
 use std::future::Future;
 
-use serde::{Deserialize, Serialize};
 use tari_engine_types::substate::SubstateId;
 use tari_validator_node_rpc::client::SubstateResult;
 
@@ -30,42 +29,60 @@ use tari_validator_node_rpc::client::SubstateResult;
 #[error("Failed substate cache operation {0}")]
 pub struct SubstateCacheError(pub String);
 
-#[derive(Debug, Deserialize, Clone, minicbor::Decode, minicbor::CborLen)]
+/// A point in a shard's state transition stream up to which the cache holds every transition.
+///
+/// The cache is served on a completeness argument rather than a timer: an entry answers for the
+/// substate's latest version because every commit that would supersede or destroy it reaches the
+/// cache through that shard's stream. A watermark is what makes the argument checkable — it is
+/// captured before a committee fetch and handed back to [`SubstateCache::write`], so a transition
+/// that arrived while the fetch was in flight can veto the write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FetchWatermark(pub u64);
+
+#[derive(Debug, Clone)]
 pub struct SubstateCacheEntry {
-    #[n(0)]
     pub version: u32,
-    #[n(1)]
     pub substate_result: SubstateResult,
-    #[n(2)]
     pub cached_at: u64,
-    /// True if the value was committee-verified when it was fetched. Entries written before this
-    /// field existed decode as unverified.
-    #[n(3)]
-    #[serde(default)]
-    #[cbor(default)]
+    /// True if the value was committee-verified when it was fetched.
     pub verified: bool,
 }
 
-#[derive(Debug, Serialize, Clone, Copy, minicbor::Encode, minicbor::CborLen)]
+#[derive(Debug, Clone, Copy)]
 pub struct SubstateCacheEntryRef<'a> {
-    #[n(0)]
     pub version: u32,
-    #[n(1)]
     pub substate_result: &'a SubstateResult,
-    #[n(2)]
     pub cached_at: u64,
-    #[n(3)]
     pub verified: bool,
+    /// The lookup that produced this entry asked for the substate's latest version, so it answers
+    /// unversioned reads until a transition for the substate retracts the claim.
+    pub is_latest: bool,
 }
 
 pub trait SubstateCache: Send + Sync {
+    /// The watermark for the shard owning `id`, or `None` when that shard's completeness cannot be
+    /// established - it has never been synced, or the last sync of it is too far behind to serve
+    /// from. Nothing may be cached for a substate whose shard has no watermark.
+    fn watermark(
+        &self,
+        id: &SubstateId,
+    ) -> impl Future<Output = Result<Option<FetchWatermark>, SubstateCacheError>> + Send;
+
+    /// The cached answer for `id` at `version`, or for its latest version when `version` is `None`.
+    /// Returns `None` when nothing is cached or the shard has no watermark.
     fn read(
         &self,
         id: &SubstateId,
+        version: Option<u32>,
     ) -> impl Future<Output = Result<Option<SubstateCacheEntry>, SubstateCacheError>> + Send;
+
+    /// Records `entry`, provided no transition for `id` has arrived since `watermark`. A write
+    /// vetoed that way is not an error: the caller still has its freshly fetched value, and the next
+    /// read fetches again.
     fn write(
         &self,
         id: &SubstateId,
         entry: SubstateCacheEntryRef<'_>,
+        watermark: FetchWatermark,
     ) -> impl Future<Output = Result<(), SubstateCacheError>> + Send;
 }

@@ -59,17 +59,11 @@ use tari_validator_node_rpc::client::{
 use crate::{
     error::IndexerError,
     substate_cache::{SubstateCache, SubstateCacheEntry, SubstateCacheEntryRef},
-    substate_versions::SubstateVersionTracker,
 };
 
 const LOG_TARGET: &str = "tari::indexer::scanner";
 
-const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(300);
-
-/// How long a cached value may be served as the latest version of its substate: the window in which a
-/// wallet can be handed a version consensus has already spent. Comparable to the unavoidable gap
-/// between submitting a transaction and it committing, below which a fresher indexer buys nothing.
-const DEFAULT_LATEST_VERSION_TTL: Duration = Duration::from_secs(2);
+const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(900);
 
 /// A store of committee-validated shard-group state merkle roots that the read path consults to
 /// avoid re-validating a served commit proof's QC chain when its root is already trusted.
@@ -102,14 +96,10 @@ pub struct CachedSubstateManager<TEpochManager, TVnClient, TSubstateCache> {
     committee_provider: TEpochManager,
     validator_node_client_factory: TVnClient,
     substate_cache: TSubstateCache,
-    /// Bounds how long an entry may answer for the exact version it holds - specifically its verdict
-    /// on whether that version is still up, since the value itself never changes. Backstops
-    /// [`SubstateVersionTracker`], which is capacity bounded, lags by a sync interval, and is empty
-    /// after a restart while the on-disk cache is not.
+    /// Coarse staleness backstop on every cache entry. Correctness rests on the cache's own
+    /// invalidation, so this exists to bound how long a value may be served if the transitions that
+    /// would have retracted it never arrive.
     cache_ttl: Duration,
-    /// See [`DEFAULT_LATEST_VERSION_TTL`].
-    latest_version_ttl: Duration,
-    substate_versions: Arc<SubstateVersionTracker>,
     /// When set, substates fetched from a validator must come with a proof that verifies against the
     /// shard group committee, or they are rejected (fail-closed). The negative `DoesNotExist` case
     /// is not provable and is left to the existing f+1 agreement.
@@ -133,7 +123,6 @@ where
         committee_provider: TEpochManager,
         validator_node_client_factory: TVnClient,
         substate_cache: TSubstateCache,
-        substate_versions: Arc<SubstateVersionTracker>,
     ) -> Self {
         Self {
             network,
@@ -141,8 +130,6 @@ where
             validator_node_client_factory,
             substate_cache,
             cache_ttl: DEFAULT_CACHE_TTL,
-            latest_version_ttl: DEFAULT_LATEST_VERSION_TTL,
-            substate_versions,
             verify_substate_proofs: false,
             trusted_root_store: None,
             #[cfg(feature = "metrics")]
@@ -153,16 +140,6 @@ where
     pub fn with_cache_ttl(mut self, ttl: Duration) -> Self {
         self.cache_ttl = ttl;
         self
-    }
-
-    pub fn with_latest_version_ttl(mut self, ttl: Duration) -> Self {
-        self.latest_version_ttl = ttl;
-        self
-    }
-
-    /// Clamped: an entry that has aged out for exact-version reads cannot still be the latest.
-    fn latest_version_ttl(&self) -> Duration {
-        self.latest_version_ttl.min(self.cache_ttl)
     }
 
     pub fn with_substate_proof_verification(mut self, enabled: bool) -> Self {
@@ -196,9 +173,7 @@ where
         specific_version: Option<u32>,
     ) -> Result<SubstateLookupResult, IndexerError> {
         debug!(target: LOG_TARGET, "get_substate: {}v{}", substate_id, specific_version.display());
-        let mut cached_version = None;
-        // start from the latest cached version of the substate (if cached previously)
-        let cache_res = self.substate_cache.read(substate_id).await?;
+        let cache_res = self.substate_cache.read(substate_id, specific_version).await?;
         if let Some(entry) = cache_res {
             // An unverified entry (e.g. written by the batch path or before verification was
             // enabled) is never served while verification is on: refetch so it can be replaced with
@@ -206,19 +181,7 @@ where
             if entry.verified || !self.verify_substate_proofs {
                 let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_secs();
                 let age = now.saturating_sub(entry.cached_at);
-                let is_up = matches!(entry.substate_result, SubstateResult::Up { .. });
-                // Lags the chain by a sync interval, so it retires long-lived entries rather than
-                // policing the latest-version window - that is the TTL's job.
-                let is_superseded = self.substate_versions.is_superseded(substate_id, entry.version);
-
-                let is_servable = !is_superseded &&
-                    match specific_version {
-                        Some(version) => entry.version == version && age <= self.cache_ttl.as_secs(),
-                        // A `Down` entry can never be the latest version.
-                        None => is_up && age <= self.latest_version_ttl().as_secs(),
-                    };
-
-                if is_servable {
+                if age <= self.cache_ttl.as_secs() {
                     debug!(target: LOG_TARGET, "Substate cache hit for {} with version {}", substate_id, entry.version);
                     #[cfg(feature = "metrics")]
                     self.metrics.as_ref().inspect(|m| m.inc_cache_hits());
@@ -230,37 +193,37 @@ where
 
                 debug!(
                     target: LOG_TARGET,
-                    "Cached substate {} at v{} (age {}s) cannot answer a request for v{} (superseded: {}). Fetching from committee.",
+                    "Cached substate {} at v{} has aged out ({}s). Fetching from committee.",
                     substate_id,
                     entry.version,
                     age,
-                    specific_version.display(),
-                    is_superseded,
                 );
-                cached_version = Some(entry.version);
             }
         }
         #[cfg(feature = "metrics")]
         self.metrics.as_ref().inspect(|m| m.inc_cache_misses());
 
+        // Captured before the fetch so that a transition arriving while it is in flight can veto the
+        // write it produces.
+        let watermark = self.substate_cache.watermark(substate_id).await?;
+
         let lookup_result = self
             .fetch_substate_from_committee(substate_id, specific_version)
             .await?;
 
-        if let Some(version) = lookup_result.result.version() {
+        if let (Some(watermark), Some(version)) = (watermark, lookup_result.result.version()) {
             // Unverified results are not cached while verification is on, so the next read retries
-            // for a proven copy instead of pinning the unverified value for the TTL.
-            let should_update_cache =
-                (lookup_result.verified || !self.verify_substate_proofs) && cached_version.is_none_or(|v| v < version);
-            if should_update_cache {
+            // for a proven copy instead of pinning the unverified value.
+            if lookup_result.verified || !self.verify_substate_proofs {
                 debug!(target: LOG_TARGET, "Updating cached substate {} with version {}", substate_id, version);
                 let entry = SubstateCacheEntryRef {
                     version,
                     substate_result: &lookup_result.result,
                     cached_at: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_secs(),
                     verified: lookup_result.verified,
+                    is_latest: specific_version.is_none(),
                 };
-                self.substate_cache.write(substate_id, entry).await?;
+                self.substate_cache.write(substate_id, entry, watermark).await?;
             }
         }
 
@@ -273,7 +236,7 @@ where
     ) -> Result<HashMap<&'a SubstateId, Option<SubstateCacheEntry>>, IndexerError> {
         let mut results = HashMap::with_capacity(substate_ids.len());
         for substate_id in substate_ids {
-            let cache_res = self.substate_cache.read(substate_id).await?;
+            let cache_res = self.substate_cache.read(substate_id, None).await?;
             results.insert(substate_id, cache_res);
         }
         Ok(results)
@@ -310,6 +273,15 @@ where
         let num_committees = self.committee_provider.get_num_committees(epoch).await?;
         let committee_map = self.build_vn_committee_map(substate_ids, epoch, num_committees).await?;
 
+        // Captured before any fetch so that a transition arriving while one is in flight can veto the
+        // write it produces.
+        let mut watermarks = HashMap::with_capacity(substate_ids.len());
+        for substate_id in substate_ids {
+            if let Some(watermark) = self.substate_cache.watermark(substate_id).await? {
+                watermarks.insert(substate_id, watermark);
+            }
+        }
+
         let mut results = HashMap::with_capacity(substate_ids.len());
         for (shard_group, (committee, substate_ids)) in committee_map {
             debug!(target: LOG_TARGET, "Fetching {} substates from shard group {}", substate_ids.len(), shard_group);
@@ -332,6 +304,9 @@ where
                     batch_count += 1;
 
                     for (substate_id, substate) in &resp {
+                        let Some(watermark) = watermarks.get(substate_id).copied() else {
+                            continue;
+                        };
                         let substate_result = SubstateResult::Up {
                             substate: Box::new(substate.clone()),
                         };
@@ -341,8 +316,9 @@ where
                             substate_result: &substate_result,
                             cached_at: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_secs(),
                             verified: false,
+                            is_latest: true,
                         };
-                        self.substate_cache.write(substate_id, entry).await?;
+                        self.substate_cache.write(substate_id, entry, watermark).await?;
                     }
                     results.extend(resp);
                 }

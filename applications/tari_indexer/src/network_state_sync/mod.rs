@@ -7,6 +7,7 @@ mod error;
 mod event_filter;
 #[cfg(feature = "metrics")]
 mod metrics;
+mod shard_watermarks;
 mod stats;
 mod sync_plan;
 mod sync_progress;
@@ -17,6 +18,7 @@ pub use config::*;
 pub use event_filter::*;
 #[cfg(feature = "metrics")]
 pub use metrics::NetworkStateMetrics;
+pub use shard_watermarks::ShardWatermarks;
 pub use sync_progress::*;
 pub use validator_status::ValidatorStatusMonitor;
 pub use worker::*;

@@ -44,7 +44,7 @@ mod network_state_sync;
 mod notify;
 mod storage_sqlite;
 mod store;
-mod substate_file_cache;
+mod substate_cache;
 mod substate_manager;
 mod template_manager;
 mod transaction_gossip;

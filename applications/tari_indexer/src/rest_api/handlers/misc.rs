@@ -65,7 +65,7 @@ pub async fn get_info(Extension(context): Extension<HandlerContext>) -> HandlerR
         transaction_retention_epochs: config.transaction_retention_epochs,
         index_gossiped_transactions: config.index_gossiped_transactions,
         verify_substate_proofs: config.verify_substate_proofs,
-        latest_substate_cache_ttl_secs: config.latest_substate_cache_ttl.as_secs(),
+        substate_cache_max_serve_lag_secs: config.substate_cache_max_serve_lag.as_secs(),
         indexes_all_events: config.indexes_all_events,
     };
     // Only `current_epoch` changes at runtime; the rest is fixed for the life of the process.

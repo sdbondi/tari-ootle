@@ -26,6 +26,7 @@ use std::{
     io,
     str::FromStr,
     sync::Arc,
+    time::Duration,
 };
 
 use anyhow::{Context, anyhow};
@@ -52,7 +53,6 @@ use tari_epoch_oracles::{
     store::EpochOracleStore,
 };
 use tari_indexer_client::event::{IndexerEvent, TransactionEvent};
-use tari_indexer_lib::substate_versions::SubstateVersionTracker;
 use tari_networking::{
     MessagingMode,
     NetworkingHandle,
@@ -97,7 +97,7 @@ use crate::{
     notify::Notify,
     storage_sqlite::{SqliteIndexerStore, models::Key},
     store::{IndexerStore, IndexerStoreReadTransaction, IndexerStoreWriteTransaction},
-    substate_file_cache::SubstateFileCache,
+    substate_cache::SqliteSubstateCache,
     substate_manager::SubstateManager,
     template_manager::TemplateManager,
     transaction_gossip::TransactionGossipService,
@@ -106,6 +106,13 @@ use crate::{
 };
 
 const LOG_TARGET: &str = "tari::indexer::bootstrap";
+
+/// How long a substate stays journalled as recently changed. The journal exists only to stop a
+/// committee fetch that started before a transition arrived from writing its result back as current,
+/// so it needs to outlive an in-flight fetch and nothing more.
+const SUBSTATE_CACHE_JOURNAL_RETENTION: Duration = Duration::from_secs(300);
+
+const SUBSTATE_CACHE_PRUNE_INTERVAL: Duration = Duration::from_secs(60);
 
 #[allow(clippy::too_many_lines)]
 pub async fn spawn_services(
@@ -254,9 +261,9 @@ pub async fn spawn_services(
     #[cfg(feature = "metrics")]
     let network_state_metrics = network_state_sync::NetworkStateMetrics::register(metrics_registry);
 
-    // Shared between the state sync (which records committed substate versions) and the substate
-    // manager (which uses them to tell a superseded cache entry from a current one).
-    let substate_versions = Arc::new(SubstateVersionTracker::new());
+    // Shared between the state sync (which confirms how far each shard is synced) and the substate
+    // cache (which serves an entry only while its shard is being kept up with).
+    let shard_watermarks = Arc::new(network_state_sync::ShardWatermarks::new());
 
     network_state_sync::NetworkWideStateSync::new(
         config.network,
@@ -271,7 +278,7 @@ pub async fn spawn_services(
         event_notifier.clone(),
         transaction_event_notifier.clone(),
         validator_status.clone(),
-        substate_versions.clone(),
+        shard_watermarks.clone(),
         #[cfg(feature = "metrics")]
         network_state_metrics,
         #[cfg(feature = "metrics")]
@@ -280,17 +287,21 @@ pub async fn spawn_services(
     .spawn(shutdown.clone());
 
     // Substate manager
-    let substate_cache_dir = config.to_data_dir().join("substate_cache");
-    let substate_cache = SubstateFileCache::new(substate_cache_dir).context("Failed to create substate cache")?;
+    let substate_cache = SqliteSubstateCache::new(
+        store.clone(),
+        shard_watermarks,
+        config.indexer.substate_cache_max_serve_lag,
+        SUBSTATE_CACHE_JOURNAL_RETENTION,
+        config.indexer.substate_cache_max_entries,
+    );
+    substate_cache.spawn_pruner(SUBSTATE_CACHE_PRUNE_INTERVAL, shutdown.clone());
     let substate_manager = SubstateManager::new(
         config.network,
         store.clone(),
         epoch_manager.clone(),
         validator_node_client_factory.clone(),
         substate_cache,
-        substate_versions,
     )
-    .with_latest_version_ttl(config.indexer.latest_substate_cache_ttl)
     .with_substate_proof_verification(config.indexer.verify_substate_proofs);
     #[cfg(feature = "metrics")]
     let substate_manager = substate_manager.with_metrics(metrics_registry);

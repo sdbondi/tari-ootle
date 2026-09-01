@@ -51,11 +51,13 @@ export type GetIndexerInfoResponse = {
    */
   verify_substate_proofs: boolean;
   /**
-   * How long this indexer may serve a cached substate as the latest version of that substate, in
-   * seconds. A read of the latest version may be up to this stale; reads of a specific version are
-   * unaffected.
+   * How long after a shard was last confirmed synced this indexer keeps serving cached substates
+   * for it, in seconds. Cached values are invalidated by the state transitions this indexer syncs
+   * rather than expired on a timer, so a served value trails the chain by the sync interval rather
+   * than by this bound - which is what stops a validator that has stopped serving transitions from
+   * holding a stale value open indefinitely.
    */
-  latest_substate_cache_ttl_secs: bigint;
+  substate_cache_max_serve_lag_secs: bigint;
   /**
    * Whether this indexer stores every event on the network. When false it is configured with event
    * filters, so event queries answer over a subset and absence is not proof an event did not occur.

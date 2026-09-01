@@ -19,7 +19,6 @@ use tari_engine_types::{
 };
 use tari_epoch_manager::{EpochManagerEvent, EpochManagerReader, service::EpochManagerHandle};
 use tari_indexer_client::event::{IndexerEvent, NewEpochEvent, TransactionEvent, TransactionFinalizedEvent};
-use tari_indexer_lib::substate_versions::SubstateVersionTracker;
 use tari_networking::NetworkingHandle;
 use tari_ootle_common_types::{Epoch, ShardGroup, StateVersion, VotePower, optional::Optional, shard::Shard};
 use tari_ootle_p2p::{PeerAddress, TariMessagingSpec, proto::rpc};
@@ -46,6 +45,7 @@ use crate::{
         committee_client::{ValidatorCommitteeRpcPool, ValidatorRpcSession},
         config::NetworkWideStateSyncConfig,
         error::NetworkStateSyncError,
+        shard_watermarks::ShardWatermarks,
         stats::SyncStats,
         sync_plan::SyncPlan,
         sync_progress::SyncProgress,
@@ -55,7 +55,7 @@ use crate::{
     storage_sqlite::{
         SqliteIndexerStore,
         SqliteStoreWriteTransaction,
-        models::{Key, UtxoSpent, UtxoUnspent, UtxoUpdateRecord, VerifiedStateRoot},
+        models::{Key, SubstateCacheInvalidation, UtxoSpent, UtxoUnspent, UtxoUpdateRecord, VerifiedStateRoot},
     },
     store::{
         IndexerStore,
@@ -79,7 +79,7 @@ pub struct NetworkWideStateSync {
     notify: Notify<IndexerEvent>,
     transaction_event_notify: Notify<TransactionEvent>,
     validator_status: ValidatorStatusMonitor,
-    substate_versions: Arc<SubstateVersionTracker>,
+    shard_watermarks: Arc<ShardWatermarks>,
     #[cfg(feature = "metrics")]
     metrics: NetworkStateMetrics,
     #[cfg(feature = "metrics")]
@@ -96,7 +96,7 @@ impl NetworkWideStateSync {
         notify: Notify<IndexerEvent>,
         transaction_event_notify: Notify<TransactionEvent>,
         validator_status: ValidatorStatusMonitor,
-        substate_versions: Arc<SubstateVersionTracker>,
+        shard_watermarks: Arc<ShardWatermarks>,
         #[cfg(feature = "metrics")] metrics: NetworkStateMetrics,
         #[cfg(feature = "metrics")] consensus_constants: ConsensusConstants,
     ) -> Self {
@@ -110,7 +110,7 @@ impl NetworkWideStateSync {
             notify,
             transaction_event_notify,
             validator_status,
-            substate_versions,
+            shard_watermarks,
             #[cfg(feature = "metrics")]
             metrics,
             #[cfg(feature = "metrics")]
@@ -488,8 +488,17 @@ impl NetworkWideStateSync {
         }
 
         if !incremental.is_empty() {
-            self.stream_shard_state(incremental, value_filters, sync_plan_mut, shard_group, session)
-                .await?;
+            // ALL_HASHES adds an id and a version for every substate outside the value filter, which is
+            // what lets the substate cache tell a superseded or destroyed entry from a current one. It
+            // is pointless on the from-scratch stream: those shards have no cached entries to retire.
+            self.stream_shard_state(
+                incremental,
+                value_filters | SubstateValueFilterFlags::ALL_HASHES,
+                sync_plan_mut,
+                shard_group,
+                session,
+            )
+            .await?;
         }
 
         Ok(())
@@ -558,6 +567,7 @@ impl NetworkWideStateSync {
         // Buffers accumulate a single (shard, state version) at a time: the responder splits an
         // oversized version into chunks flagged `has_more`, and the last chunk flushes them.
         let mut update_buf = Vec::new();
+        let mut invalidations_buf = Vec::new();
         let mut utxos_buf = Vec::new();
         let mut transactions_buf = Vec::new();
         let mut validator_fee_pools_buf = Vec::new();
@@ -604,6 +614,12 @@ impl NetworkWideStateSync {
                             .with_write_tx(move |tx| tx.key_value_set(Key::SyncProgress, sync_progress_snapshot))
                             .await?;
                     }
+                    // The completion marker is the only point at which this shard is known to be
+                    // level with the committee, which is what the substate cache needs: mid-stream
+                    // the indexer holds every transition up to some version while the chain is
+                    // arbitrarily far ahead of it. Confirmed even when the watermark did not move -
+                    // a quiet shard is still one this indexer is keeping up with.
+                    self.shard_watermarks.confirm(shard, synced_to);
                     debug!(target: LOG_TARGET, "🌍️ Completed state sync for shard {shard} in shard group {shard_group} to epoch {msg_epoch} and state version {synced_to}");
                     if complete.is_final {
                         saw_final = true;
@@ -642,7 +658,9 @@ impl NetworkWideStateSync {
                     state_version,
                     update,
                     msg_epoch,
+                    value_filters,
                     &mut update_buf,
+                    &mut invalidations_buf,
                     &mut utxos_buf,
                     &mut transactions_buf,
                     &mut validator_fee_pools_buf,
@@ -662,17 +680,9 @@ impl NetworkWideStateSync {
             self.stats.increase_state_updates(update_buf.len());
 
             let updates = std::mem::take(&mut update_buf);
+            let invalidations = std::mem::take(&mut invalidations_buf);
             let utxos = std::mem::take(&mut utxos_buf);
             let transactions = std::mem::take(&mut transactions_buf);
-
-            // Upping a substate is the point at which its previous version goes down, so this is the
-            // substate cache's only signal that an entry it holds has been superseded.
-            self.substate_versions.record_up_all(
-                transactions
-                    .iter()
-                    .flat_map(|(_, receipt)| receipt.diff_summary().upped.iter())
-                    .map(|up| (&up.substate_id, up.version)),
-            );
             let validator_fee_pools = std::mem::take(&mut validator_fee_pools_buf);
             let template_catalogue = std::mem::take(&mut template_catalogue_buf);
 
@@ -700,6 +710,10 @@ impl NetworkWideStateSync {
                     debug!(target: LOG_TARGET, "✅ Committing {} updates for shard {shard} (epoch: {msg_epoch}, state version: {state_version})", updates_len);
                     // TODO: this is not currently used. Consider removing.
                     tx.batch_insert_substate_transitions(network, shard, state_version, updates)?;
+                    // Must commit with the watermark below: the substate cache serves an entry on the
+                    // argument that it holds every transition up to that watermark, which a reader
+                    // seeing one of the two without the other would break.
+                    tx.substate_cache_invalidate(invalidations, state_version)?;
                     debug!(target: LOG_TARGET, "✅ Committing {} UTXOs for shard {shard} (epoch: {msg_epoch})", utxos_len);
                     tx.batch_insert_utxo_updates(msg_epoch, utxos)?;
                     for substate_data in validator_fee_pools {
@@ -898,13 +912,21 @@ fn process_watched_substate_events(
     Ok(())
 }
 
+/// Sorts one streamed transition into the buffers a commit is assembled from.
+///
+/// Every transition retires cache entries, so every one reaches `invalidations_buf`. Only those
+/// whose substate `value_filters` selects carry a value; the rest arrive as an id and a version
+/// under `ALL_HASHES` and must reach nothing else - indexing one, counting it in the economic totals
+/// or emitting an event for it would all be reading a value that was never sent.
 fn extend_bufs_from_substate_update(
     notify: &Notify<IndexerEvent>,
     shard: Shard,
     state_version: StateVersion,
     update: SubstateUpdateProof,
     msg_epoch: Epoch,
+    value_filters: SubstateValueFilterFlags,
     update_buf: &mut Vec<(Epoch, SubstateUpdateProof)>,
+    invalidations_buf: &mut Vec<SubstateCacheInvalidation>,
     utxos_buf: &mut Vec<UtxoUpdateRecord>,
     transactions_buf: &mut Vec<(TransactionReceiptAddress, TransactionReceipt)>,
     validator_fee_pools_buf: &mut Vec<SubstateData>,
@@ -913,6 +935,21 @@ fn extend_bufs_from_substate_update(
     xtr_fees_mut: &mut Amount,
     xtr_receipt_burn_mut: &mut Amount,
 ) -> Result<(), NetworkStateSyncError> {
+    invalidations_buf.push(match &update {
+        SubstateUpdateProof::Create(create) => SubstateCacheInvalidation::Created {
+            substate_id: create.substate.substate_id().clone(),
+            version: create.substate.version,
+        },
+        SubstateUpdateProof::Destroy(destroy) => SubstateCacheInvalidation::Destroyed {
+            substate_id: destroy.substate_id.clone(),
+            version: destroy.version,
+        },
+    });
+
+    if !value_filters.contains_substate(update.substate_id()) {
+        return Ok(());
+    }
+
     match &update {
         SubstateUpdateProof::Create(create) => {
             if create.substate.substate_id().is_template() {

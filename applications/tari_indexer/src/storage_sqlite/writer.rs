@@ -4,6 +4,7 @@
 use std::{
     ops::{Deref, DerefMut},
     sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use diesel::{OptionalExtension, QueryDsl, RunQueryDsl, SqliteConnection};
@@ -16,6 +17,7 @@ use tari_engine_types::{
     transaction_receipt::TransactionReceipt,
 };
 use tari_indexer_client::types::TransactionSource;
+use tari_indexer_lib::substate_cache::{FetchWatermark, SubstateCacheEntryRef};
 use tari_ootle_common_types::{Epoch, StateVersion, shard::Shard, substate_type::SubstateType};
 use tari_ootle_storage::{
     StorageError,
@@ -37,6 +39,7 @@ use crate::{
             NewTransaction,
             NewVerifiedStateRoot,
             NewWatchedSubstate,
+            SubstateCacheInvalidation,
             SubstateRecord,
             UtxoRecordInsert,
             UtxoRecordUpdate,
@@ -51,6 +54,12 @@ use crate::{
 };
 
 const LOG_TARGET: &str = "tari::indexer::storage_sqlite::writer";
+
+fn unix_timestamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
 
 pub struct SqliteStoreWriteTransaction<'a> {
     /// None indicates if the transaction has been explicitly committed/rolled back
@@ -511,6 +520,148 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
         diesel::delete(
             watched_substates::table.filter(watched_substates::component_address.eq(component_address.to_string())),
         )
+        .execute(self.connection())
+        .map_err(|e| StorageError::general(OPERATION, e))?;
+
+        Ok(())
+    }
+
+    fn substate_cache_put(
+        &mut self,
+        substate_id: &SubstateId,
+        entry: SubstateCacheEntryRef<'_>,
+        watermark: FetchWatermark,
+    ) -> Result<bool, StorageError> {
+        const OPERATION: &str = "substate_cache_put";
+        use crate::storage_sqlite::schema::{substate_cache, substate_cache_invalidations};
+
+        let id = substate_id.to_string();
+
+        // Read inside this transaction so that the journal and the insert cannot straddle a
+        // concurrent invalidation commit.
+        let invalidated_at_version: Option<i64> = substate_cache_invalidations::table
+            .select(substate_cache_invalidations::state_version)
+            .filter(substate_cache_invalidations::substate_id.eq(&id))
+            .first(self.connection())
+            .optional()
+            .map_err(|e| StorageError::general(OPERATION, e))?;
+
+        if invalidated_at_version.is_some_and(|v| v as u64 > watermark.0) {
+            debug!(
+                target: LOG_TARGET,
+                "Discarding cache write for {substate_id} v{}: its shard advanced past the fetch",
+                entry.version
+            );
+            return Ok(false);
+        }
+
+        let encoded = serialize_bincode(entry.substate_result)?;
+
+        diesel::insert_into(substate_cache::table)
+            .values((
+                substate_cache::substate_id.eq(&id),
+                substate_cache::version.eq(entry.version as i32),
+                substate_cache::is_latest.eq(entry.is_latest),
+                substate_cache::verified.eq(entry.verified),
+                substate_cache::substate_result.eq(&encoded),
+                substate_cache::cached_at.eq(entry.cached_at as i64),
+            ))
+            .on_conflict((substate_cache::substate_id, substate_cache::version))
+            .do_update()
+            .set((
+                substate_cache::verified.eq(entry.verified),
+                substate_cache::substate_result.eq(&encoded),
+                substate_cache::cached_at.eq(entry.cached_at as i64),
+            ))
+            .execute(self.connection())
+            .map_err(|e| StorageError::general(OPERATION, e))?;
+
+        // The claim is only ever set here, never cleared: a lookup that asked for this version
+        // specifically cannot say the version is the substate's latest, so it must leave a claim an
+        // unversioned lookup already made standing. Only a transition retracts one.
+        if entry.is_latest {
+            diesel::update(
+                substate_cache::table
+                    .filter(substate_cache::substate_id.eq(&id))
+                    .filter(substate_cache::version.eq(entry.version as i32)),
+            )
+            .set(substate_cache::is_latest.eq(true))
+            .execute(self.connection())
+            .map_err(|e| StorageError::general(OPERATION, e))?;
+        }
+
+        Ok(true)
+    }
+
+    fn substate_cache_invalidate<I: IntoIterator<Item = SubstateCacheInvalidation>>(
+        &mut self,
+        invalidations: I,
+        state_version: StateVersion,
+    ) -> Result<(), StorageError> {
+        const OPERATION: &str = "substate_cache_invalidate";
+        use crate::storage_sqlite::schema::{substate_cache, substate_cache_invalidations};
+
+        let now = unix_timestamp();
+        for invalidation in invalidations {
+            let id = invalidation.substate_id().to_string();
+
+            if let Some(retires_up_to) = invalidation.retires_up_to() {
+                diesel::delete(
+                    substate_cache::table
+                        .filter(substate_cache::substate_id.eq(&id))
+                        .filter(substate_cache::version.le(retires_up_to as i32)),
+                )
+                .execute(self.connection())
+                .map_err(|e| StorageError::general(OPERATION, e))?;
+            }
+
+            diesel::insert_into(substate_cache_invalidations::table)
+                .values((
+                    substate_cache_invalidations::substate_id.eq(&id),
+                    substate_cache_invalidations::state_version.eq(state_version.as_u64() as i64),
+                    substate_cache_invalidations::invalidated_at.eq(now),
+                ))
+                .on_conflict(substate_cache_invalidations::substate_id)
+                .do_update()
+                .set((
+                    substate_cache_invalidations::state_version.eq(state_version.as_u64() as i64),
+                    substate_cache_invalidations::invalidated_at.eq(now),
+                ))
+                .execute(self.connection())
+                .map_err(|e| StorageError::general(OPERATION, e))?;
+        }
+
+        Ok(())
+    }
+
+    fn substate_cache_prune(&mut self, journal_retention: Duration, max_entries: usize) -> Result<(), StorageError> {
+        const OPERATION: &str = "substate_cache_prune";
+        use crate::storage_sqlite::schema::{substate_cache, substate_cache_invalidations};
+
+        let cutoff = unix_timestamp().saturating_sub(journal_retention.as_secs() as i64);
+        diesel::delete(
+            substate_cache_invalidations::table.filter(substate_cache_invalidations::invalidated_at.le(cutoff)),
+        )
+        .execute(self.connection())
+        .map_err(|e| StorageError::general(OPERATION, e))?;
+
+        let count: i64 = substate_cache::table
+            .count()
+            .get_result(self.connection())
+            .map_err(|e| StorageError::general(OPERATION, e))?;
+        let excess = count.saturating_sub(max_entries as i64);
+        if excess <= 0 {
+            return Ok(());
+        }
+
+        // An evicted entry costs one committee round trip to restore, so oldest-written-first is a
+        // cheap approximation of least-recently-used: recording a read time would put a write on
+        // every cache hit.
+        diesel::sql_query(
+            "DELETE FROM substate_cache WHERE rowid IN (SELECT rowid FROM substate_cache ORDER BY cached_at ASC LIMIT \
+             ?)",
+        )
+        .bind::<diesel::sql_types::BigInt, _>(excess)
         .execute(self.connection())
         .map_err(|e| StorageError::general(OPERATION, e))?;
 

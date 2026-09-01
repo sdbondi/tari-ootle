@@ -23,6 +23,7 @@
 mod events;
 mod key_value;
 mod substate;
+mod substate_cache;
 mod template_catalogue;
 mod transaction;
 mod utxo;
@@ -33,6 +34,8 @@ mod watched_substate;
 pub use events::*;
 pub use key_value::*;
 pub use substate::*;
+pub use substate_cache::SubstateCacheInvalidation;
+pub(crate) use substate_cache::SubstateCacheRow;
 pub use template_catalogue::TemplateCatalogueEntry;
 pub(crate) use template_catalogue::{NewTemplateCatalogueRow, TemplateCatalogueRow};
 pub(crate) use transaction::{NewTransaction, encode_retention_epoch};

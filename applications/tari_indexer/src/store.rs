@@ -5,6 +5,7 @@ use std::{
     collections::HashMap,
     ops::{Deref, DerefMut},
     sync::Arc,
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -25,6 +26,7 @@ use tari_indexer_client::types::{
     TransactionSource,
     UtxoStateUpdateSet,
 };
+use tari_indexer_lib::substate_cache::{FetchWatermark, SubstateCacheEntry, SubstateCacheEntryRef};
 use tari_ootle_common_types::{
     Epoch,
     ShardGroup,
@@ -54,6 +56,7 @@ use crate::{
     storage_sqlite::models::{
         Key,
         KeyValue,
+        SubstateCacheInvalidation,
         SubstateRecord,
         TemplateCatalogueEntry,
         UtxoUpdateRecord,
@@ -253,6 +256,17 @@ pub trait IndexerStoreReadTransaction {
         epoch: Epoch,
         shard_group: ShardGroup,
     ) -> Result<Option<VerifiedStateRoot>, StorageError>;
+
+    // -------------------------------- Substate Cache -------------------------------- //
+
+    /// The cached answer for `substate_id` at `version`, or for its latest version when `version` is
+    /// `None`. Says nothing about whether the entry is fresh enough to serve - see
+    /// [`crate::substate_cache::SqliteSubstateCache`].
+    fn substate_cache_get(
+        &mut self,
+        substate_id: &SubstateId,
+        version: Option<u32>,
+    ) -> Result<Option<SubstateCacheEntry>, StorageError>;
 }
 
 pub trait IndexerStoreWriteTransaction {
@@ -324,6 +338,35 @@ pub trait IndexerStoreWriteTransaction {
     /// `(epoch, shard_group)` (a bounded ring) so reads landing on a validator slightly behind the
     /// indexer's last probe still hit a trusted root. Idempotent on `(epoch, shard_group, root)`.
     fn upsert_verified_state_root(&mut self, root: &VerifiedStateRoot) -> Result<(), StorageError>;
+
+    // -------------------------------- Substate Cache -------------------------------- //
+
+    /// Records a substate fetched from a committee, unless a transition for it has been applied since
+    /// `watermark` - in which case the fetch may have observed an older state than the cache already
+    /// knows about, and nothing it returned can be trusted as current. Returns whether the entry was
+    /// written.
+    fn substate_cache_put(
+        &mut self,
+        substate_id: &SubstateId,
+        entry: SubstateCacheEntryRef<'_>,
+        watermark: FetchWatermark,
+    ) -> Result<bool, StorageError>;
+
+    /// Retires the cached versions these transitions supersede or destroy, and journals each
+    /// substate at `state_version` so a fetch that started earlier cannot reinstate one.
+    ///
+    /// Must be applied in the same transaction that advances the sync watermark `state_version`
+    /// belongs to: an entry is served on the argument that the cache holds every transition up to
+    /// that watermark, which a reader observing one without the other would break.
+    fn substate_cache_invalidate<I: IntoIterator<Item = SubstateCacheInvalidation>>(
+        &mut self,
+        invalidations: I,
+        state_version: StateVersion,
+    ) -> Result<(), StorageError>;
+
+    /// Drops journal entries older than `journal_retention` and evicts the oldest cache entries down
+    /// to `max_entries`.
+    fn substate_cache_prune(&mut self, journal_retention: Duration, max_entries: usize) -> Result<(), StorageError>;
 }
 
 /// The locally recorded rejection state of a transaction.
