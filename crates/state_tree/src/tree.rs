@@ -184,13 +184,13 @@ fn calculate_substate_changes<
     // JMT nodes are keyed by (version, nibble_path). Writing a version that is not strictly ahead of
     // the base version overwrites live nodes with keys that this same write records as stale, so the
     // stale-node GC later deletes nodes the current tree still points at.
-    if let Some(current_version) = current_version {
-        if version <= current_version {
-            return Err(StateTreeError::NonMonotonicVersion {
-                current_version,
-                next_version: version,
-            });
-        }
+    if let Some(current_version) = current_version &&
+        version <= current_version
+    {
+        return Err(StateTreeError::NonMonotonicVersion {
+            current_version,
+            next_version: version,
+        });
     }
 
     let jmt = JellyfishMerkleTree::new(store);
