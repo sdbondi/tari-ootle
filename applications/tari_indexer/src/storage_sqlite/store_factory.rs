@@ -1016,15 +1016,7 @@ mod tests {
         assert!(put(&store, &id, 5, 100).await);
         assert_eq!(read(&store, &id).await, Some(5));
 
-        invalidate(
-            &store,
-            SubstateCacheInvalidation::Created {
-                substate_id: id.clone(),
-                version: 6,
-            },
-            105,
-        )
-        .await;
+        invalidate(&store, SubstateCacheInvalidation::created(id.clone(), 6).unwrap(), 105).await;
         assert_eq!(read(&store, &id).await, None);
     }
 
@@ -1034,15 +1026,7 @@ mod tests {
         let id = substate(1);
         assert!(put(&store, &id, 5, 100).await);
 
-        invalidate(
-            &store,
-            SubstateCacheInvalidation::Destroyed {
-                substate_id: id.clone(),
-                version: 5,
-            },
-            105,
-        )
-        .await;
+        invalidate(&store, SubstateCacheInvalidation::destroyed(id.clone(), 5), 105).await;
         assert_eq!(read(&store, &id).await, None);
     }
 
@@ -1055,24 +1039,8 @@ mod tests {
         let id = substate(1);
         assert!(put(&store, &id, 9, 100).await);
 
-        invalidate(
-            &store,
-            SubstateCacheInvalidation::Created {
-                substate_id: id.clone(),
-                version: 7,
-            },
-            105,
-        )
-        .await;
-        invalidate(
-            &store,
-            SubstateCacheInvalidation::Destroyed {
-                substate_id: id.clone(),
-                version: 8,
-            },
-            106,
-        )
-        .await;
+        invalidate(&store, SubstateCacheInvalidation::created(id.clone(), 7).unwrap(), 105).await;
+        invalidate(&store, SubstateCacheInvalidation::destroyed(id.clone(), 8), 106).await;
         assert_eq!(read(&store, &id).await, Some(9));
     }
 
@@ -1115,15 +1083,7 @@ mod tests {
     async fn a_write_is_vetoed_by_a_transition_that_landed_during_the_fetch() {
         let (_d, store) = temp_store().await;
         let id = substate(1);
-        invalidate(
-            &store,
-            SubstateCacheInvalidation::Created {
-                substate_id: id.clone(),
-                version: 6,
-            },
-            105,
-        )
-        .await;
+        invalidate(&store, SubstateCacheInvalidation::created(id.clone(), 6).unwrap(), 105).await;
 
         assert!(!put(&store, &id, 6, 100).await);
         assert_eq!(read(&store, &id).await, None);
@@ -1141,15 +1101,7 @@ mod tests {
         for n in 0..5u8 {
             assert!(put_entry(&store, &substate(n), 1, true, now - u64::from(4 - n), 100).await);
         }
-        invalidate(
-            &store,
-            SubstateCacheInvalidation::Created {
-                substate_id: substate(9),
-                version: 1,
-            },
-            105,
-        )
-        .await;
+        invalidate(&store, SubstateCacheInvalidation::created(substate(9), 1).unwrap(), 105).await;
 
         store
             .with_write_tx(|tx| tx.substate_cache_prune(Duration::ZERO, 2))

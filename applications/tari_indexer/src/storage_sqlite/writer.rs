@@ -615,15 +615,13 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
         for invalidation in invalidations {
             let id = invalidation.substate_id().to_string();
 
-            if let Some(retires_up_to) = invalidation.retires_up_to() {
-                diesel::delete(
-                    substate_cache::table
-                        .filter(substate_cache::substate_id.eq(&id))
-                        .filter(substate_cache::version.le(retires_up_to as i32)),
-                )
-                .execute(self.connection())
-                .map_err(|e| StorageError::general(OPERATION, e))?;
-            }
+            diesel::delete(
+                substate_cache::table
+                    .filter(substate_cache::substate_id.eq(&id))
+                    .filter(substate_cache::version.le(invalidation.retires_up_to() as i32)),
+            )
+            .execute(self.connection())
+            .map_err(|e| StorageError::general(OPERATION, e))?;
 
             diesel::insert_into(substate_cache_invalidations::table)
                 .values((
