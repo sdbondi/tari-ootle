@@ -3,7 +3,7 @@
 
 use tari_consensus::{
     hotstuff::substate_store::{LockFailedError, PendingSubstateStore, SubstateStoreError},
-    traits::{CertificateStore, ReadableSubstateStore, WriteableSubstateStore},
+    traits::{BlockTransactionExecutorError, CertificateStore, ReadableSubstateStore, WriteableSubstateStore},
 };
 use tari_consensus_types::{BlockId, LeafBlock};
 use tari_engine_types::{
@@ -17,6 +17,7 @@ use tari_ootle_common_types::{
     ShardGroup,
     SubstateLockType,
     VersionedSubstateId,
+    optional::IsNotFoundError,
     shard::Shard,
 };
 use tari_ootle_p2p::PeerAddress;
@@ -209,16 +210,30 @@ fn it_allows_requesting_the_same_lock_within_one_transaction() {
 }
 
 #[test]
-fn substate_is_down_is_classified_as_a_skippable_lock_failure() {
-    // A DOWN substate (e.g. surfaced by put_diff at propose time when an input version was already spent)
-    // must be classified as a recoverable lock failure. The proposer relies on ok_lock_failed() to skip such
-    // transactions instead of propagating the error, which would otherwise crash consensus.
+fn a_substate_with_no_live_version_is_a_skippable_lock_failure() {
+    // A substate with no live version (e.g. surfaced by put_diff at propose time when an input version was
+    // already spent) must be classified as a recoverable lock failure. The proposer relies on
+    // ok_lock_failed() to skip such transactions instead of propagating the error, which would otherwise
+    // crash consensus.
     let id = VersionedSubstateId::new(new_substate_id(0), 0);
-    let err = SubstateStoreError::SubstateIsDown { id };
+    let err = SubstateStoreError::SubstateNotFound { id };
     assert!(matches!(
         err.ok_lock_failed(),
-        Ok(LockFailedError::SubstateIsDown { .. })
+        Ok(LockFailedError::SubstateNotFound { .. })
     ));
+}
+
+#[test]
+fn a_substate_with_no_live_version_is_not_fatal_to_input_resolution() {
+    // prepare() treats anything that is not a not-found error as fatal and propagates it out of consensus.
+    // Resolving an input whose version was already spent must stay on the recoverable side of that test so
+    // the transaction aborts on its own.
+    let id = VersionedSubstateId::new(new_substate_id(0), 0);
+    assert!(SubstateStoreError::SubstateNotFound { id: id.clone() }.is_not_found_error());
+    assert!(
+        BlockTransactionExecutorError::SubstateStoreError(SubstateStoreError::SubstateNotFound { id })
+            .is_not_found_error()
+    );
 }
 
 fn add_substate(store: &TestStore, seed: u8, version: u32) -> VersionedSubstateId {

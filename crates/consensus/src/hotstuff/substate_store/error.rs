@@ -8,10 +8,13 @@ use tari_ootle_storage::{StorageError, consensus_models::LockConflict};
 pub enum SubstateStoreError {
     #[error("Lock failure: {0}")]
     LockFailed(#[from] LockFailedError),
-    #[error("Substate {id} not found")]
+    /// The substate has no live version at the requested version - it was destroyed, or was never
+    /// created. Which of the two cannot be distinguished without retaining every version ever created,
+    /// so the two must never be reported apart: the reason string reaches consensus through
+    /// `RejectReason`, and a node that has pruned its history would otherwise abort with a different
+    /// reason than one that has not.
+    #[error("Substate {id} is not found or DOWN")]
     SubstateNotFound { id: VersionedSubstateId },
-    #[error("Substate {id} is DOWN")]
-    SubstateIsDown { id: VersionedSubstateId },
     #[error("Expected substate {id} to be DOWN but it was UP")]
     ExpectedSubstateDown { id: VersionedSubstateId },
 
@@ -38,10 +41,10 @@ impl SubstateStoreError {
     pub fn ok_lock_failed(self) -> Result<LockFailedError, Self> {
         match self {
             SubstateStoreError::LockFailed(err) => Ok(err),
-            // A substate that is DOWN is an expected conflict (its version was already spent by an earlier
-            // transaction), not a fatal store error. Treat it as a lock failure so callers can skip or abort the
-            // transaction rather than aborting consensus.
-            SubstateStoreError::SubstateIsDown { id } => Ok(LockFailedError::SubstateIsDown { id }),
+            // A substate with no live version is an expected conflict (its version was already spent by an
+            // earlier transaction, or it never existed), not a fatal store error. Treat it as a lock failure
+            // so callers can skip or abort the transaction rather than aborting consensus.
+            SubstateStoreError::SubstateNotFound { id } => Ok(LockFailedError::SubstateNotFound { id }),
             other => Err(other),
         }
     }
@@ -49,10 +52,8 @@ impl SubstateStoreError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum LockFailedError {
-    #[error("Substate {id} not found")]
+    #[error("Substate {id} is not found or DOWN")]
     SubstateNotFound { id: VersionedSubstateId },
-    #[error("Substate {id} is DOWN")]
-    SubstateIsDown { id: VersionedSubstateId },
     #[error(
         "Failed to {} lock substate {substate_id} due to conflict with existing {} lock in transaction {}", conflict.requested_lock, conflict.existing_lock, conflict.transaction_id
     )]

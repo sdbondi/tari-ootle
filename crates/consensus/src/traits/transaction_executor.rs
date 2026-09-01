@@ -12,7 +12,7 @@ use tari_ootle_storage::{
 };
 use tari_ootle_transaction::Transaction;
 
-use crate::hotstuff::substate_store::{LockFailedError, SubstateStoreError};
+use crate::hotstuff::substate_store::SubstateStoreError;
 
 #[derive(thiserror::Error, Debug)]
 pub enum BlockTransactionExecutorError {
@@ -28,17 +28,6 @@ pub enum BlockTransactionExecutorError {
     TransactionPoolError(#[from] TransactionPoolError),
     #[error("BUG: Invariant error: {0}")]
     InvariantError(String),
-}
-impl BlockTransactionExecutorError {
-    pub fn is_substate_down_error(&self) -> bool {
-        matches!(
-            self,
-            BlockTransactionExecutorError::SubstateStoreError(SubstateStoreError::SubstateIsDown { .. }) |
-                BlockTransactionExecutorError::SubstateStoreError(SubstateStoreError::LockFailed(
-                    LockFailedError::SubstateIsDown { .. }
-                ))
-        )
-    }
 }
 
 impl IsNotFoundError for BlockTransactionExecutorError {
