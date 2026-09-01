@@ -1803,7 +1803,8 @@ mod balance_change_handler_tests {
     use tari_ootle_wallet_sdk::{
         WalletSdkConfig,
         cipher_seed::CipherSeedRestore,
-        models::{BalanceChangeSource, EpochBirthday, KeyBranch, KeyId},
+        models::{BalanceChangeSnapshot, BalanceChangeSource, EpochBirthday, KeyBranch, KeyId},
+        storage::{WalletStorageError, WalletStoreWriter, WriteableWalletStore},
     };
     use tari_ootle_wallet_sdk_services::{
         account_monitor::AccountMonitor,
@@ -1939,17 +1940,32 @@ mod balance_change_handler_tests {
                 BalanceChangeSource::Scan,
             )
             .unwrap();
-        for version in 2..=206 {
-            accounts
-                .update_vault_balance_and_record_change(
-                    second_vault,
-                    version,
-                    Amount::from(200u64 + u64::from(version)),
-                    Amount::zero(),
-                    BalanceChangeSource::Scan,
-                )
-                .unwrap();
-        }
+        // Enough rows to exercise MAX_BALANCE_CHANGE_LIMIT. These are bulk fixture data - only their
+        // count is asserted on - so they are inserted in one transaction. Recording them through
+        // update_vault_balance_and_record_change commits each one separately, and the resulting 205
+        // fsyncs dominate the test and scale with disk latency on CI.
+        store
+            .with_write_tx(|tx| {
+                for version in 2..=206u32 {
+                    tx.balance_changes_insert(
+                        BalanceChangeSnapshot {
+                            account_address: account,
+                            vault_address: Some(second_vault),
+                            vault_version: Some(version),
+                            resource_address: second_resource,
+                            token_symbol: Some("TWO".to_string()),
+                            divisibility: 2,
+                            revealed_before: Amount::from(199u64 + u64::from(version)),
+                            revealed_after: Amount::from(200u64 + u64::from(version)),
+                            confidential_before: Amount::zero(),
+                            confidential_after: Amount::zero(),
+                        },
+                        BalanceChangeSource::Scan,
+                    )?;
+                }
+                Ok::<_, WalletStorageError>(())
+            })
+            .unwrap();
 
         let notify = Notify::new(10);
         let mut shutdown = Shutdown::new();
