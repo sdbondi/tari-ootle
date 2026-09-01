@@ -1115,36 +1115,17 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
         .transpose()
     }
 
-    fn substate_cache_get(
-        &mut self,
-        substate_id: &SubstateId,
-        version: Option<u32>,
-    ) -> Result<Option<SubstateCacheEntry>, StorageError> {
+    fn substate_cache_get(&mut self, substate_id: &SubstateId) -> Result<Option<SubstateCacheEntry>, StorageError> {
         const OPERATION: &str = "substate_cache_get";
         use crate::storage_sqlite::schema::substate_cache;
 
-        let mut query = substate_cache::table
+        let row: Option<SubstateCacheRow> = substate_cache::table
             .filter(substate_cache::substate_id.eq(substate_id.to_string()))
-            .into_boxed();
-        match version {
-            Some(version) => query = query.filter(substate_cache::version.eq(version as i32)),
-            // More than one version can hold the claim at once: a lookup that observed a newer
-            // version lands while an older row still claims it, and only a transition retires the
-            // older claim. The highest claiming version is the substate's latest known state.
-            None => {
-                query = query
-                    .filter(substate_cache::is_latest.eq(true))
-                    .order_by(substate_cache::version.desc())
-            },
-        }
-
-        let row: Option<SubstateCacheRow> =
-            query
-                .first(self.connection())
-                .optional()
-                .map_err(|e| StorageError::QueryError {
-                    reason: format!("{OPERATION}: {e}"),
-                })?;
+            .first(self.connection())
+            .optional()
+            .map_err(|e| StorageError::QueryError {
+                reason: format!("{OPERATION}: {e}"),
+            })?;
 
         row.map(|row| {
             Ok(SubstateCacheEntry {

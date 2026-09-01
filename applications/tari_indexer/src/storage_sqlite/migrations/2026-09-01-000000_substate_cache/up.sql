@@ -1,28 +1,25 @@
--- Substates fetched from validator committees to serve client reads, held here rather than in a
--- side store so that invalidation commits in the same transaction as the state sync watermark it is
--- derived from. An entry is served until a transition for its substate retracts it, so the two must
+-- Each substate's head version as this indexer last observed it, held here rather than in a side
+-- store so that invalidation commits in the same transaction as the state sync watermark it is
+-- derived from. An entry is served until a transition for its substate retires it, so the two must
 -- never be visible out of step.
 --
--- A row is keyed by (substate_id, version) and its value never changes. `is_latest` is the only
--- claim that is ever retracted: it marks a row as an answer to an unversioned read. More than one
--- version can hold it at a time, so such a read takes the highest claiming version, which the
--- primary key serves in descending order.
+-- One row per substate, never per version. A live version is always the substate's head - upping a
+-- substate downs its predecessor - so a cached head settles every lower version too: they are all
+-- down, permanently, and are answered without consulting a validator or the sync watermark.
 create table substate_cache
 (
-    substate_id      text    not null,
+    substate_id      text    not null primary key,
     version          integer not null,
-    is_latest        boolean not null,
     verified         boolean not null,
     substate_result  blob    not null,
-    cached_at        bigint  not null,
-    primary key (substate_id, version)
+    cached_at        bigint  not null
 );
 
 create index idx_substate_cache_evict on substate_cache (cached_at);
 
 -- Substates a synced transition has touched, retained only long enough to span a committee fetch.
 -- A fetch that started before its shard reached `state_version` may have observed the substate as it
--- was beforehand, so a result landing afterwards must not be recorded as the latest version.
+-- was beforehand, so a result landing afterwards must not be recorded as the head.
 create table substate_cache_invalidations
 (
     substate_id    text   not null primary key,

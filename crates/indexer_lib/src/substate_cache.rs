@@ -64,9 +64,6 @@ pub struct SubstateCacheEntryRef<'a> {
     pub substate_result: &'a SubstateResult,
     pub cached_at: u64,
     pub verified: bool,
-    /// The lookup that produced this entry asked for the substate's latest version, so it answers
-    /// unversioned reads until a transition for the substate retracts the claim.
-    pub is_latest: bool,
 }
 
 pub trait SubstateCache: Send + Sync {
@@ -80,15 +77,23 @@ pub trait SubstateCache: Send + Sync {
 
     /// The cached answer for `id` at `version`, or for its latest version when `version` is `None`.
     /// Returns `None` when nothing is cached or the shard has no watermark.
+    ///
+    /// A version below the cached one is answered without any watermark: see
+    /// [`SubstateCache::write`] for what the cache holds and why that conclusion cannot go stale.
     fn read(
         &self,
         id: &SubstateId,
         version: Option<u32>,
     ) -> impl Future<Output = Result<Option<SubstateCacheEntry>, SubstateCacheError>> + Send;
 
-    /// Records `entry`, provided no transition for `id` has arrived since `watermark`. A write
-    /// vetoed that way is not an error: the caller still has its freshly fetched value, and the next
-    /// read fetches again.
+    /// Records `entry` as the substate's head version, provided no transition for `id` has arrived
+    /// since `watermark`. A write vetoed that way is not an error: the caller still has its freshly
+    /// fetched value, and the next read fetches again.
+    ///
+    /// The cache holds one entry per substate, its head. Only a result that establishes the head may
+    /// be written: an `Up` version is always the head, since upping a substate downs its predecessor,
+    /// and a lookup that named no version answers with the head by definition. A named version that
+    /// came back `Down` establishes only that the head is higher, not what it is.
     fn write(
         &self,
         id: &SubstateId,

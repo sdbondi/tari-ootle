@@ -259,14 +259,9 @@ pub trait IndexerStoreReadTransaction {
 
     // -------------------------------- Substate Cache -------------------------------- //
 
-    /// The cached answer for `substate_id` at `version`, or for its latest version when `version` is
-    /// `None`. Says nothing about whether the entry is fresh enough to serve - see
-    /// [`crate::substate_cache::SqliteSubstateCache`].
-    fn substate_cache_get(
-        &mut self,
-        substate_id: &SubstateId,
-        version: Option<u32>,
-    ) -> Result<Option<SubstateCacheEntry>, StorageError>;
+    /// The cached head version of `substate_id`. Says nothing about whether it is fresh enough to
+    /// serve, nor what it implies for lower versions - see [`crate::substate_cache::SqliteSubstateCache`].
+    fn substate_cache_get(&mut self, substate_id: &SubstateId) -> Result<Option<SubstateCacheEntry>, StorageError>;
 }
 
 pub trait IndexerStoreWriteTransaction {
@@ -341,10 +336,11 @@ pub trait IndexerStoreWriteTransaction {
 
     // -------------------------------- Substate Cache -------------------------------- //
 
-    /// Records a substate fetched from a committee, unless a transition for it has been applied since
-    /// `watermark` - in which case the fetch may have observed an older state than the cache already
-    /// knows about, and nothing it returned can be trusted as current. Returns whether the entry was
-    /// written.
+    /// Records a substate's head version as fetched from a committee, unless a transition for it has
+    /// been applied since `watermark` - in which case the fetch may have observed an older state than
+    /// the cache already knows about, and nothing it returned can be trusted as current. A version
+    /// below the cached head is likewise ignored, since it cannot be the head. Returns whether the
+    /// entry was written.
     fn substate_cache_put(
         &mut self,
         substate_id: &SubstateId,
@@ -352,8 +348,8 @@ pub trait IndexerStoreWriteTransaction {
         watermark: FetchWatermark,
     ) -> Result<bool, StorageError>;
 
-    /// Retires the cached versions these transitions supersede or destroy, and journals each
-    /// substate at `state_version` so a fetch that started earlier cannot reinstate one.
+    /// Retires the cached heads these transitions supersede or destroy, and journals each substate at
+    /// `state_version` so a fetch that started earlier cannot reinstate one.
     ///
     /// Must be applied in the same transaction that advances the sync watermark `state_version`
     /// belongs to: an entry is served on the argument that the cache holds every transition up to

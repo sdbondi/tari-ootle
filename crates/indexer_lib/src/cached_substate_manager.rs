@@ -212,16 +212,19 @@ where
             .await?;
 
         if let (Some(watermark), Some(version)) = (watermark, lookup_result.result.version()) {
+            // The cache holds each substate's head version. A live version is always the head, and a
+            // lookup that named no version answers with the head; a named version that came back down
+            // says only that the head is higher.
+            let is_head = specific_version.is_none() || lookup_result.result.up().is_some();
             // Unverified results are not cached while verification is on, so the next read retries
             // for a proven copy instead of pinning the unverified value.
-            if lookup_result.verified || !self.verify_substate_proofs {
+            if is_head && (lookup_result.verified || !self.verify_substate_proofs) {
                 debug!(target: LOG_TARGET, "Updating cached substate {} with version {}", substate_id, version);
                 let entry = SubstateCacheEntryRef {
                     version,
                     substate_result: &lookup_result.result,
                     cached_at: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_secs(),
                     verified: lookup_result.verified,
-                    is_latest: specific_version.is_none(),
                 };
                 self.substate_cache.write(substate_id, entry, watermark).await?;
             }
@@ -316,7 +319,6 @@ where
                             substate_result: &substate_result,
                             cached_at: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_secs(),
                             verified: false,
-                            is_latest: true,
                         };
                         self.substate_cache.write(substate_id, entry, watermark).await?;
                     }

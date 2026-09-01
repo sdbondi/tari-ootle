@@ -952,12 +952,8 @@ mod tests {
         format!("component_{:064x}", n).parse().unwrap()
     }
 
-    fn entry(version: u32, is_latest: bool) -> (SubstateResult, u32, bool) {
-        (SubstateResult::Down { version }, version, is_latest)
-    }
-
-    async fn put(store: &SqliteIndexerStore, id: &SubstateId, version: u32, is_latest: bool, watermark: u64) -> bool {
-        let (result, version, is_latest) = entry(version, is_latest);
+    async fn put(store: &SqliteIndexerStore, id: &SubstateId, version: u32, watermark: u64) -> bool {
+        let result = SubstateResult::Down { version };
         let id = id.clone();
         store
             .with_write_tx(move |tx| {
@@ -968,7 +964,6 @@ mod tests {
                         substate_result: &result,
                         cached_at: 0,
                         verified: true,
-                        is_latest,
                     },
                     FetchWatermark::new(watermark),
                 )
@@ -977,10 +972,10 @@ mod tests {
             .unwrap()
     }
 
-    async fn read(store: &SqliteIndexerStore, id: &SubstateId, version: Option<u32>) -> Option<u32> {
+    async fn read(store: &SqliteIndexerStore, id: &SubstateId) -> Option<u32> {
         let id = id.clone();
         store
-            .with_read_tx(move |tx| tx.substate_cache_get(&id, version))
+            .with_read_tx(move |tx| tx.substate_cache_get(&id))
             .await
             .unwrap()
             .map(|entry| entry.version)
@@ -994,11 +989,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_cached_entry_answers_until_a_transition_retires_it() {
+    async fn a_cached_head_is_held_until_a_transition_retires_it() {
         let (_d, store) = temp_store().await;
         let id = substate(1);
-        assert!(put(&store, &id, 5, true, 100).await);
-        assert_eq!(read(&store, &id, None).await, Some(5));
+        assert!(put(&store, &id, 5, 100).await);
+        assert_eq!(read(&store, &id).await, Some(5));
 
         invalidate(
             &store,
@@ -1009,14 +1004,14 @@ mod tests {
             105,
         )
         .await;
-        assert_eq!(read(&store, &id, None).await, None);
+        assert_eq!(read(&store, &id).await, None);
     }
 
     #[tokio::test]
     async fn a_destroy_retires_the_version_it_names() {
         let (_d, store) = temp_store().await;
         let id = substate(1);
-        assert!(put(&store, &id, 5, true, 100).await);
+        assert!(put(&store, &id, 5, 100).await);
 
         invalidate(
             &store,
@@ -1027,18 +1022,17 @@ mod tests {
             105,
         )
         .await;
-        assert_eq!(read(&store, &id, None).await, None);
-        assert_eq!(read(&store, &id, Some(5)).await, None);
+        assert_eq!(read(&store, &id).await, None);
     }
 
-    /// A cache entry can legitimately run ahead of the transition stream, having come straight from
-    /// the committee. Retiring it on a transition it already accounts for would cost a round trip on
-    /// every read of a substate whose shard is catching up.
+    /// A head can legitimately run ahead of the transition stream, having come straight from the
+    /// committee. Retiring it on a transition it already accounts for would cost a round trip on every
+    /// read of a substate whose shard is catching up.
     #[tokio::test]
-    async fn a_transition_leaves_a_higher_cached_version_alone() {
+    async fn a_transition_leaves_a_higher_cached_head_alone() {
         let (_d, store) = temp_store().await;
         let id = substate(1);
-        assert!(put(&store, &id, 9, true, 100).await);
+        assert!(put(&store, &id, 9, 100).await);
 
         invalidate(
             &store,
@@ -1058,7 +1052,18 @@ mod tests {
             106,
         )
         .await;
-        assert_eq!(read(&store, &id, None).await, Some(9));
+        assert_eq!(read(&store, &id).await, Some(9));
+    }
+
+    /// A committee member that is behind answers with a version below the head already held. Taking it
+    /// would walk the cached head backwards and reopen the window this cache exists to close.
+    #[tokio::test]
+    async fn a_lower_version_does_not_displace_the_cached_head() {
+        let (_d, store) = temp_store().await;
+        let id = substate(1);
+        assert!(put(&store, &id, 6, 100).await);
+        assert!(!put(&store, &id, 5, 100).await);
+        assert_eq!(read(&store, &id).await, Some(6));
     }
 
     #[tokio::test]
@@ -1075,54 +1080,19 @@ mod tests {
         )
         .await;
 
-        assert!(!put(&store, &id, 6, true, 100).await);
-        assert_eq!(read(&store, &id, None).await, None);
+        assert!(!put(&store, &id, 6, 100).await);
+        assert_eq!(read(&store, &id).await, None);
 
         // The same result fetched against a watermark that already covers the transition is current.
-        assert!(put(&store, &id, 6, true, 105).await);
-        assert_eq!(read(&store, &id, None).await, Some(6));
-    }
-
-    #[tokio::test]
-    async fn a_versioned_entry_does_not_answer_an_unversioned_read() {
-        let (_d, store) = temp_store().await;
-        let id = substate(1);
-        assert!(put(&store, &id, 5, false, 100).await);
-        assert_eq!(read(&store, &id, Some(5)).await, Some(5));
-        assert_eq!(read(&store, &id, None).await, None);
-
-        // A later unversioned lookup of the same version can make the claim the first one could not.
-        assert!(put(&store, &id, 5, true, 100).await);
-        assert_eq!(read(&store, &id, None).await, Some(5));
-
-        // And a versioned lookup after it does not take the claim back.
-        assert!(put(&store, &id, 5, false, 100).await);
-        assert_eq!(read(&store, &id, None).await, Some(5));
-    }
-
-    /// A lookup can observe a newer version before the transition that supersedes the cached one has
-    /// synced - `fetch_and_cache_substates` does not consult the cache at all - so two versions hold
-    /// the latest claim at once. An unversioned read must answer with the newer.
-    #[tokio::test]
-    async fn an_unversioned_read_takes_the_highest_claiming_version() {
-        let (_d, store) = temp_store().await;
-        let id = substate(1);
-        assert!(put(&store, &id, 5, true, 100).await);
-        assert!(put(&store, &id, 6, true, 100).await);
-        assert_eq!(read(&store, &id, None).await, Some(6));
-
-        // A validator that is behind can answer a later lookup with the older version. Its claim does
-        // not displace the newer one, and the older row still answers for itself.
-        assert!(put(&store, &id, 5, true, 100).await);
-        assert_eq!(read(&store, &id, None).await, Some(6));
-        assert_eq!(read(&store, &id, Some(5)).await, Some(5));
+        assert!(put(&store, &id, 6, 105).await);
+        assert_eq!(read(&store, &id).await, Some(6));
     }
 
     #[tokio::test]
     async fn pruning_evicts_down_to_the_cap_and_expires_the_journal() {
         let (_d, store) = temp_store().await;
         for n in 0..5u8 {
-            assert!(put(&store, &substate(n), u32::from(n), true, 100).await);
+            assert!(put(&store, &substate(n), u32::from(n) + 1, 100).await);
         }
         invalidate(
             &store,
@@ -1141,13 +1111,13 @@ mod tests {
 
         let mut remaining = 0;
         for n in 0..5u8 {
-            if read(&store, &substate(n), None).await.is_some() {
+            if read(&store, &substate(n)).await.is_some() {
                 remaining += 1;
             }
         }
         assert_eq!(remaining, 2);
 
         // With the journal expired, a fetch that started before the transition is no longer vetoed.
-        assert!(put(&store, &substate(9), 1, true, 100).await);
+        assert!(put(&store, &substate(9), 1, 100).await);
     }
 }

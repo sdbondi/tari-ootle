@@ -555,51 +555,38 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
             return Ok(false);
         }
 
+        // A committee member that is behind can answer with a version below the head already held.
+        let cached_version: Option<i32> = substate_cache::table
+            .select(substate_cache::version)
+            .filter(substate_cache::substate_id.eq(&id))
+            .first(self.connection())
+            .optional()
+            .map_err(|e| StorageError::general(OPERATION, e))?;
+
+        if cached_version.is_some_and(|v| v > entry.version as i32) {
+            return Ok(false);
+        }
+
         let encoded = serialize_bincode(entry.substate_result)?;
 
         diesel::insert_into(substate_cache::table)
             .values((
                 substate_cache::substate_id.eq(&id),
                 substate_cache::version.eq(entry.version as i32),
-                substate_cache::is_latest.eq(entry.is_latest),
                 substate_cache::verified.eq(entry.verified),
                 substate_cache::substate_result.eq(&encoded),
                 substate_cache::cached_at.eq(entry.cached_at as i64),
             ))
-            .on_conflict((substate_cache::substate_id, substate_cache::version))
+            .on_conflict(substate_cache::substate_id)
             .do_update()
             .set((
+                substate_cache::version.eq(entry.version as i32),
                 substate_cache::verified.eq(entry.verified),
                 substate_cache::substate_result.eq(&encoded),
                 substate_cache::cached_at.eq(entry.cached_at as i64),
             ))
             .execute(self.connection())
             .map_err(|e| StorageError::general(OPERATION, e))?;
-
-        if entry.is_latest {
-            // The lookup observed this version as the substate's latest, so every lower cached
-            // version is superseded. A higher one is left alone: the lookup may have been answered
-            // by a validator that is behind, and the read takes the highest claim regardless.
-            diesel::update(
-                substate_cache::table
-                    .filter(substate_cache::substate_id.eq(&id))
-                    .filter(substate_cache::version.lt(entry.version as i32)),
-            )
-            .set(substate_cache::is_latest.eq(false))
-            .execute(self.connection())
-            .map_err(|e| StorageError::general(OPERATION, e))?;
-
-            // The row may predate this write, put there by a lookup for this exact version, which
-            // cannot make the claim itself.
-            diesel::update(
-                substate_cache::table
-                    .filter(substate_cache::substate_id.eq(&id))
-                    .filter(substate_cache::version.eq(entry.version as i32)),
-            )
-            .set(substate_cache::is_latest.eq(true))
-            .execute(self.connection())
-            .map_err(|e| StorageError::general(OPERATION, e))?;
-        }
 
         Ok(true)
     }
