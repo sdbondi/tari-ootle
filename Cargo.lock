@@ -11790,10 +11790,8 @@ version = "0.40.0"
 dependencies = [
  "async-trait",
  "log",
- "minicbor",
  "ootle-network",
  "prometheus-client",
- "serde",
  "tari_common_types",
  "tari_engine_types",
  "tari_epoch_manager",

@@ -18,8 +18,6 @@ tari_validator_node_rpc = { workspace = true }
 
 async-trait = { workspace = true }
 log = { workspace = true }
-minicbor = { workspace = true, default-features = false, features = ["alloc", "derive"] }
-serde = { workspace = true, default-features = true }
 thiserror = { workspace = true }
 
 prometheus-client = { workspace = true, optional = true }
