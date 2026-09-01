@@ -541,7 +541,13 @@ impl<TConsensusSpec: ConsensusSpec> HotstuffWorker<TConsensusSpec> {
 
         match self
             .on_message_validate
-            .handle(current_height, epoch_state, from.clone(), msg)
+            .handle(
+                current_height,
+                epoch_state,
+                from.clone(),
+                msg,
+                &self.on_receive_new_transaction,
+            )
             .await?
         {
             MessageValidationResult::Ready { from, message: msg } => {

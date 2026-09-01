@@ -10,7 +10,7 @@ use tari_ootle_common_types::{NodeHeight, ShardGroup, SubstateAddress, Versioned
 use tari_ootle_storage::{
     StateStore,
     StateStoreReadTransaction,
-    consensus_models::{BookkeepingModel, TransactionExecution},
+    consensus_models::{BookkeepingModel, TransactionExecution, TransactionPool},
 };
 use tari_ootle_transaction::{Transaction, TransactionId};
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
@@ -73,6 +73,19 @@ impl Validator {
         self.state_store
             .with_read_tx(|tx| tx.transaction_pool_count(None, None, false))
             .unwrap()
+    }
+
+    /// Drops every transaction pool record, as consensus does on entering `Syncing` after a state sync.
+    pub fn clear_transaction_pool(&self) -> usize {
+        let pool = TransactionPool::<TestStore>::new();
+        self.state_store
+            .with_write_tx(|tx| {
+                let recs = pool.get_all(&**tx, usize::MAX)?;
+                let ids = recs.iter().map(|rec| rec.id()).collect::<Vec<_>>();
+                pool.remove_all(tx, ids)
+            })
+            .unwrap()
+            .len()
     }
 
     pub fn current_state_machine_state(&self) -> ConsensusCurrentState {

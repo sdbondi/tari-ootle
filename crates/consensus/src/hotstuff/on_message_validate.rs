@@ -29,7 +29,14 @@ use tokio::sync::broadcast;
 
 use super::config::HotstuffConfig;
 use crate::{
-    hotstuff::{CurrentView, HotstuffEvent, ProposalValidationError, epoch_state::EpochState, error::HotStuffError},
+    hotstuff::{
+        CurrentView,
+        HotstuffEvent,
+        ProposalValidationError,
+        epoch_state::EpochState,
+        error::HotStuffError,
+        on_receive_new_transaction::OnReceiveNewTransaction,
+    },
     messages::{ForeignProposalMessage, HotstuffMessage, MissingTransactionsRequest, ProposalMessage},
     tracing::TraceTimer,
     traits::{ConsensusSpec, OutboundMessaging},
@@ -83,6 +90,7 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
         epoch_state: &EpochState<TConsensusSpec::Addr>,
         from: TConsensusSpec::Addr,
         msg: HotstuffMessage,
+        new_transactions: &OnReceiveNewTransaction<TConsensusSpec>,
     ) -> Result<MessageValidationResult<TConsensusSpec::Addr>, HotStuffError> {
         let _timer = TraceTimer::debug(LOG_TARGET, "on_message_validate");
         match msg {
@@ -95,7 +103,7 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
                     );
                     return Ok(MessageValidationResult::Discard);
                 }
-                self.process_local_proposal(current_height, from, epoch_state, *msg)
+                self.process_local_proposal(current_height, from, epoch_state, *msg, new_transactions)
             },
             HotstuffMessage::CatchUpSyncResponse(msg) => {
                 if !epoch_state.local_committee().contains(&from) {
@@ -106,7 +114,7 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
                     );
                     return Ok(MessageValidationResult::Discard);
                 }
-                self.process_catch_up_response(from, epoch_state, *msg)
+                self.process_catch_up_response(from, epoch_state, *msg, new_transactions)
             },
             HotstuffMessage::ForeignProposal(proposal) => {
                 self.process_foreign_proposal(epoch_state, from, proposal).await
@@ -178,6 +186,7 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
         from: TConsensusSpec::Addr,
         epoch_state: &EpochState<TConsensusSpec::Addr>,
         proposal: ProposalMessage,
+        new_transactions: &OnReceiveNewTransaction<TConsensusSpec>,
     ) -> Result<MessageValidationResult<TConsensusSpec::Addr>, HotStuffError> {
         info!(
             target: LOG_TARGET,
@@ -206,7 +215,7 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
             });
         }
 
-        self.handle_missing_transactions_local_block(from, epoch_state.local_committee_info(), proposal)
+        self.handle_missing_transactions_local_block(from, epoch_state, proposal, new_transactions)
     }
 
     /// Validate a block delivered via catch-up sync. This is an ordered block import, so — unlike
@@ -218,6 +227,7 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
         from: TConsensusSpec::Addr,
         epoch_state: &EpochState<TConsensusSpec::Addr>,
         proposal: ProposalMessage,
+        new_transactions: &OnReceiveNewTransaction<TConsensusSpec>,
     ) -> Result<MessageValidationResult<TConsensusSpec::Addr>, HotStuffError> {
         info!(
             target: LOG_TARGET,
@@ -234,9 +244,9 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
             });
         }
 
-        let missing_tx_ids = self.store.with_write_tx(|tx| {
-            self.check_for_missing_transactions(tx, epoch_state.local_committee_info(), &proposal)
-        })?;
+        let missing_tx_ids = self
+            .store
+            .with_write_tx(|tx| self.check_for_missing_transactions(tx, epoch_state, &proposal, new_transactions))?;
 
         if missing_tx_ids.is_empty() {
             return Ok(MessageValidationResult::Ready {
@@ -327,12 +337,13 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
     fn handle_missing_transactions_local_block(
         &mut self,
         from: TConsensusSpec::Addr,
-        local_committee_info: &CommitteeInfo,
+        epoch_state: &EpochState<TConsensusSpec::Addr>,
         proposal: ProposalMessage,
+        new_transactions: &OnReceiveNewTransaction<TConsensusSpec>,
     ) -> Result<MessageValidationResult<TConsensusSpec::Addr>, HotStuffError> {
         let missing_tx_ids = self
             .store
-            .with_write_tx(|tx| self.check_for_missing_transactions(tx, local_committee_info, &proposal))?;
+            .with_write_tx(|tx| self.check_for_missing_transactions(tx, epoch_state, &proposal, new_transactions))?;
 
         if missing_tx_ids.is_empty() {
             return Ok(MessageValidationResult::Ready {
@@ -358,9 +369,11 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
     fn check_for_missing_transactions(
         &self,
         tx: &mut <TConsensusSpec::StateStore as StateStore>::WriteTransaction<'_>,
-        local_committee_info: &CommitteeInfo,
+        epoch_state: &EpochState<TConsensusSpec::Addr>,
         proposal: &ProposalMessage,
+        new_transactions: &OnReceiveNewTransaction<TConsensusSpec>,
     ) -> Result<HashSet<TransactionId>, HotStuffError> {
+        let local_committee_info = epoch_state.local_committee_info();
         if proposal.block.commands().is_empty() {
             debug!(
                 target: LOG_TARGET,
@@ -369,6 +382,21 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
             return Ok(HashSet::new());
         }
         let mut missing_tx_ids = TransactionRecord::get_missing(&**tx, proposal.block.all_transaction_ids())?;
+
+        // A transaction whose record we hold but whose pool record is gone is not "missing" - no peer can
+        // send back derived local state - so it never parks and would instead no-vote every block that
+        // carries it. Re-derive its pool record from the record we already have.
+        new_transactions.resequence_known_transactions(
+            tx,
+            epoch_state.epoch(),
+            proposal
+                .block
+                .all_transaction_ids()
+                .filter(|id| !missing_tx_ids.contains(*id))
+                .copied()
+                .collect::<Vec<_>>(),
+            local_committee_info,
+        )?;
         // Also park block if it has missing transactions from foreign proposals
         for proposal in &proposal.foreign_proposals {
             let foreign_missing =

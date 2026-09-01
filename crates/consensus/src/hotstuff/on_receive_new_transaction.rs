@@ -143,6 +143,80 @@ where TConsensusSpec: ConsensusSpec
         })
     }
 
+    /// Rebuilds pool records for transactions that are already in the transaction store but absent from
+    /// the transaction pool, returning the number of records added.
+    ///
+    /// The pool holds derived per-transaction consensus state and is dropped independently of the
+    /// transaction records - a state sync clears it wholesale. A proposal for a transaction whose record
+    /// we still hold but whose pool record is gone is unvotable (`TransactionNotInPool`) and cannot be
+    /// repaired by the missing-transaction request path, which only replaces absent records. Re-deriving
+    /// the pool record from the record we already hold is what makes such a proposal votable again.
+    ///
+    /// Safety comes from [`Self::validate_new_transaction`], which refuses to sequence an id that has
+    /// already committed - by its finalized decision or by its receipt existing in state - so this can
+    /// never resurrect a transaction the synced state has finalised.
+    pub fn resequence_known_transactions<I: IntoIterator<Item = TransactionId>>(
+        &self,
+        tx: &mut <<TConsensusSpec as ConsensusSpec>::StateStore as StateStore>::WriteTransaction<'_>,
+        current_epoch: Epoch,
+        transaction_ids: I,
+        local_committee_info: &CommitteeInfo,
+    ) -> Result<usize, HotStuffError> {
+        let mut unpooled = Vec::new();
+        for id in transaction_ids {
+            if self.transaction_pool.exists(&**tx, &id)? {
+                continue;
+            }
+            // A finalized record means the id has already run its course on this node. Whether an
+            // aborted attempt may be sequenced again is the mempool's call; repairing the pool during
+            // block validation must not resurrect one as a side effect.
+            if TransactionRecord::get_finalized_decision(&**tx, &id)?.is_some() {
+                continue;
+            }
+            unpooled.push(id);
+        }
+        if unpooled.is_empty() {
+            return Ok(0);
+        }
+
+        let (recs, _) = TransactionRecord::get_any(&**tx, unpooled.iter())?;
+        let mut batch = Vec::with_capacity(recs.len());
+        for rec in recs {
+            // A stored record does not carry whether it passed full local validation, and this is a
+            // rare repair path, so validate in full rather than assume.
+            if let Some(validate_data) = self.validate_new_transaction(
+                tx,
+                current_epoch,
+                rec,
+                local_committee_info,
+                TransactionSource::Requested,
+            )? {
+                batch.push(validate_data);
+            }
+        }
+
+        let num_sequenced = batch.iter().filter(|data| data.must_sequence).count();
+        if num_sequenced == 0 {
+            return Ok(0);
+        }
+
+        info!(
+            target: LOG_TARGET,
+            "🎱 Re-sequencing {num_sequenced} known transaction(s) that are missing from the pool",
+        );
+        self.transaction_pool.insert_new_batched(
+            tx,
+            local_committee_info.num_preshards(),
+            local_committee_info.num_committees(),
+            batch
+                .iter()
+                .filter(|data| data.must_sequence)
+                .map(|data| (&data.transaction, data.decision, true)),
+        )?;
+
+        Ok(num_sequenced)
+    }
+
     fn validate_new_transaction(
         &self,
         tx: &mut <<TConsensusSpec as ConsensusSpec>::StateStore as StateStore>::WriteTransaction<'_>,

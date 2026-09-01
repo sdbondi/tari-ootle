@@ -8,7 +8,13 @@
 //! Use `Test::builder().with_rocks_path("/tmp/test{}")...` to create a database for each validator
 //! where {} is replaced with the node address.
 
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use log::info;
 use ootle_byte_type::ToByteType;
@@ -1851,5 +1857,61 @@ async fn multishard_transaction_epoch_expired() {
     )
     .await;
 
+    test.assert_clean_shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn transaction_missing_from_pool_is_resequenced_from_its_record() {
+    setup_logger();
+    // Hold back proposals so the transaction is pooled but no block can carry it yet, which makes the
+    // point at which the pool record is dropped deterministic.
+    let hold_proposals = Arc::new(AtomicBool::new(true));
+    let hold_proposals_f = hold_proposals.clone();
+    let mut test = Test::builder()
+        .add_committee(0, vec!["1", "2"])
+        .with_message_filter(Box::new(move |_from, _to, msg| {
+            !(hold_proposals_f.load(Ordering::SeqCst) && matches!(msg, HotstuffMessage::Proposal(_)))
+        }))
+        // Holding proposals burns a pacemaker round, so shorten the round and allow more than the
+        // default single-round budget.
+        .modify_consensus_constants(|c| {
+            c.pacemaker_block_time = Duration::from_secs(2);
+        })
+        .with_test_timeout(Duration::from_secs(30))
+        .start()
+        .await;
+    let (tx1, _, _) = test.send_transaction_to_all(Decision::Commit, 1, 1, 1).await;
+    test.start_epoch(Epoch(1)).await;
+    test.wait_for_pool_count(TestVnDestination::All, 1).await;
+
+    // Drop "2"'s pool record while keeping its transaction record, as a state sync does. "2" holds the
+    // transaction, so the missing-transaction request path has nothing to fetch and cannot repair this;
+    // without re-sequencing, "2" no-votes every block carrying tx1 and the committee never reaches quorum.
+    assert_eq!(test.get_validator(&TestAddress::new("2")).clear_transaction_pool(), 1);
+
+    hold_proposals.store(false, Ordering::SeqCst);
+
+    // The loop only advances on committed blocks but any hotstuff event refreshes the harness timeout,
+    // so bound the whole run to keep a stalled committee a test failure.
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            test.on_block_committed().await;
+
+            if test.is_transaction_pool_empty() {
+                break;
+            }
+            let leaf = test.get_validator(&TestAddress::new("1")).get_leaf_block();
+            if leaf.height >= NodeHeight(30) {
+                panic!("Transaction not committed after {} blocks", leaf.height);
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for tx1 to be committed");
+
+    test.stop();
+    test.assert_all_validators_committed(tx1.id());
+    test.assert_all_validators_have_decision(tx1.id(), Decision::Commit)
+        .await;
     test.assert_clean_shutdown().await;
 }
