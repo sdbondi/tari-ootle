@@ -178,10 +178,14 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
             return Ok(None);
         }
 
-        // Bootstrapped genesis state is committed at version 0; consensus/sync state changes begin at
-        // version 1. A freshly bootstrapped node persists version 0, so clamp the sync start to 1 (the
-        // peer rejects start_state_version 0, and genesis is never synced - every node bootstraps it).
-        let start_state_version = maybe_persisted_state_version.map_or(1, |v| v.max(1));
+        // The stream is inclusive of start_state_version, so it must be the first version we have not
+        // yet persisted. A persisted version must never be written a second time: JMT nodes are keyed
+        // by (version, nibble_path), so rewriting a version overwrites live nodes and records those
+        // very keys as stale at that version, and the stale-node GC then deletes them from under the
+        // current tree. Bootstrapped genesis state is committed at version 0 and is never synced -
+        // every node bootstraps it - so a freshly bootstrapped node starts at version 1, which is also
+        // the minimum the peer accepts.
+        let start_state_version = maybe_persisted_state_version.map_or(1, |v| v + 1);
         let mut last_state_version = start_state_version;
         info!(
             target: LOG_TARGET,

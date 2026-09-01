@@ -6,6 +6,7 @@ use tari_jellyfish::{LeafKey, TreeHash, TreeStore, Version};
 use tari_ootle_common_types::VersionedSubstateId;
 use tari_state_tree::{
     StateTree,
+    StateTreeError,
     StateTreePayload,
     SubstateTreeChange,
     key_mapper::DbKeyMapper,
@@ -78,9 +79,18 @@ impl<S: TreeStore<StateTreePayload>> HashTreeTester<S> {
         next_version: Version,
         changes: impl IntoIterator<Item = SubstateTreeChange>,
     ) -> TreeHash {
+        self.try_put_changes_at_version(current_version, next_version, changes)
+            .unwrap()
+    }
+
+    pub fn try_put_changes_at_version(
+        &mut self,
+        current_version: Option<Version>,
+        next_version: Version,
+        changes: impl IntoIterator<Item = SubstateTreeChange>,
+    ) -> Result<TreeHash, StateTreeError> {
         self.create_state_tree()
             .put_substate_changes(current_version, next_version, changes)
-            .unwrap()
     }
 }
 

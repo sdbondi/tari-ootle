@@ -6,7 +6,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use tari_jellyfish::{SPARSE_MERKLE_PLACEHOLDER_HASH, SparseMerkleProofExt, StaleTreeNode, TreeHash, Version};
 use tari_ootle_common_types::ToSubstateAddress;
-use tari_state_tree::memory_store::MemoryTreeStore;
+use tari_state_tree::{StateTreeError, memory_store::MemoryTreeStore};
 
 use crate::support::{HashTreeTester, change, hash_value_from_seed, make_value};
 mod support;
@@ -91,29 +91,6 @@ fn hash_computed_consistently_after_adding_higher_tier_sibling() {
 
     // We did [2] + [1] + [3] = [1,2,3] (i.e. same state).
     assert_eq!(root_after_adding_sibling, reference_root);
-}
-
-#[test]
-fn hash_allows_putting_in_same_version() {
-    let mut tester_1 = HashTreeTester::new_empty();
-    tester_1.put_changes_at_version(None, 1, vec![change(1, Some(30))]);
-    tester_1.put_changes_at_version(Some(1), 1, vec![change(2, Some(31))]);
-    tester_1.put_changes_at_version(Some(1), 1, vec![change(3, Some(32))]);
-    tester_1.put_changes_at_version(Some(1), 1, vec![change(4, Some(33))]);
-    tester_1.put_changes_at_version(Some(1), 1, vec![change(5, Some(34))]);
-    let hash_1 = tester_1.put_changes_at_version(Some(1), 1, vec![change(6, Some(35))]);
-    let mut tester_2 = HashTreeTester::new_empty();
-    tester_2.put_changes_at_version(None, 1, vec![
-        change(1, Some(30)),
-        change(2, Some(31)),
-        change(3, Some(32)),
-    ]);
-    let hash_2 = tester_2.put_changes_at_version(Some(1), 2, vec![
-        change(4, Some(33)),
-        change(5, Some(34)),
-        change(6, Some(35)),
-    ]);
-    assert_eq!(hash_1, hash_2);
 }
 
 #[test]
@@ -350,4 +327,37 @@ fn two_level_substate_inclusion_proof_for_genesis_version_zero() {
     proof
         .verify_inclusion(&group_root, &make_value(1), &hash_value_from_seed(200))
         .unwrap_err();
+}
+
+#[test]
+fn rewriting_an_already_written_version_is_rejected() {
+    let mut tester = HashTreeTester::new_empty();
+    tester.put_substate_changes(vec![change(1, Some(30))]);
+
+    // Writing v1 a second time would overwrite the live nodes keyed at v1 while recording those same
+    // keys as stale at v1, leaving the tree pointing at nodes the stale-node GC is free to delete.
+    let err = tester
+        .try_put_changes_at_version(Some(1), 1, vec![change(2, Some(40))])
+        .unwrap_err();
+
+    assert!(matches!(err, StateTreeError::NonMonotonicVersion {
+        current_version: 1,
+        next_version: 1
+    }));
+}
+
+#[test]
+fn writing_a_version_behind_the_current_one_is_rejected() {
+    let mut tester = HashTreeTester::new_empty();
+    tester.put_substate_changes(vec![change(1, Some(30))]);
+    tester.put_substate_changes(vec![change(2, Some(40))]);
+
+    let err = tester
+        .try_put_changes_at_version(Some(2), 1, vec![change(3, Some(50))])
+        .unwrap_err();
+
+    assert!(matches!(err, StateTreeError::NonMonotonicVersion {
+        current_version: 2,
+        next_version: 1
+    }));
 }
