@@ -1,8 +1,10 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
+use std::time::Duration;
+
 use tari_bor::BorError;
-use tari_networking::NetworkingError;
+use tari_networking::{NetworkingError, PeerId};
 use tari_ootle_common_types::optional::IsNotFoundError;
 use tari_rpc_framework::{RpcError, RpcStatus};
 
@@ -18,6 +20,8 @@ pub enum ValidatorNodeRpcClientError {
     InvalidResponse(anyhow::Error),
     #[error("BorError: {0}")]
     BorError(#[from] BorError),
+    #[error("Timed out after {timeout:.0?} connecting to peer {peer_id}")]
+    ConnectTimeout { peer_id: PeerId, timeout: Duration },
 }
 
 impl ValidatorNodeRpcClientError {

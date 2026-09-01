@@ -22,7 +22,7 @@ use tari_ootle_p2p::{
 };
 use tari_ootle_storage::time::{PrimitiveDateTime, UtcDateTime};
 use tari_ootle_transaction::{Transaction, TransactionId};
-use tokio::sync::RwLock;
+use tokio::{sync::RwLock, time};
 
 use crate::{ValidatorNodeRpcClientError, rpc_service};
 
@@ -363,6 +363,12 @@ impl<TAddr: NodeAddressable + ToPeerId> ValidatorNodeClientFactory<TAddr> for Ta
     }
 }
 
+/// How long a dial to a validator may take before it is treated as unreachable. The transport's own
+/// failure modes are far slower - an unroutable host times out at the OS level, and the RPC handshake
+/// allows 90s of its own - while a caller that gives up here still has the rest of the committee to
+/// try.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// An RPC pool that holds a session for multiple validator nodes
 #[derive(Debug, Clone)]
 pub struct RpcMultiPool<TMsg: MessageSpec> {
@@ -382,18 +388,36 @@ impl<TMsg: MessageSpec> RpcMultiPool<TMsg> {
         &self,
         addr: &PeerId,
     ) -> Result<rpc_service::ValidatorNodeRpcClient, ValidatorNodeRpcClientError> {
-        let mut sessions = self.sessions.write().await;
-        if let Some(client) = sessions.get(addr) {
-            if client.is_connected() {
-                return Ok(client.clone());
-            } else {
-                sessions.remove(addr);
-            }
+        if let Some(client) = self.connected_session(addr).await {
+            return Ok(client);
         }
 
-        let client: rpc_service::ValidatorNodeRpcClient = self.networking.connect_rpc(*addr).await?;
-        sessions.insert(*addr, client.clone());
+        // Dial without holding the lock. A peer that is unreachable takes as long to fail as its
+        // transport allows, and the pool is shared by every caller: holding the lock across the dial
+        // would queue all of them - including those bound for peers that are up - behind the one that
+        // is down.
+        let client: rpc_service::ValidatorNodeRpcClient =
+            time::timeout(CONNECT_TIMEOUT, self.networking.connect_rpc(*addr))
+                .await
+                .map_err(|_| ValidatorNodeRpcClientError::ConnectTimeout {
+                    peer_id: *addr,
+                    timeout: CONNECT_TIMEOUT,
+                })??;
 
-        Ok(client)
+        let mut sessions = self.sessions.write().await;
+        // Another caller may have connected to the same peer while this dial was in flight. Keep
+        // whichever session is already pooled so that concurrent callers converge on one.
+        match sessions.get(addr) {
+            Some(pooled) if pooled.is_connected() => Ok(pooled.clone()),
+            _ => {
+                sessions.insert(*addr, client.clone());
+                Ok(client)
+            },
+        }
+    }
+
+    async fn connected_session(&self, addr: &PeerId) -> Option<rpc_service::ValidatorNodeRpcClient> {
+        let sessions = self.sessions.read().await;
+        sessions.get(addr).filter(|client| client.is_connected()).cloned()
     }
 }
