@@ -71,7 +71,11 @@ bitflags! {
         /// `SubstateValueOrHash::Hash` for templates. When combined with `TEMPLATE`, the full
         /// binary is sent and the metadata field is populated alongside it.
         const TEMPLATE_METADATA = 0x0000_0200;
-        /// Include all hashes for substates even if filtered out
+        /// Include every transition for substates outside the value filter: an up as its state hash
+        /// alone, and a down in full (a down carries no value). This makes the stream a complete
+        /// record of which substates changed, which a subscriber that caches substate values needs
+        /// in order to tell a cached entry that is still current from one that has been superseded
+        /// or destroyed.
         const ALL_HASHES = 0x1000_0000;
         /// Return the substates that are live at the point the stream is taken, rather than the
         /// transitions that produced them: ups whose substate is still live are sent, and ups whose

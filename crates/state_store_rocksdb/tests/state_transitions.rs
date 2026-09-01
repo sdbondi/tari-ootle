@@ -121,3 +121,47 @@ fn up_only_skips_an_up_whose_substate_was_since_destroyed() {
         .unwrap();
     assert_eq!(transitions.updates.len(), 1);
 }
+
+/// A substate destroyed with no successor version leaves no trace in any later up, so `ALL_HASHES` must
+/// carry its down. A subscriber caching substate values outside its own value filter has no other
+/// signal that the value it holds is gone.
+#[test]
+fn all_hashes_streams_downs_for_filtered_out_substates() {
+    let (db, _tmp) = create_rocksdb();
+    const EPOCH: Epoch = Epoch::zero();
+    let mut tx = db.create_write_tx().unwrap();
+    Block::zero_block(Network::LocalNet, num_preshards())
+        .insert(&mut tx)
+        .unwrap();
+
+    let mut substate = gen_substates_for_shards(EPOCH, 1, 0..1, 0).next().unwrap();
+    let shard = substate.shard();
+    tx.substates_commit_batch(create_substate_update_batch(EPOCH, [&substate]))
+        .unwrap();
+
+    substate.set_destroyed(SubstateDestroyed {
+        at_epoch: EPOCH,
+        at_state_version: 2,
+    });
+    tx.substates_commit_batch(create_substate_update_batch(EPOCH, [&substate]))
+        .unwrap();
+
+    // The generated substates are components, so a UTXO-only filter excludes them.
+    let filter = SubstateValueFilterFlags::UTXO;
+    let transitions = tx.state_transitions_get_starting_at(shard, 2, filter).unwrap();
+    assert!(
+        transitions.updates.is_empty(),
+        "expected no updates for a filtered-out substate: {:?}",
+        transitions.updates
+    );
+
+    let transitions = tx
+        .state_transitions_get_starting_at(shard, 2, filter | SubstateValueFilterFlags::ALL_HASHES)
+        .unwrap();
+    assert_eq!(transitions.updates.len(), 1);
+    assert!(
+        transitions.updates[0].is_destroy(),
+        "expected a destroy: {:?}",
+        transitions.updates[0]
+    );
+}
