@@ -43,8 +43,9 @@ where
         // State sync only rewrites the state store, not the consensus transaction pool. Drop any pool
         // records so that on re-entering consensus we don't re-propose transactions the freshly-synced
         // state has already finalised (the rest of the committee removed them on commit, so they can
-        // never gather a QC again — this wedges the network). Genuinely-pending transactions return via
-        // mempool gossip.
+        // never gather a QC again - this wedges the network). A still-pending transaction is restored
+        // to the pool from the record we kept, when a proposal for it arrives
+        // (`OnReceiveNewTransaction::resequence_known_transactions`).
         let cleared = context.hotstuff.clear_transaction_pool()?;
         if cleared > 0 {
             info!(target: LOG_TARGET, "🧹 Cleared {cleared} transaction(s) from the pool after state sync");

@@ -1863,20 +1863,20 @@ async fn multishard_transaction_epoch_expired() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn transaction_missing_from_pool_is_resequenced_from_its_record() {
     setup_logger();
-    // Hold back proposals so the transaction is pooled but no block can carry it yet, which makes the
-    // point at which the pool record is dropped deterministic.
-    let hold_proposals = Arc::new(AtomicBool::new(true));
-    let hold_proposals_f = hold_proposals.clone();
+    // Drop proposals so the transaction is pooled but no block can carry it yet, which makes the point
+    // at which the pool record is dropped deterministic.
+    let drop_proposals = Arc::new(AtomicBool::new(true));
+    let drop_proposals_f = drop_proposals.clone();
     let mut test = Test::builder()
         .add_committee(0, vec!["1", "2"])
         .with_message_filter(Box::new(move |_from, _to, msg| {
-            !(hold_proposals_f.load(Ordering::SeqCst) && matches!(msg, HotstuffMessage::Proposal(_)))
+            !(drop_proposals_f.load(Ordering::SeqCst) && matches!(msg, HotstuffMessage::Proposal(_)))
         }))
-        // Holding proposals burns a pacemaker round, so shorten the round and allow more than the
-        // default single-round budget.
+        // Dropping proposals burns a pacemaker round, so shorten the round...
         .modify_consensus_constants(|c| {
             c.pacemaker_block_time = Duration::from_secs(2);
         })
+        // ...and allow more than the default budget of one round plus two seconds.
         .with_test_timeout(Duration::from_secs(30))
         .start()
         .await;
@@ -1889,7 +1889,7 @@ async fn transaction_missing_from_pool_is_resequenced_from_its_record() {
     // without re-sequencing, "2" no-votes every block carrying tx1 and the committee never reaches quorum.
     assert_eq!(test.get_validator(&TestAddress::new("2")).clear_transaction_pool(), 1);
 
-    hold_proposals.store(false, Ordering::SeqCst);
+    drop_proposals.store(false, Ordering::SeqCst);
 
     // The loop only advances on committed blocks but any hotstuff event refreshes the harness timeout,
     // so bound the whole run to keep a stalled committee a test failure.

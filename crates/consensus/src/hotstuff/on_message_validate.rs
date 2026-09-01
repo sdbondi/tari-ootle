@@ -244,9 +244,10 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
             });
         }
 
-        let missing_tx_ids = self
-            .store
-            .with_write_tx(|tx| self.check_for_missing_transactions(tx, epoch_state, &proposal, new_transactions))?;
+        let missing_tx_ids = self.store.with_write_tx(|tx| {
+            self.resequence_unpooled_transactions(tx, epoch_state, &proposal, new_transactions)?;
+            self.check_for_missing_transactions(tx, epoch_state.local_committee_info(), &proposal)
+        })?;
 
         if missing_tx_ids.is_empty() {
             return Ok(MessageValidationResult::Ready {
@@ -341,9 +342,10 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
         proposal: ProposalMessage,
         new_transactions: &OnReceiveNewTransaction<TConsensusSpec>,
     ) -> Result<MessageValidationResult<TConsensusSpec::Addr>, HotStuffError> {
-        let missing_tx_ids = self
-            .store
-            .with_write_tx(|tx| self.check_for_missing_transactions(tx, epoch_state, &proposal, new_transactions))?;
+        let missing_tx_ids = self.store.with_write_tx(|tx| {
+            self.resequence_unpooled_transactions(tx, epoch_state, &proposal, new_transactions)?;
+            self.check_for_missing_transactions(tx, epoch_state.local_committee_info(), &proposal)
+        })?;
 
         if missing_tx_ids.is_empty() {
             return Ok(MessageValidationResult::Ready {
@@ -366,14 +368,40 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
         })
     }
 
-    fn check_for_missing_transactions(
+    /// Rebuilds pool records for this block's transactions that we hold but that are absent from the
+    /// transaction pool, so that a proposal is not rejected over derived state no peer can resend.
+    ///
+    /// Only the commands the rebuilt `New` stage can serve are offered: a later command is not made
+    /// votable by a `New` record, and that record would then be proposed at a stage the committee has
+    /// moved past. See [`OnReceiveNewTransaction::resequence_known_transactions`].
+    fn resequence_unpooled_transactions(
         &self,
         tx: &mut <TConsensusSpec::StateStore as StateStore>::WriteTransaction<'_>,
         epoch_state: &EpochState<TConsensusSpec::Addr>,
         proposal: &ProposalMessage,
         new_transactions: &OnReceiveNewTransaction<TConsensusSpec>,
+    ) -> Result<(), HotStuffError> {
+        let ids = proposal
+            .block
+            .commands()
+            .iter()
+            .filter_map(|cmd| cmd.local_only().or_else(|| cmd.local_prepare()))
+            .map(|atom| atom.id)
+            .collect::<Vec<_>>();
+
+        if ids.is_empty() {
+            return Ok(());
+        }
+
+        new_transactions.resequence_known_transactions(tx, epoch_state.epoch(), ids, epoch_state.local_committee_info())
+    }
+
+    fn check_for_missing_transactions(
+        &self,
+        tx: &mut <TConsensusSpec::StateStore as StateStore>::WriteTransaction<'_>,
+        local_committee_info: &CommitteeInfo,
+        proposal: &ProposalMessage,
     ) -> Result<HashSet<TransactionId>, HotStuffError> {
-        let local_committee_info = epoch_state.local_committee_info();
         if proposal.block.commands().is_empty() {
             debug!(
                 target: LOG_TARGET,
@@ -382,21 +410,6 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
             return Ok(HashSet::new());
         }
         let mut missing_tx_ids = TransactionRecord::get_missing(&**tx, proposal.block.all_transaction_ids())?;
-
-        // A transaction whose record we hold but whose pool record is gone is not "missing" - no peer can
-        // send back derived local state - so it never parks and would instead no-vote every block that
-        // carries it. Re-derive its pool record from the record we already have.
-        new_transactions.resequence_known_transactions(
-            tx,
-            epoch_state.epoch(),
-            proposal
-                .block
-                .all_transaction_ids()
-                .filter(|id| !missing_tx_ids.contains(*id))
-                .copied()
-                .collect::<Vec<_>>(),
-            local_committee_info,
-        )?;
         // Also park block if it has missing transactions from foreign proposals
         for proposal in &proposal.foreign_proposals {
             let foreign_missing =

@@ -143,14 +143,18 @@ where TConsensusSpec: ConsensusSpec
         })
     }
 
-    /// Rebuilds pool records for transactions that are already in the transaction store but absent from
-    /// the transaction pool, returning the number of records added.
+    /// Rebuilds pool records for transactions this node already holds but that are absent from the
+    /// transaction pool.
     ///
     /// The pool holds derived per-transaction consensus state and is dropped independently of the
-    /// transaction records - a state sync clears it wholesale. A proposal for a transaction whose record
-    /// we still hold but whose pool record is gone is unvotable (`TransactionNotInPool`) and cannot be
-    /// repaired by the missing-transaction request path, which only replaces absent records. Re-deriving
-    /// the pool record from the record we already hold is what makes such a proposal votable again.
+    /// transaction records - a state sync clears it wholesale. A proposal for a transaction whose
+    /// record we still hold but whose pool record is gone is unvotable (`TransactionNotInPool`), and
+    /// the missing-transaction request path cannot repair it because it only replaces absent records.
+    ///
+    /// A rebuilt record enters at the `New` pool stage and is inserted ready, so callers must
+    /// pass only ids whose command in the block being validated is one the `New` stage serves. An id
+    /// carrying a later command gains nothing here - the stage check rejects it either way - and the
+    /// ready record would be proposed, putting a stale-stage command in every block this node leads.
     ///
     /// Safety comes from [`Self::validate_new_transaction`], which refuses to sequence an id that has
     /// already committed - by its finalized decision or by its receipt existing in state - so this can
@@ -161,35 +165,37 @@ where TConsensusSpec: ConsensusSpec
         current_epoch: Epoch,
         transaction_ids: I,
         local_committee_info: &CommitteeInfo,
-    ) -> Result<usize, HotStuffError> {
+    ) -> Result<(), HotStuffError> {
         let mut unpooled = Vec::new();
         for id in transaction_ids {
+            // Cheap membership check first: on the hot path almost every id is already pooled, and
+            // this avoids loading its record to find that out.
             if self.transaction_pool.exists(&**tx, &id)? {
                 continue;
             }
-            // A finalized record means the id has already run its course on this node. Whether an
+            // A finalized marker means the id has already run its course on this node. Whether an
             // aborted attempt may be sequenced again is the mempool's call; repairing the pool during
             // block validation must not resurrect one as a side effect.
-            if TransactionRecord::get_finalized_decision(&**tx, &id)?.is_some() {
+            if TransactionRecord::is_record_finalized(&**tx, &id)? {
                 continue;
             }
             unpooled.push(id);
         }
         if unpooled.is_empty() {
-            return Ok(0);
+            return Ok(());
         }
 
         let (recs, _) = TransactionRecord::get_any(&**tx, unpooled.iter())?;
         let mut batch = Vec::with_capacity(recs.len());
         for rec in recs {
-            // A stored record does not carry whether it passed full local validation, and this is a
-            // rare repair path, so validate in full rather than assume.
+            // A record is only ever persisted by `validate_new_transaction` below, after it has passed
+            // full validation, so reading one back needs the epoch rules re-checked and nothing more.
             if let Some(validate_data) = self.validate_new_transaction(
                 tx,
                 current_epoch,
                 rec,
                 local_committee_info,
-                TransactionSource::Requested,
+                TransactionSource::OwnMempool,
             )? {
                 batch.push(validate_data);
             }
@@ -197,7 +203,7 @@ where TConsensusSpec: ConsensusSpec
 
         let num_sequenced = batch.iter().filter(|data| data.must_sequence).count();
         if num_sequenced == 0 {
-            return Ok(0);
+            return Ok(());
         }
 
         info!(
@@ -214,7 +220,7 @@ where TConsensusSpec: ConsensusSpec
                 .map(|data| (&data.transaction, data.decision, true)),
         )?;
 
-        Ok(num_sequenced)
+        Ok(())
     }
 
     fn validate_new_transaction(
