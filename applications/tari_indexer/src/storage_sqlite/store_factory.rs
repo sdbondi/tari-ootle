@@ -1067,10 +1067,23 @@ mod tests {
         assert_eq!(read(&store, &id).await, Some(6));
     }
 
-    /// With proof verification off nothing outranks anything, so ageing the head out is the only way a
-    /// wrong one is ever corrected.
+    /// A committee member that is behind can prove an older version against an older signed root, which
+    /// the trusted-root ring accepts by design. A proof attests only that the version existed, so a
+    /// proven head is a lower bound that no amount of elapsed time may walk back.
     #[tokio::test]
-    async fn a_stale_head_does_not_block_a_lower_version() {
+    async fn an_aged_verified_head_is_still_not_walked_backwards() {
+        let (_d, store) = temp_store().await;
+        let id = substate(1);
+        let aged = now_secs() - HEAD_TTL.as_secs() - 1;
+        assert!(put_entry(&store, &id, 10, true, aged, 100).await);
+        assert!(!put_entry(&store, &id, 6, true, now_secs(), 100).await);
+        assert_eq!(read(&store, &id).await, Some(10));
+    }
+
+    /// An unverified head is not a lower bound on anything, and with proof verification off nothing
+    /// outranks it, so ageing it out is the only way a wrong one is ever corrected.
+    #[tokio::test]
+    async fn an_aged_unverified_head_does_not_block_a_lower_version() {
         let (_d, store) = temp_store().await;
         let id = substate(1);
         let stale = now_secs() - HEAD_TTL.as_secs() - 1;

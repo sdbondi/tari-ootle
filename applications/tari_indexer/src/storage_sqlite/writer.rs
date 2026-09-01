@@ -556,10 +556,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
             return Ok(false);
         }
 
-        // A committee member that is behind can answer with a version below the head already held,
-        // which would walk the head backwards. A head holds that ground only while it is fresh and no
-        // less trustworthy than what is arriving: no transition retires a version above the real
-        // head, so a head recorded too high is corrected by nothing else.
+        // A committee member that is behind can answer with a version below the head already held.
         let cached: Option<(i32, bool, i64)> = substate_cache::table
             .select((
                 substate_cache::version,
@@ -572,9 +569,17 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
             .map_err(|e| StorageError::general(OPERATION, e))?;
 
         if let Some((cached_version, cached_verified, cached_at)) = cached {
-            let is_stale = unix_timestamp().saturating_sub(cached_at) > head_ttl.as_secs() as i64;
-            let outranks = entry.verified && !cached_verified;
-            if cached_version > entry.version as i32 && !is_stale && !outranks {
+            // A proof attests that a version existed, never that it is current, so a verified head is a
+            // lower bound on the real one and nothing may walk it back: a committee member that is
+            // behind can prove an older version against an older signed root, and the trusted-root ring
+            // accepts that by design.
+            //
+            // An unverified head carries no such guarantee and can be wrong in either direction, so it
+            // yields to a proven result, and to time when there is nothing better - which is the only
+            // way one recorded above the real version is ever corrected.
+            let outranked = entry.verified && !cached_verified;
+            let aged_out = !cached_verified && unix_timestamp().saturating_sub(cached_at) > head_ttl.as_secs() as i64;
+            if cached_version > entry.version as i32 && !outranked && !aged_out {
                 return Ok(false);
             }
         }
