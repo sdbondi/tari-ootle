@@ -67,39 +67,67 @@ const COMMANDS = [
 
 type OtherCommands = Record<string, Array<any>>;
 
-// The per-block budget governs WASM and native points together, so only their sum may be shown as a share of it.
-function ExecutionPointsCell({ wasm, native, max }: { wasm: bigint; native: bigint; max: bigint }) {
-  const total = Number(wasm) + Number(native);
-  const budget = Number(max);
+function BudgetCell({ used, budget, tooltip }: { used: number; budget: number; tooltip: React.ReactNode }) {
   if (!budget) {
-    return <>{total.toLocaleString()}</>;
+    return <>{used.toLocaleString()}</>;
   }
-  const percent = (total / budget) * 100;
+  const percent = (used / budget) * 100;
   // Sub-0.01% blocks are the common case on a quiet network, so distinguish them from empty rather than rounding
   // them to zero.
-  const share = !total ? "0" : percent < 0.01 ? "<0.01" : percent.toFixed(2);
+  const share = !used ? "0" : percent < 0.01 ? "<0.01" : percent.toFixed(2);
   return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-      {total.toLocaleString()} ({share}%)
-      <Tooltip
-        arrow
-        title={
-          <>
-            <div>
-              {total.toLocaleString()} of the {budget.toLocaleString()} execution points a leader packs a block against
-            </div>
-            <div>
-              {Number(wasm).toLocaleString()} WASM metering + {Number(native).toLocaleString()} native verification
-            </div>
-            <div>
-              Both are CPU time every validator spends re-executing this block, so one budget governs them together.
-            </div>
-          </>
-        }
-      >
+      {used.toLocaleString()} ({share}%)
+      <Tooltip arrow title={tooltip}>
         <HelpOutlineIcon sx={{ fontSize: "1rem", opacity: 0.6, cursor: "help" }} />
       </Tooltip>
     </Box>
+  );
+}
+
+// The per-block budget governs WASM and native points together, so only their sum may be shown as a share of it.
+function ExecutionPointsCell({ wasm, native, max }: { wasm: bigint; native: bigint; max: bigint }) {
+  const total = Number(wasm) + Number(native);
+  return (
+    <BudgetCell
+      used={total}
+      budget={Number(max)}
+      tooltip={
+        <>
+          <div>
+            {total.toLocaleString()} of the {Number(max).toLocaleString()} execution points a leader packs a block
+            against
+          </div>
+          <div>
+            {Number(wasm).toLocaleString()} WASM metering + {Number(native).toLocaleString()} native verification
+          </div>
+          <div>
+            Both are CPU time every validator spends re-executing this block, so one budget governs them together.
+          </div>
+        </>
+      }
+    />
+  );
+}
+
+function BlockWeightCell({ weight, max }: { weight: bigint; max: bigint }) {
+  return (
+    <BudgetCell
+      used={Number(weight)}
+      budget={Number(max)}
+      tooltip={
+        <>
+          <div>
+            {Number(weight).toLocaleString()} of the {Number(max).toLocaleString()} command weight a leader packs a
+            block against
+          </div>
+          <div>
+            Weight stands in for the size, IO and storage cost that metering does not see, so for ordinary traffic
+            this budget fills long before the execution points one.
+          </div>
+        </>
+      }
+    />
   );
 }
 
@@ -119,6 +147,8 @@ export default function BlockDetails() {
   const [wasmPoints, setWasmPoints] = useState<bigint>(0n);
   const [nativePoints, setNativePoints] = useState<bigint>(0n);
   const [maxExecutionPoints, setMaxExecutionPoints] = useState<bigint>(0n);
+  const [blockWeight, setBlockWeight] = useState<bigint>(0n);
+  const [maxBlockWeight, setMaxBlockWeight] = useState<bigint>(0n);
   const [foreignProposals, setForeignProposals] = useState<ForeignProposalAtom[]>([]);
 
   useEffect(() => {
@@ -130,6 +160,8 @@ export default function BlockDetails() {
           setWasmPoints(resp.total_wasm_execution_points);
           setNativePoints(resp.total_native_execution_points);
           setMaxExecutionPoints(resp.max_block_execution_points);
+          setBlockWeight(resp.total_transaction_weight);
+          setMaxBlockWeight(resp.max_block_weight);
           getBlock({ block_id: resp.block.header.parent }).then((justify_block) => {
             if (resp.block.stored_at && justify_block.block.stored_at) {
               let blockTime = resp.block.block_time || 0;
@@ -258,6 +290,12 @@ export default function BlockDetails() {
                               Fee Burn</TableCell>
                             <DataTableCell>
                               {block!.header.accumulated_data.total_exhaust_burn.toString()}
+                            </DataTableCell>
+                          </TableRow>
+                          <TableRow>
+                            <TableCell>Block Weight</TableCell>
+                            <DataTableCell>
+                              <BlockWeightCell weight={blockWeight} max={maxBlockWeight} />
                             </DataTableCell>
                           </TableRow>
                           <TableRow>

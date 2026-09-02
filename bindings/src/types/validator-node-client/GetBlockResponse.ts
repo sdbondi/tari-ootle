@@ -16,4 +16,14 @@ export type GetBlockResponse = {
    * so only that sum is a meaningful proportion of it.
    */
   max_block_execution_points: bigint;
+  /**
+   * Total proposal weight of the block's transaction commands: each transaction's weight discounted by how much
+   * of the work its command stage adds.
+   */
+  total_transaction_weight: bigint;
+  /**
+   * The per-block weight budget a leader packs against. Weight stands in for the size and IO cost that metering
+   * does not see, so for ordinary traffic this budget fills long before the execution points one.
+   */
+  max_block_weight: bigint;
 };

@@ -392,14 +392,15 @@ impl JsonRpcHandlers {
     pub async fn get_block(&self, value: JsonRpcExtractor) -> JrpcResult {
         let answer_id = value.get_answer_id();
         let data: GetBlockRequest = value.parse_params()?;
-        let (block, executions) = self
+        let (block, executions, total_transaction_weight) = self
             .state_store
             .with_read_tx(|tx| {
                 let Some(block) = Block::get(tx, &data.block_id).optional()? else {
                     return Ok(None);
                 };
                 let executions = tx.block_transaction_executions_get_all_for_block(&data.block_id)?;
-                Ok::<_, StorageError>(Some((block, executions)))
+                let total_transaction_weight = sum_transaction_weight(tx, &block)?;
+                Ok::<_, StorageError>(Some((block, executions, total_transaction_weight)))
             })
             .map_err(internal_error(answer_id.clone()))?
             .ok_or_else(|| not_found(answer_id.clone(), format!("Block {} not found", data.block_id)))?;
@@ -418,6 +419,8 @@ impl JsonRpcHandlers {
             total_wasm_execution_points,
             total_native_execution_points,
             max_block_execution_points: self.consensus_constants.max_block_execution_points,
+            total_transaction_weight,
+            max_block_weight: self.consensus_constants.max_block_weight,
         };
         Ok(JsonRpcResponse::success(answer_id, res))
     }
@@ -906,4 +909,22 @@ impl JsonRpcHandlers {
             types::PrepareLayerOneTransactionResponse { path },
         ))
     }
+}
+
+/// Sums the proposal weight of the block's transaction commands, mirroring what a leader packs a block against and
+/// what a replica validates it by: a transaction's weight, discounted by how much of the work its command stage
+/// actually adds. Transactions pruned from storage contribute nothing, so an old block's total may read low.
+fn sum_transaction_weight<TTx: StateStoreReadTransaction>(tx: &TTx, block: &Block) -> Result<u64, StorageError> {
+    let mut total = 0u64;
+    for cmd in block.commands() {
+        let Some(atom) = cmd.transaction() else {
+            continue;
+        };
+        let Some(record) = atom.get_transaction(tx).optional()? else {
+            continue;
+        };
+        let weight = record.transaction().calculate_transaction_weight().as_u64();
+        total = total.saturating_add(weight.saturating_mul(cmd.execution_weight_percent()) / 100);
+    }
+    Ok(total)
 }
