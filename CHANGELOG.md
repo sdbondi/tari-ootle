@@ -3,6 +3,161 @@
 All notable changes to this project will be documented in this file.
 See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [0.40.0](https://github.com/tari-project/tari-ootle/compare/v0.39.3...v0.40.0) (2026-09-02)
+
+Two production incidents on esmeralda are fixed here — a state-sync off-by-one that corrupted the
+state tree and permanently wedged a validator, and the pool-clear that kept the same node out of
+consensus for an epoch. Alongside them: the WASM metering ceiling is raised to make non-trivial
+cryptography viable in templates, the substate schema activation schedule becomes per-network, and
+the indexer's substate cache is invalidated by the transition stream instead of a two-second timer.
+
+### ⚠️ Upgrade notes
+
+- `feat!` — **All validators must be upgraded together.** `max_block_validation_execution_points`
+  moves from 7.1e9 to 7.25e9 and `MAX_WASM_POINTS_PER_TRANSACTION` from 100M to 250M. These are
+  consensus rules requiring network-wide uniformity — two validators on different versions disagree
+  on block validity.
+- `fix!` — **Reject reasons change, so transaction receipts change.** A transaction aborting because
+  an input has no live version now reports `"Substate {id} is not found or DOWN"` instead of
+  `"Substate {id} is DOWN"`. The receipt is a substate and is hashed into the state tree, so mixed
+  versions commit different receipts for the same transaction and diverge.
+- **Operator note** — a validator node now **refuses to start** if its binary introduces a substate
+  schema activation at an epoch the node has already run past, since that would silently re-hash
+  committed substates. Override with `--allow-past-protocol-activation` (or
+  `validator_node.allow_past_protocol_activation`) only for a node whose state is being discarded.
+  No existing network is affected: every schedule is still `[(Epoch(0), V0)]`.
+- **Operator note** — **indexer config**: `latest_substate_cache_ttl` is removed, replaced by
+  `substate_cache_max_serve_lag` (default 300s) and `substate_cache_max_entries` (default 100k). The
+  internal `DEFAULT_CACHE_TTL` moves 300s → 900s and is demoted from a correctness mechanism to a
+  coarse backstop for entries the transitions never reach.
+  `max_serve_lag` must comfortably exceed a *full* sync round
+  (`state_scanning_interval` plus the time to sync every shard group), not just the interval, or the
+  cache closes between rounds. A SQLite migration runs on first start; the old `cacache` directory
+  is orphaned and can be deleted.
+- `feat!` — **`tari_indexer_client`**: `GetIndexerInfoResponse.latest_substate_cache_ttl_secs` is
+  renamed `substate_cache_max_serve_lag_secs`.
+
+### Consensus
+
+- `fix` — **A validator whose pool was cleared can no longer be locked out of consensus for the rest
+  of the epoch.** After a state sync, `Syncing::on_enter` clears the transaction pool; the next
+  epoch's block re-proposed a cleared transaction, and `evaluate_local_only_command` no-votes any
+  block whose transaction is not in the pool. The node fell behind and failed the state merkle root
+  check on every subsequent block — ~65 minutes out of consensus on esmeralda. Parking does not
+  cover it: the transaction *record* was never missing, only the derived pool record, and there is
+  nothing to request from a peer. The readiness check now widens from "which transactions do we not
+  have?" to "which are not ready?", re-sequencing a held transaction through the same
+  `validate_new_transaction` path used for peer-fetched ones. That path already refuses to sequence
+  an id whose finalized decision is a commit or whose `TransactionReceipt` exists in state, so a
+  repair cannot resurrect what the synced state committed.
+- `fix!` — **A destroyed substate and one that never existed report as the same error.** Telling them
+  apart is a property of how much history a node retained, not of the ledger, but the distinction was
+  stringified into the reject reason and hashed into the state tree — so two honest nodes with
+  different `epoch_history_length` settings committed different receipts for the same transaction.
+  `SubstateIsDown` is folded into `SubstateNotFound` on both `SubstateStoreError` and
+  `LockFailedError`. Nothing depended on the distinction: `try_lock_all` already classified both as
+  hard conflicts. This also removes a trap — `is_not_found_error()` never matched `SubstateIsDown`,
+  so merging the message without merging the variant would have turned an ordinary stale submission
+  into a fatal error propagating out of consensus.
+- `feat` — **The substate schema activation schedule is per network.** Networks run at independent
+  epochs, so one hardcoded table cannot express when a schema goes live on each.
+  `ProtocolVersion::activations` matches exhaustively on `Network`, so a new network must state its
+  own schedule rather than silently inherit one; `at`, `newest_scheduled_activation` and
+  `hash_substate` take a `Network` alongside the `Epoch` already threaded to every hashing site. The
+  duplicate `ProtocolVersion` in `common_types` is removed and re-exported from `engine_types`, so
+  the copy gating consensus and the copy gating substate hashing can no longer disagree. The
+  unsatisfiable `MAX_SUPPORTED` guard in the hotstuff worker is removed — it compared two values read
+  from the same binary's table.
+
+### State sync
+
+- `fix` — **The state stream starts at the first *unpersisted* version.** It opened at the shard's
+  already-persisted version, and the stream is inclusive, so the peer replayed a version the client
+  had already written. JMT nodes are keyed by `(version, nibble_path)`: the rewrite overwrote the
+  live nodes at those keys while recording those same keys as stale at that version, and an hour
+  later the stale-node GC deleted them out from under the current tree. The node then failed every
+  block evaluation and every subsequent sync on `A node v6384:f9 expected to exist … was not found`,
+  looping `CheckSync → Syncing → Failure → Sleeping` permanently — unrecoverable without a database
+  wipe. `calculate_substate_changes` now also rejects a non-monotonic version, so a same-version
+  write fails loudly rather than silently corrupting the tree.
+- `fix` — **`UP_ONLY` decides liveness by destruction, not by value presence.** A destroyed substate
+  keeps its value until epoch GC prunes it, which runs `epoch_history_length` epochs back (default
+  1), so anything destroyed inside that window was streamed as an up with its down filtered out and
+  no later transition to correct it. An indexer syncing from scratch recorded those substates as live
+  **permanently** — later rounds resume past that state version, so a UTXO spent shortly before the
+  sync was reported unspent for the rest of that indexer's life.
+
+### Execution Engine
+
+- `feat!` — **The per-transaction WASM metering ceiling is raised from 100M to 250M points** (~12ms →
+  ~30ms of validator CPU at the calibrated ~8.4M points/ms). The old ceiling put non-trivial
+  cryptography out of reach of templates entirely and was 24x tighter than the native ceiling a
+  single transaction already enjoys, for the same real CPU at the same price. Measured against a
+  Groth16/BN254 verifier written entirely in WASM: at 100M nothing fitted except a single-input
+  verification, at 96% of budget with nothing left for contract logic; at 250M a sixteen-input
+  statement fits at 70% of budget and two verifies fit in one transaction. Sixty-four inputs
+  deliberately does not fit — cost is linear at ~5.3M points each, so a statement that wide belongs
+  behind a hash. The proposal budget is unchanged, so a block packs fewer heavy transactions rather
+  than doing more work, and still admits at least 18 max-compute transactions
+  (`MIN_MAX_COMPUTE_TRANSACTIONS_PER_BLOCK`). `FREE_COMPUTE_GRACE_POINTS` stays at 32M: nothing this
+  expensive should be fundable before a fee is paid.
+- `feat` — `TemplateTest::last_execution_points()` exposes what a call cost. `ExecuteResult` carries
+  the points, but `call_function`/`call_method` return only the decoded value and drop the result.
+
+### Indexer
+
+- `feat` — **The substate cache is invalidated by the state transition stream instead of expiring on
+  a timer**, so an unversioned read is servable indefinitely rather than for two seconds. Every read
+  past that TTL cost a validator committee round trip — one per vault and per resource on a wallet
+  account refresh. Presence in the cache is now validity, resting on three changes: the down feed is
+  completed (`ALL_HASHES` was honoured on the up arm but not the down arm, so a subscriber never
+  learned of a *terminal* down — a spent `Utxo` or `ConfidentialOutput`, or a `ValidatorFeePool`
+  drained to zero — and would serve it as live forever); the cache moves from a `cacache` directory
+  into the indexer's SQLite database so invalidation commits in the same transaction that advances
+  `Key::SyncProgress`; and `ShardWatermarks` records per shard and **per process run** that a
+  completion marker put the indexer level with the committee, so a fresh or restarted indexer serves
+  nothing from cache until its first round lands. A cached head settles every version below it
+  locally, answering a versioned read below the head without a round trip.
+- `fix` — **The WASM module cache resolves against the configured data dir.** The indexer built its
+  path from `config.indexer.data_dir` directly, which is relative by default and, unlike the
+  validator node's, is never absolutised at load — so `wasm_cache` was created relative to the
+  process working directory instead of `{base_path}/{network}/data/indexer/`.
+
+### Swarm daemon
+
+- `fix` — Log output cleaned up.
+
+### Build & CI
+
+- `ci` — **`consensus_tests` gets a 600s kill timeout**, up from the 240s `[profile.ci]` bound, scoped
+  to that package alone. Runs were failing on `development` with 663 of 664 tests passing and one
+  killed by the clock. These tests wait on wall-clock timers rather than on work finishing, so they
+  are slow by construction and stretch further under runner contention — nineteen crossed the 60s
+  slow mark within the same second, and several reported slow went on to pass at 73–93s.
+- `test` — The walletd balance-change fixture builds its 205 bulk rows in one transaction instead of
+  205, each of which was its own `with_write_tx` and so its own fsync. 4.3s → 0.6s locally, and the
+  runtime no longer scales with fsync latency; it was timing out at 60s in CI while passing locally.
+- `chore` — Dependency bumps: `taiki-e/install-action` 2.86.5 → 2.87.0, `browserslist` 4.28.6 →
+  4.28.8 (swarm daemon web UI).
+
+### Docs
+
+- `docs` — Changelog entries added for 0.39.1, 0.39.2 and 0.39.3, which the changelog had skipped.
+
+### Crate versions
+
+`[workspace.package].version` moves to `0.40.0` (the whole tier-3 cohort). Independently versioned
+crates affected:
+
+| crate | version |
+|---|---|
+| `tari_ootle_wallet_crypto` | 0.41.0 → 0.42.0 |
+| `tari_indexer_client` | 0.40.0 → 0.41.0 |
+| `ootle-rs` | 0.21.0 → 0.22.0 |
+| `tari_ootle_wallet_sdk` | 0.41.0 → 0.42.0 |
+| `tari_ootle_wallet_storage_sqlite` | 0.41.0 → 0.42.0 |
+| `tari_ootle_walletd_client` | 0.41.0 → 0.42.0 |
+
 ## [0.39.3](https://github.com/tari-project/tari-ootle/compare/v0.39.2...v0.39.3) (2026-08-26)
 
 ### ⚠️ Upgrade notes
