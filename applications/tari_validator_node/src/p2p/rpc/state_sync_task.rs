@@ -17,7 +17,7 @@ use tari_rpc_framework::RpcStatus;
 use tari_state_tree::Version;
 use tokio::sync::mpsc;
 
-use crate::consensus::ConsensusHandle;
+use crate::{consensus::ConsensusHandle, p2p::rpc::CONSENSUS_NOT_RUNNING};
 
 const LOG_TARGET: &str = "tari::ootle::rpc::sync_task";
 
@@ -313,8 +313,10 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
             return Ok(epoch);
         };
 
-        if !self.consensus.can_serve_committed_state() {
-            return Err(RpcStatus::general(ConsensusHandle::CANNOT_SERVE_COMMITTED_STATE));
+        // A tip claim needs more than the history check that admitted the request: only a node
+        // participating in consensus is receiving the transitions it is claiming to be level on.
+        if !self.consensus.is_running() {
+            return Err(RpcStatus::general(CONSENSUS_NOT_RUNNING));
         }
 
         if authority.is_stale_at(epoch) {

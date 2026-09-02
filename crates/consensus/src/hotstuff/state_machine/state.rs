@@ -5,10 +5,17 @@ use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
 
-use crate::hotstuff::state_machine::{check_sync::CheckSync, idle::Idle, running::Running, syncing::Syncing};
+use crate::hotstuff::state_machine::{
+    check_sync::CheckSync,
+    idle::Idle,
+    initialising::Initialising,
+    running::Running,
+    syncing::Syncing,
+};
 
 #[derive(Debug)]
 pub(super) enum ConsensusState<TSpec> {
+    Initialising(Initialising<TSpec>),
     Idle(Idle<TSpec>),
     CheckSync(CheckSync<TSpec>),
     Syncing(Syncing<TSpec>),
@@ -20,6 +27,7 @@ pub(super) enum ConsensusState<TSpec> {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ConsensusCurrentState {
     #[default]
+    Initialising,
     Idle,
     CheckSync,
     Syncing,
@@ -33,6 +41,7 @@ impl Display for ConsensusCurrentState {
         #[allow(clippy::enum_glob_use)]
         use ConsensusCurrentState::*;
         match self {
+            Initialising => write!(f, "Initialising"),
             Idle => write!(f, "Idle"),
             CheckSync => write!(f, "CheckSync"),
             Syncing => write!(f, "Syncing"),
@@ -64,6 +73,7 @@ impl<TSpec> Display for ConsensusState<TSpec> {
 impl<TSpec> From<&ConsensusState<TSpec>> for ConsensusCurrentState {
     fn from(value: &ConsensusState<TSpec>) -> Self {
         match value {
+            ConsensusState::Initialising(_) => ConsensusCurrentState::Initialising,
             ConsensusState::Idle(_) => ConsensusCurrentState::Idle,
             ConsensusState::CheckSync(_) => ConsensusCurrentState::CheckSync,
             ConsensusState::Syncing(_) => ConsensusCurrentState::Syncing,

@@ -203,6 +203,7 @@ impl From<tari_consensus::hotstuff::ConsensusCurrentState> for proto::rpc::Conse
     fn from(value: tari_consensus::hotstuff::ConsensusCurrentState) -> Self {
         use tari_consensus::hotstuff::ConsensusCurrentState::*;
         match value {
+            Initialising => proto::rpc::ConsensusState::Initialising,
             Idle => proto::rpc::ConsensusState::Idle,
             CheckSync => proto::rpc::ConsensusState::CheckSync,
             Syncing => proto::rpc::ConsensusState::Syncing,
@@ -217,6 +218,7 @@ impl From<proto::rpc::ConsensusState> for tari_consensus::hotstuff::ConsensusCur
     fn from(value: proto::rpc::ConsensusState) -> Self {
         use tari_consensus::hotstuff::ConsensusCurrentState::*;
         match value {
+            proto::rpc::ConsensusState::Initialising => Initialising,
             proto::rpc::ConsensusState::Idle => Idle,
             proto::rpc::ConsensusState::CheckSync => CheckSync,
             proto::rpc::ConsensusState::Syncing => Syncing,

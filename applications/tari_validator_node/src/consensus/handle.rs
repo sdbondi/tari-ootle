@@ -17,9 +17,6 @@ pub struct ConsensusHandle {
 }
 
 impl ConsensusHandle {
-    /// The status returned to a peer when [`ConsensusHandle::can_serve_committed_state`] is false.
-    pub const CANNOT_SERVE_COMMITTED_STATE: &'static str = "Consensus is not running on this node";
-
     pub(super) fn new(
         rx_current_state: watch::Receiver<ConsensusCurrentState>,
         events_subscription: EventSubscription<HotstuffEvent>,
@@ -65,9 +62,10 @@ impl ConsensusHandle {
         self.get_current_state().is_running()
     }
 
-    /// True while this node's committed state may be served to peers. While consensus is itself
-    /// syncing, what this node has committed is not what its committee has committed, so it must not
-    /// answer for the committee.
+    /// True while this node's committed history may be served to peers. A node that has left the
+    /// register still holds what it committed while it was in one, and is the only source of it for
+    /// the committee that took over, so `Idle` serves. While consensus is initialising or syncing,
+    /// what this node has committed is not what its committee has committed, so it must not answer.
     pub fn can_serve_committed_state(&self) -> bool {
         matches!(
             self.get_current_state(),

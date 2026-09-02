@@ -90,6 +90,7 @@ use crate::{
     consensus::ConsensusHandle,
     p2p::{
         rpc::{
+            CONSENSUS_NOT_RUNNING,
             block_sync_task::BlockSyncTask,
             state_sync_task::{ShardCursor, StateSyncTask, TipAuthority},
         },
@@ -125,7 +126,7 @@ impl<TStateStore: StateStore> ValidatorNodeRpcServiceImpl<TStateStore> {
         if self.consensus.can_serve_committed_state() {
             Ok(())
         } else {
-            Err(RpcStatus::general(ConsensusHandle::CANNOT_SERVE_COMMITTED_STATE))
+            Err(RpcStatus::general(CONSENSUS_NOT_RUNNING))
         }
     }
 
@@ -493,6 +494,11 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
         // marker names the epoch its claim is made as of, so the claim and the marker must be anchored
         // to the same one.
         let tip_authority = if end_epoch.is_none() {
+            // A tip claim needs more than the history check that admitted the request: only a node
+            // participating in consensus is receiving the transitions it would claim to be level on.
+            if !self.consensus.is_running() {
+                return Err(RpcStatus::general(CONSENSUS_NOT_RUNNING));
+            }
             let epoch = self.consensus.current_epoch();
             // A node that has not entered a view has no committee to answer for.
             if epoch.is_zero() {

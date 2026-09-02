@@ -142,7 +142,8 @@ async fn health_check(Extension(handlers): Extension<Arc<JsonRpcHandlers>>) -> i
     let is_ok = is_net_ok &&
         matches!(
             status,
-            ConsensusCurrentState::Idle |
+            ConsensusCurrentState::Initialising |
+                ConsensusCurrentState::Idle |
                 ConsensusCurrentState::Running |
                 ConsensusCurrentState::Syncing |
                 ConsensusCurrentState::CheckSync

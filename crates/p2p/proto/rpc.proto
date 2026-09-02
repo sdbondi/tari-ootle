@@ -350,6 +350,8 @@ enum ConsensusState {
   Running = 3;
   Sleeping = 4;
   Shutdown = 5;
+  // The node has not scanned the base layer far enough to know its own registration or committee.
+  Initialising = 6;
 }
 
 message GetHighQcRequest {

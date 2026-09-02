@@ -820,6 +820,7 @@ pub struct ValidatorStatus {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "tari-indexer-client/"))]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub enum ValidatorConsensusState {
+    Initialising,
     Idle,
     CheckSync,
     Syncing,
