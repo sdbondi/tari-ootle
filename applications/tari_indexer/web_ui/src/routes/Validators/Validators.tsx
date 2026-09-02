@@ -30,6 +30,7 @@ function stateColour(state: ValidatorConsensusState): StateColour {
   switch (state) {
     case "Running":
       return "success";
+    case "Initialising":
     case "CheckSync":
     case "Syncing":
       return "info";
