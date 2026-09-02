@@ -30,6 +30,7 @@
 mod metrics;
 
 use std::{
+    cmp,
     convert::TryFrom,
     fmt,
     future::Future,
@@ -76,6 +77,10 @@ use crate::{
 };
 
 const LOG_TARGET: &str = "libp2p::rpc::client";
+
+/// How many keepalive intervals may pass with no frame at all before a peer that was asked for
+/// keepalives is treated as gone.
+const MISSED_KEEPALIVES_BEFORE_TIMEOUT: u32 = 3;
 
 #[derive(Clone)]
 pub struct RpcClient {
@@ -324,6 +329,14 @@ impl RpcClientConfig {
     pub fn handshake_timeout(&self) -> Duration {
         self.handshake_timeout
     }
+
+    /// The longest gap between frames tolerated of a peer that was asked for keepalives. Several
+    /// intervals plus the grace period, because the peer MAY serve a longer interval than it was
+    /// asked for and does not report which it chose.
+    fn keepalive_timeout(&self) -> Option<Duration> {
+        self.keepalive_interval
+            .map(|interval| interval * MISSED_KEEPALIVES_BEFORE_TIMEOUT + self.deadline_grace_period)
+    }
 }
 
 impl Default for RpcClientConfig {
@@ -354,18 +367,24 @@ impl RpcRequestOptions {
     }
 
     /// The deadline to send to the peer for this request. It bounds the gap between messages that
-    /// carry the response, so a stream idle for longer than this ends.
+    /// carry the response: a stream that produces none for this long is abandoned by the peer, and
+    /// the client gives up a grace period later.
     ///
-    /// The deadline is carried on the wire in whole seconds and rounds down, so a sub-second
-    /// deadline reads as "no deadline" to the peer.
+    /// The deadline is carried on the wire in whole seconds and rounds down, with a floor of one
+    /// second. A peer MAY reject outright a deadline shorter than the minimum it accepts.
     pub fn with_deadline(mut self, deadline: Duration) -> Self {
         self.deadline = Some(deadline);
         self
     }
 
     /// Asks the peer to emit an empty keepalive frame every `interval` while this response has
-    /// nothing to send. Keepalives prove liveness within the deadline budget rather than extending
-    /// it, so the interval must be comfortably shorter than the deadline in force for the request.
+    /// nothing to send, so that a peer that has gone away is told apart from one that is merely
+    /// idle. Keepalives prove liveness within the deadline budget rather than extending it: a
+    /// response that produces no real message for the deadline still ends.
+    ///
+    /// The interval must be comfortably shorter than the deadline in force for the request. The
+    /// peer MAY serve a longer interval than asked for, so the client waits several of them before
+    /// giving up.
     ///
     /// See [`RpcClientBuilder::with_keepalive_interval`] for what the peer does with the interval.
     pub fn with_keepalive_interval(mut self, interval: Duration) -> Self {
@@ -654,7 +673,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
     async fn do_ping_pong(&mut self, reply: oneshot::Sender<Result<Duration, RpcStatus>>) -> Result<(), RpcError> {
         let ack = proto::RpcRequest {
             flags: u32::from(RpcMessageFlags::ACK.bits()),
-            deadline: self.config.deadline.map(|t| t.as_secs()).unwrap_or(0),
+            deadline: self.config.deadline.map(|t| t.as_secs().max(1)).unwrap_or(0),
             ..Default::default()
         };
 
@@ -668,8 +687,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
             self.protocol_name(),
             start.elapsed()
         );
-        let mut reader =
-            RpcResponseReader::new(&mut self.framed, self.config, 0).tolerating_keepalives(self.tolerates_keepalives);
+        let mut reader = RpcResponseReader::new(&mut self.framed, self.config, 0);
         let resp = match reader.read_ack().await {
             Ok(resp) => resp,
             Err(RpcError::ReplyTimeout) => {
@@ -737,7 +755,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
         let req = proto::RpcRequest {
             request_id: u32::from(request_id),
             method,
-            deadline: config.deadline.map(|t| t.as_secs()).unwrap_or(0),
+            deadline: config.deadline.map(|t| t.as_secs().max(1)).unwrap_or(0),
             keepalive_interval: config.keepalive_interval.map(|t| t.as_secs().max(1)).unwrap_or(0),
             flags: 0,
             payload: request.message.to_vec(),
@@ -769,6 +787,10 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
         #[cfg(feature = "metrics")]
         let mut metrics_timer = Some(latency.start_timer());
 
+        // Mirrors the peer's own budget: it abandons the response `deadline` after the last message
+        // that carried one, and keepalives do not renew that on either side.
+        let mut deadline_at = config.deadline.map(|d| Instant::now() + d);
+
         let timer = Instant::now();
         if let Err(err) = self.send_request(req).await {
             warn!(target: LOG_TARGET, "{}", err);
@@ -794,7 +816,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
 
             // Check if the response receiver has been dropped while receiving messages
             let resp_result = {
-                let resp_fut = self.read_response(request_id, config);
+                let resp_fut = self.read_response(request_id, config, deadline_at);
                 tokio::pin!(resp_fut);
                 let closed_fut = response_tx.closed();
                 tokio::pin!(closed_fut);
@@ -867,6 +889,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
                     return Err(err);
                 },
             };
+            deadline_at = config.deadline.map(|d| Instant::now() + d);
 
             match Self::convert_to_result(resp) {
                 Ok(Ok(resp)) => {
@@ -922,13 +945,15 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
         &mut self,
         request_id: u16,
         config: RpcClientConfig,
+        deadline_at: Option<Instant>,
     ) -> Result<(proto::RpcResponse, Option<Duration>), RpcError> {
         let peer_id = self.peer_id;
         let protocol_name = self.protocol_name().to_string();
 
         let tolerates_keepalives = self.tolerates_keepalives;
-        let mut reader =
-            RpcResponseReader::new(&mut self.framed, config, request_id).tolerating_keepalives(tolerates_keepalives);
+        let mut reader = RpcResponseReader::new(&mut self.framed, config, request_id)
+            .tolerating_keepalives(tolerates_keepalives)
+            .expecting_response_by(deadline_at);
         let mut num_ignored = 0;
         let resp = loop {
             match reader.read_response().await {
@@ -1013,6 +1038,9 @@ struct RpcResponseReader<'a, TSubstream> {
     config: RpcClientConfig,
     request_id: u16,
     tolerates_keepalives: bool,
+    /// The instant by which a frame carrying the response must arrive. Keepalives do not move it,
+    /// so a peer emitting them cannot hold a response open past the deadline it was given.
+    deadline_at: Option<Instant>,
     bytes_read: usize,
     time_to_first_msg: Option<Duration>,
 }
@@ -1026,6 +1054,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
             config,
             request_id,
             tolerates_keepalives: false,
+            deadline_at: None,
             bytes_read: 0,
             time_to_first_msg: None,
         }
@@ -1033,6 +1062,11 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
 
     pub fn tolerating_keepalives(mut self, tolerates_keepalives: bool) -> Self {
         self.tolerates_keepalives = tolerates_keepalives;
+        self
+    }
+
+    pub fn expecting_response_by(mut self, deadline_at: Option<Instant>) -> Self {
+        self.deadline_at = deadline_at;
         self
     }
 
@@ -1109,9 +1143,21 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
         Ok(())
     }
 
+    /// How long to wait for the next frame of any kind: no later than the deadline the peer was
+    /// given for the response, plus a grace period for latency, and no longer than the gap
+    /// tolerated of a peer that was asked for keepalives.
+    fn frame_timeout(&self) -> Option<Duration> {
+        let until_deadline = self
+            .deadline_at
+            .map(|at| (at + self.config.deadline_grace_period).saturating_duration_since(Instant::now()));
+        match (until_deadline, self.config.keepalive_timeout()) {
+            (Some(deadline), Some(keepalive)) => Some(cmp::min(deadline, keepalive)),
+            (deadline, keepalive) => deadline.or(keepalive),
+        }
+    }
+
     async fn next(&mut self) -> Result<proto::RpcResponse, RpcError> {
-        // Wait until the timeout, allowing an extra grace period to account for latency
-        let next_msg_fut = match self.config.timeout_with_grace_period() {
+        let next_msg_fut = match self.frame_timeout() {
             Some(timeout) => Either::Left(time::timeout(timeout, self.framed.next())),
             None => Either::Right(self.framed.next().map(Ok)),
         };
@@ -1464,6 +1510,131 @@ mod keepalive_tests {
         assert_eq!(second_request.keepalive_interval, 0);
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].as_ref().unwrap().supported_versions, vec![7]);
+    }
+
+    /// Streams keepalives every `every` for as long as the client keeps the session open, and never
+    /// a message carrying a response.
+    async fn serve_only_keepalives(substream: DuplexStream, every: Duration) {
+        let mut framed = framing::canonical(substream.compat(), RPC_MAX_FRAME_SIZE);
+        let request = read_request(&mut framed).await;
+        loop {
+            time::sleep(every).await;
+            if send_response_checked(&mut framed, RpcResponse::keepalive(request.request_id))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    }
+
+    async fn send_response_checked(
+        framed: &mut CanonicalFraming<Compat<DuplexStream>>,
+        resp: RpcResponse,
+    ) -> Result<(), std::io::Error> {
+        framed.send(resp.to_proto().encode_to_vec().into()).await
+    }
+
+    #[tokio::test]
+    async fn keepalives_do_not_extend_the_deadline_they_prove_liveness_within() {
+        let (server, client) = tokio::io::duplex(RPC_MAX_FRAME_SIZE);
+        // Keepalives arrive far more often than the deadline, and the gap tolerated of a peer that
+        // was asked for them is far longer, so only the deadline can end this stream.
+        let server = tokio::spawn(serve_only_keepalives(server, Duration::from_millis(50)));
+
+        let config = RpcClientConfig {
+            deadline: Some(Duration::from_secs(1)),
+            deadline_grace_period: Duration::from_millis(200),
+            ..Default::default()
+        };
+        let mut rpc_client = RpcClient::connect(
+            config,
+            PeerId::random(),
+            framing::canonical(client.compat(), RPC_MAX_FRAME_SIZE),
+            StreamProtocol::new(PROTOCOL),
+        )
+        .await
+        .unwrap();
+
+        let started = Instant::now();
+        let received = time::timeout(
+            Duration::from_secs(10),
+            rpc_client
+                .server_streaming_with_options::<_, _, proto::RpcSession>(
+                    proto::RpcSession::default(),
+                    1u32,
+                    RpcRequestOptions::new().with_keepalive_interval(Duration::from_secs(2)),
+                )
+                .await
+                .unwrap()
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .expect("keepalives held the response open past its deadline");
+        let elapsed = started.elapsed();
+
+        server.abort();
+        assert_eq!(
+            received[0].as_ref().unwrap_err().as_status_code(),
+            RpcStatusCode::Timeout
+        );
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "expected the deadline to end the stream, took {elapsed:.2?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_stops_sending_the_keepalives_it_promised_is_given_up_on() {
+        let (server, client) = tokio::io::duplex(RPC_MAX_FRAME_SIZE);
+        // The peer answers the handshake, then goes silent without ever closing the substream.
+        let server = tokio::spawn(async move {
+            let mut framed = framing::canonical(server.compat(), RPC_MAX_FRAME_SIZE);
+            read_request(&mut framed).await;
+            future::pending::<()>().await;
+        });
+
+        let config = RpcClientConfig {
+            deadline: Some(Duration::from_secs(60)),
+            deadline_grace_period: Duration::from_millis(300),
+            ..Default::default()
+        };
+        let mut rpc_client = RpcClient::connect(
+            config,
+            PeerId::random(),
+            framing::canonical(client.compat(), RPC_MAX_FRAME_SIZE),
+            StreamProtocol::new(PROTOCOL),
+        )
+        .await
+        .unwrap();
+
+        let started = Instant::now();
+        let received = time::timeout(
+            Duration::from_secs(10),
+            rpc_client
+                .server_streaming_with_options::<_, _, proto::RpcSession>(
+                    proto::RpcSession::default(),
+                    1u32,
+                    RpcRequestOptions::new().with_keepalive_interval(Duration::from_millis(100)),
+                )
+                .await
+                .unwrap()
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .expect("a silent peer held the response open for the whole deadline");
+        let elapsed = started.elapsed();
+
+        server.abort();
+        assert_eq!(
+            received[0].as_ref().unwrap_err().as_status_code(),
+            RpcStatusCode::Timeout
+        );
+        // Three missed intervals plus the grace period, well inside the 60s deadline.
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "expected the missed keepalives to end the stream, took {elapsed:.2?}"
+        );
     }
 
     #[tokio::test]
