@@ -30,6 +30,7 @@ use tari_ootle_storage::{
         EpochCheckpoint,
         PendingShardStateTreeDiff,
         SubstateChange,
+        TransactionRecord,
         TreeRootSummary,
         ValidatorConsensusStats,
     },
@@ -493,13 +494,24 @@ pub fn process_newly_justified_block<TTx: StateStoreReadTransaction>(
                 .get_transaction_pool_record(tx, new_leaf_block, atom.id())
                 .optional()?
             else {
-                // A transaction that has left the pool has been finalized, so it has no evidence left to update.
-                debug!(
-                    target: LOG_TARGET,
-                    "Transaction {} in newly justified block {} is no longer in the pool",
-                    atom.id(),
-                    new_leaf_block,
-                );
+                // Finalizing a transaction removes its pool record, and a finalized transaction has no evidence
+                // left to update. Any other absence leaves the transaction unable to make progress.
+                if TransactionRecord::is_record_finalized(tx, atom.id())? {
+                    debug!(
+                        target: LOG_TARGET,
+                        "Transaction {} in justified block {} is finalized and no longer in the pool",
+                        atom.id(),
+                        block,
+                    );
+                } else {
+                    warn!(
+                        target: LOG_TARGET,
+                        "❓️ Transaction {} in justified block {} is not in the pool and is not finalized. Its \
+                         evidence cannot be updated.",
+                        atom.id(),
+                        block,
+                    );
+                }
                 continue;
             };
 
@@ -511,7 +523,7 @@ pub fn process_newly_justified_block<TTx: StateStoreReadTransaction>(
                 debug!(
                     target: LOG_TARGET,
                     "🔍 Updating evidence for LocalPrepare command in block {} for transaction {}. {}",
-                    new_leaf_block,
+                    block,
                     atom.id(),
                     pool_tx.evidence()
                 );
@@ -523,7 +535,7 @@ pub fn process_newly_justified_block<TTx: StateStoreReadTransaction>(
                 debug!(
                     target: LOG_TARGET,
                     "🔍 Updating evidence for LocalAccept command in block {} for transaction {}. {}",
-                    new_leaf_block,
+                    block,
                     atom.id(),
                     pool_tx.evidence()
                 );
@@ -537,7 +549,7 @@ pub fn process_newly_justified_block<TTx: StateStoreReadTransaction>(
                     target: LOG_TARGET,
                     "✅ Justified block: Setting READY for transaction {} in block {}",
                     atom.id(),
-                    new_leaf_block,
+                    block,
                 );
                 pool_tx.set_ready(true);
             }

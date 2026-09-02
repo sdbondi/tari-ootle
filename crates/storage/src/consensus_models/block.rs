@@ -418,10 +418,17 @@ impl Block {
         self.timeout_certificate.as_ref()
     }
 
+    /// Whether some branch has justified this block.
+    ///
+    /// This is stamped by a block carrying a QC over this one, before that block is voted on, and stays
+    /// stamped across the whole block store even where that branch is later abandoned. Work whose result
+    /// belongs to one branch must therefore key off that branch rather than off this flag.
     pub fn has_justify_qc(&self) -> bool {
         self.justify_qc_id.is_some()
     }
 
+    /// The id of a QC over this block, as last recorded by [`Self::add_justify_qc`]. Carries the same
+    /// whole-store scope as [`Self::has_justify_qc`].
     pub fn justify_qc_id(&self) -> Option<PcId> {
         self.justify_qc_id
     }
