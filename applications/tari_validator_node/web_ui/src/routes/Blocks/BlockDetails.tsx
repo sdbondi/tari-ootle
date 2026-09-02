@@ -247,11 +247,6 @@ export default function BlockDetails() {
                             </DataTableCell>
                           </TableRow>
                           <TableRow>
-                            <TableCell title="Total WASM metering points consumed by transactions executed for this block">WASM
-                              Points</TableCell>
-                            <DataTableCell>{Number(wasmPoints).toLocaleString()}</DataTableCell>
-                          </TableRow>
-                          <TableRow>
                             <TableCell>Execution Points</TableCell>
                             <DataTableCell>
                               <ExecutionPointsCell wasm={wasmPoints} native={nativePoints} max={maxExecutionPoints} />

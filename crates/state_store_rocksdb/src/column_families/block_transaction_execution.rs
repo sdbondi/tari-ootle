@@ -47,8 +47,10 @@ prefixed!(
 
 /// Reverse index of [`BlockTransactionExecutionCf`] by the block the execution was recorded against.
 ///
-/// An entry exists for exactly as long as its execution row, so executions stay queryable by block after
-/// the transaction finalizes — block-scoped cascades and block introspection both depend on this.
+/// On a database written from schema version 2 on, an entry exists for exactly as long as its execution row, so
+/// executions stay queryable by block after the transaction finalizes — block-scoped cascades and block
+/// introspection both depend on this. Older databases dropped a transaction's entries as it finalized, so a
+/// consumer that must also cover those has to reach the rows by transaction id instead.
 pub struct BlockIndex;
 
 impl Cf for BlockIndex {
