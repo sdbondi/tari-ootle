@@ -23,7 +23,19 @@
 import { useState, useEffect } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Accordion, AccordionDetails, AccordionSummary } from "../../Components/Accordion";
-import { Grid, Table, TableContainer, TableBody, TableRow, TableCell, Button, Fade, Alert, Box, Tooltip } from "@mui/material";
+import {
+  Grid,
+  Table,
+  TableContainer,
+  TableBody,
+  TableRow,
+  TableCell,
+  Button,
+  Fade,
+  Alert,
+  Box,
+  Tooltip,
+} from "@mui/material";
 import Typography from "@mui/material/Typography";
 import { DataTableCell, StyledPaper } from "../../Components/StyledComponents";
 import PageHeading from "../../Components/PageHeading";
@@ -79,7 +91,9 @@ function ExecutionPointsCell({ wasm, native, max }: { wasm: bigint; native: bigi
             <div>
               {Number(wasm).toLocaleString()} WASM metering + {Number(native).toLocaleString()} native verification
             </div>
-            <div>Both are CPU time every validator spends re-executing this block, so one budget governs them together.</div>
+            <div>
+              Both are CPU time every validator spends re-executing this block, so one budget governs them together.
+            </div>
           </>
         }
       >
