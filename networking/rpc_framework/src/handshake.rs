@@ -13,6 +13,11 @@ use crate::{error::HandshakeRejectReason, framing::CanonicalFraming, proto};
 
 const LOG_TARGET: &str = "libp2p::rpc::handshake";
 
+/// How long to spend reading a refusal a peer has already sent. Long enough to decode what is
+/// buffered, short enough that a peer which failed the write for some other reason and then says
+/// nothing cannot hold up connecting.
+const REJECTION_READ_TIMEOUT: Duration = Duration::from_millis(100);
+
 /// Supported RPC protocol versions.
 /// Currently only v0 is supported
 pub(super) const SUPPORTED_RPC_VERSIONS: &[u32] = &[0];
@@ -112,7 +117,10 @@ where T: AsyncRead + AsyncWrite + Unpin
         // A server that refuses the session replies and closes without waiting to be spoken to, so
         // the write can fail against a peer that has already said why. Reading is only reached on
         // that failure: the accepted path never waits for a reply, and so never pays a round trip.
-        let send_result = self.framed.send(payload.into()).await.and(self.framed.flush().await);
+        let send_result = match self.framed.send(payload.into()).await {
+            Ok(()) => self.framed.flush().await,
+            Err(err) => Err(err),
+        };
         if let Err(err) = send_result {
             warn!(
                 target: LOG_TARGET,
@@ -123,15 +131,14 @@ where T: AsyncRead + AsyncWrite + Unpin
         Ok(())
     }
 
-    /// The rejection the peer has already sent, if it sent one. Whatever it wrote before closing is
-    /// buffered, so this reads what is there rather than waiting on the peer.
+    /// The refusal the peer has already sent, if it sent one. Whatever it wrote before closing is
+    /// buffered, so this reads what is there under its own short bound rather than the handshake's.
     async fn read_rejection(&mut self) -> Option<RpcHandshakeError> {
-        let frame = self.recv_next_frame().await.ok()??.ok()?;
-        let reply = proto::RpcSessionReply::decode(&mut frame.freeze()).ok()?;
-        match reply.result() {
-            Err(reason) => Some(RpcHandshakeError::Rejected(reason)),
-            Ok(_) => None,
-        }
+        let frame = time::timeout(REJECTION_READ_TIMEOUT, self.framed.next())
+            .await
+            .ok()??
+            .ok()?;
+        decode_session_rejection(&frame).map(RpcHandshakeError::Rejected)
     }
 
     async fn recv_next_frame(&mut self) -> Result<Option<Result<BytesMut, io::Error>>, time::error::Elapsed> {
@@ -139,5 +146,22 @@ where T: AsyncRead + AsyncWrite + Unpin
             Some(timeout) => time::timeout(timeout, self.framed.next()).await,
             None => Ok(self.framed.next().await),
         }
+    }
+}
+
+/// The reason a server refused a session, if `frame` is its refusal reply.
+///
+/// Deliberately strict: a reply carrying no session result is not a refusal, and treating one as
+/// such would report an arbitrary frame that happens to decode as a reply as a refusal with an
+/// unrecognised reason.
+pub(crate) fn decode_session_rejection(frame: &[u8]) -> Option<HandshakeRejectReason> {
+    let reply = proto::RpcSessionReply::decode(frame).ok()?;
+    match reply.session_result {
+        Some(proto::rpc_session_reply::SessionResult::Rejected(true)) => Some(
+            HandshakeRejectReason::from_i32(reply.reject_reason).unwrap_or(HandshakeRejectReason::Unknown(
+                "server returned unrecognised rejection reason",
+            )),
+        ),
+        _ => None,
     }
 }

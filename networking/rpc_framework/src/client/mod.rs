@@ -65,7 +65,6 @@ use crate::{
     RpcServerError,
     RpcStatus,
     body::ClientStreaming,
-    error::HandshakeRejectReason,
     framing::CanonicalFraming,
     message::{BaseRequest, RpcMessageFlags},
     proto,
@@ -1005,10 +1004,11 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
                     let time_to_first_msg = reader.time_to_first_msg();
                     break (resp, time_to_first_msg);
                 },
-                // A frame for the previous request was in flight when this one went out — an
-                // abandoned stream can leave arbitrarily many. Skipping them is bounded by the
-                // deadline this read already carries, so how many arrive does not matter.
-                Err(RpcError::ResponseIdDidNotMatchRequest { actual, .. }) if actual.wrapping_add(1) == request_id => {
+                // A frame for an earlier request was in flight when this one went out — abandoning
+                // a stream can leave arbitrarily many, from more than one request back. Skipping
+                // them is bounded by the deadline this read already carries, so neither how many
+                // arrive nor which request they were for matters.
+                Err(RpcError::ResponseIdDidNotMatchRequest { actual, .. }) => {
                     trace!(
                         target: LOG_TARGET,
                         "(peer: {}, {}) Discarding a delayed frame for request {}", peer_id, protocol_name, actual
@@ -1209,7 +1209,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
                 // one-way, so a refusal arrives where the first response was expected.
                 if self.may_be_session_rejection &&
                     resp.request_id == 0 &&
-                    let Some(reason) = decode_session_rejection(&frame)
+                    let Some(reason) = crate::handshake::decode_session_rejection(&frame)
                 {
                     return Err(RpcError::HandshakeError(RpcHandshakeError::Rejected(reason)));
                 }
@@ -1219,15 +1219,6 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
             Ok(None) => Err(RpcError::ServerClosedRequest),
             Err(_) => Err(RpcError::ReplyTimeout),
         }
-    }
-}
-
-/// The reason a server refused a session, if `frame` is its rejection reply.
-fn decode_session_rejection(frame: &BytesMut) -> Option<HandshakeRejectReason> {
-    let reply = proto::RpcSessionReply::decode(frame.as_ref()).ok()?;
-    match reply.session_result {
-        Some(proto::rpc_session_reply::SessionResult::Rejected(true)) => Some(reply.reject_reason().into()),
-        _ => None,
     }
 }
 
@@ -1737,6 +1728,65 @@ mod keepalive_tests {
                 1u32,
                 RpcRequestOptions::new().with_keepalive_interval(Duration::from_millis(100)),
             )
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+
+        server.await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].as_ref().unwrap().supported_versions, vec![7]);
+    }
+
+    #[tokio::test]
+    async fn a_frame_from_more_than_one_request_ago_is_discarded() {
+        let (server, client) = tokio::io::duplex(RPC_MAX_FRAME_SIZE);
+        let reply = proto::RpcSession {
+            supported_versions: vec![7],
+        };
+        let message: Bytes = reply.encode_to_vec().into();
+        let server = tokio::spawn(async move {
+            let mut framed = framing::canonical(server.compat(), RPC_MAX_FRAME_SIZE);
+            let first = read_request(&mut framed).await;
+            send_message(&mut framed, first.request_id, message.clone()).await;
+
+            let frame = framed.next().await.unwrap().unwrap();
+            let second = proto::RpcRequest::decode(frame.freeze()).unwrap();
+            send_message(&mut framed, second.request_id, message.clone()).await;
+
+            // A frame for the first request arrives while the third is outstanding, two ids back.
+            let frame = framed.next().await.unwrap().unwrap();
+            let third = proto::RpcRequest::decode(frame.freeze()).unwrap();
+            send_response(&mut framed, RpcResponse {
+                request_id: first.request_id,
+                status: RpcStatusCode::Ok,
+                flags: RpcMessageFlags::empty(),
+                payload: message.clone(),
+            })
+            .await;
+            send_message(&mut framed, third.request_id, message).await;
+        });
+
+        let mut rpc_client = RpcClient::connect(
+            RpcClientConfig::default(),
+            PeerId::random(),
+            framing::canonical(client.compat(), RPC_MAX_FRAME_SIZE),
+            StreamProtocol::new(PROTOCOL),
+        )
+        .await
+        .unwrap();
+
+        for _ in 0..2 {
+            rpc_client
+                .server_streaming::<_, _, proto::RpcSession>(proto::RpcSession::default(), 1u32)
+                .await
+                .unwrap()
+                .collect::<Vec<_>>()
+                .await;
+        }
+
+        let received = rpc_client
+            .server_streaming::<_, _, proto::RpcSession>(proto::RpcSession::default(), 1u32)
             .await
             .unwrap()
             .collect::<Vec<_>>()
