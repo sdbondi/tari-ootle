@@ -1126,6 +1126,10 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
                 if !self.tolerates_keepalives {
                     return Err(RpcError::UnexpectedAckResponse);
                 }
+                // Evidence that the peer has begun streaming, and the only such evidence that is
+                // not id-policed: a keepalive left over from an abandoned request is indistinguish-
+                // able from one for this response, so this is a guess where the rest is not.
+                self.bounds.keepalives_due = true;
                 continue;
             }
             break resp;
@@ -1188,11 +1192,14 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
             .bounds
             .deadline_at
             .map(|at| (at + self.config.deadline_grace_period).saturating_duration_since(Instant::now()));
-        let until_keepalives_missed = self
-            .bounds
-            .keepalives_due
-            .then(|| self.config.keepalive_timeout())
-            .flatten();
+        // A peer owes no keepalives until it is streaming a body, so its tolerance does not apply
+        // before the first frame — except where no deadline bounds the read either, since the
+        // worker serves this session serially and an unbounded read hangs every caller on it.
+        let until_keepalives_missed = if self.bounds.keepalives_due || until_deadline.is_none() {
+            self.config.keepalive_timeout()
+        } else {
+            None
+        };
         match (until_deadline, until_keepalives_missed) {
             (Some(deadline), Some(keepalive)) => Some(cmp::min(deadline, keepalive)),
             (deadline, keepalive) => deadline.or(keepalive),
@@ -1206,10 +1213,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
         };
 
         match next_msg_fut.await {
-            Ok(Some(Ok(resp))) => {
-                self.bounds.keepalives_due = true;
-                Ok(proto::RpcResponse::decode(resp)?)
-            },
+            Ok(Some(Ok(resp))) => Ok(proto::RpcResponse::decode(resp)?),
             Ok(Some(Err(err))) => Err(err.into()),
             Ok(None) => Err(RpcError::ServerClosedRequest),
             Err(_) => Err(RpcError::ReplyTimeout),
@@ -1720,6 +1724,110 @@ mod keepalive_tests {
         .unwrap();
 
         // The tolerated gap once keepalives are due is 500ms, far short of the peer's first frame.
+        let received = rpc_client
+            .server_streaming_with_options::<_, _, proto::RpcSession>(
+                proto::RpcSession::default(),
+                1u32,
+                RpcRequestOptions::new().with_keepalive_interval(Duration::from_millis(100)),
+            )
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+
+        server.await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].as_ref().unwrap().supported_versions, vec![7]);
+    }
+
+    #[tokio::test]
+    async fn a_read_is_bounded_even_when_the_session_carries_no_deadline() {
+        let (server, client) = tokio::io::duplex(RPC_MAX_FRAME_SIZE);
+        // The peer answers the handshake and then never sends anything at all.
+        let server = tokio::spawn(async move {
+            let mut framed = framing::canonical(server.compat(), RPC_MAX_FRAME_SIZE);
+            read_request(&mut framed).await;
+            future::pending::<()>().await;
+        });
+
+        let config = RpcClientConfig {
+            deadline: None,
+            deadline_grace_period: Duration::from_millis(200),
+            peer_minimum_keepalive_interval: Duration::from_millis(100),
+            ..Default::default()
+        };
+        let mut rpc_client = RpcClient::connect(
+            config,
+            PeerId::random(),
+            framing::canonical(client.compat(), RPC_MAX_FRAME_SIZE),
+            StreamProtocol::new(PROTOCOL),
+        )
+        .await
+        .unwrap();
+
+        let received = time::timeout(
+            Duration::from_secs(5),
+            rpc_client
+                .server_streaming_with_options::<_, _, proto::RpcSession>(
+                    proto::RpcSession::default(),
+                    1u32,
+                    RpcRequestOptions::new().with_keepalive_interval(Duration::from_millis(100)),
+                )
+                .await
+                .unwrap()
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .expect("a session without a deadline left the read unbounded");
+
+        server.abort();
+        assert_eq!(
+            received[0].as_ref().unwrap_err().as_status_code(),
+            RpcStatusCode::Timeout
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stray_frame_is_not_taken_as_the_peer_having_begun_streaming() {
+        let (server, client) = tokio::io::duplex(RPC_MAX_FRAME_SIZE);
+        let reply = proto::RpcSession {
+            supported_versions: vec![7],
+        };
+        let message: Bytes = reply.encode_to_vec().into();
+        let server = tokio::spawn(async move {
+            let mut framed = framing::canonical(server.compat(), RPC_MAX_FRAME_SIZE);
+            let request = read_request(&mut framed).await;
+            // A frame for the request before this one, which the client discards on its id. The
+            // first request id is 1, and the leniency for a delayed response covers its
+            // predecessor.
+            send_response(&mut framed, RpcResponse {
+                request_id: request.request_id - 1,
+                status: RpcStatusCode::Ok,
+                flags: RpcMessageFlags::empty(),
+                payload: Bytes::new(),
+            })
+            .await;
+            time::sleep(Duration::from_secs(1)).await;
+            send_message(&mut framed, request.request_id, message).await;
+        });
+
+        let config = RpcClientConfig {
+            deadline: Some(Duration::from_secs(10)),
+            deadline_grace_period: Duration::from_millis(200),
+            peer_minimum_keepalive_interval: Duration::from_millis(100),
+            ..Default::default()
+        };
+        let mut rpc_client = RpcClient::connect(
+            config,
+            PeerId::random(),
+            framing::canonical(client.compat(), RPC_MAX_FRAME_SIZE),
+            StreamProtocol::new(PROTOCOL),
+        )
+        .await
+        .unwrap();
+
+        // The discarded frame is not a keepalive, so it says nothing about the peer streaming and
+        // must not tighten the wait to the 500ms tolerance.
         let received = rpc_client
             .server_streaming_with_options::<_, _, proto::RpcSession>(
                 proto::RpcSession::default(),
