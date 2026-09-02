@@ -306,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_resource_is_answered_as_not_found() {
+    fn a_not_found_error_keeps_its_message() {
         let err = Result::<(), _>::Err(TestError("missing")).or_not_found().unwrap_err();
         assert!(is_not_found_code(&err));
         // The error keeps its own message rather than being flattened to "not found".

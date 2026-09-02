@@ -610,7 +610,7 @@ pub async fn handle_get(
         .transaction_api()
         .get(req.transaction_id)
         .optional()?
-        .ok_or_else(|| not_found(format!("Transaction {} not found", req.transaction_id)))?;
+        .ok_or_else(|| not_found(format!("Transaction {}", req.transaction_id)))?;
 
     Ok(TransactionGetResponse {
         transaction: transaction.transaction,
@@ -646,7 +646,7 @@ pub async fn handle_get_result(
         .transaction_api()
         .get(req.transaction_id)
         .optional()?
-        .ok_or_else(|| not_found(format!("Transaction {} not found", req.transaction_id)))?;
+        .ok_or_else(|| not_found(format!("Transaction {}", req.transaction_id)))?;
 
     Ok(TransactionGetResultResponse {
         transaction_id: req.transaction_id,
@@ -667,7 +667,7 @@ pub async fn handle_wait_result(
         .transaction_api()
         .get(req.transaction_id)
         .optional()?
-        .ok_or_else(|| not_found(format!("Transaction {} not found", req.transaction_id)))?;
+        .ok_or_else(|| not_found(format!("Transaction {}", req.transaction_id)))?;
 
     if let Some(result) = transaction.finalize {
         return Ok(TransactionWaitResultResponse {

@@ -336,8 +336,23 @@ pub fn resolve_handler_error(answer_id: axum_jrpc::Id, e: &HandlerError) -> Json
     }
 }
 
+/// True for an error already carrying the not-found code, whatever built it.
+fn is_not_found(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<JsonRpcError>().map(|e| e.error_reason()),
+        Some(JsonRpcErrorReason::ApplicationError(code)) if code == ApplicationErrorCode::NotFound as i32
+    )
+}
+
 fn resolve_any_error(answer_id: axum_jrpc::Id, e: &anyhow::Error) -> JsonRpcResponse {
-    warn!(target: LOG_TARGET, "🌐 JSON-RPC error: {}", e);
+    // Asking about something that is not there is a normal thing for a caller to do, and one that
+    // polls - `transactions.wait_result` against an id the wallet does not know - would otherwise
+    // warn once per poll. Everything else stays a warning.
+    if is_not_found(e) {
+        debug!(target: LOG_TARGET, "🌐 JSON-RPC not found: {}", e);
+    } else {
+        warn!(target: LOG_TARGET, "🌐 JSON-RPC error: {}", e);
+    }
     if let Some(handler_err) = e.downcast_ref::<HandlerError>() {
         return resolve_handler_error(answer_id, handler_err);
     }
