@@ -47,16 +47,14 @@ use tokio::time;
 use super::context::HandlerContext;
 use crate::{
     WalletSdk,
-    handlers::{
-        HandlerError,
-        helpers::{
-            get_account,
-            get_account_or_default,
-            invalid_params,
-            invalid_request,
-            not_found,
-            transaction_rejected,
-        },
+    handlers::helpers::{
+        OrNotFound,
+        get_account,
+        get_account_or_default,
+        invalid_params,
+        invalid_request,
+        not_found,
+        transaction_rejected,
     },
     services::wasm_optimizer::optimize_wasm_template,
 };
@@ -162,7 +160,8 @@ async fn submit_inner(
         let loaded_substates = sdk
             .substate_api()
             .locate_dependent_substates(&substates, req.detect_inputs_use_unversioned)
-            .await?;
+            .await
+            .or_not_found()?;
         loaded_substates
             .into_iter()
             .map(|input| {
@@ -370,7 +369,8 @@ pub async fn handle_detect_inputs(
     let detected = sdk
         .substate_api()
         .locate_dependent_substates(&substates, req.use_unversioned)
-        .await?
+        .await
+        .or_not_found()?
         .into_iter()
         .map(|input| {
             if req.use_unversioned {
@@ -416,7 +416,8 @@ async fn submit_dry_run_inner(
         let dependencies = sdk
             .substate_api()
             .locate_dependent_substates(&substates, req.detect_inputs_use_unversioned)
-            .await?;
+            .await
+            .or_not_found()?;
         dependencies
             .into_iter()
             .map(|input| {
@@ -537,7 +538,11 @@ pub async fn handle_submit_manifest(
 
     // Detect inputs
     let substates = transaction.to_referenced_substates()?.into_iter().collect::<Vec<_>>();
-    let dependencies = sdk.substate_api().locate_dependent_substates(&substates, true).await?;
+    let dependencies = sdk
+        .substate_api()
+        .locate_dependent_substates(&substates, true)
+        .await
+        .or_not_found()?;
     let inputs = dependencies.into_iter().map(|input| input.into_unversioned());
 
     let transaction = transaction.with_inputs(inputs);
@@ -605,7 +610,7 @@ pub async fn handle_get(
         .transaction_api()
         .get(req.transaction_id)
         .optional()?
-        .ok_or(HandlerError::NotFound)?;
+        .ok_or_else(|| not_found(format!("Transaction {} not found", req.transaction_id)))?;
 
     Ok(TransactionGetResponse {
         transaction: transaction.transaction,
@@ -641,7 +646,7 @@ pub async fn handle_get_result(
         .transaction_api()
         .get(req.transaction_id)
         .optional()?
-        .ok_or(HandlerError::NotFound)?;
+        .ok_or_else(|| not_found(format!("Transaction {} not found", req.transaction_id)))?;
 
     Ok(TransactionGetResultResponse {
         transaction_id: req.transaction_id,
@@ -662,7 +667,7 @@ pub async fn handle_wait_result(
         .transaction_api()
         .get(req.transaction_id)
         .optional()?
-        .ok_or(HandlerError::NotFound)?;
+        .ok_or_else(|| not_found(format!("Transaction {} not found", req.transaction_id)))?;
 
     if let Some(result) = transaction.finalize {
         return Ok(TransactionWaitResultResponse {

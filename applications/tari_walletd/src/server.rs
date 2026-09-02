@@ -333,14 +333,6 @@ where
 pub fn resolve_handler_error(answer_id: axum_jrpc::Id, e: &HandlerError) -> JsonRpcResponse {
     match e {
         HandlerError::Anyhow(e) => resolve_any_error(answer_id, e),
-        HandlerError::NotFound => JsonRpcResponse::error(
-            answer_id,
-            JsonRpcError::new(
-                JsonRpcErrorReason::ApplicationError(ApplicationErrorCode::NotFound as i32),
-                e.to_string(),
-                json!({}),
-            ),
-        ),
     }
 }
 

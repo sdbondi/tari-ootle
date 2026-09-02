@@ -5,6 +5,4 @@
 pub enum HandlerError {
     #[error("Error: {0}")]
     Anyhow(#[from] anyhow::Error),
-    #[error("Not found")]
-    NotFound,
 }
