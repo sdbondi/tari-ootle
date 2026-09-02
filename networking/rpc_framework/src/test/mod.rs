@@ -22,5 +22,4 @@
 
 pub(super) mod greeting_service;
 mod handshake;
-pub(super) mod mock;
 mod smoke;
