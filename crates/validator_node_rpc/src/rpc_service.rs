@@ -67,3 +67,25 @@ pub trait ValidatorNodeRpcService: Send + Sync + 'static {
         req: Request<proto::GetCommittedBlockProofRequest>,
     ) -> Result<Response<proto::GetCommittedBlockProofResponse>, RpcStatus>;
 }
+
+#[cfg(test)]
+mod tests {
+    use tari_rpc_framework::RpcRequestOptions;
+
+    use super::*;
+
+    /// Every streaming method on the generated client can be called with per-request options, so a
+    /// caller that holds a stream open does not have to reconfigure the session every caller shares.
+    #[test]
+    fn streaming_methods_accept_request_options() {
+        async fn call_each(client: &mut ValidatorNodeRpcClient, options: RpcRequestOptions) {
+            let _stream = client.sync_blocks_with_options(Default::default(), options).await;
+            let _stream = client.sync_state_with_options(Default::default(), options).await;
+            let _stream = client
+                .get_substate_batch_with_options(Default::default(), options)
+                .await;
+        }
+
+        let _ = call_each;
+    }
+}

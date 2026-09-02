@@ -136,9 +136,9 @@ impl RpcClient {
         M: Into<RpcMethod>,
     {
         let req_bytes = request.encode_to_vec();
-        let request = BaseRequest::new(method.into(), req_bytes.into());
+        let call = ClientCall::new(BaseRequest::new(method.into(), req_bytes.into()));
 
-        let mut resp = self.call_inner(request).await?;
+        let mut resp = self.call_inner(call).await?;
         let resp = resp.recv().await.ok_or(RpcError::ServerClosedRequest)??;
         let resp = R::decode(resp.into_message())?;
 
@@ -152,10 +152,27 @@ impl RpcClient {
         R: prost::Message + Default,
         M: Into<RpcMethod>,
     {
-        let req_bytes = request.encode_to_vec();
-        let request = BaseRequest::new(method.into(), req_bytes.into());
+        self.server_streaming_with_options(request, method, RpcRequestOptions::default())
+            .await
+    }
 
-        let resp = self.call_inner(request).await?;
+    /// Perform a single request and streaming response, overriding the session defaults for this
+    /// request only. See [`RpcRequestOptions`].
+    pub async fn server_streaming_with_options<T, M, R>(
+        &mut self,
+        request: T,
+        method: M,
+        options: RpcRequestOptions,
+    ) -> Result<ClientStreaming<R>, RpcError>
+    where
+        T: prost::Message,
+        R: prost::Message + Default,
+        M: Into<RpcMethod>,
+    {
+        let req_bytes = request.encode_to_vec();
+        let call = ClientCall::new(BaseRequest::new(method.into(), req_bytes.into())).with_options(options);
+
+        let resp = self.call_inner(call).await?;
 
         Ok(ClientStreaming::new(resp))
     }
@@ -181,10 +198,10 @@ impl RpcClient {
 
     async fn call_inner(
         &mut self,
-        request: BaseRequest<Bytes>,
+        call: ClientCall,
     ) -> Result<mpsc::Receiver<Result<Response<Bytes>, RpcStatus>>, RpcError> {
         let svc = self.connector.ready().await?;
-        let resp = svc.call(request).await?;
+        let resp = svc.call(call).await?;
         Ok(resp)
     }
 }
@@ -320,6 +337,72 @@ impl Default for RpcClientConfig {
     }
 }
 
+/// Overrides of the session defaults that apply to a single request.
+///
+/// A session is shared by every caller holding the client, so a deadline long enough for a stream
+/// that deliberately idles must not lengthen the ordinary requests running alongside it. Any option
+/// left unset takes the value the client was built with.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RpcRequestOptions {
+    deadline: Option<Duration>,
+    keepalive_interval: Option<Duration>,
+}
+
+impl RpcRequestOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The deadline to send to the peer for this request. It bounds the gap between messages that
+    /// carry the response, so a stream idle for longer than this ends.
+    ///
+    /// The deadline is carried on the wire in whole seconds and rounds down, so a sub-second
+    /// deadline reads as "no deadline" to the peer.
+    pub fn with_deadline(mut self, deadline: Duration) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
+
+    /// Asks the peer to emit an empty keepalive frame every `interval` while this response has
+    /// nothing to send. Keepalives prove liveness within the deadline budget rather than extending
+    /// it, so the interval must be comfortably shorter than the deadline in force for the request.
+    ///
+    /// See [`RpcClientBuilder::with_keepalive_interval`] for what the peer does with the interval.
+    pub fn with_keepalive_interval(mut self, interval: Duration) -> Self {
+        self.keepalive_interval = Some(interval);
+        self
+    }
+
+    /// The configuration a request carrying these options is served with.
+    fn apply_to(&self, config: RpcClientConfig) -> RpcClientConfig {
+        RpcClientConfig {
+            deadline: self.deadline.or(config.deadline),
+            keepalive_interval: self.keepalive_interval.or(config.keepalive_interval),
+            ..config
+        }
+    }
+}
+
+/// A request and the per-request overrides to send it with.
+pub(crate) struct ClientCall {
+    request: BaseRequest<Bytes>,
+    options: RpcRequestOptions,
+}
+
+impl ClientCall {
+    fn new(request: BaseRequest<Bytes>) -> Self {
+        Self {
+            request,
+            options: RpcRequestOptions::default(),
+        }
+    }
+
+    fn with_options(mut self, options: RpcRequestOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+
 #[derive(Clone)]
 pub struct ClientConnector {
     inner: mpsc::Sender<ClientRequest>,
@@ -371,7 +454,7 @@ impl fmt::Debug for ClientConnector {
     }
 }
 
-impl Service<BaseRequest<Bytes>> for ClientConnector {
+impl Service<ClientCall> for ClientConnector {
     type Error = RpcError;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
     type Response = mpsc::Receiver<Result<Response<Bytes>, RpcStatus>>;
@@ -380,12 +463,12 @@ impl Service<BaseRequest<Bytes>> for ClientConnector {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, request: BaseRequest<Bytes>) -> Self::Future {
+    fn call(&mut self, call: ClientCall) -> Self::Future {
         let (reply, reply_rx) = oneshot::channel();
         let inner = self.inner.clone();
         async move {
             inner
-                .send(ClientRequest::SendRequest { request, reply })
+                .send(ClientRequest::SendRequest { call, reply })
                 .await
                 .map_err(|_| RpcError::ClientClosed)?;
 
@@ -407,6 +490,10 @@ struct RpcClientWorker<TSubstream> {
     ready_tx: Option<oneshot::Sender<Result<(), RpcError>>>,
     protocol_id: StreamProtocol,
     shutdown_signal: ShutdownSignal,
+    /// Whether a keepalive frame is expected on this session. Frames left over from an abandoned
+    /// request outlive it, so once any request has asked for keepalives the whole session must
+    /// tolerate them, or a later request that did not ask ends the session on one.
+    tolerates_keepalives: bool,
 }
 
 impl<TSubstream> RpcClientWorker<TSubstream>
@@ -423,6 +510,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
         shutdown_signal: ShutdownSignal,
     ) -> Self {
         Self {
+            tolerates_keepalives: config.keepalive_interval.is_some(),
             config,
             peer_id,
             request_rx,
@@ -553,8 +641,8 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
     async fn handle_request(&mut self, req: ClientRequest) -> Result<(), RpcError> {
         use ClientRequest::{SendPing, SendRequest};
         match req {
-            SendRequest { request, reply } => {
-                self.do_request_response(request, reply).await?;
+            SendRequest { call, reply } => {
+                self.do_request_response(call, reply).await?;
             },
             SendPing(reply) => {
                 self.do_ping_pong(reply).await?;
@@ -580,7 +668,8 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
             self.protocol_name(),
             start.elapsed()
         );
-        let mut reader = RpcResponseReader::new(&mut self.framed, self.config, 0);
+        let mut reader =
+            RpcResponseReader::new(&mut self.framed, self.config, 0).tolerating_keepalives(self.tolerates_keepalives);
         let resp = match reader.read_ack().await {
             Ok(resp) => resp,
             Err(RpcError::ReplyTimeout) => {
@@ -633,9 +722,13 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
     #[allow(clippy::too_many_lines)]
     async fn do_request_response(
         &mut self,
-        request: BaseRequest<Bytes>,
+        call: ClientCall,
         reply: oneshot::Sender<mpsc::Receiver<Result<Response<Bytes>, RpcStatus>>>,
     ) -> Result<(), RpcError> {
+        let ClientCall { request, options } = call;
+        let config = options.apply_to(self.config);
+        self.tolerates_keepalives |= config.keepalive_interval.is_some();
+
         #[cfg(feature = "metrics")]
         metrics::outbound_request_bytes(&self.peer_id, &self.protocol_id).observe(request.get_ref().len() as f64);
 
@@ -644,8 +737,8 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
         let req = proto::RpcRequest {
             request_id: u32::from(request_id),
             method,
-            deadline: self.config.deadline.map(|t| t.as_secs()).unwrap_or(0),
-            keepalive_interval: self.config.keepalive_interval.map(|t| t.as_secs().max(1)).unwrap_or(0),
+            deadline: config.deadline.map(|t| t.as_secs()).unwrap_or(0),
+            keepalive_interval: config.keepalive_interval.map(|t| t.as_secs().max(1)).unwrap_or(0),
             flags: 0,
             payload: request.message.to_vec(),
         };
@@ -701,7 +794,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
 
             // Check if the response receiver has been dropped while receiving messages
             let resp_result = {
-                let resp_fut = self.read_response(request_id);
+                let resp_fut = self.read_response(request_id, config);
                 tokio::pin!(resp_fut);
                 let closed_fut = response_tx.closed();
                 tokio::pin!(closed_fut);
@@ -825,11 +918,17 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
         Ok(())
     }
 
-    async fn read_response(&mut self, request_id: u16) -> Result<(proto::RpcResponse, Option<Duration>), RpcError> {
+    async fn read_response(
+        &mut self,
+        request_id: u16,
+        config: RpcClientConfig,
+    ) -> Result<(proto::RpcResponse, Option<Duration>), RpcError> {
         let peer_id = self.peer_id;
         let protocol_name = self.protocol_name().to_string();
 
-        let mut reader = RpcResponseReader::new(&mut self.framed, self.config, request_id);
+        let tolerates_keepalives = self.tolerates_keepalives;
+        let mut reader =
+            RpcResponseReader::new(&mut self.framed, config, request_id).tolerating_keepalives(tolerates_keepalives);
         let mut num_ignored = 0;
         let resp = loop {
             match reader.read_response().await {
@@ -903,7 +1002,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
 
 pub enum ClientRequest {
     SendRequest {
-        request: BaseRequest<Bytes>,
+        call: ClientCall,
         reply: oneshot::Sender<mpsc::Receiver<Result<Response<Bytes>, RpcStatus>>>,
     },
     SendPing(oneshot::Sender<Result<Duration, RpcStatus>>),
@@ -913,6 +1012,7 @@ struct RpcResponseReader<'a, TSubstream> {
     framed: &'a mut CanonicalFraming<TSubstream>,
     config: RpcClientConfig,
     request_id: u16,
+    tolerates_keepalives: bool,
     bytes_read: usize,
     time_to_first_msg: Option<Duration>,
 }
@@ -925,9 +1025,15 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
             framed,
             config,
             request_id,
+            tolerates_keepalives: false,
             bytes_read: 0,
             time_to_first_msg: None,
         }
+    }
+
+    pub fn tolerating_keepalives(mut self, tolerates_keepalives: bool) -> Self {
+        self.tolerates_keepalives = tolerates_keepalives;
+        self
     }
 
     pub fn bytes_read(&self) -> usize {
@@ -946,7 +1052,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
                 // A keepalive carries neither payload nor stream position, so its request id is not
                 // policed: one left over from an abandoned request is as harmless as one for this
                 // request, and counting it as a mismatch would spend the leniency budget below.
-                if self.config.keepalive_interval.is_none() {
+                if !self.tolerates_keepalives {
                     return Err(RpcError::UnexpectedAckResponse);
                 }
                 continue;
@@ -1218,6 +1324,146 @@ mod keepalive_tests {
             received[0].as_ref().unwrap_err().as_status_code(),
             RpcStatusCode::ProtocolError
         );
+    }
+
+    #[tokio::test]
+    async fn request_options_override_the_session_defaults_on_the_wire() {
+        let (server, client) = tokio::io::duplex(RPC_MAX_FRAME_SIZE);
+        let reply = proto::RpcSession {
+            supported_versions: vec![7],
+        };
+        let server = tokio::spawn(serve_keepalives_then_message(
+            server,
+            2,
+            None,
+            reply.encode_to_vec().into(),
+        ));
+
+        // The session asks for no keepalives and carries the default deadline.
+        let mut rpc_client = RpcClient::connect(
+            RpcClientConfig::default(),
+            PeerId::random(),
+            framing::canonical(client.compat(), RPC_MAX_FRAME_SIZE),
+            StreamProtocol::new(PROTOCOL),
+        )
+        .await
+        .unwrap();
+
+        let stream = rpc_client
+            .server_streaming_with_options::<_, _, proto::RpcSession>(
+                proto::RpcSession::default(),
+                1u32,
+                RpcRequestOptions::new()
+                    .with_deadline(Duration::from_secs(600))
+                    .with_keepalive_interval(Duration::from_secs(30)),
+            )
+            .await
+            .unwrap();
+        let received = stream.collect::<Vec<_>>().await;
+
+        let request = server.await.unwrap();
+        assert_eq!(request.deadline, 600);
+        assert_eq!(request.keepalive_interval, 30);
+        // Asking per-request is also what makes the frames it asked for tolerable.
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].as_ref().unwrap().supported_versions, vec![7]);
+    }
+
+    #[tokio::test]
+    async fn a_request_without_options_keeps_the_session_defaults() {
+        let (server, client) = tokio::io::duplex(RPC_MAX_FRAME_SIZE);
+        let reply = proto::RpcSession {
+            supported_versions: vec![7],
+        };
+        let server = tokio::spawn(serve_keepalives_then_message(
+            server,
+            0,
+            None,
+            reply.encode_to_vec().into(),
+        ));
+
+        let config = RpcClientConfig {
+            deadline: Some(Duration::from_secs(45)),
+            keepalive_interval: Some(Duration::from_secs(11)),
+            ..Default::default()
+        };
+        let mut rpc_client = RpcClient::connect(
+            config,
+            PeerId::random(),
+            framing::canonical(client.compat(), RPC_MAX_FRAME_SIZE),
+            StreamProtocol::new(PROTOCOL),
+        )
+        .await
+        .unwrap();
+
+        let stream = rpc_client
+            .server_streaming_with_options::<_, _, proto::RpcSession>(
+                proto::RpcSession::default(),
+                1u32,
+                RpcRequestOptions::new(),
+            )
+            .await
+            .unwrap();
+        stream.collect::<Vec<_>>().await;
+
+        let request = server.await.unwrap();
+        assert_eq!(request.deadline, 45);
+        assert_eq!(request.keepalive_interval, 11);
+    }
+
+    #[tokio::test]
+    async fn a_session_that_asked_for_keepalives_once_tolerates_a_later_stray_frame() {
+        let (server, client) = tokio::io::duplex(RPC_MAX_FRAME_SIZE);
+        let reply = proto::RpcSession {
+            supported_versions: vec![7],
+        };
+        let message: Bytes = reply.encode_to_vec().into();
+        let server = tokio::spawn(async move {
+            let mut framed = framing::canonical(server.compat(), RPC_MAX_FRAME_SIZE);
+            let first = read_request(&mut framed).await;
+            send_message(&mut framed, first.request_id, message.clone()).await;
+
+            // The second request asks for no keepalives, but the first request's frames are still
+            // in flight behind it.
+            let frame = framed.next().await.unwrap().unwrap();
+            let second = proto::RpcRequest::decode(frame.freeze()).unwrap();
+            send_response(&mut framed, RpcResponse::keepalive(first.request_id)).await;
+            send_message(&mut framed, second.request_id, message).await;
+            (first, second)
+        });
+
+        let mut rpc_client = RpcClient::connect(
+            RpcClientConfig::default(),
+            PeerId::random(),
+            framing::canonical(client.compat(), RPC_MAX_FRAME_SIZE),
+            StreamProtocol::new(PROTOCOL),
+        )
+        .await
+        .unwrap();
+
+        rpc_client
+            .server_streaming_with_options::<_, _, proto::RpcSession>(
+                proto::RpcSession::default(),
+                1u32,
+                RpcRequestOptions::new().with_keepalive_interval(Duration::from_secs(5)),
+            )
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+
+        let second = rpc_client
+            .server_streaming::<_, _, proto::RpcSession>(proto::RpcSession::default(), 1u32)
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+
+        let (first_request, second_request) = server.await.unwrap();
+        assert_eq!(first_request.keepalive_interval, 5);
+        assert_eq!(second_request.keepalive_interval, 0);
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].as_ref().unwrap().supported_versions, vec![7]);
     }
 
     #[tokio::test]

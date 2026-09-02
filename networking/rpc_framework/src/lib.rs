@@ -66,6 +66,7 @@ pub use client::{
     RpcClient,
     RpcClientBuilder,
     RpcClientConfig,
+    RpcRequestOptions,
 };
 
 mod either;
@@ -107,6 +108,7 @@ pub mod __macro_reexports {
         RpcClient,
         RpcClientBuilder,
         RpcError,
+        RpcRequestOptions,
         RpcStatus,
         framing::CanonicalFraming,
         message::{Request, Response},
