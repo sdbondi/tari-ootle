@@ -1,49 +1,29 @@
-//  Copyright 2021, The Tari Project
-//
-//  Redistribution and use in source and binary forms, with or without modification, are permitted provided that the
-//  following conditions are met:
-//
-//  1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following
-//  disclaimer.
-//
-//  2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the
-//  following disclaimer in the documentation and/or other materials provided with the distribution.
-//
-//  3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote
-//  products derived from this software without specific prior written permission.
-//
-//  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
-//  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-//  DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-//  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-//  SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-//  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
-//  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//   Copyright 2023 The Tari Project
+//   SPDX-License-Identifier: BSD-3-Clause
 
-use tari_test_utils::unpack_enum;
 use tokio::task;
+use tokio_util::compat::TokioAsyncReadCompatExt;
 
 use crate::{
+    Handshake,
+    error::HandshakeRejectReason,
     framing,
-    memsocket::MemorySocket,
-    protocol::rpc::{
-        error::HandshakeRejectReason,
-        handshake::{RpcHandshakeError, SUPPORTED_RPC_VERSIONS},
-        Handshake,
-    },
+    handshake::{RpcHandshakeError, SUPPORTED_RPC_VERSIONS},
 };
+
+const FRAME_SIZE: usize = 1024;
 
 #[tokio::test]
 async fn it_performs_the_handshake() {
-    let (client, server) = MemorySocket::new_pair();
+    let (client, server) = tokio::io::duplex(FRAME_SIZE);
 
     let handshake_result = task::spawn(async move {
-        let mut server_framed = framing::canonical(server, 1024);
+        let mut server_framed = framing::canonical(server.compat(), FRAME_SIZE);
         let mut handshake_server = Handshake::new(&mut server_framed);
         handshake_server.perform_server_handshake().await
     });
 
-    let mut client_framed = framing::canonical(client, 1024);
+    let mut client_framed = framing::canonical(client.compat(), FRAME_SIZE);
     let mut handshake_client = Handshake::new(&mut client_framed);
 
     handshake_client.perform_client_handshake().await.unwrap();
@@ -52,20 +32,41 @@ async fn it_performs_the_handshake() {
 }
 
 #[tokio::test]
-async fn it_rejects_the_handshake() {
-    let (client, server) = MemorySocket::new_pair();
+async fn the_client_does_not_wait_for_the_server_to_accept() {
+    let (client, server) = tokio::io::duplex(FRAME_SIZE);
+    // Nothing ever reads or answers the client's side.
+    let _server = server;
 
-    let mut client_framed = framing::canonical(client, 1024);
+    let mut client_framed = framing::canonical(client.compat(), FRAME_SIZE);
     let mut handshake_client = Handshake::new(&mut client_framed);
 
-    let mut server_framed = framing::canonical(server, 1024);
+    // Completes on the send alone. A reply would cost a round trip on every session opened.
+    handshake_client.perform_client_handshake().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_rejection_is_reported_when_the_peer_has_already_closed() {
+    let (client, server) = tokio::io::duplex(FRAME_SIZE);
+
+    let mut server_framed = framing::canonical(server.compat(), FRAME_SIZE);
     let mut handshake_server = Handshake::new(&mut server_framed);
     handshake_server
         .reject_with_reason(HandshakeRejectReason::NoSessionsAvailable)
         .await
         .unwrap();
+    drop(server_framed);
 
+    let mut client_framed = framing::canonical(client.compat(), FRAME_SIZE);
+    let mut handshake_client = Handshake::new(&mut client_framed);
+
+    // The send fails against the closed peer, so the reason it already sent is read rather than
+    // reported as a bare IO error.
     let err = handshake_client.perform_client_handshake().await.unwrap_err();
-    unpack_enum!(RpcHandshakeError::Rejected(reason) = err);
-    unpack_enum!(HandshakeRejectReason::NoSessionsAvailable = reason);
+    assert!(
+        matches!(
+            err,
+            RpcHandshakeError::Rejected(HandshakeRejectReason::NoSessionsAvailable)
+        ),
+        "unexpected error {err:?}"
+    );
 }

@@ -12492,6 +12492,7 @@ dependencies = [
  "prost 0.14.3",
  "proto_builder",
  "tari_metrics",
+ "tari_rpc_macros",
  "tari_shutdown",
  "thiserror 2.0.18",
  "tokio",
