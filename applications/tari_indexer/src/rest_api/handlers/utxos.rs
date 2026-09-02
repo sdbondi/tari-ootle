@@ -27,7 +27,7 @@ use crate::rest_api::{
     context::HandlerContext,
     error::ErrorResponse,
     handlers::HandlerResult,
-    streaming::{UtxoUpdateStream, encoding},
+    streaming::{UtxoUpdateStream, disable_proxy_buffering, encoding},
 };
 
 const LOG_TARGET: &str = "tari::ootle::indexer::rest_api::handlers::utxos";
@@ -105,6 +105,7 @@ pub async fn stream_utxo_updates(
     response
         .headers_mut()
         .insert(header::VARY, HeaderValue::from_static("accept"));
+    disable_proxy_buffering(response.headers_mut());
     Ok(response)
 }
 

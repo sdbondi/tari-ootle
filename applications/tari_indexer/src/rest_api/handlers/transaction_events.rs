@@ -19,7 +19,7 @@ use tokio_stream::StreamExt;
 
 use crate::{
     network_state_sync::EventFilter,
-    rest_api::{context::HandlerContext, handlers::HandlerResult},
+    rest_api::{context::HandlerContext, handlers::HandlerResult, streaming::disable_proxy_buffering},
     storage_sqlite::SqliteIndexerStore,
     store::ReadOnlyStore,
 };
@@ -92,6 +92,7 @@ pub async fn sse_transaction_events(
     response
         .headers_mut()
         .insert(header::VARY, HeaderValue::from_static("last-event-id"));
+    disable_proxy_buffering(response.headers_mut());
     Ok(response)
 }
 
