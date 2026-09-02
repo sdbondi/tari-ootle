@@ -276,6 +276,16 @@ impl<TClient> RpcClientBuilder<TClient> {
         self
     }
 
+    /// The shortest keepalive interval to assume the peer may serve. A server raises a request
+    /// below its own minimum to that minimum and does not report the interval it chose, so the
+    /// client holds it to the longer of what it asked for and this.
+    ///
+    /// Default: 5 seconds, the minimum a server here serves unless configured otherwise
+    pub fn with_peer_minimum_keepalive_interval(mut self, interval: Duration) -> Self {
+        self.config.peer_minimum_keepalive_interval = interval;
+        self
+    }
+
     /// Set the length of time that the client will wait for a response in the RPC handshake before returning a timeout
     /// error.
     /// Default: 15 seconds
@@ -316,9 +326,10 @@ pub struct RpcClientConfig {
     pub deadline: Option<Duration>,
     pub deadline_grace_period: Duration,
     pub keepalive_interval: Option<Duration>,
-    /// The shortest keepalive interval to assume a peer may serve, whatever this client asks for.
-    /// Set it to the peer's own minimum where that is known to differ from the framework default.
-    pub minimum_keepalive_interval: Duration,
+    /// The shortest keepalive interval to assume the *peer* may serve, whatever this client asks
+    /// for. Distinct from [`RpcServerBuilder::with_minimum_keepalive_interval`], which is what a
+    /// server here will serve; this is a belief about the one at the other end.
+    pub peer_minimum_keepalive_interval: Duration,
     pub handshake_timeout: Duration,
 }
 
@@ -338,10 +349,10 @@ impl RpcClientConfig {
     ///
     /// The peer raises an interval shorter than its own minimum to that minimum and does not report
     /// the interval it settled on, so asking for a short one says nothing about how often frames
-    /// actually arrive. `minimum_keepalive_interval` is what the client assumes about that.
+    /// actually arrive. `peer_minimum_keepalive_interval` is what the client assumes about that.
     fn keepalive_timeout(&self) -> Option<Duration> {
         self.keepalive_interval.map(|interval| {
-            cmp::max(interval, self.minimum_keepalive_interval) * MISSED_KEEPALIVES_BEFORE_TIMEOUT +
+            cmp::max(interval, self.peer_minimum_keepalive_interval) * MISSED_KEEPALIVES_BEFORE_TIMEOUT +
                 self.deadline_grace_period
         })
     }
@@ -353,7 +364,7 @@ impl Default for RpcClientConfig {
             deadline: Some(Duration::from_secs(120)),
             deadline_grace_period: Duration::from_secs(60),
             keepalive_interval: None,
-            minimum_keepalive_interval: crate::DEFAULT_MINIMUM_KEEPALIVE_INTERVAL,
+            peer_minimum_keepalive_interval: crate::DEFAULT_MINIMUM_KEEPALIVE_INTERVAL,
             handshake_timeout: Duration::from_secs(90),
         }
     }
@@ -409,6 +420,18 @@ impl RpcRequestOptions {
             ..config
         }
     }
+}
+
+/// What bounds a read of the next frame, beyond the session's own configuration.
+#[derive(Debug, Clone, Copy, Default)]
+struct ReadBounds {
+    /// The instant by which a frame carrying the response must arrive. Keepalives do not move it,
+    /// so a peer emitting them cannot hold a response open past the deadline it was given.
+    deadline_at: Option<Instant>,
+    /// Whether the peer has begun streaming a body. It emits keepalives only from that point, so
+    /// before the first frame its handler may legitimately produce nothing for the whole deadline
+    /// and only the deadline may bound the wait.
+    keepalives_due: bool,
 }
 
 /// A request and the per-request overrides to send it with.
@@ -796,9 +819,10 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
         #[cfg(feature = "metrics")]
         let mut metrics_timer = Some(latency.start_timer());
 
-        // Mirrors the peer's own budget: it abandons the response `deadline` after the last message
-        // that carried one, and keepalives do not renew that on either side.
-        let mut deadline_at = config.deadline.map(|d| Instant::now() + d);
+        let mut bounds = ReadBounds {
+            deadline_at: config.deadline.map(|d| Instant::now() + d),
+            keepalives_due: false,
+        };
 
         let timer = Instant::now();
         if let Err(err) = self.send_request(req).await {
@@ -825,7 +849,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
 
             // Check if the response receiver has been dropped while receiving messages
             let resp_result = {
-                let resp_fut = self.read_response(request_id, config, deadline_at);
+                let resp_fut = self.read_response(request_id, config, bounds);
                 tokio::pin!(resp_fut);
                 let closed_fut = response_tx.closed();
                 tokio::pin!(closed_fut);
@@ -898,6 +922,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
                     return Err(err);
                 },
             };
+            bounds.keepalives_due = true;
 
             match Self::convert_to_result(resp) {
                 Ok(Ok(resp)) => {
@@ -909,11 +934,12 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
                     } else {
                         let _result = response_tx.send(Ok(resp)).await;
                     }
-                    // The peer starts the next budget once it has handed the message off, and a slow
-                    // consumer holds the send above. Starting ours on receipt instead would spend
-                    // that time out of the budget and abandon a response the peer still considers
-                    // live.
-                    deadline_at = config.deadline.map(|d| Instant::now() + d);
+                    // No earlier than the peer, which restarts its own budget once the write
+                    // returns. Starting on receipt instead would spend a stalled consumer's time
+                    // out of the budget and abandon a response the peer still considers live; the
+                    // cost of starting later is a timeout late by however long the consumer held
+                    // the send above.
+                    bounds.deadline_at = config.deadline.map(|d| Instant::now() + d);
                     if is_finished {
                         break;
                     }
@@ -958,7 +984,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
         &mut self,
         request_id: u16,
         config: RpcClientConfig,
-        deadline_at: Option<Instant>,
+        bounds: ReadBounds,
     ) -> Result<(proto::RpcResponse, Option<Duration>), RpcError> {
         let peer_id = self.peer_id;
         let protocol_name = self.protocol_name().to_string();
@@ -966,7 +992,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
         let tolerates_keepalives = self.tolerates_keepalives;
         let mut reader = RpcResponseReader::new(&mut self.framed, config, request_id)
             .tolerating_keepalives(tolerates_keepalives)
-            .expecting_response_by(deadline_at);
+            .bounded_by(bounds);
         let mut num_ignored = 0;
         let resp = loop {
             match reader.read_response().await {
@@ -1051,9 +1077,7 @@ struct RpcResponseReader<'a, TSubstream> {
     config: RpcClientConfig,
     request_id: u16,
     tolerates_keepalives: bool,
-    /// The instant by which a frame carrying the response must arrive. Keepalives do not move it,
-    /// so a peer emitting them cannot hold a response open past the deadline it was given.
-    deadline_at: Option<Instant>,
+    bounds: ReadBounds,
     bytes_read: usize,
     time_to_first_msg: Option<Duration>,
 }
@@ -1067,7 +1091,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
             config,
             request_id,
             tolerates_keepalives: false,
-            deadline_at: None,
+            bounds: ReadBounds::default(),
             bytes_read: 0,
             time_to_first_msg: None,
         }
@@ -1078,8 +1102,8 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
         self
     }
 
-    pub fn expecting_response_by(mut self, deadline_at: Option<Instant>) -> Self {
-        self.deadline_at = deadline_at;
+    pub fn bounded_by(mut self, bounds: ReadBounds) -> Self {
+        self.bounds = bounds;
         self
     }
 
@@ -1157,13 +1181,19 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
     }
 
     /// How long to wait for the next frame of any kind: no later than the deadline the peer was
-    /// given for the response, plus a grace period for latency, and no longer than the gap
-    /// tolerated of a peer that was asked for keepalives.
+    /// given for the response, plus a grace period for latency, and — once the peer is streaming a
+    /// body and so owes keepalives — no longer than the gap tolerated of a peer that promised them.
     fn frame_timeout(&self) -> Option<Duration> {
         let until_deadline = self
+            .bounds
             .deadline_at
             .map(|at| (at + self.config.deadline_grace_period).saturating_duration_since(Instant::now()));
-        match (until_deadline, self.config.keepalive_timeout()) {
+        let until_keepalives_missed = self
+            .bounds
+            .keepalives_due
+            .then(|| self.config.keepalive_timeout())
+            .flatten();
+        match (until_deadline, until_keepalives_missed) {
             (Some(deadline), Some(keepalive)) => Some(cmp::min(deadline, keepalive)),
             (deadline, keepalive) => deadline.or(keepalive),
         }
@@ -1176,7 +1206,10 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
         };
 
         match next_msg_fut.await {
-            Ok(Some(Ok(resp))) => Ok(proto::RpcResponse::decode(resp)?),
+            Ok(Some(Ok(resp))) => {
+                self.bounds.keepalives_due = true;
+                Ok(proto::RpcResponse::decode(resp)?)
+            },
             Ok(Some(Err(err))) => Err(err.into()),
             Ok(None) => Err(RpcError::ServerClosedRequest),
             Err(_) => Err(RpcError::ReplyTimeout),
@@ -1600,17 +1633,21 @@ mod keepalive_tests {
     #[tokio::test]
     async fn a_peer_that_stops_sending_the_keepalives_it_promised_is_given_up_on() {
         let (server, client) = tokio::io::duplex(RPC_MAX_FRAME_SIZE);
-        // The peer answers the handshake, then goes silent without ever closing the substream.
+        // The peer starts streaming keepalives, then goes silent without closing the substream.
         let server = tokio::spawn(async move {
             let mut framed = framing::canonical(server.compat(), RPC_MAX_FRAME_SIZE);
-            read_request(&mut framed).await;
+            let request = read_request(&mut framed).await;
+            for _ in 0..2 {
+                send_response(&mut framed, RpcResponse::keepalive(request.request_id)).await;
+                time::sleep(Duration::from_millis(100)).await;
+            }
             future::pending::<()>().await;
         });
 
         let config = RpcClientConfig {
             deadline: Some(Duration::from_secs(60)),
             deadline_grace_period: Duration::from_millis(300),
-            minimum_keepalive_interval: Duration::from_millis(100),
+            peer_minimum_keepalive_interval: Duration::from_millis(100),
             ..Default::default()
         };
         let mut rpc_client = RpcClient::connect(
@@ -1649,6 +1686,54 @@ mod keepalive_tests {
             elapsed < Duration::from_secs(3),
             "expected the missed keepalives to end the stream, took {elapsed:.2?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_peer_yet_to_send_a_first_frame_is_bounded_only_by_its_deadline() {
+        let (server, client) = tokio::io::duplex(RPC_MAX_FRAME_SIZE);
+        let reply = proto::RpcSession {
+            supported_versions: vec![7],
+        };
+        let message: Bytes = reply.encode_to_vec().into();
+        // A peer runs the handler to completion before it streams anything, and emits no keepalives
+        // while it does, so silence up to the deadline is legitimate here.
+        let server = tokio::spawn(async move {
+            let mut framed = framing::canonical(server.compat(), RPC_MAX_FRAME_SIZE);
+            let request = read_request(&mut framed).await;
+            time::sleep(Duration::from_secs(1)).await;
+            send_message(&mut framed, request.request_id, message).await;
+        });
+
+        let config = RpcClientConfig {
+            deadline: Some(Duration::from_secs(10)),
+            deadline_grace_period: Duration::from_millis(200),
+            peer_minimum_keepalive_interval: Duration::from_millis(100),
+            ..Default::default()
+        };
+        let mut rpc_client = RpcClient::connect(
+            config,
+            PeerId::random(),
+            framing::canonical(client.compat(), RPC_MAX_FRAME_SIZE),
+            StreamProtocol::new(PROTOCOL),
+        )
+        .await
+        .unwrap();
+
+        // The tolerated gap once keepalives are due is 500ms, far short of the peer's first frame.
+        let received = rpc_client
+            .server_streaming_with_options::<_, _, proto::RpcSession>(
+                proto::RpcSession::default(),
+                1u32,
+                RpcRequestOptions::new().with_keepalive_interval(Duration::from_millis(100)),
+            )
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+
+        server.await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].as_ref().unwrap().supported_versions, vec![7]);
     }
 
     #[tokio::test]
