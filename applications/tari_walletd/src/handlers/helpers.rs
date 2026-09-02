@@ -178,20 +178,21 @@ pub(super) fn not_found<T: Display>(details: T) -> anyhow::Error {
     .into()
 }
 
-/// Answers a missing resource as [`not_found`] rather than as a general error.
+/// Answers a missing thing with the JSON-RPC not-found code rather than as a general error.
 ///
 /// A caller asking for something that does not exist yet - an account it has just created, an input
 /// whose creating transaction has not reached the indexer - has to be able to tell that apart from
 /// the wallet failing. Only the first is worth retrying, and a general error tells it the opposite.
 ///
 /// The distinction is already carried by [`IsNotFoundError`]; this puts it where the JSON-RPC layer
-/// reads it, keeping the error's own message.
-pub(super) trait OrNotFound<T> {
-    fn or_not_found(self) -> Result<T, anyhow::Error>;
+/// reads it, keeping the error's own message. Named for that layer because that is the whole of what
+/// it does: the error it produces means something only to a JSON-RPC caller.
+pub(super) trait OrJrpcNotFound<T> {
+    fn or_jrpc_not_found(self) -> Result<T, anyhow::Error>;
 }
 
-impl<T, E: IsNotFoundError + Into<anyhow::Error>> OrNotFound<T> for Result<T, E> {
-    fn or_not_found(self) -> Result<T, anyhow::Error> {
+impl<T, E: IsNotFoundError + Into<anyhow::Error>> OrJrpcNotFound<T> for Result<T, E> {
+    fn or_jrpc_not_found(self) -> Result<T, anyhow::Error> {
         self.map_err(|e| {
             if e.is_not_found_error() {
                 not_found(e.into())
@@ -307,7 +308,9 @@ mod tests {
 
     #[test]
     fn a_not_found_error_keeps_its_message() {
-        let err = Result::<(), _>::Err(TestError("missing")).or_not_found().unwrap_err();
+        let err = Result::<(), _>::Err(TestError("missing"))
+            .or_jrpc_not_found()
+            .unwrap_err();
         assert!(is_not_found_code(&err));
         // The error keeps its own message rather than being flattened to "not found".
         assert!(err.to_string().contains("missing"));
@@ -316,7 +319,9 @@ mod tests {
     /// Only a missing resource is retryable, so nothing else may be reported as one.
     #[test]
     fn any_other_failure_is_left_alone() {
-        let err = Result::<(), _>::Err(TestError("broken")).or_not_found().unwrap_err();
+        let err = Result::<(), _>::Err(TestError("broken"))
+            .or_jrpc_not_found()
+            .unwrap_err();
         assert!(!is_not_found_code(&err));
         assert!(err.downcast_ref::<TestError>().is_some());
     }

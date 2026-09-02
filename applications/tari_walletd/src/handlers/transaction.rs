@@ -48,7 +48,7 @@ use super::context::HandlerContext;
 use crate::{
     WalletSdk,
     handlers::helpers::{
-        OrNotFound,
+        OrJrpcNotFound,
         get_account,
         get_account_or_default,
         invalid_params,
@@ -161,7 +161,7 @@ async fn submit_inner(
             .substate_api()
             .locate_dependent_substates(&substates, req.detect_inputs_use_unversioned)
             .await
-            .or_not_found()?;
+            .or_jrpc_not_found()?;
         loaded_substates
             .into_iter()
             .map(|input| {
@@ -370,7 +370,7 @@ pub async fn handle_detect_inputs(
         .substate_api()
         .locate_dependent_substates(&substates, req.use_unversioned)
         .await
-        .or_not_found()?
+        .or_jrpc_not_found()?
         .into_iter()
         .map(|input| {
             if req.use_unversioned {
@@ -417,7 +417,7 @@ async fn submit_dry_run_inner(
             .substate_api()
             .locate_dependent_substates(&substates, req.detect_inputs_use_unversioned)
             .await
-            .or_not_found()?;
+            .or_jrpc_not_found()?;
         dependencies
             .into_iter()
             .map(|input| {
@@ -542,7 +542,7 @@ pub async fn handle_submit_manifest(
         .substate_api()
         .locate_dependent_substates(&substates, true)
         .await
-        .or_not_found()?;
+        .or_jrpc_not_found()?;
     let inputs = dependencies.into_iter().map(|input| input.into_unversioned());
 
     let transaction = transaction.with_inputs(inputs);
