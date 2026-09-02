@@ -186,8 +186,8 @@ impl RpcCodeGenerator {
                     quote!(request: #request_type)
                 };
 
-                // A per-request deadline only says something about a response that arrives over
-                // time, so only streaming methods get the variant that takes one.
+                // Only streaming methods take per-request options. Holding a response open is what
+                // needs a deadline of its own; a unary call is served within the session's.
                 let with_options = if m.is_server_streaming {
                     let name_with_options = format_ident!("{}_with_options", name);
                     let params_with_options = if is_unit {

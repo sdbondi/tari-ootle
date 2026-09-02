@@ -15,11 +15,7 @@ proc-macro2 = { workspace = true }
 quote = { workspace = true }
 syn = { workspace = true, features = ["full", "fold", "extra-traits"] }
 
-#[dev-dependencies]
-#tari_comms = {  path = "../core", features = ["rpc"] }
-#tari_test_utils = {  path = "../../infrastructure/test_utils" }
+[dev-dependencies]
+tari_rpc_framework = { workspace = true }
 
-#futures = "0.3.5"
-#prost = "0.12.0"
-#tokio = { version = "1", features = ["macros"] }
-#tower-service = "0.3"
+prost = { workspace = true, features = ["std", "derive"] }
