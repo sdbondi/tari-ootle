@@ -54,16 +54,18 @@ const COMMANDS = [
 
 type OtherCommands = Record<string, Array<any>>;
 
-function formatExecutionPoints(points: bigint, max: bigint): string {
-  const value = Number(points);
+// The per-block budget governs WASM and native points together, so only their sum may be shown as a share of it.
+function formatExecutionPoints(wasm: bigint, native: bigint, max: bigint): string {
+  const value = Number(wasm) + Number(native);
   const budget = Number(max);
   const absolute = value.toLocaleString();
-  if (!budget) {
+  if (!value || !budget) {
     return absolute;
   }
   const percent = (value / budget) * 100;
-  // Sub-0.01% blocks are the common case on a quiet network, so show enough precision to distinguish them from empty.
-  const formatted = percent > 0 && percent < 0.01 ? "<0.01" : percent.toFixed(2);
+  // Sub-0.01% blocks are the common case on a quiet network, so distinguish them from empty rather than rounding
+  // them to zero.
+  const formatted = percent < 0.01 ? "<0.01" : percent.toFixed(2);
   return `${absolute} (${formatted}% of ${budget.toLocaleString()})`;
 }
 
@@ -81,6 +83,7 @@ export default function BlockDetails() {
   const [identity, setIdentity] = useState<VNGetIdentityResponse>();
   const [blockTime, setBlockTime] = useState<number>(0);
   const [wasmPoints, setWasmPoints] = useState<bigint>(0n);
+  const [nativePoints, setNativePoints] = useState<bigint>(0n);
   const [maxExecutionPoints, setMaxExecutionPoints] = useState<bigint>(0n);
   const [foreignProposals, setForeignProposals] = useState<ForeignProposalAtom[]>([]);
 
@@ -91,6 +94,7 @@ export default function BlockDetails() {
           setIdentity(identity);
           setBlock(resp.block);
           setWasmPoints(resp.total_wasm_execution_points);
+          setNativePoints(resp.total_native_execution_points);
           setMaxExecutionPoints(resp.max_block_execution_points);
           getBlock({ block_id: resp.block.header.parent }).then((justify_block) => {
             if (resp.block.stored_at && justify_block.block.stored_at) {
@@ -223,9 +227,16 @@ export default function BlockDetails() {
                             </DataTableCell>
                           </TableRow>
                           <TableRow>
-                            <TableCell title="Total WASM metering points consumed by transactions executed for this block, and how much of the per-block execution budget they take up">WASM
+                            <TableCell title="Total WASM metering points consumed by transactions executed for this block">WASM
                               Points</TableCell>
-                            <DataTableCell>{formatExecutionPoints(wasmPoints, maxExecutionPoints)}</DataTableCell>
+                            <DataTableCell>{Number(wasmPoints).toLocaleString()}</DataTableCell>
+                          </TableRow>
+                          <TableRow>
+                            <TableCell title="WASM metering plus native verification points consumed by transactions executed for this block, and how much of the per-block execution budget they take up">Execution
+                              Points</TableCell>
+                            <DataTableCell>
+                              {formatExecutionPoints(wasmPoints, nativePoints, maxExecutionPoints)}
+                            </DataTableCell>
                           </TableRow>
                           <TableRow>
                             <TableCell>Status</TableCell>

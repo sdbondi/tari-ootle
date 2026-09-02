@@ -276,8 +276,10 @@ pub struct GetBlockResponse {
     pub block: Block,
     /// Total WASM metering points consumed by transactions executed for this block.
     pub total_wasm_execution_points: u64,
-    /// The per-block execution points budget a leader packs against, so the points above can be reported as a
-    /// proportion of a full block.
+    /// Total native verification points charged to transactions executed for this block.
+    pub total_native_execution_points: u64,
+    /// The per-block execution points budget a leader packs against. It governs the sum of the two totals above,
+    /// so only that sum is a meaningful proportion of it.
     pub max_block_execution_points: u64,
 }
 

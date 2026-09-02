@@ -129,6 +129,7 @@ pub struct JsonRpcHandlers {
     layer_one_transaction_submitter: FileLayerOneSubmitter,
     global_db: GlobalDb<SqliteGlobalDbAdapter<PeerAddress>>,
     consensus: ConsensusHandle,
+    consensus_constants: ConsensusConstants,
     networking: NetworkingHandle<TariMessagingSpec>,
     state_store: ValidatorNodeStateStore,
 }
@@ -142,6 +143,7 @@ impl JsonRpcHandlers {
             template_provider: services.template_provider.clone(),
             epoch_manager: services.epoch_manager.clone(),
             consensus: services.consensus_handle.clone(),
+            consensus_constants: services.consensus_constants.clone(),
             global_db: services.global_db.clone(),
             layer_one_transaction_submitter: services.layer_one_transaction_submitter.clone(),
             networking: services.networking.clone(),
@@ -406,11 +408,16 @@ impl JsonRpcHandlers {
             .iter()
             .map(|e| e.result().wasm_execution_points)
             .fold(0u64, u64::saturating_add);
+        let total_native_execution_points = executions
+            .iter()
+            .map(|e| e.result().native_execution_points)
+            .fold(0u64, u64::saturating_add);
 
         let res = GetBlockResponse {
             block,
             total_wasm_execution_points,
-            max_block_execution_points: ConsensusConstants::from(self.config.network).max_block_execution_points,
+            total_native_execution_points,
+            max_block_execution_points: self.consensus_constants.max_block_execution_points,
         };
         Ok(JsonRpcResponse::success(answer_id, res))
     }
