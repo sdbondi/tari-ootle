@@ -23,13 +23,14 @@
 import { useState, useEffect } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Accordion, AccordionDetails, AccordionSummary } from "../../Components/Accordion";
-import { Grid, Table, TableContainer, TableBody, TableRow, TableCell, Button, Fade, Alert } from "@mui/material";
+import { Grid, Table, TableContainer, TableBody, TableRow, TableCell, Button, Fade, Alert, Box, Tooltip } from "@mui/material";
 import Typography from "@mui/material/Typography";
 import { DataTableCell, StyledPaper } from "../../Components/StyledComponents";
 import PageHeading from "../../Components/PageHeading";
 import StatusChip from "../../Components/StatusChip";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import KeyboardArrowUpIcon from "@mui/icons-material/KeyboardArrowUp";
+import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import Loading from "../../Components/Loading";
 import { getBlock, getIdentity } from "../../utils/json_rpc";
 import Transactions from "./Transactions";
@@ -55,18 +56,37 @@ const COMMANDS = [
 type OtherCommands = Record<string, Array<any>>;
 
 // The per-block budget governs WASM and native points together, so only their sum may be shown as a share of it.
-function formatExecutionPoints(wasm: bigint, native: bigint, max: bigint): string {
-  const value = Number(wasm) + Number(native);
+function ExecutionPointsCell({ wasm, native, max }: { wasm: bigint; native: bigint; max: bigint }) {
+  const total = Number(wasm) + Number(native);
   const budget = Number(max);
-  const absolute = value.toLocaleString();
-  if (!value || !budget) {
-    return absolute;
+  if (!budget) {
+    return <>{total.toLocaleString()}</>;
   }
-  const percent = (value / budget) * 100;
+  const percent = (total / budget) * 100;
   // Sub-0.01% blocks are the common case on a quiet network, so distinguish them from empty rather than rounding
   // them to zero.
-  const formatted = percent < 0.01 ? "<0.01" : percent.toFixed(2);
-  return `${absolute} (${formatted}% of ${budget.toLocaleString()})`;
+  const share = !total ? "0" : percent < 0.01 ? "<0.01" : percent.toFixed(2);
+  return (
+    <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+      {total.toLocaleString()} ({share}%)
+      <Tooltip
+        arrow
+        title={
+          <>
+            <div>
+              {total.toLocaleString()} of the {budget.toLocaleString()} execution points a leader packs a block against
+            </div>
+            <div>
+              {Number(wasm).toLocaleString()} WASM metering + {Number(native).toLocaleString()} native verification
+            </div>
+            <div>Both are CPU time every validator spends re-executing this block, so one budget governs them together.</div>
+          </>
+        }
+      >
+        <HelpOutlineIcon sx={{ fontSize: "1rem", opacity: 0.6, cursor: "help" }} />
+      </Tooltip>
+    </Box>
+  );
 }
 
 export default function BlockDetails() {
@@ -232,10 +252,9 @@ export default function BlockDetails() {
                             <DataTableCell>{Number(wasmPoints).toLocaleString()}</DataTableCell>
                           </TableRow>
                           <TableRow>
-                            <TableCell title="WASM metering plus native verification points consumed by transactions executed for this block, and how much of the per-block execution budget they take up">Execution
-                              Points</TableCell>
+                            <TableCell>Execution Points</TableCell>
                             <DataTableCell>
-                              {formatExecutionPoints(wasmPoints, nativePoints, maxExecutionPoints)}
+                              <ExecutionPointsCell wasm={wasmPoints} native={nativePoints} max={maxExecutionPoints} />
                             </DataTableCell>
                           </TableRow>
                           <TableRow>
