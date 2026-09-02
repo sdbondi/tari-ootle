@@ -333,12 +333,21 @@ pub async fn spawn_services(
     .await
     .context("template manager init thread panicked")??;
 
-    // Dry run - use a shorter cache TTL for more accurate fee estimates. Proof verification is left
-    // off here: dry run only produces a fee estimate, and gating it on proof availability would make
-    // transaction submission fragile when proofs are momentarily unavailable.
+    // Dry run - use a shorter cache TTL for more accurate fee estimates. A nonexistent input is held
+    // for the shorter of the two: an input resolved as absent estimates a transaction that would in
+    // fact have succeeded, which is the same staleness `dry_run_cache_ttl` is set to bound.
+    // Proof verification is left off here: dry run only produces a fee estimate, and gating it on
+    // proof availability would make transaction submission fragile when proofs are momentarily
+    // unavailable.
     let dry_run_substate_manager = substate_manager
         .clone()
         .with_cache_ttl(config.indexer.dry_run_cache_ttl)
+        .with_negative_cache_ttl(
+            config
+                .indexer
+                .dry_run_cache_ttl
+                .min(config.indexer.substate_cache_negative_ttl),
+        )
         .with_substate_proof_verification(false);
     let fee_table = get_fee_table_by_network(config.network);
     let dry_run_transaction_processor = DryRunTransactionProcessor::new(

@@ -189,12 +189,19 @@ pub struct IndexerConfig {
     #[serde(default = "default_substate_cache_max_entries")]
     pub substate_cache_max_entries: usize,
     /// How long the cache serves a substate it has established does not exist. A creation retracts
-    /// that through the transition stream, so this bounds only the case where the stream does not
-    /// deliver.
+    /// that through the transition stream, so ordinary staleness is bounded by the sync round and
+    /// this covers only what that stream cannot correct.
+    ///
+    /// What it cannot correct is an answer that was already wrong when it was cached. The committee
+    /// is chosen from the epoch manager's current epoch, independently of the watermark that gates
+    /// the write, so a lagging view of a shard group split can put the question to a committee that
+    /// honestly no longer holds the substate and agrees it does not exist. Uncached that misleads
+    /// one caller; cached it is served to every caller until this expires.
     ///
     /// Held shorter than the other entries because it is the one a caller feels as an absence: a
-    /// substate being waited on stays missing until this expires. Set it to zero to answer every
-    /// nonexistent lookup from the committee, at `f + 1` round trips each.
+    /// substate being waited on stays missing until this expires. Lowering it towards zero narrows
+    /// that window to sub-second - an entry cached within the current second still answers - at
+    /// `f + 1` committee round trips for every nonexistent lookup.
     #[serde(default = "default_substate_cache_negative_ttl", with = "serializers::seconds")]
     pub substate_cache_negative_ttl: Duration,
     /// How many epochs past its terminal epoch a stored transaction is retained before it is pruned.

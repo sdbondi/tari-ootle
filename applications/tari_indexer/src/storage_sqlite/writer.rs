@@ -17,7 +17,7 @@ use tari_engine_types::{
     transaction_receipt::TransactionReceipt,
 };
 use tari_indexer_client::types::TransactionSource;
-use tari_indexer_lib::substate_cache::{FetchWatermark, SubstateCacheEntryRef};
+use tari_indexer_lib::substate_cache::{FetchWatermark, SubstateCacheEntryRef, caches_nonexistence};
 use tari_ootle_common_types::{
     Epoch,
     StateVersion,
@@ -544,6 +544,17 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
 
         let id = substate_id.to_string();
         let version = entry.version.map(|v| v as i32);
+
+        // Nothing journals a first creation for a substate outside `caches_nonexistence`, so a
+        // record here that one does not exist could never be retracted and would stand until it
+        // ages out. The invariant is enforced where it can be broken rather than only at the callers.
+        if version.is_none() && !caches_nonexistence(substate_id) {
+            warn!(
+                target: LOG_TARGET,
+                "Refusing to cache the nonexistence of {substate_id}: no transition would retract it"
+            );
+            return Ok(false);
+        }
 
         // Read inside this transaction so that the journal and the insert cannot straddle a
         // concurrent invalidation commit.

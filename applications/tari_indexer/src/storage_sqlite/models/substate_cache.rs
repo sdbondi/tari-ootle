@@ -37,13 +37,14 @@ impl SubstateCacheInvalidation {
     /// created-once substate in the stream and buy nothing with it.
     pub fn created(substate_id: SubstateId, version: u32) -> Option<Self> {
         let retires_up_to = version.checked_sub(1);
-        if retires_up_to.is_none() && !caches_nonexistence(&substate_id) {
+        let retires_nonexistence = caches_nonexistence(&substate_id);
+        if retires_up_to.is_none() && !retires_nonexistence {
             return None;
         }
         Some(Self {
             substate_id,
             retires_up_to,
-            retires_nonexistence: true,
+            retires_nonexistence,
         })
     }
 
@@ -68,7 +69,9 @@ impl SubstateCacheInvalidation {
         self.retires_up_to
     }
 
-    /// Whether this retires a cached record that the substate does not exist.
+    /// Whether a record that the substate does not exist may exist to be retired. False where
+    /// nothing caches one, so the retirement is not attempted for the substates that dominate the
+    /// stream by count.
     pub fn retires_nonexistence(&self) -> bool {
         self.retires_nonexistence
     }
@@ -99,8 +102,11 @@ mod tests {
     fn a_first_creation_is_dropped_where_nonexistence_is_not_cached() {
         assert!(!caches_nonexistence(&receipt()));
         assert!(SubstateCacheInvalidation::created(receipt(), 0).is_none());
-        // Above the first version it carries a retirement that stands on its own.
-        assert!(SubstateCacheInvalidation::created(receipt(), 1).is_some());
+        // Above the first version it carries a retirement that stands on its own, and does not
+        // attempt one that could never match.
+        let above = SubstateCacheInvalidation::created(receipt(), 1).unwrap();
+        assert_eq!(above.retires_up_to(), Some(0));
+        assert!(!above.retires_nonexistence());
     }
 
     #[test]

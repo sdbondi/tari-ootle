@@ -1218,6 +1218,16 @@ mod tests {
         assert!(read_entry(&store, &id).await.is_none());
     }
 
+    /// Nothing would ever retract a nonexistence recorded for a substate no first creation journals,
+    /// so the write is refused rather than left to age out.
+    #[tokio::test]
+    async fn a_nonexistence_is_refused_where_no_transition_would_retract_it() {
+        let (_d, store) = temp_store().await;
+        let receipt: SubstateId = format!("txreceipt_{:064x}", 1).parse().unwrap();
+        assert!(!put_nonexistent(&store, &receipt, 100).await);
+        assert!(read_entry(&store, &receipt).await.is_none());
+    }
+
     /// Nonexistence ranks below every version: a real head displaces it, and it never walks one back.
     #[tokio::test]
     async fn a_nonexistence_yields_to_any_head() {
