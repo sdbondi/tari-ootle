@@ -27,7 +27,7 @@ use std::{
 
 use log::*;
 use tari_bor::encode;
-use tari_consensus::hotstuff::{ConsensusCurrentState, commit_proofs::generate_block_commit_proof};
+use tari_consensus::hotstuff::commit_proofs::generate_block_commit_proof;
 use tari_consensus_types::{BlockId, HighPc, ProposalCertificate};
 use tari_engine_types::substate::SubstateId;
 use tari_epoch_manager::{EpochManagerReader, service::EpochManagerHandle};
@@ -122,9 +122,7 @@ impl<TStateStore: StateStore> ValidatorNodeRpcServiceImpl<TStateStore> {
     }
 
     fn check_consensus_state(&self) -> Result<(), RpcStatus> {
-        let state = self.consensus.get_current_state();
-        // If syncing, we do not want to serve state sync or block sync requests
-        if matches!(state, ConsensusCurrentState::Running | ConsensusCurrentState::Idle) {
+        if self.consensus.can_serve_committed_state() {
             Ok(())
         } else {
             Err(RpcStatus::general("Consensus is not running on this node"))
@@ -484,6 +482,25 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
 
         let end_epoch = req.until_epoch.map(Epoch::from);
 
+        // An unbounded request asks for this node's tip, which only a member of the committee that
+        // currently stores those shards can answer: a non-member receives no further transitions for
+        // them and streams silence, which the caller cannot tell apart from being caught up. A bounded
+        // request is answered out of history and the caller checks it against a quorum-signed
+        // checkpoint, so any node still holding that history may serve it.
+        if end_epoch.is_none() {
+            let current_epoch = self
+                .epoch_manager
+                .current_epoch()
+                .await
+                .map_err(RpcStatus::log_internal_error(LOG_TARGET))?;
+            let local_committee_info = self
+                .epoch_manager
+                .get_local_committee_info(current_epoch)
+                .await
+                .map_err(RpcStatus::log_internal_error(LOG_TARGET))?;
+            ShardCursor::ensure_all_stored(&cursors, &local_committee_info)?;
+        }
+
         let value_filter_flags = SubstateValueFilterFlags::from_bits_truncate(req.value_filters);
         if value_filter_flags.is_empty() {
             return Err(RpcStatus::bad_request(
@@ -507,7 +524,7 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
                 sender,
                 cursors,
                 end_epoch,
-                self.consensus.current_epoch(),
+                self.consensus.clone(),
                 STATE_SYNC_MAX_BATCH_SIZE
                     .try_into()
                     .expect("STATE_SYNC_MAX_BATCH_SIZE is not zero"),

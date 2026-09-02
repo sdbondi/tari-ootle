@@ -4,7 +4,7 @@
 use std::num::NonZeroUsize;
 
 use log::*;
-use tari_ootle_common_types::{Epoch, NumPreshards, optional::Optional, shard::Shard};
+use tari_ootle_common_types::{Epoch, NumPreshards, committee::CommitteeInfo, optional::Optional, shard::Shard};
 use tari_ootle_p2p::proto::rpc;
 use tari_ootle_storage::{
     StateStore,
@@ -15,6 +15,8 @@ use tari_ootle_storage::{
 use tari_rpc_framework::RpcStatus;
 use tari_state_tree::Version;
 use tokio::sync::mpsc;
+
+use crate::consensus::ConsensusHandle;
 
 const LOG_TARGET: &str = "tari::ootle::rpc::sync_task";
 
@@ -71,6 +73,19 @@ impl ShardCursor {
 
         Ok(validated)
     }
+
+    /// Rejects any cursor for a shard that `committee_info` does not cover. Every committee holds the
+    /// global shard, so a cursor for it is always in range.
+    pub fn ensure_all_stored(cursors: &[Self], committee_info: &CommitteeInfo) -> Result<(), RpcStatus> {
+        let shard_group = committee_info.shard_group();
+        match cursors.iter().find(|c| !shard_group.contains_or_global(&c.shard)) {
+            Some(cursor) => Err(RpcStatus::bad_request(format!(
+                "This node in {shard_group} does not store {}",
+                cursor.shard
+            ))),
+            None => Ok(()),
+        }
+    }
 }
 
 pub struct StateSyncTask<TStateStore: StateStore> {
@@ -78,7 +93,7 @@ pub struct StateSyncTask<TStateStore: StateStore> {
     sender: mpsc::Sender<Result<rpc::SyncStateResponse, RpcStatus>>,
     cursors: Vec<ShardCursor>,
     end_epoch: Option<Epoch>,
-    current_epoch: Epoch,
+    consensus: ConsensusHandle,
     batch_size: NonZeroUsize,
     value_filters: SubstateValueFilterFlags,
 }
@@ -89,7 +104,7 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
         sender: mpsc::Sender<Result<rpc::SyncStateResponse, RpcStatus>>,
         cursors: Vec<ShardCursor>,
         end_epoch: Option<Epoch>,
-        current_epoch: Epoch,
+        consensus: ConsensusHandle,
         batch_size: NonZeroUsize,
         value_filters: SubstateValueFilterFlags,
     ) -> Self {
@@ -98,7 +113,7 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
             sender,
             cursors,
             end_epoch,
-            current_epoch,
+            consensus,
             batch_size,
             value_filters,
         }
@@ -201,6 +216,10 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
     ///
     /// For a bounded request the consumer verifies against its own checkpoint, so the reported version is
     /// just our last streamed version - the consumer does not trust it as the sync target.
+    ///
+    /// The marker asserts that the caller is level with this node as of the epoch it names. A stream can
+    /// outlive the epoch it opened in, and can outlive this node's standing to make that claim, so both
+    /// the epoch and that standing are established at send time.
     async fn send_complete(
         &mut self,
         cursor: &ShardCursor,
@@ -208,6 +227,12 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
         last_sent_version: Option<Version>,
         is_final: bool,
     ) -> Result<(), ()> {
+        if !self.consensus.can_serve_committed_state() {
+            self.send(Err(RpcStatus::general("Consensus is not running on this node")))
+                .await?;
+            return Err(());
+        }
+
         let synced_to_version = match tip_at_start {
             // Unbounded: advance to the committed tip, but never past a version we actually streamed.
             Some(tip) => tip.max(last_sent_version.unwrap_or(0)),
@@ -218,7 +243,7 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
         self.send(Ok(rpc::SyncStateResponse {
             response: Some(rpc::sync_state_response::Response::Complete(rpc::SyncComplete {
                 synced_to_version,
-                epoch: Some(self.current_epoch.into()),
+                epoch: Some(self.consensus.current_epoch().into()),
                 shard: cursor.shard.as_u32(),
                 is_final,
             })),
@@ -274,7 +299,20 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
 
 #[cfg(test)]
 mod tests {
+    use tari_ootle_common_types::{ShardGroup, VotePower};
+
     use super::*;
+
+    fn committee_info(start: u32, end_inclusive: u32) -> CommitteeInfo {
+        CommitteeInfo::new(
+            NumPreshards::P64,
+            4,
+            8,
+            ShardGroup::new(start, end_inclusive),
+            Epoch(1),
+            VotePower::of(4),
+        )
+    }
 
     fn cursor(shard: u32, start_state_version: u64) -> rpc::ShardCursor {
         rpc::ShardCursor {
@@ -338,5 +376,18 @@ mod tests {
     #[test]
     fn it_rejects_a_zero_start_state_version() {
         assert!(ShardCursor::validate_all(vec![cursor(1, 1), cursor(2, 0)]).is_err());
+    }
+
+    #[test]
+    fn it_accepts_cursors_for_stored_shards_and_the_global_shard() {
+        let cursors = ShardCursor::validate_all(vec![cursor(0, 1), cursor(8, 1), cursor(15, 1)]).unwrap();
+        ShardCursor::ensure_all_stored(&cursors, &committee_info(8, 15)).unwrap();
+    }
+
+    #[test]
+    fn it_rejects_a_cursor_for_a_shard_this_node_does_not_store() {
+        let cursors = ShardCursor::validate_all(vec![cursor(8, 1), cursor(16, 1)]).unwrap();
+        let err = ShardCursor::ensure_all_stored(&cursors, &committee_info(8, 15)).unwrap_err();
+        assert!(err.details().contains("does not store Shard(16)"), "{err}");
     }
 }

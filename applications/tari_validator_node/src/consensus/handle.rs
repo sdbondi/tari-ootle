@@ -61,4 +61,14 @@ impl ConsensusHandle {
     pub fn is_running(&self) -> bool {
         self.get_current_state().is_running()
     }
+
+    /// True while this node's committed state may be served to peers. While consensus is itself
+    /// syncing, what this node has committed is not what its committee has committed, so it must not
+    /// answer for the committee.
+    pub fn can_serve_committed_state(&self) -> bool {
+        matches!(
+            self.get_current_state(),
+            ConsensusCurrentState::Running | ConsensusCurrentState::Idle
+        )
+    }
 }
