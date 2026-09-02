@@ -67,7 +67,7 @@ const COMMANDS = [
 
 type OtherCommands = Record<string, Array<any>>;
 
-function BudgetCell({ used, budget, tooltip }: { used: number; budget: number; tooltip: React.ReactNode }) {
+function BudgetCell({ used, budget, tooltip }: { used: number; budget: number; tooltip: string }) {
   if (!budget) {
     return <>{used.toLocaleString()}</>;
   }
@@ -87,54 +87,22 @@ function BudgetCell({ used, budget, tooltip }: { used: number; budget: number; t
 
 // The per-block budget governs WASM and native points together, so only their sum may be shown as a share of it.
 function ExecutionPointsCell({ wasm, native, max }: { wasm: bigint; native: bigint; max: bigint }) {
-  const total = Number(wasm) + Number(native);
   return (
     <BudgetCell
-      used={total}
+      used={Number(wasm) + Number(native)}
       budget={Number(max)}
-      tooltip={
-        <>
-          <div>
-            {total.toLocaleString()} of the {Number(max).toLocaleString()} execution points a leader packs a block
-            against
-          </div>
-          <div>
-            {Number(wasm).toLocaleString()} WASM metering + {Number(native).toLocaleString()} native verification
-          </div>
-          <div>
-            Both are CPU time every validator spends re-executing this block, so one budget governs them together.
-          </div>
-        </>
-      }
+      tooltip="Compute metered for this block, against the per-block budget."
     />
   );
 }
 
+// The sum follows the validation rule, so it belongs with the validation bound and no other budget.
 function BlockWeightCell({ weight, max }: { weight: bigint; max: bigint }) {
   return (
     <BudgetCell
       used={Number(weight)}
       budget={Number(max)}
-      tooltip={
-        <>
-          <div>
-            {Number(weight).toLocaleString()} of the {Number(max).toLocaleString()} execution weight a replica will
-            vote for
-          </div>
-          <div>
-            Transaction commands only — foreign proposals and evictions carry no execution weight, though they do
-            consume the lower budget a leader packs against.
-          </div>
-          <div>
-            A block carrying a single transaction command is exempt from the bound, so one heavy transaction can read
-            above 100%.
-          </div>
-          <div>
-            Weight stands in for the size, IO and storage cost that metering does not see, so for ordinary traffic
-            this budget fills long before the execution points one.
-          </div>
-        </>
-      }
+      tooltip="Size and IO cost of this block's transactions, against the most a replica will vote for."
     />
   );
 }
