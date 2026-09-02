@@ -126,6 +126,10 @@ function BlockWeightCell({ weight, max }: { weight: bigint; max: bigint }) {
             consume the lower budget a leader packs against.
           </div>
           <div>
+            A block carrying a single transaction command is exempt from the bound, so one heavy transaction can read
+            above 100%.
+          </div>
+          <div>
             Weight stands in for the size, IO and storage cost that metering does not see, so for ordinary traffic
             this budget fills long before the execution points one.
           </div>
