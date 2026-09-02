@@ -20,12 +20,6 @@
 //  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// pub mod pool;
-
-// TODO
-// #[cfg(test)]
-// mod tests;
-
 #[cfg(feature = "metrics")]
 mod metrics;
 
@@ -71,6 +65,7 @@ use crate::{
     RpcServerError,
     RpcStatus,
     body::ClientStreaming,
+    error::HandshakeRejectReason,
     framing::CanonicalFraming,
     message::{BaseRequest, RpcMessageFlags},
     proto,
@@ -541,10 +536,9 @@ struct RpcClientWorker<TSubstream> {
     ready_tx: Option<oneshot::Sender<Result<(), RpcError>>>,
     protocol_id: StreamProtocol,
     shutdown_signal: ShutdownSignal,
-    /// Whether a keepalive frame is expected on this session. Frames left over from an abandoned
-    /// request outlive it, so once any request has asked for keepalives the whole session must
-    /// tolerate them, or a later request that did not ask ends the session on one.
-    tolerates_keepalives: bool,
+    /// Whether a response has yet been read on this session. Until one has, the next frame may be
+    /// the server refusing the session rather than answering.
+    has_read_a_response: bool,
 }
 
 impl<TSubstream> RpcClientWorker<TSubstream>
@@ -561,7 +555,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
         shutdown_signal: ShutdownSignal,
     ) -> Self {
         Self {
-            tolerates_keepalives: config.keepalive_interval.is_some(),
+            has_read_a_response: false,
             config,
             peer_id,
             request_rx,
@@ -777,7 +771,6 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
     ) -> Result<(), RpcError> {
         let ClientCall { request, options } = call;
         let config = options.apply_to(self.config);
-        self.tolerates_keepalives |= config.keepalive_interval.is_some();
 
         #[cfg(feature = "metrics")]
         metrics::outbound_request_bytes(&self.peer_id, &self.protocol_id).observe(request.get_ref().len() as f64);
@@ -910,12 +903,14 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
                     self.request_rx.close();
                     break;
                 },
-                Err(err @ RpcError::UnexpectedAckResponse) => {
-                    warn!(
+                Err(RpcError::HandshakeError(RpcHandshakeError::Rejected(reason))) => {
+                    debug!(
                         target: LOG_TARGET,
-                        "Request {} (method={}) received an unsolicited keepalive: {}", request_id, method, err
+                        "(peer={}) Server refused the session: {}", self.peer_id, reason
                     );
-                    let _result = response_tx.send(Err(RpcStatus::protocol_error(err.to_string()))).await;
+                    let _result = response_tx
+                        .send(Err(RpcStatus::handshake_denied(reason.to_string())))
+                        .await;
                     break;
                 },
                 Err(err) => {
@@ -923,6 +918,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
                 },
             };
             bounds.keepalives_due = true;
+            self.has_read_a_response = true;
 
             match Self::convert_to_result(resp) {
                 Ok(Ok(resp)) => {
@@ -989,11 +985,10 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
         let peer_id = self.peer_id;
         let protocol_name = self.protocol_name().to_string();
 
-        let tolerates_keepalives = self.tolerates_keepalives;
+        let may_be_session_rejection = !self.has_read_a_response;
         let mut reader = RpcResponseReader::new(&mut self.framed, config, request_id)
-            .tolerating_keepalives(tolerates_keepalives)
+            .watching_for_session_rejection(may_be_session_rejection)
             .bounded_by(bounds);
-        let mut num_ignored = 0;
         let resp = loop {
             match reader.read_response().await {
                 Ok(resp) => {
@@ -1010,21 +1005,14 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
                     let time_to_first_msg = reader.time_to_first_msg();
                     break (resp, time_to_first_msg);
                 },
-                Err(RpcError::ResponseIdDidNotMatchRequest { actual, expected })
-                    if actual.wrapping_add(1) == request_id =>
-                {
-                    warn!(
+                // A frame for the previous request was in flight when this one went out — an
+                // abandoned stream can leave arbitrarily many. Skipping them is bounded by the
+                // deadline this read already carries, so how many arrive does not matter.
+                Err(RpcError::ResponseIdDidNotMatchRequest { actual, .. }) if actual.wrapping_add(1) == request_id => {
+                    trace!(
                         target: LOG_TARGET,
-                        "Possible delayed response received for previous request {}", actual
+                        "(peer: {}, {}) Discarding a delayed frame for request {}", peer_id, protocol_name, actual
                     );
-                    num_ignored += 1;
-
-                    // Be lenient for a number of messages that may have been buffered to come through for the previous
-                    // request.
-                    const MAX_ALLOWED_IGNORED: usize = 20;
-                    if num_ignored > MAX_ALLOWED_IGNORED {
-                        return Err(RpcError::ResponseIdDidNotMatchRequest { actual, expected });
-                    }
                     continue;
                 },
                 Err(err) => return Err(err),
@@ -1076,8 +1064,11 @@ struct RpcResponseReader<'a, TSubstream> {
     framed: &'a mut CanonicalFraming<TSubstream>,
     config: RpcClientConfig,
     request_id: u16,
-    tolerates_keepalives: bool,
     bounds: ReadBounds,
+    /// Whether a frame may still turn out to be the session rejection reply. The handshake is
+    /// one-way, so a server that refuses the session answers the first request rather than the
+    /// handshake, and the refusal has to be recognised where a response was expected.
+    may_be_session_rejection: bool,
     bytes_read: usize,
     time_to_first_msg: Option<Duration>,
 }
@@ -1090,20 +1081,20 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
             framed,
             config,
             request_id,
-            tolerates_keepalives: false,
             bounds: ReadBounds::default(),
+            may_be_session_rejection: false,
             bytes_read: 0,
             time_to_first_msg: None,
         }
     }
 
-    pub fn tolerating_keepalives(mut self, tolerates_keepalives: bool) -> Self {
-        self.tolerates_keepalives = tolerates_keepalives;
+    pub fn bounded_by(mut self, bounds: ReadBounds) -> Self {
+        self.bounds = bounds;
         self
     }
 
-    pub fn bounded_by(mut self, bounds: ReadBounds) -> Self {
-        self.bounds = bounds;
+    pub fn watching_for_session_rejection(mut self, may_be_session_rejection: bool) -> Self {
+        self.may_be_session_rejection = may_be_session_rejection;
         self
     }
 
@@ -1122,13 +1113,11 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
             if resp.is_keepalive() {
                 // A keepalive carries neither payload nor stream position, so its request id is not
                 // policed: one left over from an abandoned request is as harmless as one for this
-                // request, and counting it as a mismatch would spend the leniency budget below.
-                if !self.tolerates_keepalives {
-                    return Err(RpcError::UnexpectedAckResponse);
-                }
-                // Evidence that the peer has begun streaming, and the only such evidence that is
-                // not id-policed: a keepalive left over from an abandoned request is indistinguish-
-                // able from one for this response, so this is a guess where the rest is not.
+                // request. A peer that sends one unasked cannot gain anything by it either, since
+                // only a frame carrying a response moves the deadline.
+                //
+                // It is also evidence that the peer has begun streaming, and the only such evidence
+                // that is not id-policed, so this is a guess where the rest is not.
                 self.bounds.keepalives_due = true;
                 continue;
             }
@@ -1213,11 +1202,32 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
         };
 
         match next_msg_fut.await {
-            Ok(Some(Ok(resp))) => Ok(proto::RpcResponse::decode(resp)?),
+            Ok(Some(Ok(frame))) => {
+                let resp = proto::RpcResponse::decode(frame.as_ref())?;
+                // Request ids start at one, so a frame without one is not a response at all. On the
+                // first frame of a session that means the server refused it: the handshake is
+                // one-way, so a refusal arrives where the first response was expected.
+                if self.may_be_session_rejection &&
+                    resp.request_id == 0 &&
+                    let Some(reason) = decode_session_rejection(&frame)
+                {
+                    return Err(RpcError::HandshakeError(RpcHandshakeError::Rejected(reason)));
+                }
+                Ok(resp)
+            },
             Ok(Some(Err(err))) => Err(err.into()),
             Ok(None) => Err(RpcError::ServerClosedRequest),
             Err(_) => Err(RpcError::ReplyTimeout),
         }
+    }
+}
+
+/// The reason a server refused a session, if `frame` is its rejection reply.
+fn decode_session_rejection(frame: &BytesMut) -> Option<HandshakeRejectReason> {
+    let reply = proto::RpcSessionReply::decode(frame.as_ref()).ok()?;
+    match reply.session_result {
+        Some(proto::rpc_session_reply::SessionResult::Rejected(true)) => Some(reply.reject_reason().into()),
+        _ => None,
     }
 }
 
@@ -1386,7 +1396,7 @@ mod keepalive_tests {
     }
 
     #[tokio::test]
-    async fn a_keepalive_that_was_never_asked_for_is_a_protocol_error() {
+    async fn a_keepalive_that_was_never_asked_for_is_discarded() {
         let (server, client) = tokio::io::duplex(RPC_MAX_FRAME_SIZE);
         let reply = proto::RpcSession {
             supported_versions: vec![7],
@@ -1415,11 +1425,10 @@ mod keepalive_tests {
 
         let request = server.await.unwrap();
         assert_eq!(request.keepalive_interval, 0);
+        // A peer that sends one unasked gains nothing by it, since only a frame carrying a response
+        // moves the deadline. Refusing the session over it would cost every caller sharing it.
         assert_eq!(received.len(), 1);
-        assert_eq!(
-            received[0].as_ref().unwrap_err().as_status_code(),
-            RpcStatusCode::ProtocolError
-        );
+        assert_eq!(received[0].as_ref().unwrap().supported_versions, vec![7]);
     }
 
     #[tokio::test]
@@ -1460,7 +1469,6 @@ mod keepalive_tests {
         let request = server.await.unwrap();
         assert_eq!(request.deadline, 600);
         assert_eq!(request.keepalive_interval, 30);
-        // Asking per-request is also what makes the frames it asked for tolerable.
         assert_eq!(received.len(), 1);
         assert_eq!(received[0].as_ref().unwrap().supported_versions, vec![7]);
     }
@@ -1508,7 +1516,7 @@ mod keepalive_tests {
     }
 
     #[tokio::test]
-    async fn a_session_that_asked_for_keepalives_once_tolerates_a_later_stray_frame() {
+    async fn a_stray_keepalive_does_not_disturb_a_later_request() {
         let (server, client) = tokio::io::duplex(RPC_MAX_FRAME_SIZE);
         let reply = proto::RpcSession {
             supported_versions: vec![7],
@@ -1519,8 +1527,7 @@ mod keepalive_tests {
             let first = read_request(&mut framed).await;
             send_message(&mut framed, first.request_id, message.clone()).await;
 
-            // The second request asks for no keepalives, but the first request's frames are still
-            // in flight behind it.
+            // A frame from the first request is still in flight behind the second.
             let frame = framed.next().await.unwrap().unwrap();
             let second = proto::RpcRequest::decode(frame.freeze()).unwrap();
             send_response(&mut framed, RpcResponse::keepalive(first.request_id)).await;
