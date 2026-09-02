@@ -91,7 +91,7 @@ use crate::{
     p2p::{
         rpc::{
             block_sync_task::BlockSyncTask,
-            state_sync_task::{ShardCursor, StateSyncTask},
+            state_sync_task::{ShardCursor, StateSyncTask, TipAuthority},
         },
         services::mempool::MempoolHandle,
     },
@@ -492,15 +492,19 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
         // this node receives, and can lag the epoch reached by scanning the base layer. The completion
         // marker names the epoch its claim is made as of, so the claim and the marker must be anchored
         // to the same one.
-        let tip_authorised_at = if end_epoch.is_none() {
+        let tip_authority = if end_epoch.is_none() {
             let epoch = self.consensus.current_epoch();
+            // A node that has not entered a view has no committee to answer for.
+            if epoch.is_zero() {
+                return Err(RpcStatus::general("Consensus has not started on this node"));
+            }
             let local_committee_info = self
                 .epoch_manager
                 .get_local_committee_info(epoch)
                 .await
                 .map_err(RpcStatus::log_internal_error(LOG_TARGET))?;
             ShardCursor::ensure_all_stored(&cursors, &local_committee_info)?;
-            Some(epoch)
+            Some(TipAuthority::new(epoch, local_committee_info))
         } else {
             None
         };
@@ -530,7 +534,7 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
                 end_epoch,
                 self.consensus.clone(),
                 self.epoch_manager.clone(),
-                tip_authorised_at,
+                tip_authority,
                 STATE_SYNC_MAX_BATCH_SIZE
                     .try_into()
                     .expect("STATE_SYNC_MAX_BATCH_SIZE is not zero"),

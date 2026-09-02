@@ -96,6 +96,34 @@ fn ensure_shard_is_stored(shard: Shard, committee_info: &CommitteeInfo) -> Resul
     }
 }
 
+/// This node's warrant to tell a caller that it is level with the committee: the epoch the warrant was
+/// established at, and the committee that epoch placed this node in.
+///
+/// It covers a shard only for as long as that committee stores it, so it carries the committee rather
+/// than the fact that some check once passed - a group can shrink or reshuffle at an epoch boundary
+/// while still containing the shard the boundary was noticed on.
+#[derive(Debug, Clone)]
+pub struct TipAuthority {
+    epoch: Epoch,
+    committee_info: CommitteeInfo,
+}
+
+impl TipAuthority {
+    pub fn new(epoch: Epoch, committee_info: CommitteeInfo) -> Self {
+        Self { epoch, committee_info }
+    }
+
+    /// True once `epoch` has moved on from the one this warrant was established at, leaving it saying
+    /// nothing about the committee now.
+    fn is_stale_at(&self, epoch: Epoch) -> bool {
+        self.epoch != epoch
+    }
+
+    fn ensure_stores(&self, shard: Shard) -> Result<(), RpcStatus> {
+        ensure_shard_is_stored(shard, &self.committee_info)
+    }
+}
+
 pub struct StateSyncTask<TStateStore: StateStore> {
     store: TStateStore,
     sender: mpsc::Sender<Result<rpc::SyncStateResponse, RpcStatus>>,
@@ -103,9 +131,9 @@ pub struct StateSyncTask<TStateStore: StateStore> {
     end_epoch: Option<Epoch>,
     consensus: ConsensusHandle,
     epoch_manager: EpochManagerHandle<PeerAddress>,
-    /// The epoch whose committee was checked to store the requested shards, for a stream that claims
-    /// to serve this node's tip. `None` for a bounded stream, which makes no such claim.
-    tip_authorised_at: Option<Epoch>,
+    /// This node's warrant to serve its tip, for a stream that claims to. `None` for a bounded stream,
+    /// which makes no such claim.
+    tip_authority: Option<TipAuthority>,
     batch_size: NonZeroUsize,
     value_filters: SubstateValueFilterFlags,
 }
@@ -118,7 +146,7 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
         end_epoch: Option<Epoch>,
         consensus: ConsensusHandle,
         epoch_manager: EpochManagerHandle<PeerAddress>,
-        tip_authorised_at: Option<Epoch>,
+        tip_authority: Option<TipAuthority>,
         batch_size: NonZeroUsize,
         value_filters: SubstateValueFilterFlags,
     ) -> Self {
@@ -129,7 +157,7 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
             end_epoch,
             consensus,
             epoch_manager,
-            tip_authorised_at,
+            tip_authority,
             batch_size,
             value_filters,
         }
@@ -276,11 +304,12 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
     /// caller verifies against its own checkpoint, so it needs nothing of this node's present standing.
     ///
     /// The claim is anchored to a single epoch - the one whose committee was checked to store these
-    /// shards - and a stream can outlive it. When the epoch moves on beneath the stream, membership is
-    /// re-established at the new epoch before any further claim is made under it.
+    /// shards - and a stream can outlive it. When the epoch moves on beneath the stream the warrant is
+    /// re-established at the new epoch, and every shard is checked against it, since a boundary can
+    /// leave the committee holding some of the streamed shards and not others.
     async fn authorise_tip(&mut self, shard: Shard) -> Result<Epoch, RpcStatus> {
         let epoch = self.consensus.current_epoch();
-        let Some(authorised_at) = self.tip_authorised_at else {
+        let Some(mut authority) = self.tip_authority.as_ref() else {
             return Ok(epoch);
         };
 
@@ -288,15 +317,16 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
             return Err(RpcStatus::general(ConsensusHandle::CANNOT_SERVE_COMMITTED_STATE));
         }
 
-        if epoch != authorised_at {
+        if authority.is_stale_at(epoch) {
             let committee_info = self
                 .epoch_manager
                 .get_local_committee_info(epoch)
                 .await
                 .map_err(RpcStatus::log_internal_error(LOG_TARGET))?;
-            ensure_shard_is_stored(shard, &committee_info)?;
-            self.tip_authorised_at = Some(epoch);
+            authority = self.tip_authority.insert(TipAuthority::new(epoch, committee_info));
         }
+
+        authority.ensure_stores(shard)?;
 
         Ok(epoch)
     }
@@ -432,6 +462,32 @@ mod tests {
     fn it_accepts_cursors_for_stored_shards_and_the_global_shard() {
         let cursors = ShardCursor::validate_all(vec![cursor(0, 1), cursor(9, 1), cursor(16, 1)]).unwrap();
         ShardCursor::ensure_all_stored(&cursors, &committee_info(9, 16)).unwrap();
+    }
+
+    #[test]
+    fn a_warrant_covers_every_shard_its_committee_stores() {
+        let authority = TipAuthority::new(Epoch(1), committee_info(9, 16));
+        authority.ensure_stores(Shard::global()).unwrap();
+        authority.ensure_stores(Shard::from_u32(9)).unwrap();
+        authority.ensure_stores(Shard::from_u32(16)).unwrap();
+    }
+
+    #[test]
+    fn a_warrant_does_not_cover_a_shard_its_epoch_dropped_from_the_group() {
+        // A boundary that shrinks the group still leaves it holding the shards the boundary is first
+        // noticed on, so every shard is measured against the committee rather than against the
+        // boundary having been handled.
+        let authority = TipAuthority::new(Epoch(2), committee_info(9, 12));
+        authority.ensure_stores(Shard::from_u32(9)).unwrap();
+        let err = authority.ensure_stores(Shard::from_u32(13)).unwrap_err();
+        assert!(err.details().contains("does not store Shard(13)"), "{err}");
+    }
+
+    #[test]
+    fn a_warrant_is_stale_once_the_epoch_moves_on() {
+        let authority = TipAuthority::new(Epoch(1), committee_info(9, 16));
+        assert!(!authority.is_stale_at(Epoch(1)));
+        assert!(authority.is_stale_at(Epoch(2)));
     }
 
     #[test]
