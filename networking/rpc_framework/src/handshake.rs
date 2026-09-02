@@ -13,10 +13,10 @@ use crate::{error::HandshakeRejectReason, framing::CanonicalFraming, proto};
 
 const LOG_TARGET: &str = "libp2p::rpc::handshake";
 
-/// How long to spend reading a refusal a peer has already sent. Long enough to decode what is
-/// buffered, short enough that a peer which failed the write for some other reason and then says
-/// nothing cannot hold up connecting.
-const REJECTION_READ_TIMEOUT: Duration = Duration::from_millis(100);
+/// How long to spend reading a refusal a peer has already sent. The frame is buffered, so this is
+/// generous for the case it exists for; the point of the bound is that a peer whose write failed for
+/// some other reason and then says nothing cannot hold up connecting for the handshake timeout.
+const REJECTION_READ_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Supported RPC protocol versions.
 /// Currently only v0 is supported
@@ -151,9 +151,8 @@ where T: AsyncRead + AsyncWrite + Unpin
 
 /// The reason a server refused a session, if `frame` is its refusal reply.
 ///
-/// Deliberately strict: a reply carrying no session result is not a refusal, and treating one as
-/// such would report an arbitrary frame that happens to decode as a reply as a refusal with an
-/// unrecognised reason.
+/// A refusal is a reply whose session result is `Rejected(true)`. A reply carrying no session
+/// result at all is not one, and neither is any other frame that happens to decode as a reply.
 pub(crate) fn decode_session_rejection(frame: &[u8]) -> Option<HandshakeRejectReason> {
     let reply = proto::RpcSessionReply::decode(frame).ok()?;
     match reply.session_result {

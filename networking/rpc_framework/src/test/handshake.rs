@@ -51,8 +51,7 @@ async fn the_client_does_not_wait_for_the_server_to_accept() {
 async fn a_frame_that_is_not_a_refusal_is_not_read_as_one() {
     let (client, server) = tokio::io::duplex(FRAME_SIZE);
 
-    // A reply-shaped frame carrying no session result. Reporting this as a refusal would put an
-    // invented reason in front of whatever really went wrong.
+    // A reply-shaped frame carrying no session result, which is not a refusal.
     let mut server_framed = framing::canonical(server.compat(), FRAME_SIZE);
     server_framed
         .send(

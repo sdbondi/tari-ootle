@@ -920,7 +920,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
             self.has_read_a_response = true;
 
             match Self::convert_to_result(resp) {
-                Ok(Ok(resp)) => {
+                Ok(resp) => {
                     let is_finished = resp.is_finished();
                     // If the consumer drops the receiver, we can stop sending responses.
                     if response_tx.is_closed() {
@@ -939,7 +939,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
                         break;
                     }
                 },
-                Ok(Err(err)) => {
+                Err(err) => {
                     debug!(target: LOG_TARGET, "Remote service returned error: {}", err);
                     if !response_tx.is_closed() {
                         let _result = response_tx.send(Err(err.clone())).await;
@@ -949,14 +949,6 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
                     }
                     break;
                 },
-                Err(err @ RpcError::ResponseIdDidNotMatchRequest { .. }) => {
-                    warn!(target: LOG_TARGET, "{}", err);
-                    // Ignore the response, this can happen when there is excessive latency. The server sends back a
-                    // reply before the deadline but it is only received after the client has timed
-                    // out
-                    continue;
-                },
-                Err(err) => return Err(err),
             }
         }
 
@@ -1034,21 +1026,20 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
         next_id
     }
 
-    fn convert_to_result(resp: proto::RpcResponse) -> Result<Result<Response<Bytes>, RpcStatus>, RpcError> {
+    fn convert_to_result(resp: proto::RpcResponse) -> Result<Response<Bytes>, RpcStatus> {
         let status = RpcStatus::from(&resp);
         if !status.is_ok() {
-            return Ok(Err(status));
+            return Err(status);
         }
         let flags = match resp.flags() {
             Ok(flags) => flags,
-            Err(e) => return Ok(Err(RpcError::ServerError(RpcServerError::ProtocolError(e)).into())),
-        };
-        let resp = Response {
-            flags,
-            payload: resp.payload.into(),
+            Err(e) => return Err(RpcError::ServerError(RpcServerError::ProtocolError(e)).into()),
         };
 
-        Ok(Ok(resp))
+        Ok(Response {
+            flags,
+            payload: resp.payload.into(),
+        })
     }
 }
 
