@@ -306,7 +306,8 @@ pub async fn spawn_services(
         validator_node_client_factory.clone(),
         substate_cache,
     )
-    .with_substate_proof_verification(config.indexer.verify_substate_proofs);
+    .with_substate_proof_verification(config.indexer.verify_substate_proofs)
+    .with_negative_cache_ttl(config.indexer.substate_cache_negative_ttl);
     #[cfg(feature = "metrics")]
     let substate_manager = substate_manager.with_metrics(metrics_registry);
 

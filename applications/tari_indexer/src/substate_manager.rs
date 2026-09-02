@@ -152,6 +152,11 @@ impl SubstateManager {
         self
     }
 
+    pub fn with_negative_cache_ttl(mut self, ttl: Duration) -> Self {
+        self.cache_manager = self.cache_manager.with_negative_cache_ttl(ttl);
+        self
+    }
+
     pub fn with_substate_proof_verification(mut self, enabled: bool) -> Self {
         self.cache_manager = self.cache_manager.with_substate_proof_verification(enabled);
         self

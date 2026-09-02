@@ -58,7 +58,7 @@ use tari_validator_node_rpc::client::{
 
 use crate::{
     error::IndexerError,
-    substate_cache::{SubstateCache, SubstateCacheEntry, SubstateCacheEntryRef},
+    substate_cache::{SubstateCache, SubstateCacheEntry, SubstateCacheEntryRef, caches_nonexistence},
 };
 
 const LOG_TARGET: &str = "tari::indexer::scanner";
@@ -66,6 +66,13 @@ const LOG_TARGET: &str = "tari::indexer::scanner";
 /// Coarse staleness backstop for everything the cache holds. Correctness rests on invalidation from
 /// the transition stream, so this bounds only the cases that stream cannot correct.
 pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(900);
+
+/// Staleness backstop for a cached `DoesNotExist`, held shorter than [`DEFAULT_CACHE_TTL`].
+///
+/// A creation retracts the entry through the transition stream, so this bounds only the case where
+/// that stream does not deliver. It is kept short because it is the one entry whose staleness a
+/// caller feels as an absence: a substate it is waiting for stays missing until this expires.
+pub const DEFAULT_NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(60);
 
 /// A store of committee-validated shard-group state merkle roots that the read path consults to
 /// avoid re-validating a served commit proof's QC chain when its root is already trusted.
@@ -102,6 +109,8 @@ pub struct CachedSubstateManager<TEpochManager, TVnClient, TSubstateCache> {
     /// invalidation, so this exists to bound how long a value may be served if the transitions that
     /// would have retracted it never arrive.
     cache_ttl: Duration,
+    /// Staleness backstop for a cached `DoesNotExist`. See [`DEFAULT_NEGATIVE_CACHE_TTL`].
+    negative_cache_ttl: Duration,
     /// When set, substates fetched from a validator must come with a proof that verifies against the
     /// shard group committee, or they are rejected (fail-closed). The negative `DoesNotExist` case
     /// is not provable and is left to the existing f+1 agreement.
@@ -132,6 +141,7 @@ where
             validator_node_client_factory,
             substate_cache,
             cache_ttl: DEFAULT_CACHE_TTL,
+            negative_cache_ttl: DEFAULT_NEGATIVE_CACHE_TTL,
             verify_substate_proofs: false,
             trusted_root_store: None,
             #[cfg(feature = "metrics")]
@@ -141,6 +151,11 @@ where
 
     pub fn with_cache_ttl(mut self, ttl: Duration) -> Self {
         self.cache_ttl = ttl;
+        self
+    }
+
+    pub fn with_negative_cache_ttl(mut self, ttl: Duration) -> Self {
+        self.negative_cache_ttl = ttl;
         self
     }
 
@@ -177,14 +192,22 @@ where
         debug!(target: LOG_TARGET, "get_substate: {}v{}", substate_id, specific_version.display());
         let cache_res = self.substate_cache.read(substate_id, specific_version).await?;
         if let Some(entry) = cache_res {
-            // An unverified entry (e.g. written by the batch path or before verification was
-            // enabled) is never served while verification is on: refetch so it can be replaced with
-            // a proven copy.
-            if entry.verified || !self.verify_substate_proofs {
+            // Absence has nothing to prove against the state tree, so a cached nonexistence is never
+            // verified and gating it on a proof would mean never serving one. Its evidence is the
+            // f+1 agreement that produced it. Every other entry that is unverified (e.g. written by
+            // the batch path or before verification was enabled) is refetched while verification is
+            // on, so it can be replaced with a proven copy.
+            let is_nonexistence = matches!(entry.substate_result, SubstateResult::DoesNotExist);
+            if is_nonexistence || entry.verified || !self.verify_substate_proofs {
+                let ttl = if is_nonexistence {
+                    self.negative_cache_ttl
+                } else {
+                    self.cache_ttl
+                };
                 let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_secs();
                 let age = now.saturating_sub(entry.cached_at);
-                if age <= self.cache_ttl.as_secs() {
-                    debug!(target: LOG_TARGET, "Substate cache hit for {} with version {}", substate_id, entry.version);
+                if age <= ttl.as_secs() {
+                    debug!(target: LOG_TARGET, "Substate cache hit for {} with version {}", substate_id, entry.version.display());
                     #[cfg(feature = "metrics")]
                     self.metrics.as_ref().inspect(|m| m.inc_cache_hits());
                     return Ok(SubstateLookupResult {
@@ -197,7 +220,7 @@ where
                     target: LOG_TARGET,
                     "Cached substate {} at v{} has aged out ({}s). Fetching from committee.",
                     substate_id,
-                    entry.version,
+                    entry.version.display(),
                     age,
                 );
             }
@@ -213,15 +236,26 @@ where
             .fetch_substate_from_committee(substate_id, specific_version)
             .await?;
 
-        if let (Some(watermark), Some(version)) = (watermark, lookup_result.result.version()) {
+        if let Some(watermark) = watermark {
             // The cache holds each substate's head version. A live version is always the head, and a
             // lookup that named no version answers with the head; a named version that came back down
             // says only that the head is higher.
-            let is_head = specific_version.is_none() || lookup_result.result.up().is_some();
+            let is_head = match &lookup_result.result {
+                SubstateResult::Up { .. } => true,
+                SubstateResult::Down { .. } => specific_version.is_none(),
+                // Having no live version is as much a statement about the head as naming one, but
+                // only for the substates whose nonexistence the stream is able to retract.
+                SubstateResult::DoesNotExist => specific_version.is_none() && caches_nonexistence(substate_id),
+            };
             // Unverified results are not cached while verification is on, so the next read retries
-            // for a proven copy instead of pinning the unverified value.
-            if is_head && (lookup_result.verified || !self.verify_substate_proofs) {
-                debug!(target: LOG_TARGET, "Updating cached substate {} with version {}", substate_id, version);
+            // for a proven copy instead of pinning the unverified value. Nonexistence is exempt: it
+            // has no proof to wait for.
+            let admissible = lookup_result.verified ||
+                !self.verify_substate_proofs ||
+                matches!(lookup_result.result, SubstateResult::DoesNotExist);
+            if is_head && admissible {
+                let version = lookup_result.result.version();
+                debug!(target: LOG_TARGET, "Updating cached substate {} with version {}", substate_id, version.display());
                 let entry = SubstateCacheEntryRef {
                     version,
                     substate_result: &lookup_result.result,
@@ -317,7 +351,7 @@ where
                         };
                         // The batch RPC does not carry proofs, so these entries are always unverified.
                         let entry = SubstateCacheEntryRef {
-                            version: substate.version(),
+                            version: Some(substate.version()),
                             substate_result: &substate_result,
                             cached_at: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_secs(),
                             verified: false,

@@ -32,6 +32,7 @@ use tari_common::{
     configuration::{CommonConfig, serializers},
 };
 use tari_crypto::ristretto::RistrettoPublicKey;
+use tari_indexer_lib::cached_substate_manager::DEFAULT_NEGATIVE_CACHE_TTL;
 use tari_ootle_app_utilities::{
     epoch_oracle_config::EpochOracleConfig,
     p2p_config::{P2pConfig, PeerSeedsConfig},
@@ -187,6 +188,15 @@ pub struct IndexerConfig {
     /// are evicted, at the cost of one validator round trip each to fetch again.
     #[serde(default = "default_substate_cache_max_entries")]
     pub substate_cache_max_entries: usize,
+    /// How long the cache serves a substate it has established does not exist. A creation retracts
+    /// that through the transition stream, so this bounds only the case where the stream does not
+    /// deliver.
+    ///
+    /// Held shorter than the other entries because it is the one a caller feels as an absence: a
+    /// substate being waited on stays missing until this expires. Set it to zero to answer every
+    /// nonexistent lookup from the committee, at `f + 1` round trips each.
+    #[serde(default = "default_substate_cache_negative_ttl", with = "serializers::seconds")]
+    pub substate_cache_negative_ttl: Duration,
     /// How many epochs past its terminal epoch a stored transaction is retained before it is pruned.
     /// A transaction's terminal epoch is the epoch it committed in once its receipt has been
     /// indexed, and its `max_epoch` — the last epoch it could still be sequenced in — until then, so
@@ -268,6 +278,10 @@ fn default_substate_cache_max_serve_lag() -> Duration {
 
 fn default_substate_cache_max_entries() -> usize {
     100_000
+}
+
+fn default_substate_cache_negative_ttl() -> Duration {
+    DEFAULT_NEGATIVE_CACHE_TTL
 }
 
 /// The subset of an indexer's configuration that is published over its API, as it affects what
@@ -414,6 +428,7 @@ impl Default for IndexerConfig {
             allow_past_protocol_activation: false,
             substate_cache_max_serve_lag: default_substate_cache_max_serve_lag(),
             substate_cache_max_entries: default_substate_cache_max_entries(),
+            substate_cache_negative_ttl: default_substate_cache_negative_ttl(),
             transaction_retention_epochs: default_transaction_retention_epochs(),
             index_gossiped_transactions: default_index_gossiped_transactions(),
             max_transaction_gossip_queue_bytes: default_max_transaction_gossip_queue_bytes(),
