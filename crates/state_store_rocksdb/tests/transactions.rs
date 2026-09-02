@@ -425,6 +425,14 @@ mod transaction_execution_operations {
         let rec = tx.transactions_get(tx1.id()).unwrap();
         assert!(rec.is_finalized(&*tx).unwrap(), "Transaction should be finalized");
 
+        // Finalizing must not orphan the block index: block-scoped cascades and block introspection still need to
+        // reach a finalized transaction's execution through the block it was executed in.
+        let all = tx
+            .block_transaction_executions_get_all_for_block(not_committed_block.id())
+            .unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq_debug(&all[0], &exec1);
+
         let pending = tx
             .block_transaction_executions_get_pending_for_block(tx2.id(), &not_committed_block.as_leaf())
             .unwrap();

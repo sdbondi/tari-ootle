@@ -32,7 +32,7 @@ use ootle_byte_type::{ConvertFromByteType, ToByteType};
 use serde_json::{self as json, json};
 use tari_base_node_client::types::BaseLayerValidatorNode;
 use tari_common_types::types::CompressedPublicKey;
-use tari_consensus::hotstuff::ConsensusCurrentState;
+use tari_consensus::{consensus_constants::ConsensusConstants, hotstuff::ConsensusCurrentState};
 use tari_consensus_types::{Decision, LeafBlock};
 use tari_crypto::{ristretto::RistrettoPublicKey, tari_utilities::ByteArray};
 use tari_epoch_manager::{EpochManagerReader, service::EpochManagerHandle, traits::LayerOneTransactionSubmitter};
@@ -410,6 +410,7 @@ impl JsonRpcHandlers {
         let res = GetBlockResponse {
             block,
             total_wasm_execution_points,
+            max_block_execution_points: ConsensusConstants::from(self.config.network).max_block_execution_points,
         };
         Ok(JsonRpcResponse::success(answer_id, res))
     }

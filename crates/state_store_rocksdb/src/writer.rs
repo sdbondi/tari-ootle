@@ -670,8 +670,6 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
 
         let finalized_cf = self.db().cf(FinalizedTransactionLinkCf)?;
         let epoch_index_cf = self.db().cf(finalized_transaction::EpochIndex)?;
-        let exec_query = self.db().cf(block_transaction_execution::ByTransactionIdQuery)?;
-        let exec_index_cf = self.db().cf(block_transaction_execution::BlockIndex)?;
 
         let iter = transactions.into_iter();
         // Add transactions to finalized CF
@@ -690,13 +688,6 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
             }
             finalized_cf.put(transaction.id(), &data, OPERATION)?;
             epoch_index_cf.put(&(epoch, *transaction.id()), &(), OPERATION)?;
-
-            // Delete from block index which is used for querying pending executions
-            let iter = exec_query.query_prefix_range_key_iterator(Ordering::default(), transaction.id());
-            for result in iter {
-                let (tx_id, block_id, height) = result?;
-                exec_index_cf.delete(&(block_id, tx_id, height), OPERATION)?;
-            }
         }
 
         Ok(())
@@ -723,8 +714,6 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         for result in iter {
             let (tx_id, block_id, height) = result?;
             exec_cf.delete(&(tx_id, block_id, height), OPERATION)?;
-            // The block index entry is removed at finalize, but executions recorded by proposals
-            // still in flight at that point may have index entries remaining.
             exec_index_cf.delete(&(block_id, tx_id, height), OPERATION)?;
         }
 

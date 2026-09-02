@@ -54,6 +54,19 @@ const COMMANDS = [
 
 type OtherCommands = Record<string, Array<any>>;
 
+function formatExecutionPoints(points: bigint, max: bigint): string {
+  const value = Number(points);
+  const budget = Number(max);
+  const absolute = value.toLocaleString();
+  if (!budget) {
+    return absolute;
+  }
+  const percent = (value / budget) * 100;
+  // Sub-0.01% blocks are the common case on a quiet network, so show enough precision to distinguish them from empty.
+  const formatted = percent > 0 && percent < 0.01 ? "<0.01" : percent.toFixed(2);
+  return `${absolute} (${formatted}% of ${budget.toLocaleString()})`;
+}
+
 export default function BlockDetails() {
   const { blockId } = useParams();
   const [expandedPanels, setExpandedPanels] = useState<string[]>([]);
@@ -68,6 +81,7 @@ export default function BlockDetails() {
   const [identity, setIdentity] = useState<VNGetIdentityResponse>();
   const [blockTime, setBlockTime] = useState<number>(0);
   const [wasmPoints, setWasmPoints] = useState<bigint>(0n);
+  const [maxExecutionPoints, setMaxExecutionPoints] = useState<bigint>(0n);
   const [foreignProposals, setForeignProposals] = useState<ForeignProposalAtom[]>([]);
 
   useEffect(() => {
@@ -77,6 +91,7 @@ export default function BlockDetails() {
           setIdentity(identity);
           setBlock(resp.block);
           setWasmPoints(resp.total_wasm_execution_points);
+          setMaxExecutionPoints(resp.max_block_execution_points);
           getBlock({ block_id: resp.block.header.parent }).then((justify_block) => {
             if (resp.block.stored_at && justify_block.block.stored_at) {
               let blockTime = resp.block.block_time || 0;
@@ -208,9 +223,9 @@ export default function BlockDetails() {
                             </DataTableCell>
                           </TableRow>
                           <TableRow>
-                            <TableCell title="Total WASM metering points consumed by transactions executed for this block">WASM
+                            <TableCell title="Total WASM metering points consumed by transactions executed for this block, and how much of the per-block execution budget they take up">WASM
                               Points</TableCell>
-                            <DataTableCell>{wasmPoints.toString()}</DataTableCell>
+                            <DataTableCell>{formatExecutionPoints(wasmPoints, maxExecutionPoints)}</DataTableCell>
                           </TableRow>
                           <TableRow>
                             <TableCell>Status</TableCell>

@@ -4,8 +4,12 @@ import type { Block } from "../Block";
 export type GetBlockResponse = {
   block: Block;
   /**
-   * Total WASM metering points consumed by transactions executed for this block (the per-block budget is
-   * enforced against this sum).
+   * Total WASM metering points consumed by transactions executed for this block.
    */
   total_wasm_execution_points: bigint;
+  /**
+   * The per-block execution points budget a leader packs against, so the points above can be reported as a
+   * proportion of a full block.
+   */
+  max_block_execution_points: bigint;
 };

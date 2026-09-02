@@ -45,6 +45,10 @@ prefixed!(
     KeyPrefix::BlockTransactionExecutionByBlockIdIndex
 );
 
+/// Reverse index of [`BlockTransactionExecutionCf`] by the block the execution was recorded against.
+///
+/// An entry exists for exactly as long as its execution row, so executions stay queryable by block after
+/// the transaction finalizes — block-scoped cascades and block introspection both depend on this.
 pub struct BlockIndex;
 
 impl Cf for BlockIndex {
