@@ -32,6 +32,10 @@
 /// This can be thought of as the hard limit on message size.
 pub const RPC_MAX_FRAME_SIZE: usize = 6 * 1024 * 1024; // 6 MiB
 
+/// The shortest keepalive interval a server serves unless configured otherwise, and the interval a
+/// client assumes a peer may clamp up to when it asks for a shorter one.
+pub const DEFAULT_MINIMUM_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// The maximum request payload size
 const fn max_request_size() -> usize {
     RPC_MAX_FRAME_SIZE

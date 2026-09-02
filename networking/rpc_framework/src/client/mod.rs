@@ -316,6 +316,9 @@ pub struct RpcClientConfig {
     pub deadline: Option<Duration>,
     pub deadline_grace_period: Duration,
     pub keepalive_interval: Option<Duration>,
+    /// The shortest keepalive interval to assume a peer may serve, whatever this client asks for.
+    /// Set it to the peer's own minimum where that is known to differ from the framework default.
+    pub minimum_keepalive_interval: Duration,
     pub handshake_timeout: Duration,
 }
 
@@ -330,12 +333,17 @@ impl RpcClientConfig {
         self.handshake_timeout
     }
 
-    /// The longest gap between frames tolerated of a peer that was asked for keepalives. Several
-    /// intervals plus the grace period, because the peer MAY serve a longer interval than it was
-    /// asked for and does not report which it chose.
+    /// The longest gap between frames tolerated of a peer that was asked for keepalives: several
+    /// of the longest interval the peer might be serving, plus the grace period.
+    ///
+    /// The peer raises an interval shorter than its own minimum to that minimum and does not report
+    /// the interval it settled on, so asking for a short one says nothing about how often frames
+    /// actually arrive. `minimum_keepalive_interval` is what the client assumes about that.
     fn keepalive_timeout(&self) -> Option<Duration> {
-        self.keepalive_interval
-            .map(|interval| interval * MISSED_KEEPALIVES_BEFORE_TIMEOUT + self.deadline_grace_period)
+        self.keepalive_interval.map(|interval| {
+            cmp::max(interval, self.minimum_keepalive_interval) * MISSED_KEEPALIVES_BEFORE_TIMEOUT +
+                self.deadline_grace_period
+        })
     }
 }
 
@@ -345,6 +353,7 @@ impl Default for RpcClientConfig {
             deadline: Some(Duration::from_secs(120)),
             deadline_grace_period: Duration::from_secs(60),
             keepalive_interval: None,
+            minimum_keepalive_interval: crate::DEFAULT_MINIMUM_KEEPALIVE_INTERVAL,
             handshake_timeout: Duration::from_secs(90),
         }
     }
@@ -889,7 +898,6 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
                     return Err(err);
                 },
             };
-            deadline_at = config.deadline.map(|d| Instant::now() + d);
 
             match Self::convert_to_result(resp) {
                 Ok(Ok(resp)) => {
@@ -901,6 +909,11 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
                     } else {
                         let _result = response_tx.send(Ok(resp)).await;
                     }
+                    // The peer starts the next budget once it has handed the message off, and a slow
+                    // consumer holds the send above. Starting ours on receipt instead would spend
+                    // that time out of the budget and abandon a response the peer still considers
+                    // live.
+                    deadline_at = config.deadline.map(|d| Instant::now() + d);
                     if is_finished {
                         break;
                     }
@@ -1597,6 +1610,7 @@ mod keepalive_tests {
         let config = RpcClientConfig {
             deadline: Some(Duration::from_secs(60)),
             deadline_grace_period: Duration::from_millis(300),
+            minimum_keepalive_interval: Duration::from_millis(100),
             ..Default::default()
         };
         let mut rpc_client = RpcClient::connect(
@@ -1634,6 +1648,98 @@ mod keepalive_tests {
         assert!(
             elapsed < Duration::from_secs(3),
             "expected the missed keepalives to end the stream, took {elapsed:.2?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_slow_consumer_does_not_spend_the_next_message_s_deadline() {
+        const NUM_MESSAGES: usize = 6;
+        let (server, client) = tokio::io::duplex(RPC_MAX_FRAME_SIZE);
+        let reply = proto::RpcSession {
+            supported_versions: vec![7],
+        };
+        let message: Bytes = reply.encode_to_vec().into();
+        let server = tokio::spawn(async move {
+            let mut framed = framing::canonical(server.compat(), RPC_MAX_FRAME_SIZE);
+            let request = read_request(&mut framed).await;
+            for _ in 0..NUM_MESSAGES {
+                send_response(&mut framed, RpcResponse {
+                    request_id: request.request_id,
+                    status: RpcStatusCode::Ok,
+                    flags: RpcMessageFlags::empty(),
+                    payload: message.clone(),
+                })
+                .await;
+            }
+            // Quiet for longer than the grace period but well inside the deadline, which the peer
+            // only starts counting once it has sent the message above.
+            time::sleep(Duration::from_millis(1500)).await;
+            send_response(&mut framed, RpcResponse {
+                request_id: request.request_id,
+                status: RpcStatusCode::Ok,
+                flags: RpcMessageFlags::FIN,
+                payload: Bytes::new(),
+            })
+            .await;
+        });
+
+        let config = RpcClientConfig {
+            deadline: Some(Duration::from_secs(1)),
+            deadline_grace_period: Duration::from_millis(200),
+            ..Default::default()
+        };
+        let mut rpc_client = RpcClient::connect(
+            config,
+            PeerId::random(),
+            framing::canonical(client.compat(), RPC_MAX_FRAME_SIZE),
+            StreamProtocol::new(PROTOCOL),
+        )
+        .await
+        .unwrap();
+
+        let mut stream = rpc_client
+            .server_streaming::<_, _, proto::RpcSession>(proto::RpcSession::default(), 1u32)
+            .await
+            .unwrap();
+
+        // Read nothing for long enough to fill the response channel and block the worker mid-send.
+        time::sleep(Duration::from_secs(1)).await;
+        let mut received = Vec::new();
+        while let Some(item) = stream.next().await {
+            received.push(item);
+        }
+
+        server.await.unwrap();
+        assert_eq!(received.len(), NUM_MESSAGES);
+        assert!(
+            received.iter().all(Result::is_ok),
+            "a stalled consumer cost the stream its deadline: {received:?}"
+        );
+    }
+
+    #[test]
+    fn the_keepalive_tolerance_covers_a_peer_serving_its_own_minimum() {
+        let config = RpcClientConfig {
+            keepalive_interval: Some(Duration::from_secs(1)),
+            deadline_grace_period: Duration::from_secs(2),
+            ..Default::default()
+        };
+        // Asking for 1s tolerates a peer that raised it to the 5s default minimum.
+        assert_eq!(config.keepalive_timeout(), Some(Duration::from_secs(17)));
+
+        let config = RpcClientConfig {
+            keepalive_interval: Some(Duration::from_secs(30)),
+            ..config
+        };
+        assert_eq!(config.keepalive_timeout(), Some(Duration::from_secs(92)));
+
+        assert_eq!(
+            RpcClientConfig {
+                keepalive_interval: None,
+                ..config
+            }
+            .keepalive_timeout(),
+            None
         );
     }
 

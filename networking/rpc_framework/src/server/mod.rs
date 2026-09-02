@@ -227,7 +227,7 @@ impl Default for RpcServerBuilder {
             maximum_simultaneous_sessions: None,
             maximum_sessions_per_client: None,
             minimum_client_deadline: Duration::from_secs(1),
-            minimum_keepalive_interval: Duration::from_secs(5),
+            minimum_keepalive_interval: crate::DEFAULT_MINIMUM_KEEPALIVE_INTERVAL,
             handshake_timeout: Duration::from_secs(15),
         }
     }
