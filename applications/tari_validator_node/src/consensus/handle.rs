@@ -17,6 +17,9 @@ pub struct ConsensusHandle {
 }
 
 impl ConsensusHandle {
+    /// The status returned to a peer when [`ConsensusHandle::can_serve_committed_state`] is false.
+    pub const CANNOT_SERVE_COMMITTED_STATE: &'static str = "Consensus is not running on this node";
+
     pub(super) fn new(
         rx_current_state: watch::Receiver<ConsensusCurrentState>,
         events_subscription: EventSubscription<HotstuffEvent>,

@@ -28,3 +28,43 @@ pub enum NetworkStateSyncError {
     #[error("Invariant error: {details}. This indicates a bug in the code, please report it.")]
     InvariantError { details: String },
 }
+
+impl NetworkStateSyncError {
+    /// True if this failure is attributable to the peer or the stream rather than to local state, so
+    /// the shards it covers can be left for another round while the rest of the sync proceeds.
+    pub fn is_peer_fault(&self) -> bool {
+        matches!(
+            self,
+            Self::RequestFailed(_) |
+                Self::RpcError(_) |
+                Self::InvalidStateUpdate { .. } |
+                Self::InvalidCommitProof { .. } |
+                Self::ValidatorCommitteeClientError(_)
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_local_failure_is_not_attributed_to_the_peer() {
+        // Aborting the round is the right response to local state being broken, so these must never be
+        // skipped past.
+        assert!(
+            !NetworkStateSyncError::StorageError(StorageError::NotFound {
+                item: "substate",
+                key: String::new(),
+            })
+            .is_peer_fault()
+        );
+        assert!(!NetworkStateSyncError::InvariantError { details: String::new() }.is_peer_fault());
+    }
+
+    #[test]
+    fn a_rejection_by_the_peer_is_attributed_to_the_peer() {
+        assert!(NetworkStateSyncError::RequestFailed(RpcStatus::bad_request("nope")).is_peer_fault());
+        assert!(NetworkStateSyncError::InvalidStateUpdate { details: String::new() }.is_peer_fault());
+    }
+}

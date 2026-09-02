@@ -4,8 +4,9 @@
 use std::num::NonZeroUsize;
 
 use log::*;
+use tari_epoch_manager::{EpochManagerReader, service::EpochManagerHandle};
 use tari_ootle_common_types::{Epoch, NumPreshards, committee::CommitteeInfo, optional::Optional, shard::Shard};
-use tari_ootle_p2p::proto::rpc;
+use tari_ootle_p2p::{PeerAddress, proto::rpc};
 use tari_ootle_storage::{
     StateStore,
     StateStoreReadTransaction,
@@ -74,17 +75,24 @@ impl ShardCursor {
         Ok(validated)
     }
 
-    /// Rejects any cursor for a shard that `committee_info` does not cover. Every committee holds the
-    /// global shard, so a cursor for it is always in range.
+    /// Rejects any cursor for a shard that `committee_info` does not cover.
     pub fn ensure_all_stored(cursors: &[Self], committee_info: &CommitteeInfo) -> Result<(), RpcStatus> {
-        let shard_group = committee_info.shard_group();
-        match cursors.iter().find(|c| !shard_group.contains_or_global(&c.shard)) {
-            Some(cursor) => Err(RpcStatus::bad_request(format!(
-                "This node in {shard_group} does not store {}",
-                cursor.shard
-            ))),
-            None => Ok(()),
-        }
+        cursors
+            .iter()
+            .try_for_each(|cursor| ensure_shard_is_stored(cursor.shard, committee_info))
+    }
+}
+
+/// Rejects a shard that `committee_info` does not cover. Every committee holds the global shard, so it
+/// is always in range.
+fn ensure_shard_is_stored(shard: Shard, committee_info: &CommitteeInfo) -> Result<(), RpcStatus> {
+    let shard_group = committee_info.shard_group();
+    if shard_group.contains_or_global(&shard) {
+        Ok(())
+    } else {
+        Err(RpcStatus::bad_request(format!(
+            "This node in {shard_group} does not store {shard}"
+        )))
     }
 }
 
@@ -94,6 +102,10 @@ pub struct StateSyncTask<TStateStore: StateStore> {
     cursors: Vec<ShardCursor>,
     end_epoch: Option<Epoch>,
     consensus: ConsensusHandle,
+    epoch_manager: EpochManagerHandle<PeerAddress>,
+    /// The epoch whose committee was checked to store the requested shards, for a stream that claims
+    /// to serve this node's tip. `None` for a bounded stream, which makes no such claim.
+    tip_authorised_at: Option<Epoch>,
     batch_size: NonZeroUsize,
     value_filters: SubstateValueFilterFlags,
 }
@@ -105,6 +117,8 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
         cursors: Vec<ShardCursor>,
         end_epoch: Option<Epoch>,
         consensus: ConsensusHandle,
+        epoch_manager: EpochManagerHandle<PeerAddress>,
+        tip_authorised_at: Option<Epoch>,
         batch_size: NonZeroUsize,
         value_filters: SubstateValueFilterFlags,
     ) -> Self {
@@ -114,6 +128,8 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
             cursors,
             end_epoch,
             consensus,
+            epoch_manager,
+            tip_authorised_at,
             batch_size,
             value_filters,
         }
@@ -217,9 +233,9 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
     /// For a bounded request the consumer verifies against its own checkpoint, so the reported version is
     /// just our last streamed version - the consumer does not trust it as the sync target.
     ///
-    /// The marker asserts that the caller is level with this node as of the epoch it names. A stream can
-    /// outlive the epoch it opened in, and can outlive this node's standing to make that claim, so both
-    /// the epoch and that standing are established at send time.
+    /// The marker asserts that the caller is level with this node as of the epoch it names, so its epoch
+    /// and this node's standing to make that claim are one fact, established together at send time by
+    /// `authorise_tip`.
     async fn send_complete(
         &mut self,
         cursor: &ShardCursor,
@@ -227,11 +243,13 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
         last_sent_version: Option<Version>,
         is_final: bool,
     ) -> Result<(), ()> {
-        if !self.consensus.can_serve_committed_state() {
-            self.send(Err(RpcStatus::general("Consensus is not running on this node")))
-                .await?;
-            return Err(());
-        }
+        let epoch = match self.authorise_tip(cursor.shard).await {
+            Ok(epoch) => epoch,
+            Err(status) => {
+                self.send(Err(status)).await?;
+                return Err(());
+            },
+        };
 
         let synced_to_version = match tip_at_start {
             // Unbounded: advance to the committed tip, but never past a version we actually streamed.
@@ -243,12 +261,44 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
         self.send(Ok(rpc::SyncStateResponse {
             response: Some(rpc::sync_state_response::Response::Complete(rpc::SyncComplete {
                 synced_to_version,
-                epoch: Some(self.consensus.current_epoch().into()),
+                epoch: Some(epoch.into()),
                 shard: cursor.shard.as_u32(),
                 is_final,
             })),
         }))
         .await
+    }
+
+    /// Establishes this node's standing to tell the caller that it is level with the committee for
+    /// `shard`, and returns the epoch that claim is made as of.
+    ///
+    /// Only an unbounded stream makes the claim: a bounded stream is answered out of history, which the
+    /// caller verifies against its own checkpoint, so it needs nothing of this node's present standing.
+    ///
+    /// The claim is anchored to a single epoch - the one whose committee was checked to store these
+    /// shards - and a stream can outlive it. When the epoch moves on beneath the stream, membership is
+    /// re-established at the new epoch before any further claim is made under it.
+    async fn authorise_tip(&mut self, shard: Shard) -> Result<Epoch, RpcStatus> {
+        let epoch = self.consensus.current_epoch();
+        let Some(authorised_at) = self.tip_authorised_at else {
+            return Ok(epoch);
+        };
+
+        if !self.consensus.can_serve_committed_state() {
+            return Err(RpcStatus::general(ConsensusHandle::CANNOT_SERVE_COMMITTED_STATE));
+        }
+
+        if epoch != authorised_at {
+            let committee_info = self
+                .epoch_manager
+                .get_local_committee_info(epoch)
+                .await
+                .map_err(RpcStatus::log_internal_error(LOG_TARGET))?;
+            ensure_shard_is_stored(shard, &committee_info)?;
+            self.tip_authorised_at = Some(epoch);
+        }
+
+        Ok(epoch)
     }
 
     fn fetch_next_batch(
@@ -380,14 +430,14 @@ mod tests {
 
     #[test]
     fn it_accepts_cursors_for_stored_shards_and_the_global_shard() {
-        let cursors = ShardCursor::validate_all(vec![cursor(0, 1), cursor(8, 1), cursor(15, 1)]).unwrap();
-        ShardCursor::ensure_all_stored(&cursors, &committee_info(8, 15)).unwrap();
+        let cursors = ShardCursor::validate_all(vec![cursor(0, 1), cursor(9, 1), cursor(16, 1)]).unwrap();
+        ShardCursor::ensure_all_stored(&cursors, &committee_info(9, 16)).unwrap();
     }
 
     #[test]
     fn it_rejects_a_cursor_for_a_shard_this_node_does_not_store() {
-        let cursors = ShardCursor::validate_all(vec![cursor(8, 1), cursor(16, 1)]).unwrap();
-        let err = ShardCursor::ensure_all_stored(&cursors, &committee_info(8, 15)).unwrap_err();
-        assert!(err.details().contains("does not store Shard(16)"), "{err}");
+        let cursors = ShardCursor::validate_all(vec![cursor(9, 1), cursor(17, 1)]).unwrap();
+        let err = ShardCursor::ensure_all_stored(&cursors, &committee_info(9, 16)).unwrap_err();
+        assert!(err.details().contains("does not store Shard(17)"), "{err}");
     }
 }

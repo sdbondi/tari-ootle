@@ -125,7 +125,7 @@ impl<TStateStore: StateStore> ValidatorNodeRpcServiceImpl<TStateStore> {
         if self.consensus.can_serve_committed_state() {
             Ok(())
         } else {
-            Err(RpcStatus::general("Consensus is not running on this node"))
+            Err(RpcStatus::general(ConsensusHandle::CANNOT_SERVE_COMMITTED_STATE))
         }
     }
 
@@ -487,19 +487,23 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
         // them and streams silence, which the caller cannot tell apart from being caught up. A bounded
         // request is answered out of history and the caller checks it against a quorum-signed
         // checkpoint, so any node still holding that history may serve it.
-        if end_epoch.is_none() {
-            let current_epoch = self
-                .epoch_manager
-                .current_epoch()
-                .await
-                .map_err(RpcStatus::log_internal_error(LOG_TARGET))?;
+        //
+        // Membership is resolved at the epoch consensus is in, which is what governs the transitions
+        // this node receives, and can lag the epoch reached by scanning the base layer. The completion
+        // marker names the epoch its claim is made as of, so the claim and the marker must be anchored
+        // to the same one.
+        let tip_authorised_at = if end_epoch.is_none() {
+            let epoch = self.consensus.current_epoch();
             let local_committee_info = self
                 .epoch_manager
-                .get_local_committee_info(current_epoch)
+                .get_local_committee_info(epoch)
                 .await
                 .map_err(RpcStatus::log_internal_error(LOG_TARGET))?;
             ShardCursor::ensure_all_stored(&cursors, &local_committee_info)?;
-        }
+            Some(epoch)
+        } else {
+            None
+        };
 
         let value_filter_flags = SubstateValueFilterFlags::from_bits_truncate(req.value_filters);
         if value_filter_flags.is_empty() {
@@ -525,6 +529,8 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
                 cursors,
                 end_epoch,
                 self.consensus.clone(),
+                self.epoch_manager.clone(),
+                tip_authorised_at,
                 STATE_SYNC_MAX_BATCH_SIZE
                     .try_into()
                     .expect("STATE_SYNC_MAX_BATCH_SIZE is not zero"),
