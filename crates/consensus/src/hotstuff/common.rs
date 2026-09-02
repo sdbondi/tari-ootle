@@ -438,6 +438,11 @@ pub(crate) fn get_highest_seen_justified_view<TTx: StateStoreReadTransaction>(
     Ok(high_pc.max(high_tc))
 }
 
+/// Records the prepare/accept evidence for the commands in `new_leaf_block` and its not-yet-justified ancestors,
+/// now that `justify_id` justifies them, and marks any transaction that this completes as ready to propose.
+///
+/// The updates are written to `change_set`, which only ever applies to the branch its block is on, so every branch
+/// that justifies `new_leaf_block` must call this for itself.
 #[allow(clippy::too_many_lines)]
 pub fn process_newly_justified_block<TTx: StateStoreReadTransaction>(
     tx: &TTx,
@@ -488,11 +493,14 @@ pub fn process_newly_justified_block<TTx: StateStoreReadTransaction>(
                 .get_transaction_pool_record(tx, new_leaf_block, atom.id())
                 .optional()?
             else {
-                return Err(HotStuffError::InvariantError(format!(
-                    "Transaction {} in newly justified block {} not found in the pool",
+                // A transaction that has left the pool has been finalized, so it has no evidence left to update.
+                debug!(
+                    target: LOG_TARGET,
+                    "Transaction {} in newly justified block {} is no longer in the pool",
                     atom.id(),
                     new_leaf_block,
-                )));
+                );
+                continue;
             };
 
             if cmd.is_local_prepare() {
@@ -539,11 +547,6 @@ pub fn process_newly_justified_block<TTx: StateStoreReadTransaction>(
 
         timer.with_iterations(num_applicable_commands);
         Ok(())
-    }
-
-    // Nothing to do if the block has been marked as justified
-    if new_leaf_block.justify_qc_id() == Some(justify_id) {
-        return Ok(vec![]);
     }
 
     // Update the pending transaction pool state for the chain of newly justified blocks.

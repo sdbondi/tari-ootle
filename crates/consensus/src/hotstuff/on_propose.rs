@@ -441,10 +441,8 @@ where TConsensusSpec: ConsensusSpec
             // Add all (ABORT) executions that may have resulted from foreign proposals
             executed_transactions.extend(change_set.take_all_transaction_executions());
 
-            if !justify_block.has_justify_qc() {
-                // TODO: we dont need to process transactions here that are not in the batch
-                process_newly_justified_block(tx, &justify_block, high_qc_id, local_committee_info, &mut change_set)?;
-            }
+            // TODO: we dont need to process transactions here that are not in the batch
+            process_newly_justified_block(tx, &justify_block, high_qc_id, local_committee_info, &mut change_set)?;
         }
 
         let locked_epoch = LockedEpoch::new(

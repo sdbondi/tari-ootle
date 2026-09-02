@@ -154,18 +154,15 @@ where TConsensusSpec: ConsensusSpec
         // Process newly justified block
         let mut justified_block = Block::get_justified_block(&**tx, valid_block.justify(), valid_block.epoch())?;
         // This comes before decide so that all evidence can be in place before LocalPrepare and LocalAccept
-        if !justified_block.has_justify_qc() {
-            // We need to process this before to ensure that we have the latest state when checking the new block
-            let processed_blocks =
-                process_newly_justified_block(&**tx, &justified_block, block_qc_id, local_committee_info, change_set)?;
-            for mut block in processed_blocks {
-                block.add_justify_qc(tx, &block_qc_id)?;
-            }
-            justified_block.add_justify_qc(tx, &block_qc_id)?;
-            // Even if we do not yet see the next epoch (e.g. race condition), if a majority have, we allow the
-            // epoch end to be proposed.
-            can_propose_epoch_end |= justified_block.is_epoch_end();
+        let processed_blocks =
+            process_newly_justified_block(&**tx, &justified_block, block_qc_id, local_committee_info, change_set)?;
+        for mut block in processed_blocks {
+            block.add_justify_qc(tx, &block_qc_id)?;
         }
+        justified_block.add_justify_qc(tx, &block_qc_id)?;
+        // Even if we do not yet see the next epoch (e.g. race condition), if a majority have, we allow the
+        // epoch end to be proposed.
+        can_propose_epoch_end |= justified_block.is_epoch_end();
 
         if self.should_vote(&**tx, valid_block.block())? {
             let parent = valid_block.block().get_parent(&**tx)?;
