@@ -118,8 +118,12 @@ function BlockWeightCell({ weight, max }: { weight: bigint; max: bigint }) {
       tooltip={
         <>
           <div>
-            {Number(weight).toLocaleString()} of the {Number(max).toLocaleString()} command weight a leader packs a
-            block against
+            {Number(weight).toLocaleString()} of the {Number(max).toLocaleString()} execution weight a replica will
+            vote for
+          </div>
+          <div>
+            Transaction commands only — foreign proposals and evictions carry no execution weight, though they do
+            consume the lower budget a leader packs against.
           </div>
           <div>
             Weight stands in for the size, IO and storage cost that metering does not see, so for ordinary traffic
@@ -160,8 +164,8 @@ export default function BlockDetails() {
           setWasmPoints(resp.total_wasm_execution_points);
           setNativePoints(resp.total_native_execution_points);
           setMaxExecutionPoints(resp.max_block_execution_points);
-          setBlockWeight(resp.total_transaction_weight);
-          setMaxBlockWeight(resp.max_block_weight);
+          setBlockWeight(resp.total_block_execution_weight);
+          setMaxBlockWeight(resp.max_block_validation_weight);
           getBlock({ block_id: resp.block.header.parent }).then((justify_block) => {
             if (resp.block.stored_at && justify_block.block.stored_at) {
               let blockTime = resp.block.block_time || 0;
@@ -293,7 +297,7 @@ export default function BlockDetails() {
                             </DataTableCell>
                           </TableRow>
                           <TableRow>
-                            <TableCell>Block Weight</TableCell>
+                            <TableCell>Execution Weight</TableCell>
                             <DataTableCell>
                               <BlockWeightCell weight={blockWeight} max={maxBlockWeight} />
                             </DataTableCell>

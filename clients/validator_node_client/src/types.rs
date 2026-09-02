@@ -281,12 +281,14 @@ pub struct GetBlockResponse {
     /// The per-block execution points budget a leader packs against. It governs the sum of the two totals above,
     /// so only that sum is a meaningful proportion of it.
     pub max_block_execution_points: u64,
-    /// Total proposal weight of the block's transaction commands: each transaction's weight discounted by how much
-    /// of the work its command stage adds.
-    pub total_transaction_weight: u64,
-    /// The per-block weight budget a leader packs against. Weight stands in for the size and IO cost that metering
-    /// does not see, so for ordinary traffic this budget fills long before the execution points one.
-    pub max_block_weight: u64,
+    /// Total execution weight of the block's transaction commands: each transaction's weight discounted by how much
+    /// of the work its command stage adds. Foreign proposal and evict commands carry no execution weight and so
+    /// contribute nothing.
+    pub total_block_execution_weight: u64,
+    /// The execution weight a block may carry and still be voted for. Weight stands in for the size, IO and storage
+    /// cost that metering does not see, so for ordinary traffic this budget fills long before the execution points
+    /// one.
+    pub max_block_validation_weight: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

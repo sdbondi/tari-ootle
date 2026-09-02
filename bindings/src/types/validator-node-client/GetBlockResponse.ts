@@ -17,13 +17,15 @@ export type GetBlockResponse = {
    */
   max_block_execution_points: bigint;
   /**
-   * Total proposal weight of the block's transaction commands: each transaction's weight discounted by how much
-   * of the work its command stage adds.
+   * Total execution weight of the block's transaction commands: each transaction's weight discounted by how much
+   * of the work its command stage adds. Foreign proposal and evict commands carry no execution weight and so
+   * contribute nothing.
    */
-  total_transaction_weight: bigint;
+  total_block_execution_weight: bigint;
   /**
-   * The per-block weight budget a leader packs against. Weight stands in for the size and IO cost that metering
-   * does not see, so for ordinary traffic this budget fills long before the execution points one.
+   * The execution weight a block may carry and still be voted for. Weight stands in for the size, IO and storage
+   * cost that metering does not see, so for ordinary traffic this budget fills long before the execution points
+   * one.
    */
-  max_block_weight: bigint;
+  max_block_validation_weight: bigint;
 };
