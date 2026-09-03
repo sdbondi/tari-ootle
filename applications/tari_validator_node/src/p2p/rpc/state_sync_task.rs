@@ -4,6 +4,7 @@
 use std::num::NonZeroUsize;
 
 use log::*;
+use tari_consensus::hotstuff::HotstuffEvent;
 use tari_epoch_manager::{EpochManagerReader, service::EpochManagerHandle};
 use tari_ootle_common_types::{Epoch, NumPreshards, committee::CommitteeInfo, optional::Optional, shard::Shard};
 use tari_ootle_p2p::{PeerAddress, proto::rpc};
@@ -15,7 +16,7 @@ use tari_ootle_storage::{
 };
 use tari_rpc_framework::RpcStatus;
 use tari_state_tree::Version;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 use crate::{consensus::ConsensusHandle, p2p::rpc::CONSENSUS_NOT_RUNNING};
 
@@ -134,6 +135,8 @@ pub struct StateSyncTask<TStateStore: StateStore> {
     /// This node's warrant to serve its tip, for a stream that claims to. `None` for a bounded stream,
     /// which makes no such claim.
     tip_authority: Option<TipAuthority>,
+    /// Whether to hold the stream open at the tip and keep streaming as this node commits.
+    follow: bool,
     batch_size: NonZeroUsize,
     value_filters: SubstateValueFilterFlags,
 }
@@ -147,6 +150,7 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
         consensus: ConsensusHandle,
         epoch_manager: EpochManagerHandle<PeerAddress>,
         tip_authority: Option<TipAuthority>,
+        follow: bool,
         batch_size: NonZeroUsize,
         value_filters: SubstateValueFilterFlags,
     ) -> Self {
@@ -158,6 +162,7 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
             consensus,
             epoch_manager,
             tip_authority,
+            follow,
             batch_size,
             value_filters,
         }
@@ -166,7 +171,7 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
     pub async fn run(mut self) -> Result<(), ()> {
         // Each shard's updates are streamed contiguously, in the order the caller listed them, so a
         // consumer can finalise a shard the moment its completion marker arrives.
-        let cursors = std::mem::take(&mut self.cursors);
+        let mut cursors = std::mem::take(&mut self.cursors);
         let Some(last_index) = cursors.len().checked_sub(1) else {
             // Every stream must carry a final marker, so an empty request cannot be answered with an
             // empty stream. `ShardCursor::validate_all` rejects one before it reaches here.
@@ -174,24 +179,15 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
                 .await?;
             return Err(());
         };
-        for (i, cursor) in cursors.into_iter().enumerate() {
-            self.run_for_shard(&cursor, i == last_index).await?;
-        }
-        Ok(())
-    }
 
-    async fn run_for_shard(&mut self, cursor: &ShardCursor, is_final: bool) -> Result<(), ()> {
-        let shard = cursor.shard;
-        // For an unbounded (sync-to-tip) request, snapshot the committed tree tip before scanning. The
-        // completion marker advances the client over trailing versions that stream no updates (all
-        // filtered out for its subscription). Snapshotting first ensures the marker never reports
-        // beyond what we streamed: anything committed after this point is left for the next round.
-        let tip_at_start = if self.end_epoch.is_none() {
-            match self.read_latest_tree_version(shard) {
-                Ok(version) => version,
+        // Subscribed before the catch-up so that a commit landing during it is not missed.
+        let mut events = if self.follow {
+            match self.consensus.subscribe_to_hotstuff_events() {
+                Ok(events) => Some(events),
                 Err(err) => {
-                    error!(target: LOG_TARGET, "🌍 Error reading latest tree version for {}: {}", shard, err);
-                    self.send(Err(RpcStatus::log_internal_error(LOG_TARGET)(err))).await?;
+                    error!(target: LOG_TARGET, "🌍 Failed to subscribe to consensus events: {}", err);
+                    self.send(Err(RpcStatus::general("Consensus events are unavailable")))
+                        .await?;
                     return Err(());
                 },
             }
@@ -199,6 +195,91 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
             None
         };
 
+        for (i, cursor) in cursors.iter_mut().enumerate() {
+            let is_final = events.is_none() && i == last_index;
+            self.run_for_shard(cursor, is_final).await?;
+        }
+
+        match events.as_mut() {
+            Some(events) => self.follow_tip(&mut cursors, events).await,
+            None => Ok(()),
+        }
+    }
+
+    /// Keeps streaming past the tip: each commit is followed by a pass over every cursor, and a
+    /// shard that moved is streamed and closed off with a further marker.
+    ///
+    /// The commit event is published from inside the committing transaction, so a pass may run
+    /// before the transitions it announces are visible; the next commit's pass picks them up, and
+    /// the pacemaker commits on a timer so that pass is never far off. An epoch change forces a
+    /// marker for every shard whether or not it moved: the marker re-establishes this node's
+    /// warrant at the new epoch, which is what ends the stream promptly for a shard this node no
+    /// longer stores, and tells the caller the epoch it is now level as of.
+    async fn follow_tip(
+        &mut self,
+        cursors: &mut [ShardCursor],
+        events: &mut broadcast::Receiver<HotstuffEvent>,
+    ) -> Result<(), ()> {
+        loop {
+            let force_marker = match events.recv().await {
+                Ok(HotstuffEvent::BlockCommitted { .. }) => false,
+                Ok(HotstuffEvent::EpochChanged { .. }) => true,
+                Ok(_) => continue,
+                // Dropped events are only ever commits or an epoch change, both answered by a pass.
+                Err(broadcast::error::RecvError::Lagged(_)) => true,
+                Err(broadcast::error::RecvError::Closed) => {
+                    debug!(target: LOG_TARGET, "🌍 Consensus stopped. Ending followed stream");
+                    return Ok(());
+                },
+            };
+            for cursor in cursors.iter_mut() {
+                self.follow_shard(cursor, force_marker).await?;
+            }
+        }
+    }
+
+    async fn follow_shard(&mut self, cursor: &mut ShardCursor, force_marker: bool) -> Result<(), ()> {
+        let tip_at_start = self.snapshot_tip(cursor.shard).await?;
+        let moved = tip_at_start.is_some_and(|tip| tip >= cursor.start_state_version);
+        if !moved && !force_marker {
+            return Ok(());
+        }
+        self.stream_shard(cursor, tip_at_start, false).await
+    }
+
+    async fn run_for_shard(&mut self, cursor: &mut ShardCursor, is_final: bool) -> Result<(), ()> {
+        // For an unbounded (sync-to-tip) request, snapshot the committed tree tip before scanning. The
+        // completion marker advances the client over trailing versions that stream no updates (all
+        // filtered out for its subscription). Snapshotting first ensures the marker never reports
+        // beyond what we streamed: anything committed after this point is left for the next round.
+        let tip_at_start = if self.end_epoch.is_none() {
+            self.snapshot_tip(cursor.shard).await?
+        } else {
+            None
+        };
+        self.stream_shard(cursor, tip_at_start, is_final).await
+    }
+
+    async fn snapshot_tip(&mut self, shard: Shard) -> Result<Option<Version>, ()> {
+        match self.read_latest_tree_version(shard) {
+            Ok(version) => Ok(version),
+            Err(err) => {
+                error!(target: LOG_TARGET, "🌍 Error reading latest tree version for {}: {}", shard, err);
+                self.send(Err(RpcStatus::log_internal_error(LOG_TARGET)(err))).await?;
+                Err(())
+            },
+        }
+    }
+
+    /// Streams `cursor`'s shard from its resume point and closes it off with a marker, advancing the
+    /// cursor past the version the marker reports.
+    async fn stream_shard(
+        &mut self,
+        cursor: &mut ShardCursor,
+        tip_at_start: Option<Version>,
+        is_final: bool,
+    ) -> Result<(), ()> {
+        let shard = cursor.shard;
         let mut current_state_version = cursor.start_state_version;
         let mut counter = 0usize;
         let mut last_sent_version: Option<Version> = None;
@@ -242,15 +323,20 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
             }
         }
 
-        self.send_complete(cursor, tip_at_start, last_sent_version, is_final)
-            .await
+        let synced_to_version = self
+            .send_complete(cursor, tip_at_start, last_sent_version, is_final)
+            .await?;
+        // A node behind the caller's cursor reports a tip below it; the cursor only ever advances.
+        cursor.start_state_version = cursor.start_state_version.max(synced_to_version + 1);
+        Ok(())
     }
 
     fn read_latest_tree_version(&self, shard: Shard) -> Result<Option<Version>, StorageError> {
         self.store.with_read_tx(|tx| tx.state_tree_versions_get_latest(shard))
     }
 
-    /// Closes off a shard with a `SyncComplete` stating the version the client is now synced to.
+    /// Closes off a shard with a `SyncComplete` stating the version the client is now synced to, and
+    /// returns that version.
     ///
     /// For an unbounded request this is the committed tree tip (capped to what we streamed), letting the
     /// client advance over trailing versions that streamed no updates - e.g. a shard whose latest
@@ -270,7 +356,7 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
         tip_at_start: Option<Version>,
         last_sent_version: Option<Version>,
         is_final: bool,
-    ) -> Result<(), ()> {
+    ) -> Result<Version, ()> {
         let epoch = match self.authorise_tip(cursor.shard).await {
             Ok(epoch) => epoch,
             Err(status) => {
@@ -294,7 +380,8 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
                 is_final,
             })),
         }))
-        .await
+        .await?;
+        Ok(synced_to_version)
     }
 
     /// Establishes this node's standing to tell the caller that it is level with the committee for
