@@ -14,6 +14,7 @@ use crate::{
         state_machine::{
             event::ConsensusStateEvent,
             idle::Idle,
+            initialising::Initialising,
             state::{ConsensusCurrentState, ConsensusState},
             syncing::Syncing,
         },
@@ -62,6 +63,7 @@ where
         state: &ConsensusState<TSpec>,
     ) -> ConsensusStateEvent {
         match state {
+            ConsensusState::Initialising(state) => self.result_or_shutdown(state.on_enter(context)).await,
             ConsensusState::Idle(state) => self.result_or_shutdown(state.on_enter(context)).await,
             ConsensusState::CheckSync(state) => self.result_or_shutdown(state.on_enter(context)).await,
             ConsensusState::Syncing(state) => self.result_or_shutdown(state.on_enter(context)).await,
@@ -85,6 +87,7 @@ where
         let event_str = event.to_string();
 
         let next_state = match (state, event) {
+            (ConsensusState::Initialising(_), ConsensusStateEvent::Initialised) => ConsensusState::Idle(Idle::new()),
             (ConsensusState::Idle(state), ConsensusStateEvent::RegisteredForEpoch { .. }) => {
                 ConsensusState::CheckSync(state.into())
             },
@@ -95,7 +98,11 @@ where
             (ConsensusState::Syncing(state), ConsensusStateEvent::SyncComplete) => {
                 ConsensusState::Running(state.into())
             },
-            (ConsensusState::Sleeping, ConsensusStateEvent::Resume) => ConsensusState::Idle(Idle::new()),
+            // Resuming from a failure starts over: whatever was known about the epoch was established
+            // before the failure and is not assumed to still hold.
+            (ConsensusState::Sleeping, ConsensusStateEvent::Resume) => {
+                ConsensusState::Initialising(Initialising::new())
+            },
             (ConsensusState::Running(state), ConsensusStateEvent::NeedSync { .. }) => {
                 ConsensusState::CheckSync(state.into())
             },
@@ -129,12 +136,12 @@ where
         // When starting up we will wait a bit.
         // Context: in swarm, we start on epoch 2, then quickly go to epoch 3. This causes some nodes to start consensus
         // on epoch 2 and some on epoch 3.
-        let idle = if self.initial_delay {
-            Idle::with_delay()
+        let initialising = if self.initial_delay {
+            Initialising::with_delay()
         } else {
-            Idle::new()
+            Initialising::new()
         };
-        let mut state = ConsensusState::Idle(idle);
+        let mut state = ConsensusState::Initialising(initialising);
         loop {
             let next_event = self.next_event(&mut context, &state).await;
             state = self.transition(state, next_event);

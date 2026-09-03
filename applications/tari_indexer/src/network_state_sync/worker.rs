@@ -425,8 +425,19 @@ impl NetworkWideStateSync {
                 .into_iter()
                 .chain(shard_group.shard_iter());
 
-            self.sync_shard_group_state(shards, sync_plan_mut, shard_group, &mut session)
-                .await?;
+            // A responder that cannot serve these shards - it left the committee, or the epoch this
+            // indexer resolved its committees at has moved on - costs this shard group the round and
+            // no more. The global shard stays unclaimed so that the next committee streams it.
+            if let Err(err) = self
+                .sync_shard_group_state(shards, sync_plan_mut, shard_group, &mut session)
+                .await
+            {
+                if !err.is_peer_fault() {
+                    return Err(err);
+                }
+                warn!(target: LOG_TARGET, "⚠️ State sync for shard group {} from {} failed: {}. Continuing with others", shard_group, session.peer_address(), err);
+                continue;
+            }
             has_synced_global_shard = true;
         }
 

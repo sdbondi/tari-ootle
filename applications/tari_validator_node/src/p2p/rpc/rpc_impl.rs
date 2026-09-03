@@ -27,7 +27,7 @@ use std::{
 
 use log::*;
 use tari_bor::encode;
-use tari_consensus::hotstuff::{ConsensusCurrentState, commit_proofs::generate_block_commit_proof};
+use tari_consensus::hotstuff::commit_proofs::generate_block_commit_proof;
 use tari_consensus_types::{BlockId, HighPc, ProposalCertificate};
 use tari_engine_types::substate::SubstateId;
 use tari_epoch_manager::{EpochManagerReader, service::EpochManagerHandle};
@@ -90,8 +90,9 @@ use crate::{
     consensus::ConsensusHandle,
     p2p::{
         rpc::{
+            CONSENSUS_NOT_RUNNING,
             block_sync_task::BlockSyncTask,
-            state_sync_task::{ShardCursor, StateSyncTask},
+            state_sync_task::{ShardCursor, StateSyncTask, TipAuthority},
         },
         services::mempool::MempoolHandle,
     },
@@ -122,12 +123,10 @@ impl<TStateStore: StateStore> ValidatorNodeRpcServiceImpl<TStateStore> {
     }
 
     fn check_consensus_state(&self) -> Result<(), RpcStatus> {
-        let state = self.consensus.get_current_state();
-        // If syncing, we do not want to serve state sync or block sync requests
-        if matches!(state, ConsensusCurrentState::Running | ConsensusCurrentState::Idle) {
+        if self.consensus.can_serve_committed_state() {
             Ok(())
         } else {
-            Err(RpcStatus::general("Consensus is not running on this node"))
+            Err(RpcStatus::general(CONSENSUS_NOT_RUNNING))
         }
     }
 
@@ -484,6 +483,38 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
 
         let end_epoch = req.until_epoch.map(Epoch::from);
 
+        // An unbounded request asks for this node's tip, which only a member of the committee that
+        // currently stores those shards can answer: a non-member receives no further transitions for
+        // them and streams silence, which the caller cannot tell apart from being caught up. A bounded
+        // request is answered out of history and the caller checks it against a quorum-signed
+        // checkpoint, so any node still holding that history may serve it.
+        //
+        // Membership is resolved at the epoch consensus is in, which is what governs the transitions
+        // this node receives, and can lag the epoch reached by scanning the base layer. The completion
+        // marker names the epoch its claim is made as of, so the claim and the marker must be anchored
+        // to the same one.
+        let tip_authority = if end_epoch.is_none() {
+            // A tip claim needs more than the history check that admitted the request: only a node
+            // participating in consensus is receiving the transitions it would claim to be level on.
+            if !self.consensus.is_running() {
+                return Err(RpcStatus::general(CONSENSUS_NOT_RUNNING));
+            }
+            let epoch = self.consensus.current_epoch();
+            // A node that has not entered a view has no committee to answer for.
+            if epoch.is_zero() {
+                return Err(RpcStatus::general("Consensus has not started on this node"));
+            }
+            let local_committee_info = self
+                .epoch_manager
+                .get_local_committee_info(epoch)
+                .await
+                .map_err(RpcStatus::log_internal_error(LOG_TARGET))?;
+            ShardCursor::ensure_all_stored(&cursors, &local_committee_info)?;
+            Some(TipAuthority::new(epoch, local_committee_info))
+        } else {
+            None
+        };
+
         let value_filter_flags = SubstateValueFilterFlags::from_bits_truncate(req.value_filters);
         if value_filter_flags.is_empty() {
             return Err(RpcStatus::bad_request(
@@ -507,7 +538,9 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
                 sender,
                 cursors,
                 end_epoch,
-                self.consensus.current_epoch(),
+                self.consensus.clone(),
+                self.epoch_manager.clone(),
+                tip_authority,
                 STATE_SYNC_MAX_BATCH_SIZE
                     .try_into()
                     .expect("STATE_SYNC_MAX_BATCH_SIZE is not zero"),

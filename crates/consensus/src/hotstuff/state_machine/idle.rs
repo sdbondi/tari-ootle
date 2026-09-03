@@ -1,12 +1,12 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::{marker::PhantomData, time::Duration};
+use std::marker::PhantomData;
 
 use log::*;
 use tari_epoch_manager::{EpochManagerEvent, EpochManagerReader};
 use tari_ootle_common_types::Epoch;
-use tokio::{sync::broadcast, time};
+use tokio::sync::broadcast;
 
 use crate::{
     hotstuff::{
@@ -18,43 +18,29 @@ use crate::{
 
 const LOG_TARGET: &str = "tari::ootle::consensus::sm::idle";
 
+/// The state of a node that is registered for no committee in the current epoch: it holds whatever it
+/// committed while it was, and waits for an epoch that puts it back in one.
 #[derive(Debug, Clone)]
 pub struct Idle<TSpec> {
     _spec: PhantomData<TSpec>,
-    delay: bool,
 }
 
 impl<TSpec> Idle<TSpec>
 where TSpec: ConsensusSpec
 {
     pub fn new() -> Self {
-        Self {
-            _spec: PhantomData,
-            delay: false,
-        }
-    }
-
-    pub fn with_delay() -> Self {
-        Self {
-            _spec: PhantomData,
-            delay: true,
-        }
+        Self { _spec: PhantomData }
     }
 
     pub(super) async fn on_enter(
         &self,
         context: &mut ConsensusWorkerContext<TSpec>,
     ) -> Result<ConsensusStateEvent, HotStuffError> {
-        debug!(target: LOG_TARGET, "Entered idle state with delay: {}", self.delay);
-        if self.delay {
-            time::sleep(Duration::from_secs(5)).await;
-        }
+        debug!(target: LOG_TARGET, "Entered idle state");
         // Subscribe before checking if we're registered to eliminate the chance that we miss the epoch event
         let mut epoch_events = context.epoch_manager.subscribe();
-        context.epoch_manager.wait_for_initial_scanning_to_complete().await?;
-        let current_epoch = context.epoch_manager.current_epoch().await?;
-        if self.is_registered_for_epoch(context, current_epoch).await? {
-            return Ok(ConsensusStateEvent::RegisteredForEpoch { epoch: current_epoch });
+        if let Some(event) = self.check_registration(context).await? {
+            return Ok(event);
         }
 
         loop {
@@ -70,6 +56,13 @@ where TSpec: ConsensusSpec
                         },
                         Err(broadcast::error::RecvError::Lagged(n)) => {
                             debug!(target: LOG_TARGET, "Idle state lagged behind by {n} epoch manager events");
+                            // The skipped events may include the epoch change that puts this node in a
+                            // committee. Only that event promotes out of this state, and the check on
+                            // entry has already run, so registration is read again rather than waited
+                            // for.
+                            if let Some(event) = self.check_registration(context).await? {
+                                return Ok(event);
+                            }
                         },
                         Err(broadcast::error::RecvError::Closed) => {
                             debug!(target: LOG_TARGET, "Epoch manager event stream closed");
@@ -84,6 +77,18 @@ where TSpec: ConsensusSpec
 
         debug!(target: LOG_TARGET, "Idle event triggering shutdown because epoch manager event stream closed");
         Ok(ConsensusStateEvent::Shutdown)
+    }
+
+    /// Emits `RegisteredForEpoch` if this node is in a committee for the current epoch.
+    async fn check_registration(
+        &self,
+        context: &mut ConsensusWorkerContext<TSpec>,
+    ) -> Result<Option<ConsensusStateEvent>, HotStuffError> {
+        let current_epoch = context.epoch_manager.current_epoch().await?;
+        if self.is_registered_for_epoch(context, current_epoch).await? {
+            return Ok(Some(ConsensusStateEvent::RegisteredForEpoch { epoch: current_epoch }));
+        }
+        Ok(None)
     }
 
     async fn is_registered_for_epoch(

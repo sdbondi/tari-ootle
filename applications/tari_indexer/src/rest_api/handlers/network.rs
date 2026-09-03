@@ -144,6 +144,7 @@ pub async fn get_network_sync_stats(
 
 fn to_client_consensus_state(state: ConsensusCurrentState) -> ValidatorConsensusState {
     match state {
+        ConsensusCurrentState::Initialising => ValidatorConsensusState::Initialising,
         ConsensusCurrentState::Idle => ValidatorConsensusState::Idle,
         ConsensusCurrentState::CheckSync => ValidatorConsensusState::CheckSync,
         ConsensusCurrentState::Syncing => ValidatorConsensusState::Syncing,

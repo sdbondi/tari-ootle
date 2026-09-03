@@ -9,6 +9,9 @@ use crate::hotstuff::HotStuffError;
 
 #[derive(Debug)]
 pub enum ConsensusStateEvent {
+    /// The base layer has been scanned far enough for this node's registration and committee to be
+    /// resolvable.
+    Initialised,
     RegisteredForEpoch {
         epoch: Epoch,
     },
@@ -35,6 +38,7 @@ impl Display for ConsensusStateEvent {
         #[allow(clippy::enum_glob_use)]
         use ConsensusStateEvent::*;
         match self {
+            Initialised => write!(f, "Initialised"),
             RegisteredForEpoch { epoch } => write!(f, "Registered for epoch {}", epoch),
             NotRegisteredForEpoch { epoch } => write!(f, "Not registered for epoch {}", epoch),
             NeedSync {

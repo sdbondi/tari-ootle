@@ -61,4 +61,15 @@ impl ConsensusHandle {
     pub fn is_running(&self) -> bool {
         self.get_current_state().is_running()
     }
+
+    /// True while this node's committed history may be served to peers. A node that has left the
+    /// register still holds what it committed while it was in one, and is the only source of it for
+    /// the committee that took over, so `Idle` serves. While consensus is initialising or syncing,
+    /// what this node has committed is not what its committee has committed, so it must not answer.
+    pub fn can_serve_committed_state(&self) -> bool {
+        matches!(
+            self.get_current_state(),
+            ConsensusCurrentState::Running | ConsensusCurrentState::Idle
+        )
+    }
 }

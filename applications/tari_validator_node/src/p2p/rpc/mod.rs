@@ -24,6 +24,9 @@ mod block_sync_task;
 mod rpc_impl;
 mod state_sync_task;
 
+/// The status returned to a peer whose request needs consensus in a state this node is not in.
+pub(crate) const CONSENSUS_NOT_RUNNING: &str = "Consensus is not running on this node";
+
 pub use rpc_impl::ValidatorNodeRpcServiceImpl;
 use tari_epoch_manager::service::EpochManagerHandle;
 use tari_ootle_p2p::PeerAddress;
