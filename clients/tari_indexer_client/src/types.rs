@@ -639,8 +639,12 @@ pub struct UtxoUpdateSet {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UtxoStateUpdateSet {
     pub updates: Vec<WalletUtxoUpdate>,
+    /// The highest state version in `updates`. Every update at that version is included, so it is a
+    /// resume point: a later request filtering on `state_version > max_state_version` loses nothing.
     pub max_state_version: StateVersion,
     pub max_epoch: Epoch,
+    /// The shard holds further updates above `max_state_version`.
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -22,6 +22,7 @@ pub struct UtxoUpdatePayload {
 pub struct StartOfShard {
     pub shard: Shard,
     pub max_state_version: StateVersion,
+    /// The shard holds updates beyond this pass, as reported by the indexer.
     pub has_more: bool,
 }
 

@@ -232,7 +232,7 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
                 let sos = res.sos.map(|sos| StartOfShard {
                     shard: Shard::from(sos.shard),
                     max_state_version: StateVersion::from(sos.max_state_version),
-                    has_more: sos.num_updates >= 1000,
+                    has_more: sos.has_more,
                 });
                 let update = res
                     .update

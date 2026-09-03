@@ -193,6 +193,139 @@ mod tests {
         }
     }
 
+    /// One state version covers a whole synced batch, so a shard's UTXOs cluster into version
+    /// groups. These build a shard whose groups straddle the read limit.
+    fn utxo_resource() -> tari_template_lib_types::ResourceAddress {
+        use std::str::FromStr;
+        tari_template_lib_types::ResourceAddress::from_str(
+            "resource_0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap()
+    }
+
+    fn unspent_at(seq: u8, state_version: u64) -> crate::storage_sqlite::models::UtxoUpdateRecord {
+        use tari_engine_types::{UtxoOutput, crypto::OutputBody};
+        use tari_template_lib_types::{
+            EncryptedData,
+            UtxoId,
+            crypto::{RistrettoPublicKeyBytes, UtxoTag},
+            stealth::SpendAuthorization,
+        };
+
+        use crate::storage_sqlite::models::{UtxoUnspent, UtxoUpdateRecord};
+
+        let address = tari_template_lib_types::UtxoAddress::new(utxo_resource(), UtxoId::from_array([seq; 32]));
+        UtxoUpdateRecord::Unspent(Box::new(UtxoUnspent {
+            address,
+            version: 0,
+            shard: tari_ootle_common_types::shard::Shard::from(1u32),
+            state_version: StateVersion::new(state_version),
+            utxo_output: UtxoOutput {
+                output: OutputBody {
+                    public_nonce: RistrettoPublicKeyBytes::from_bytes(&[seq; 32]).unwrap(),
+                    encrypted_data: EncryptedData::empty(),
+                    minimum_value_promise: 0,
+                    viewable_balance: None,
+                },
+                auth: SpendAuthorization::Key(RistrettoPublicKeyBytes::from_bytes(&[seq; 32]).unwrap()),
+                tag: UtxoTag::from(0u32),
+            },
+            is_frozen: false,
+        }))
+    }
+
+    async fn store_with_utxos(groups: &[(u64, u8)]) -> (tempfile::TempDir, SqliteIndexerStore) {
+        let (dir, store) = temp_store().await;
+        let mut seq = 0u8;
+        let mut records = Vec::new();
+        for &(state_version, count) in groups {
+            for _ in 0..count {
+                seq += 1;
+                records.push(unspent_at(seq, state_version));
+            }
+        }
+        store
+            .with_write_tx(move |tx| tx.batch_insert_utxo_updates(Epoch(1), records))
+            .await
+            .unwrap();
+        (dir, store)
+    }
+
+    async fn read_updates(
+        store: &SqliteIndexerStore,
+        from: u64,
+        limit: u32,
+    ) -> tari_indexer_client::types::UtxoStateUpdateSet {
+        store
+            .with_read_tx(move |tx| {
+                tx.utxos_get_updates(
+                    utxo_resource(),
+                    Epoch(0),
+                    tari_ootle_common_types::shard::Shard::from(1u32),
+                    StateVersion::new(from),
+                    false,
+                    limit,
+                )
+            })
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_read_stops_on_a_version_boundary_not_mid_version() {
+        // Limit 4 falls inside the 3-row group at version 20.
+        let (_dir, store) = store_with_utxos(&[(10, 2), (20, 3), (30, 1)]).await;
+
+        let set = read_updates(&store, 0, 4).await;
+
+        assert!(set.has_more);
+        // Version 20 is held back whole rather than half-served.
+        assert_eq!(set.max_state_version, StateVersion::new(10));
+        assert_eq!(set.updates.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn resuming_from_the_reported_version_loses_no_update() {
+        let (_dir, store) = store_with_utxos(&[(10, 2), (20, 3), (30, 1)]).await;
+
+        let mut seen = 0;
+        let mut cursor = 0;
+        loop {
+            let set = read_updates(&store, cursor, 4).await;
+            seen += set.updates.len();
+            cursor = set.max_state_version.as_u64();
+            if !set.has_more {
+                break;
+            }
+        }
+
+        assert_eq!(seen, 6);
+    }
+
+    #[tokio::test]
+    async fn a_version_wider_than_the_limit_is_served_whole() {
+        // No complete earlier version to stop at, so the limit gives way rather than the read
+        // returning nothing and stranding the cursor.
+        let (_dir, store) = store_with_utxos(&[(10, 5), (20, 1)]).await;
+
+        let set = read_updates(&store, 0, 2).await;
+
+        assert_eq!(set.updates.len(), 5);
+        assert_eq!(set.max_state_version, StateVersion::new(10));
+        assert!(set.has_more);
+    }
+
+    #[tokio::test]
+    async fn a_drained_read_reports_no_more() {
+        let (_dir, store) = store_with_utxos(&[(10, 2), (20, 1)]).await;
+
+        let set = read_updates(&store, 0, 10).await;
+
+        assert!(!set.has_more);
+        assert_eq!(set.updates.len(), 3);
+        assert_eq!(set.max_state_version, StateVersion::new(20));
+    }
+
     async fn temp_store() -> (tempfile::TempDir, SqliteIndexerStore) {
         let dir = tempfile::tempdir().unwrap();
         let store = SqliteIndexerStore::try_create(dir.path().join("indexer.db")).unwrap();

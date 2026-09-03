@@ -19,6 +19,10 @@ pub struct StartOfShard {
     pub max_state_version: u64,
     #[prost(uint32, tag = "3")]
     pub num_updates: u32,
+    /// The shard holds further updates beyond this pass. Authoritative: a pass can stop short of
+    /// `per_shard_limit` and still have more to give, so counting `num_updates` cannot answer this.
+    #[prost(bool, tag = "4")]
+    pub has_more: bool,
 }
 
 #[derive(::prost::Message, serde::Serialize, serde::Deserialize)]

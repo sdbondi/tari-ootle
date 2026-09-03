@@ -3,6 +3,7 @@
 
 use std::{io::Write, str::FromStr};
 
+use axum::http::HeaderValue;
 use bytes::{BufMut, Bytes};
 use log::*;
 use mediatype::MediaType;
@@ -54,6 +55,18 @@ impl MimeTypeEncoder {
     pub fn protobuf() -> Self {
         MimeTypeEncoder::Protobuf(ProtobufEncoder)
     }
+
+    /// The media type of the bytes this encoder produces, for the response's `Content-Type`.
+    ///
+    /// Both are streaming framings rather than single documents: a run of length-delimited
+    /// protobuf messages, or newline-delimited JSON. A proxy or client that reads the header to
+    /// decide whether it may buffer a response needs the framing, not the payload's grammar.
+    pub const fn media_type(&self) -> HeaderValue {
+        match self {
+            MimeTypeEncoder::Protobuf(_) => HeaderValue::from_static("application/x-protobuf"),
+            MimeTypeEncoder::Json(_) => HeaderValue::from_static("application/x-ndjson"),
+        }
+    }
 }
 
 impl Encoder for MimeTypeEncoder {
@@ -68,10 +81,17 @@ impl Encoder for MimeTypeEncoder {
 }
 
 pub fn from_media_type(mime_type: &str) -> Option<MimeTypeEncoder> {
+    // Ordered by preference, so a client that expresses none (`*/*`) is served protobuf.
+    // `application/json` and `application/x-ndjson` both select the newline-delimited JSON framing,
+    // which is what the response then declares itself to be.
     const ACCEPTED_TYPES: &[MediaType] = &[
         MediaType::new(
             mediatype::Name::new_unchecked("application"),
             mediatype::Name::new_unchecked("x-protobuf"),
+        ),
+        MediaType::new(
+            mediatype::Name::new_unchecked("application"),
+            mediatype::Name::new_unchecked("x-ndjson"),
         ),
         MediaType::new(
             mediatype::Name::new_unchecked("application"),
@@ -82,7 +102,7 @@ pub fn from_media_type(mime_type: &str) -> Option<MimeTypeEncoder> {
     let accepted = media_type.negotiate(ACCEPTED_TYPES)?;
     match accepted.subty.as_str() {
         "x-protobuf" => Some(MimeTypeEncoder::Protobuf(ProtobufEncoder)),
-        "json" => Some(MimeTypeEncoder::Json(JsonEncoder)),
+        "json" | "x-ndjson" => Some(MimeTypeEncoder::Json(JsonEncoder)),
         _ => None,
     }
 }

@@ -27,7 +27,7 @@ use crate::rest_api::{
     context::HandlerContext,
     error::ErrorResponse,
     handlers::HandlerResult,
-    streaming::{UtxoUpdateStream, encoding},
+    streaming::{UtxoUpdateStream, disable_proxy_buffering, encoding},
 };
 
 const LOG_TARGET: &str = "tari::ootle::indexer::rest_api::handlers::utxos";
@@ -49,6 +49,12 @@ pub async fn stream_utxo_updates(
         return Err(ErrorResponse::bad_request(
             "per_shard_limit cannot be greater than 1000",
         ));
+    }
+
+    // A shard's updates are served in whole state versions, so a limit of zero would still return
+    // one version rather than the empty response it asks for.
+    if req.per_shard_limit == 0 {
+        return Err(ErrorResponse::bad_request("per_shard_limit must be greater than 0"));
     }
 
     if req.shard_state_versions.len() > NumPreshards::MAX_SHARD.as_u32() as usize {
@@ -80,7 +86,8 @@ pub async fn stream_utxo_updates(
     let encoder = match accept_header {
         Some(mime) => encoding::from_media_type(mime).ok_or_else(|| {
             ErrorResponse::bad_request(format!(
-                "Unsupported Accept header '{}', supported types are 'application/x-protobuf' and 'application/json'",
+                "Unsupported Accept header '{}', supported types are 'application/x-protobuf', 'application/x-ndjson' \
+                 and 'application/json'",
                 mime
             ))
         })?,
@@ -105,6 +112,7 @@ pub async fn stream_utxo_updates(
     response
         .headers_mut()
         .insert(header::VARY, HeaderValue::from_static("accept"));
+    disable_proxy_buffering(response.headers_mut());
     Ok(response)
 }
 

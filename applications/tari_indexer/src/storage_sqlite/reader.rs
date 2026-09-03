@@ -805,12 +805,19 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
         const OPERATION: &str = "get_utxo_updates";
         use crate::storage_sqlite::schema::utxos;
 
+        // One state version covers a whole synced batch, so every UTXO touched by the same block on
+        // this shard shares it. `state_version` is therefore not a unique key and the caller's
+        // cursor cannot address a row within a version — it can only say "everything after version
+        // V". A response that ends mid-version would strand the rest of that version above the
+        // cursor the caller then resumes from, so a version is either wholly included or wholly
+        // absent. One row beyond the limit is read to find where that boundary falls.
+        let overshoot_limit = i64::from(limit).saturating_add(1);
         let mut query = utxos::table
             .filter(utxos::resource_address.eq(resource_address.to_string()))
             .filter(utxos::state_version.gt(from_state_version.as_u64() as i64))
             .filter(utxos::epoch.ge(from_epoch.as_u64() as i64))
             .filter(utxos::shard.eq(shard.as_u32() as i32))
-            .limit(i64::from(limit))
+            .limit(overshoot_limit)
             .order_by(utxos::state_version.asc())
             .into_boxed();
         if unspent_only {
@@ -820,29 +827,71 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
                 .filter(utxos::is_burnt.eq(false));
         }
         let rows = query
-            .load_iter::<models::UtxoRecord, _>(self.connection())
+            .load::<models::UtxoRecord>(self.connection())
             .map_err(|e| StorageError::QueryError {
                 reason: format!("{OPERATION}: {}", e),
             })?;
 
-        let mut updates = Vec::new();
-        let mut max_state_version = StateVersion::zero();
+        let has_more = rows.len() as i64 == overshoot_limit;
+        let mut converted = Vec::with_capacity(rows.len());
         let mut max_epoch = Epoch::zero();
         for row in rows {
-            let row = row.map_err(|e| StorageError::QueryError {
-                reason: format!("{OPERATION}: {}", e),
-            })?;
             let epoch = Epoch(row.epoch as u64);
             let (state_version, update) = row.try_convert_to_update()?;
-            max_state_version = max_state_version.max(state_version);
             max_epoch = max_epoch.max(epoch);
-            updates.push(update);
+            converted.push((state_version, update));
         }
 
+        if has_more {
+            // Rows are ordered by state version, so the overshoot row's version is the highest
+            // present and is the only one that can be partial.
+            let partial_version = converted
+                .last()
+                .map(|(state_version, _)| *state_version)
+                .expect("has_more implies at least one row");
+            let complete = converted.partition_point(|(v, _)| *v < partial_version);
+            if complete > 0 {
+                converted.truncate(complete);
+            } else {
+                // The whole read sits at one version, so there is no complete earlier version to
+                // stop at. Returning nothing would leave the caller's cursor where it was and no
+                // way past this shard, so the version is served whole and the limit is overrun.
+                let mut whole_version = utxos::table
+                    .filter(utxos::resource_address.eq(resource_address.to_string()))
+                    .filter(utxos::state_version.eq(partial_version.as_u64() as i64))
+                    .filter(utxos::epoch.ge(from_epoch.as_u64() as i64))
+                    .filter(utxos::shard.eq(shard.as_u32() as i32))
+                    .into_boxed();
+                if unspent_only {
+                    whole_version = whole_version
+                        .filter(utxos::is_spent.eq(false))
+                        .filter(utxos::is_burnt.eq(false));
+                }
+                let rows = whole_version
+                    .load::<models::UtxoRecord>(self.connection())
+                    .map_err(|e| StorageError::QueryError {
+                        reason: format!("{OPERATION}: {}", e),
+                    })?;
+
+                converted.clear();
+                for row in rows {
+                    let epoch = Epoch(row.epoch as u64);
+                    let (state_version, update) = row.try_convert_to_update()?;
+                    max_epoch = max_epoch.max(epoch);
+                    converted.push((state_version, update));
+                }
+            }
+        }
+
+        let max_state_version = converted
+            .last()
+            .map_or_else(StateVersion::zero, |(state_version, _)| *state_version);
+
         Ok(UtxoStateUpdateSet {
-            updates,
+            updates: converted.into_iter().map(|(_, update)| update).collect(),
             max_state_version,
             max_epoch,
+            has_more,
         })
     }
 

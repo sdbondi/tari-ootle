@@ -30,8 +30,10 @@ pub struct StealthUtxoWatchRequest {
     /// When true, only currently-unspent UTXOs are streamed (no `Spent`/`Burnt` frames).
     /// A monitor that must track spends has to set this to `false`.
     pub unspent_only: bool,
-    /// Maximum updates returned per shard per pass. `StartOfShard::num_updates == per_shard_limit`
-    /// indicates the shard has more updates to drain on a subsequent request.
+    /// Target number of updates returned per shard per pass. A pass may return fewer and still have
+    /// more to give, and may overrun this to keep one state version whole, so
+    /// [`StealthUtxoFrame::StartOfShard::has_more`] — not a count comparison — says whether the
+    /// shard has updates left to drain.
     pub per_shard_limit: u32,
 }
 
@@ -50,14 +52,18 @@ impl StealthUtxoWatchRequest {
 /// A single decoded frame from the stealth UTXO update stream.
 ///
 /// Frames arrive grouped per shard: a `StartOfShard`, then zero or more `Unspent`/`Spent`/`Burnt`
-/// updates, terminated by an `EndOfShard` carrying the shard's high-watermark state version — use
-/// it to advance the resume cursor for that shard (see [`ShardCursor::observe`]).
+/// updates, terminated by an `EndOfShard`. `EndOfShard::max_state_version` is the shard's resume
+/// point — every update at or below it has either been delivered or was excluded by the request's
+/// own filters — so advance the cursor from it via [`ShardCursor::observe`].
 #[derive(Debug, Clone)]
 pub enum StealthUtxoFrame {
     StartOfShard {
         shard: Shard,
         max_state_version: StateVersion,
         num_updates: u32,
+        /// The shard has updates beyond this pass. Poll again to drain it rather than waiting for
+        /// the next scheduled pass.
+        has_more: bool,
     },
     /// A currently-unspent output. Carries only the `(tag, public_nonce)` fetch key — the commitment
     /// and viewable-balance ciphertext must be resolved via
@@ -74,6 +80,9 @@ pub enum StealthUtxoFrame {
         id: UtxoId,
         version: u32,
     },
+    /// Terminates a shard's updates. `max_state_version` is the resume point for the shard, chosen
+    /// by the indexer: the last delivered state version while the shard has more to drain, and the
+    /// shard's high watermark once it is drained.
     EndOfShard {
         shard: Shard,
         max_state_version: StateVersion,
@@ -143,6 +152,7 @@ impl StealthUtxoStream {
                                 shard,
                                 max_state_version: StateVersion::from(sos.max_state_version),
                                 num_updates: sos.num_updates,
+                                has_more: sos.has_more,
                             });
                         }
                         if let Some(update) = update {
@@ -257,5 +267,27 @@ impl ShardCursor {
         if max_state_version > *entry {
             *entry = max_state_version;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_advances_monotonically() {
+        let mut cursor = ShardCursor::default();
+        let shard = Shard::from(1u32);
+        cursor.observe(shard, StateVersion::from(250));
+        cursor.observe(shard, StateVersion::from(100));
+        assert_eq!(cursor.get(shard), StateVersion::from(250));
+    }
+
+    #[test]
+    fn genesis_covers_every_shard_at_zero() {
+        let cursor = ShardCursor::genesis(NumPreshards::P4);
+        let pairs = cursor.to_pairs();
+        assert_eq!(pairs.len(), 4);
+        assert!(pairs.iter().all(|(_, v)| *v == StateVersion::zero()));
     }
 }
