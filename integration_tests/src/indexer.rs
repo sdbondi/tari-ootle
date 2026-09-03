@@ -173,6 +173,7 @@ pub async fn spawn_indexer(world: &mut TariWorld, indexer_name: String, base_nod
     let db_path = base_dir.to_path_buf().join("state.db");
 
     let (ipc_sender, ipc_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let localnet_consensus_constants_file = world.consensus_constants_file.clone();
 
     let handle = task::spawn(async move {
         let mut config = ApplicationConfig {
@@ -188,6 +189,7 @@ pub async fn spawn_indexer(world: &mut TariWorld, indexer_name: String, base_nod
         config.common.base_path = base_dir.to_path_buf();
         config.indexer.data_dir = base_dir.to_path_buf();
         config.indexer.identity_file = base_dir.join("indexer_id.json");
+        config.indexer.localnet_consensus_constants_file = localnet_consensus_constants_file;
         config.epoch_oracle.base_layer.base_node_grpc_url =
             Some(format!("http://127.0.0.1:{}", base_node_grpc_port).parse().unwrap());
         config.indexer.block_scanning_interval = Duration::from_secs(5);

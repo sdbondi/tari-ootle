@@ -66,6 +66,10 @@ impl ProcessDefinition for Indexer {
             .arg(format!("-pindexer.web_ui_public_graphql_url={graphql_public_url}"))
             .arg("-pepoch_oracle.base_layer.scanning_interval=1")
             .arg(format!("-pindexer.rate_limits.enabled={rate_limit}"))
+            .arg(format!(
+                "-pindexer.localnet_consensus_constants_file={}",
+                context.consensus_constants_file().display()
+            ))
             .env("API_DEBUG", "1"); // Enable detailed API error messages
 
         // mDNS is not guaranteed to work, so we'll explicitly set the seed peers for the indexer.

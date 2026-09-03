@@ -149,6 +149,7 @@ pub async fn spawn_validator_node(
         base_node_grpc_port,
         fee_claim_public_key,
         peer_seeds,
+        localnet_consensus_constants_file: world.consensus_constants_file.clone(),
     })
     .await
 }
@@ -179,6 +180,7 @@ pub async fn respawn_validator_node(world: &mut TariWorld, validator_node_name: 
         base_node_grpc_port: old.base_node_grpc_port,
         fee_claim_public_key,
         peer_seeds,
+        localnet_consensus_constants_file: world.consensus_constants_file.clone(),
     })
     .await
 }
@@ -197,6 +199,7 @@ struct ValidatorSpawn {
     base_node_grpc_port: u16,
     fee_claim_public_key: RistrettoPublicKey,
     peer_seeds: Vec<String>,
+    localnet_consensus_constants_file: Option<PathBuf>,
 }
 
 async fn spawn_validator_node_process(spawn: ValidatorSpawn) -> ValidatorNodeProcess {
@@ -206,6 +209,7 @@ async fn spawn_validator_node_process(spawn: ValidatorSpawn) -> ValidatorNodePro
         base_node_grpc_port,
         fee_claim_public_key,
         peer_seeds,
+        localnet_consensus_constants_file,
     } = spawn;
     let (port, json_rpc_port) = get_os_assigned_ports();
     let web_ui_port = get_os_assigned_port();
@@ -235,6 +239,7 @@ async fn spawn_validator_node_process(spawn: ValidatorSpawn) -> ValidatorNodePro
             config.validator_node.web_ui_listener_address = Some(format!("127.0.0.1:{}", web_ui_port).parse().unwrap());
             config.validator_node.p2p.listener_port = port;
             config.validator_node.fee_claim_public_key = fee_claim_public_key;
+            config.validator_node.localnet_consensus_constants_file = localnet_consensus_constants_file;
             config.peer_seeds.peer_seeds = StringList::from(peer_seeds);
 
             // Load-if-exists: fresh dirs get a random identity + save; restarts reuse

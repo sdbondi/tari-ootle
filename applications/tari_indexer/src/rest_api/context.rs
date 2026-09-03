@@ -8,6 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use ootle_byte_type::ToByteType;
+use tari_consensus::consensus_constants::ConsensusConstants;
 use tari_epoch_manager::service::EpochManagerHandle;
 use tari_indexer_client::event::{IndexerEvent, TransactionEvent};
 use tari_networking::NetworkingHandle;
@@ -44,6 +45,7 @@ impl HandlerContext {
             inner: Arc::new(InnerContext {
                 cache_control_enabled: true,
                 network: services.network,
+                consensus_constants: services.consensus_constants.clone(),
                 published_config: services.published_config.clone(),
                 read_only_store: ReadOnlyStore::new(services.store.clone()),
                 global_db: services.global_db.clone(),
@@ -64,6 +66,12 @@ impl HandlerContext {
 
     pub fn global_db(&self) -> &GlobalDb<SqliteGlobalDbAdapter<PeerAddress>> {
         &self.inner.global_db
+    }
+
+    /// The constants this indexer started with, which on a LocalNet may differ from the network's
+    /// built-in values.
+    pub fn consensus_constants(&self) -> &ConsensusConstants {
+        &self.inner.consensus_constants
     }
 
     pub fn network(&self) -> Network {
@@ -146,6 +154,7 @@ impl HandlerContext {
 struct InnerContext {
     cache_control_enabled: bool,
     network: Network,
+    consensus_constants: ConsensusConstants,
     published_config: PublishedIndexerConfig,
     global_db: GlobalDb<SqliteGlobalDbAdapter<PeerAddress>>,
     epoch_manager: EpochManagerHandle<PeerAddress>,

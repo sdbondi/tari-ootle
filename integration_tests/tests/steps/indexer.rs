@@ -13,7 +13,7 @@ use integration_tests::{
     indexer::{IndexerProcess, spawn_indexer},
 };
 use libp2p::Multiaddr;
-use tari_ootle_common_types::{Epoch, displayable::Displayable, optional::Optional, shard::Shard};
+use tari_ootle_common_types::{Epoch, StateVersion, displayable::Displayable, optional::Optional, shard::Shard};
 
 #[when(expr = "indexer {word} connects to all other validators")]
 async fn given_validator_connects_to_other_vns(world: &mut TariWorld, name: String) {
@@ -30,6 +30,39 @@ async fn given_validator_connects_to_other_vns(world: &mut TariWorld, name: Stri
 
     for (pk, addr) in details {
         indexer.add_peer(pk, vec![addr.clone()]).await;
+    }
+}
+
+/// The number of shard groups follows the registered validator count divided by the committee size,
+/// so this is how a scenario states the shape of the network it has built - and waits for a
+/// registration to take effect at an epoch boundary.
+#[then(expr = "the network has {int} shard group(s) according to indexer {word}")]
+async fn network_has_shard_groups(world: &mut TariWorld, step: &Step, num_shard_groups: usize, name: String) {
+    cucumber_log!("=== Step:{}", step.value);
+    let client = world.get_indexer(&name).get_indexer_client();
+    let mut remaining = 20;
+    loop {
+        let state = client
+            .get_network_sync_state()
+            .await
+            .expect("Failed to get network sync state");
+        let shard_groups = &state.network_desc.shard_groups;
+        if shard_groups.len() == num_shard_groups {
+            return;
+        }
+
+        if remaining == 0 {
+            panic!(
+                "Indexer {} sees {} shard group(s) at epoch {}, expected {}: {:?}",
+                name,
+                shard_groups.len(),
+                state.network_desc.epoch,
+                num_shard_groups,
+                shard_groups
+            );
+        }
+        remaining -= 1;
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
 }
 
@@ -399,32 +432,43 @@ async fn assert_catalogue_entry_not_found(world: &mut TariWorld, indexer_name: S
 
 #[then(expr = "I wait for the indexer {word} to sync with the network")]
 async fn i_wait_for_the_indexer_to_sync_with_the_network(world: &mut TariWorld, indexer_name: String) {
-    let vn = world
+    // A validator reports state versions for its own shard group only, so the target is the union
+    // over every running validator: on a network of more than one committee, a single validator
+    // describes half the shard space and says nothing about the half another committee holds.
+    let mut epoch = None;
+    let mut state_versions: HashMap<Shard, StateVersion> = HashMap::new();
+    for vn in world
         .validator_nodes
         .values()
         .chain(world.vn_seeds.values())
-        .find(|vn| !vn.shutdown.is_triggered())
-        .expect(
-            "No running validator nodes found. An indexer must be connected to a running validator node to sync with \
-             the network",
-        );
-    let consensus_stats = vn
-        .get_client()
-        .get_consensus_status()
-        .await
-        .expect("Failed to get epoch stats from VN");
-    if consensus_stats.state != "Running" {
-        panic!(
-            "Validator node {} is not running. An indexer must be connected to a running validator node to sync with \
-             the network",
-            vn.name
-        );
+        .filter(|vn| !vn.shutdown.is_triggered())
+    {
+        let consensus_stats = vn
+            .get_client()
+            .get_consensus_status()
+            .await
+            .expect("Failed to get epoch stats from VN");
+        if consensus_stats.state != "Running" {
+            continue;
+        }
+        epoch = Some(consensus_stats.epoch);
+        for (shard, version) in consensus_stats.state_versions.unwrap_or_default() {
+            state_versions
+                .entry(shard)
+                .and_modify(|v| *v = (*v).max(version))
+                .or_insert(version);
+        }
     }
-    let epoch = consensus_stats.epoch;
+
+    let epoch = epoch.expect(
+        "No running validator nodes found. An indexer must be connected to a running validator node to sync with the \
+         network",
+    );
     let prev_epoch = epoch.checked_sub(Epoch(1)).expect("Epoch is zero");
-    let state_versions = consensus_stats
-        .state_versions
-        .unwrap_or_else(|| panic!("No state versions found in consensus stats for running VN {}", vn.name));
+    assert!(
+        !state_versions.is_empty(),
+        "No state versions found in consensus stats for any running validator"
+    );
 
     let indexer = world.get_indexer(&indexer_name);
     assert!(!indexer.handle.is_finished(), "Indexer {} is not running", indexer_name);

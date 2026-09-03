@@ -45,11 +45,14 @@ use std::{fs, io, iter, process, time::Instant};
 use log::*;
 use serde::{Deserialize, Serialize};
 use tari_common::exit_codes::{ExitCode, ExitError};
-use tari_consensus::consensus_constants::ConsensusConstants;
 use tari_engine_types::crypto::{MAX_LAZY_BP_AGG_FACTORS, get_commitment_factory, get_static_range_proof_service};
 use tari_epoch_manager::traits::EpochManagerSpec;
 use tari_epoch_oracles::EpochOracle;
-use tari_ootle_app_utilities::{keypair::RistrettoKeypair, protocol_activation::check_and_record_activation_schedule};
+use tari_ootle_app_utilities::{
+    consensus_constants_file::load_consensus_constants,
+    keypair::RistrettoKeypair,
+    protocol_activation::check_and_record_activation_schedule,
+};
 use tari_ootle_common_types::SubstateAddress;
 use tari_ootle_p2p::PeerAddress;
 use tari_ootle_storage::global::{DbFactory, GlobalDb};
@@ -127,7 +130,11 @@ pub async fn run_validator_node(
     #[cfg(feature = "metrics")]
     let metrics_registry = create_metrics_registry(keypair.public_key(), &mut base_registry);
 
-    let consensus_constants = ConsensusConstants::from(config.network);
+    let consensus_constants = load_consensus_constants(
+        config.network,
+        config.validator_node.localnet_consensus_constants_file.as_deref(),
+        &config.validator_node.default_localnet_consensus_constants_file(),
+    )?;
     let mut services = spawn_services(
         config.clone(),
         shutdown.to_signal(),

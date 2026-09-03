@@ -415,6 +415,7 @@ pub async fn spawn_services(
     save_identities(config, &keypair)?;
     Ok(Services {
         network: config.network,
+        consensus_constants: consensus_constants.clone(),
         published_config: PublishedIndexerConfig::from(&config.indexer),
         keypair,
         networking,
@@ -435,6 +436,7 @@ pub async fn spawn_services(
 
 pub struct Services {
     pub network: Network,
+    pub consensus_constants: ConsensusConstants,
     pub published_config: PublishedIndexerConfig,
     pub keypair: RistrettoKeypair,
     pub networking: NetworkingHandle<TariMessagingSpec>,

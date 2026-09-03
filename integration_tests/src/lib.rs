@@ -24,6 +24,7 @@ use std::{
     collections::HashMap,
     fmt::{Debug, Formatter},
     fs,
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -41,7 +42,9 @@ use tari_common_types::{
 use tari_consensus::consensus_constants::ConsensusConstants;
 use tari_crypto::keys::SecretKey;
 use tari_engine_types::substate::SubstateId;
+use tari_ootle_app_utilities::consensus_constants_file::{ConsensusConstantsFile, load_consensus_constants};
 use tari_ootle_common_types::SubstateRequirement;
+use tari_ootle_transaction::Network;
 use tari_ootle_wallet_sdk::models::AccountWithAddress;
 use tari_sidechain::EvictionProof;
 use tari_transaction_components::{
@@ -53,7 +56,10 @@ use validator_node::ValidatorNodeProcess;
 use wallet::WalletProcess;
 use wallet_daemon::TariWalletDaemonProcess;
 
-use crate::{claim_proof::CucumberClaimProof, logging::get_base_dir};
+use crate::{
+    claim_proof::CucumberClaimProof,
+    logging::{get_base_dir, get_base_dir_for_scenario},
+};
 
 pub mod base_node;
 pub mod claim_proof;
@@ -85,6 +91,10 @@ pub struct TariWorld {
     pub http_server: Option<MockHttpServer>,
     pub template_mock_server_port: Option<u16>,
     pub current_scenario_name: Option<String>,
+    /// The consensus constants file every node in this scenario is pointed at. Consensus constants
+    /// have to agree across a network, so a scenario authors one file and hands it to each node it
+    /// spawns rather than configuring them one by one.
+    pub consensus_constants_file: Option<PathBuf>,
     pub claim_proofs: HashMap<String, CucumberClaimProof>,
     pub substate_ids: IndexMap<String, SubstateId>,
     pub num_databases_saved: usize,
@@ -109,7 +119,7 @@ impl TariWorld {
         )
         .unwrap();
         Self {
-            consensus_constants: ConsensusConstants::devnet(7),
+            consensus_constants: ConsensusConstants::from(Network::LocalNet),
             base_nodes: IndexMap::new(),
             wallets: IndexMap::new(),
             validator_nodes: IndexMap::new(),
@@ -121,6 +131,7 @@ impl TariWorld {
             http_server: None,
             template_mock_server_port: None,
             current_scenario_name: None,
+            consensus_constants_file: None,
             claim_proofs: HashMap::new(),
             substate_ids: IndexMap::new(),
             num_databases_saved: 0,
@@ -159,6 +170,23 @@ impl TariWorld {
         write_point("wallet.log", point_name);
         write_point("network.log", point_name);
         write_point("wallet_daemon.log", point_name);
+    }
+
+    /// Writes `overrides` to a file shared by every node this scenario spawns, and adopts the
+    /// resulting constants as the world's own so that assertions and nodes cannot disagree.
+    pub fn set_consensus_constants(&mut self, overrides: &ConsensusConstantsFile) {
+        let dir = get_base_dir_for_scenario("network", self.get_current_scenario_name(), "consensus_constants");
+        fs::create_dir_all(&dir).expect("Failed to create consensus constants directory");
+        let path = dir.join("consensus_constants.toml");
+        fs::write(
+            &path,
+            toml::to_string(overrides).expect("Failed to serialize consensus constants"),
+        )
+        .expect("Failed to write consensus constants file");
+
+        self.consensus_constants = load_consensus_constants(Network::LocalNet, Some(&path), &path)
+            .expect("Failed to load consensus constants");
+        self.consensus_constants_file = Some(path);
     }
 
     pub fn get_current_scenario_name(&self) -> &str {

@@ -24,9 +24,30 @@ use tokio::{
 };
 
 use super::InstanceId;
+
+/// Written to the swarm directory when there is no constants file there. Everything is commented
+/// out, so it changes nothing until a line is uncommented, and it lists what may be changed without
+/// having to go and look.
+const CONSENSUS_CONSTANTS_TEMPLATE: &str = r#"# Consensus constants for this swarm, read once at
+# start-up by every node in it. Only LocalNet reads this file at all. Uncomment a line to change it
+# and restart the swarm; anything left commented keeps the network's own value.
+#
+# Every value below is the one this network already uses, so uncommenting a line as it stands changes
+# nothing. The number of committees is the registered validator count divided by the committee size,
+# so a smaller committee splits the shard space across fewer nodes.
+# committee_size_per_shard_group = 7
+
+# pacemaker_block_time_secs = 10
+# base_layer_confirmations = 3
+# missed_proposal_suspend_threshold = 5
+# missed_proposal_evict_threshold = 10
+# missed_proposal_recovery_threshold = 5
+# max_transaction_validity_epochs = 2160
+# epoch_end_spread_blocks = 1
+"#;
 use crate::{
     config::{InstanceConfig, InstanceType},
-    process_definitions::{ProcessContext, get_definition},
+    process_definitions::{CONSENSUS_CONSTANTS_FILE_NAME, ProcessContext, get_definition},
     process_manager::{
         AllocatedPorts,
         IndexerProcess,
@@ -79,6 +100,7 @@ impl InstanceManager {
 
     /// Fork all defined processes in order
     pub async fn fork_all(&mut self, executables: Executables<'_>) -> anyhow::Result<()> {
+        self.write_consensus_constants_template().await?;
         for mut instance in self.config.clone() {
             let executable = executables.get(instance.execution_instance_type()).ok_or_else(|| {
                 anyhow!(
@@ -101,6 +123,25 @@ impl InstanceManager {
                 .await?;
             }
         }
+        Ok(())
+    }
+
+    /// Writes a commented consensus constants file into the swarm directory if there is not one
+    /// already. Every node forked here is pointed at it, so a devnet is retuned by uncommenting a
+    /// line and restarting rather than by finding out where the setting lives.
+    async fn write_consensus_constants_template(&self) -> anyhow::Result<()> {
+        let path = self.base_path.join(CONSENSUS_CONSTANTS_FILE_NAME);
+        if fs::try_exists(&path).await.unwrap_or(false) {
+            return Ok(());
+        }
+
+        fs::create_dir_all(&self.base_path)
+            .await
+            .context("create_dir_all for the consensus constants file")?;
+        fs::write(&path, CONSENSUS_CONSTANTS_TEMPLATE)
+            .await
+            .context("write the consensus constants file")?;
+        log::info!("📝 Wrote consensus constants file {}", path.display());
         Ok(())
     }
 
@@ -196,6 +237,7 @@ impl InstanceManager {
             &instance_envs,
             base_path.clone(),
             processes_path,
+            self.base_path.clone(),
             self.network,
             listen_ip,
             &mut allocated_ports,

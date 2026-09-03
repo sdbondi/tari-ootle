@@ -20,7 +20,7 @@
 //  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use std::{env, time::Duration};
+use std::time::Duration;
 
 use tari_engine_types::fees::ExhaustBurnRate;
 use tari_ootle_common_types::{Epoch, NumPreshards};
@@ -118,8 +118,8 @@ pub struct ConsensusConstants {
 }
 
 impl ConsensusConstants {
-    /// Committee size used when `TARI_DEVNET_COMMITTEE_SIZE` is unset, and the size [`Self::DEVNET`]
-    /// is built at.
+    /// The committee size [`Self::DEVNET`] is built at. A devnet that wants another size sets it in a
+    /// consensus constants file, which every node on that network is handed.
     pub const DEFAULT_DEVNET_COMMITTEE_SIZE: u32 = 7;
     /// Devnet at the default committee size.
     pub const DEVNET: Self = Self::devnet(Self::DEFAULT_DEVNET_COMMITTEE_SIZE);
@@ -320,11 +320,7 @@ impl From<Network> for ConsensusConstants {
     fn from(network: Network) -> Self {
         match network {
             Network::MainNet => Self::mainnet(),
-            // Allow committee size to be overridden for LocalNet
-            Network::LocalNet => env::var("TARI_DEVNET_COMMITTEE_SIZE")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .map_or(Self::DEVNET, Self::devnet),
+            Network::LocalNet => Self::DEVNET,
             Network::Esmeralda => Self::esmeralda(),
             Network::StageNet | Network::NextNet | Network::Igor => Self::testnet(),
         }
