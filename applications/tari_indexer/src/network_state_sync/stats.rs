@@ -1,42 +1,52 @@
 //   Copyright 2025 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::fmt::Display;
+use std::{
+    fmt::Display,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
+/// Counters shared by every shard-group stream, reported and reset together.
 #[derive(Debug, Clone, Default)]
 pub struct SyncStats {
-    pub total_checkpoints: usize,
-    pub total_state_updates: usize,
-    pub total_events: usize,
+    inner: Arc<Counters>,
+}
+
+#[derive(Debug, Default)]
+struct Counters {
+    checkpoints: AtomicUsize,
+    state_updates: AtomicUsize,
+    events: AtomicUsize,
 }
 
 impl SyncStats {
     pub fn new() -> Self {
-        Self {
-            total_checkpoints: 0,
-            total_state_updates: 0,
-            total_events: 0,
-        }
+        Self::default()
     }
 
-    pub fn increment_checkpoints(&mut self) {
-        self.total_checkpoints += 1;
+    pub fn increment_checkpoints(&self) {
+        self.inner.checkpoints.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn increase_state_updates(&mut self, by: usize) {
-        self.total_state_updates += by;
+    pub fn increase_state_updates(&self, by: usize) {
+        self.inner.state_updates.fetch_add(by, Ordering::Relaxed);
     }
 
-    pub fn increase_events(&mut self, by: usize) {
-        self.total_events += by;
+    pub fn increase_events(&self, by: usize) {
+        self.inner.events.fetch_add(by, Ordering::Relaxed);
     }
 
     pub fn log_stats(&self) {
         log::info!("{}", self);
     }
 
-    pub fn reset(&mut self) {
-        *self = Self::new();
+    pub fn reset(&self) {
+        self.inner.checkpoints.store(0, Ordering::Relaxed);
+        self.inner.state_updates.store(0, Ordering::Relaxed);
+        self.inner.events.store(0, Ordering::Relaxed);
     }
 }
 
@@ -45,7 +55,9 @@ impl Display for SyncStats {
         write!(
             f,
             "Sync Stats: {{ checkpoints: {}, state_updates: {}, events: {} }}",
-            self.total_checkpoints, self.total_state_updates, self.total_events
+            self.inner.checkpoints.load(Ordering::Relaxed),
+            self.inner.state_updates.load(Ordering::Relaxed),
+            self.inner.events.load(Ordering::Relaxed)
         )
     }
 }

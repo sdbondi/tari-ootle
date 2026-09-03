@@ -138,8 +138,28 @@ pub struct IndexerConfig {
     /// How often do we want to scan the second layer for new versions
     #[serde(with = "serializers::seconds")]
     pub block_scanning_interval: Duration,
+    /// How long a shard group waits before reopening its state sync stream after the stream fails,
+    /// or after a validator that does not follow its tip closes it. Also how often sync statistics
+    /// are reported.
     #[serde(with = "serializers::seconds")]
     pub state_scanning_interval: Duration,
+    /// The longest a validator holds a state sync stream open without a transition to send. The
+    /// stream stays open past the validator's tip, streaming transitions as they commit, and is
+    /// reopened once this passes - at the cost of one completion marker per shard - so it need not
+    /// be long.
+    ///
+    /// The substate cache serves a shard that has seen no transition only while its last completion
+    /// marker arrived within `substate_cache_max_serve_lag`, and a quiet shard's next marker is the
+    /// reopen, which follows up to a minute after this passes. This must therefore be comfortably
+    /// shorter than that lag.
+    #[serde(default = "default_state_sync_stream_deadline", with = "serializers::seconds")]
+    pub state_sync_stream_deadline: Duration,
+    /// How often a validator is asked to show it is still there while the state sync stream has
+    /// nothing to send. Must be well under `state_sync_stream_deadline`. A validator serves no
+    /// shorter an interval than its own minimum (5s by default), and the stream is given up after
+    /// several missed keepalives.
+    #[serde(default = "default_state_sync_keepalive_interval", with = "serializers::seconds")]
+    pub state_sync_keepalive_interval: Duration,
     /// The sidechain to listen on. Also identifies this chain for L1 burn-claim binding.
     pub sidechain_id: Option<RistrettoPublicKey>,
     /// Cache TTL for substates fetched during dry run transaction processing.
@@ -156,11 +176,13 @@ pub struct IndexerConfig {
     /// could supersede or destroy it has already reached this indexer through that shard's transition
     /// stream, which only holds while the stream is being kept up with.
     ///
-    /// It must comfortably exceed a full sync round - `state_scanning_interval` plus however long it
-    /// takes to sync every shard group - or the cache closes between rounds and every read costs a
-    /// validator round trip. It is also the only bound on a validator that has stopped serving
-    /// transitions: until it expires, values that the withheld transitions would have retracted are
-    /// still served. Ordinary staleness is bounded by the sync round, not by this.
+    /// A shard that sees no transition is confirmed only when its stream is reopened, so this must
+    /// comfortably exceed `state_sync_stream_deadline` plus the minute or so a reopen can take, or
+    /// the cache closes for quiet shards between reopens and every read costs a validator round
+    /// trip. It is also the only bound on a validator that has stopped serving transitions: until
+    /// it expires, values that the withheld transitions would have retracted are still served.
+    /// Ordinary staleness is bounded by how promptly the validator streams its commits, not by
+    /// this.
     #[serde(default = "default_substate_cache_max_serve_lag", with = "serializers::seconds")]
     pub substate_cache_max_serve_lag: Duration,
     /// Maximum substates held in the cache - one entry each, its head version. Beyond this the oldest
@@ -232,6 +254,14 @@ pub struct IndexerConfig {
 
 fn default_verify_substate_proofs() -> bool {
     true
+}
+
+fn default_state_sync_stream_deadline() -> Duration {
+    Duration::from_secs(120)
+}
+
+fn default_state_sync_keepalive_interval() -> Duration {
+    Duration::from_secs(10)
 }
 
 fn default_substate_cache_max_serve_lag() -> Duration {
@@ -379,6 +409,8 @@ impl Default for IndexerConfig {
             web_ui_public_graphql_url: None,
             block_scanning_interval: Duration::from_secs(10),
             state_scanning_interval: Duration::from_secs(60),
+            state_sync_stream_deadline: default_state_sync_stream_deadline(),
+            state_sync_keepalive_interval: default_state_sync_keepalive_interval(),
             sidechain_id: None,
             dry_run_cache_ttl: Duration::from_secs(10),
             allow_past_protocol_activation: false,

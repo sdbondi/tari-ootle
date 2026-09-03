@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use futures::StreamExt;
+use futures::{StreamExt, future, stream::FuturesUnordered};
 use log::*;
 use ootle_network::Network;
 #[cfg(feature = "metrics")]
@@ -33,7 +33,7 @@ use tari_ootle_storage::{
     },
 };
 use tari_ootle_transaction::TransactionId;
-use tari_rpc_framework::__macro_reexports::future::Either;
+use tari_rpc_framework::{__macro_reexports::future::Either, RpcRequestOptions};
 use tari_shutdown::ShutdownSignal;
 use tari_template_lib_types::{Amount, TemplateAddress, TransactionReceiptAddress};
 use tokio::{sync::broadcast, time};
@@ -48,7 +48,7 @@ use crate::{
         shard_watermarks::ShardWatermarks,
         stats::SyncStats,
         sync_plan::SyncPlan,
-        sync_progress::SyncProgress,
+        sync_progress::{SharedSyncProgress, SyncProgress},
         validator_status::ValidatorStatusMonitor,
     },
     notify::Notify,
@@ -154,35 +154,46 @@ impl NetworkWideStateSync {
         #[cfg(feature = "metrics")]
         self.update_metrics().await;
 
-        let mut interval = time::interval(self.config.work_interval);
-        interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+        let mut report_interval = time::interval(self.config.work_interval);
+        report_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+        report_interval.reset();
 
         loop {
-            tokio::select! {
-                Ok(event) = epoch_events.recv() => {
-                    interval.reset();
-                    self.handle_epoch_event(event).await?;
-                },
-                _ = interval.tick() => {
-                    self.start_sync_round().await?;
+            let sync_plan = self.initialize_sync_plan().await?;
+            // A plan is drawn against the committees of one epoch: which shard group serves which
+            // shards, and who is in it. When the epoch moves, every stream is dropped and a new plan
+            // drawn; the cursors survive in the persisted progress, so nothing is re-streamed.
+            let mut sync = pin!(self.clone().sync_plan(sync_plan));
+            loop {
+                tokio::select! {
+                    event = epoch_events.recv() => {
+                        match event {
+                            Ok(event) => self.handle_epoch_event(event),
+                            Err(broadcast::error::RecvError::Lagged(n)) => {
+                                warn!(target: LOG_TARGET, "⚠️ Missed {n} epoch event(s). Re-planning the state sync");
+                            },
+                            Err(broadcast::error::RecvError::Closed) => {
+                                return Err(NetworkStateSyncError::InvariantError {
+                                    details: "Epoch manager stopped publishing events".to_string(),
+                                });
+                            },
+                        }
+                        break;
+                    },
+                    result = &mut sync => {
+                        result?;
+                        time::sleep(self.config.work_interval).await;
+                        break;
+                    },
+                    _ = report_interval.tick() => {
+                        self.stats.log_stats();
+                        self.stats.reset();
+                        #[cfg(feature = "metrics")]
+                        self.update_metrics().await;
+                    },
                 }
             }
         }
-    }
-
-    async fn start_sync_round(&mut self) -> Result<(), NetworkStateSyncError> {
-        info!(target: LOG_TARGET, "🌍️ Starting network-wide state sync round...");
-        let sync_plan = self.initialize_sync_plan().await?;
-        if sync_plan.network_description().epoch.is_zero() {
-            info!(target: LOG_TARGET, "🌍️ Current epoch is zero, nothing to sync.");
-            return Ok(());
-        }
-        self.start_sync(sync_plan).await?;
-        self.stats.log_stats();
-        self.stats.reset();
-        #[cfg(feature = "metrics")]
-        self.update_metrics().await;
-        Ok(())
     }
 
     /// Reads the persisted economic totals and publishes them to the Prometheus gauges. Metrics are
@@ -201,15 +212,13 @@ impl NetworkWideStateSync {
         }
     }
 
-    async fn handle_epoch_event(&mut self, event: EpochManagerEvent) -> Result<(), NetworkStateSyncError> {
+    fn handle_epoch_event(&self, event: EpochManagerEvent) {
         match event {
             EpochManagerEvent::EpochChanged { epoch, .. } => {
                 info!(target: LOG_TARGET, "🌍️ Epoch changed to {}.", epoch);
                 self.notify.notify(NewEpochEvent { epoch });
-                self.start_sync_round().await?;
             },
         }
-        Ok(())
     }
 
     async fn initialize_sync_plan(&self) -> Result<SyncPlan, NetworkStateSyncError> {
@@ -227,33 +236,42 @@ impl NetworkWideStateSync {
             committee_pools.insert(shard_group, pool);
         }
 
-        Ok(SyncPlan::new(network_desc, sync_progress, committee_pools))
+        Ok(SyncPlan::new(
+            network_desc,
+            SharedSyncProgress::new(sync_progress),
+            committee_pools,
+        ))
     }
 
-    async fn start_sync(&mut self, mut sync_plan: SyncPlan) -> Result<(), NetworkStateSyncError> {
-        self.sync_checkpoints(&mut sync_plan).await?;
-        self.sync_state(&mut sync_plan).await?;
-
-        Ok(())
+    /// Syncs the previous epoch's checkpoints, then follows every shard group's tip until the plan
+    /// is dropped. Returns only on an error that is not one shard group's alone.
+    async fn sync_plan(self, sync_plan: SyncPlan) -> Result<(), NetworkStateSyncError> {
+        if sync_plan.network_description().epoch.is_zero() {
+            info!(target: LOG_TARGET, "🌍️ Current epoch is zero, nothing to sync.");
+            return future::pending().await;
+        }
+        info!(target: LOG_TARGET, "🌍️ Starting network-wide state sync...");
+        self.sync_checkpoints(&sync_plan).await?;
+        self.follow_state(&sync_plan).await
     }
 
     #[expect(clippy::too_many_lines)]
-    async fn sync_checkpoints(&mut self, sync_plan_mut: &mut SyncPlan) -> Result<(), NetworkStateSyncError> {
-        let prev_epoch = sync_plan_mut
+    async fn sync_checkpoints(&self, sync_plan: &SyncPlan) -> Result<(), NetworkStateSyncError> {
+        let prev_epoch = sync_plan
             .network_description()
             .epoch()
             .checked_sub(Epoch(1))
             .ok_or_else(|| NetworkStateSyncError::InvariantError {
                 details: "current epoch is zero, there are no checkpoints to sync".to_string(),
             })?;
-        let committee_pools = sync_plan_mut.committee_pools().clone();
+        let committee_pools = sync_plan.committee_pools().clone();
 
         for (shard_group, mut pool) in committee_pools {
-            let from_epoch = sync_plan_mut
+            let from_epoch = sync_plan
                 .sync_progress()
-                .checkpoint_progress
-                .get(&shard_group)
-                .copied()
+                .lock()
+                .await
+                .checkpoint_epoch(shard_group)
                 .unwrap_or_else(Epoch::zero);
             if from_epoch >= prev_epoch {
                 info!(target: LOG_TARGET, "🌍️ No checkpoints to sync for shard group {shard_group} from epoch {from_epoch}");
@@ -303,8 +321,9 @@ impl NetworkWideStateSync {
 
             if checkpoints.is_empty() {
                 info!(target: LOG_TARGET, "🌍️ No checkpoints found for shard group {shard_group} from epoch {from_epoch} (prev_epoch {prev_epoch})");
-                sync_plan_mut.add_checkpoint_sync_progress(shard_group, prev_epoch);
-                let sync_progress_snapshot = sync_plan_mut.sync_progress().clone();
+                let mut progress = sync_plan.sync_progress().lock().await;
+                progress.record_checkpoint(shard_group, prev_epoch);
+                let sync_progress_snapshot = progress.clone();
                 self.store
                     .with_write_tx(move |tx| tx.key_value_set(Key::SyncProgress, sync_progress_snapshot))
                     .await?;
@@ -362,10 +381,11 @@ impl NetworkWideStateSync {
                 info!(target: LOG_TARGET, "🌍️ Inserting checkpoint for {}, shard group {}", checkpoint.epoch(), checkpoint_shard_group);
 
                 self.stats.increment_checkpoints();
-                sync_plan_mut.add_checkpoint_sync_progress(shard_group, checkpoint.epoch());
                 let xtr_exhausted = Amount::from(checkpoint.header().accumulated_data().total_exhaust_burn);
                 let checkpoint_epoch = checkpoint.epoch();
-                let sync_progress_snapshot = sync_plan_mut.sync_progress().clone();
+                let mut progress = sync_plan.sync_progress().lock().await;
+                progress.record_checkpoint(shard_group, checkpoint_epoch);
+                let sync_progress_snapshot = progress.clone();
                 self.store
                     .with_write_tx(move |tx| {
                         if !tx.epoch_checkpoint_exists(shard_group, checkpoint_epoch)? {
@@ -387,17 +407,49 @@ impl NetworkWideStateSync {
         Ok(())
     }
 
-    async fn sync_state(&mut self, sync_plan_mut: &mut SyncPlan) -> Result<(), NetworkStateSyncError> {
-        let committee_pools = sync_plan_mut.committee_pools().clone();
+    /// Follows every shard group's tip at once, each on its own stream, until dropped. Returns only
+    /// on an error that is not one shard group's alone; a group whose peer fails is retried on its
+    /// own without disturbing the others.
+    async fn follow_state(&self, sync_plan: &SyncPlan) -> Result<(), NetworkStateSyncError> {
+        let mut committee_pools = sync_plan.committee_pools().iter().collect::<Vec<_>>();
+        committee_pools.sort_by_key(|(shard_group, _)| **shard_group);
 
-        let mut has_synced_global_shard = false;
+        // Every committee holds the global shard, so it is claimed by exactly one group: the lowest.
+        let mut groups = committee_pools
+            .into_iter()
+            .enumerate()
+            .map(|(i, (shard_group, pool))| {
+                self.clone()
+                    .follow_shard_group(*shard_group, pool.clone(), i == 0, sync_plan.sync_progress().clone())
+            })
+            .collect::<FuturesUnordered<_>>();
 
-        for (shard_group, mut pool) in committee_pools {
-            // TODO: consider syncing shards in epoch chunks rather than one after another
+        while let Some(result) = groups.next().await {
+            result?;
+        }
+        Ok(())
+    }
+
+    /// Keeps one shard group synced: opens a stream from a committee member, follows it until it
+    /// ends, and opens another.
+    ///
+    /// A stream that ends because the validator had nothing to send for the deadline is reopened at
+    /// once - that is the ordinary end of a followed stream, and the reopen refreshes each shard's
+    /// watermark. One closed by a validator that does not follow, or failed by the peer, waits the
+    /// work interval first: the former is polling, the latter wants a different peer.
+    async fn follow_shard_group(
+        mut self,
+        shard_group: ShardGroup,
+        mut pool: ValidatorCommitteeRpcPool,
+        syncs_global_shard: bool,
+        progress: SharedSyncProgress,
+    ) -> Result<(), NetworkStateSyncError> {
+        loop {
             let mut session = match pool.new_session().await {
                 Ok(s) => s,
                 Err(e) => {
-                    warn!(target: LOG_TARGET, "⚠️ Failed to create session for shard group {}: {}. Continuing with others", shard_group, e);
+                    warn!(target: LOG_TARGET, "⚠️ Failed to create session for shard group {}: {}. Retrying in {:.0?}", shard_group, e, self.config.work_interval);
+                    time::sleep(self.config.work_interval).await;
                     continue;
                 },
             };
@@ -412,76 +464,64 @@ impl NetworkWideStateSync {
                 Ok(None) => {},
                 // probe only returns Err for an invalid (forged) commit proof.
                 Err(e) => {
-                    warn!(target: LOG_TARGET, "⚠️ Validator {} for shard group {} served an INVALID commit proof: {}. Skipping this round.", session.peer_address(), shard_group, e);
+                    warn!(target: LOG_TARGET, "⚠️ Validator {} for shard group {} served an INVALID commit proof: {}. Retrying in {:.0?}", session.peer_address(), shard_group, e, self.config.work_interval);
+                    time::sleep(self.config.work_interval).await;
                     continue;
                 },
             }
 
-            // Every committee holds the global shard, so it is synced once per round from whichever
-            // committee is reached first. Shard 0 sorts before every preshard, which keeps the cursor
-            // list ascending as the responder requires.
-            let shards = (!has_synced_global_shard)
+            // Shard 0 sorts before every preshard, which keeps the cursor list ascending as the
+            // responder requires.
+            let shards = syncs_global_shard
                 .then_some(Shard::global())
                 .into_iter()
                 .chain(shard_group.shard_iter());
 
             // A responder that cannot serve these shards - it left the committee, or the epoch this
-            // indexer resolved its committees at has moved on - costs this shard group the round and
-            // no more. The global shard stays unclaimed so that the next committee streams it.
-            if let Err(err) = self
-                .sync_shard_group_state(shards, sync_plan_mut, shard_group, &mut session)
+            // indexer resolved its committees at has moved on - costs this shard group a retry and
+            // no more.
+            match self
+                .sync_shard_group_state(shards, &progress, shard_group, &mut session)
                 .await
             {
-                if !err.is_peer_fault() {
-                    return Err(err);
-                }
-                warn!(target: LOG_TARGET, "⚠️ State sync for shard group {} from {} failed: {}. Continuing with others", shard_group, session.peer_address(), err);
-                continue;
+                Ok(StreamEnd::TimedOut) => {
+                    debug!(target: LOG_TARGET, "🌍️ State sync stream for shard group {shard_group} from {} had nothing to send for the deadline. Reopening", session.peer_address());
+                },
+                Ok(StreamEnd::Final) => {
+                    debug!(target: LOG_TARGET, "🌍️ Validator {} closed the state sync stream for shard group {shard_group} at its tip. Reopening in {:.0?}", session.peer_address(), self.config.work_interval);
+                    time::sleep(self.config.work_interval).await;
+                },
+                Err(err) if err.is_peer_fault() => {
+                    warn!(target: LOG_TARGET, "⚠️ State sync for shard group {} from {} failed: {}. Retrying in {:.0?}", shard_group, session.peer_address(), err, self.config.work_interval);
+                    time::sleep(self.config.work_interval).await;
+                },
+                Err(err) => return Err(err),
             }
-            has_synced_global_shard = true;
         }
-
-        Ok(())
     }
 
     /// Syncs every given shard from `session`, which serves them all over a single stream.
     ///
     /// A shard that has never been synced wants only the current head state rather than its full
     /// history, which is expressed by the `UP_ONLY` filter. Filters apply to the whole request, so
-    /// such shards are streamed separately from the ones being caught up incrementally: two streams
-    /// per shard group at most, and one in the steady state.
+    /// such shards are streamed separately from the ones being caught up incrementally, and only the
+    /// incremental stream follows the tip: a shard leaves the from-scratch stream with a cursor and
+    /// joins the followed stream opened right after it.
     async fn sync_shard_group_state(
         &mut self,
         shards: impl Iterator<Item = Shard>,
-        sync_plan_mut: &mut SyncPlan,
+        progress: &SharedSyncProgress,
         shard_group: ShardGroup,
         session: &mut ValidatorRpcSession,
-    ) -> Result<(), NetworkStateSyncError> {
+    ) -> Result<StreamEnd, NetworkStateSyncError> {
         let value_filters = SubstateValueFilterFlags::UTXO |
             SubstateValueFilterFlags::VALIDATOR_FEE_POOL |
             SubstateValueFilterFlags::CLAIMED_OUTPUT_TOMBSTONE |
             SubstateValueFilterFlags::TRANSACTION_RECEIPT |
             SubstateValueFilterFlags::TEMPLATE_METADATA;
 
-        let mut from_scratch = Vec::new();
-        let mut incremental = Vec::new();
-        for shard in shards {
-            let prev_version = sync_plan_mut
-                .sync_progress()
-                .last_state_versions
-                .get(&shard)
-                .map_or(0, |(v, _)| v.as_u64());
-            let cursor = rpc::ShardCursor {
-                shard: shard.as_u32(),
-                start_state_version: prev_version + 1,
-            };
-            if prev_version == 0 {
-                from_scratch.push(cursor);
-            } else {
-                incremental.push(cursor);
-            }
-        }
-
+        let shards = shards.collect::<Vec<_>>();
+        let (from_scratch, _) = partition_cursors(&shards, &*progress.lock().await);
         if !from_scratch.is_empty() {
             info!(
                 target: LOG_TARGET,
@@ -491,28 +531,31 @@ impl NetworkWideStateSync {
             self.stream_shard_state(
                 from_scratch,
                 value_filters | SubstateValueFilterFlags::UP_ONLY,
-                sync_plan_mut,
+                false,
+                progress,
                 shard_group,
                 session,
             )
             .await?;
         }
 
-        if !incremental.is_empty() {
-            // ALL_HASHES adds an id and a version for every substate outside the value filter, which is
-            // what lets the substate cache tell a superseded or destroyed entry from a current one. It
-            // is pointless on the from-scratch stream: those shards have no cached entries to retire.
-            self.stream_shard_state(
-                incremental,
-                value_filters | SubstateValueFilterFlags::ALL_HASHES,
-                sync_plan_mut,
-                shard_group,
-                session,
-            )
-            .await?;
+        // A shard that had nothing to fetch from scratch is left for the next stream.
+        let (_, incremental) = partition_cursors(&shards, &*progress.lock().await);
+        if incremental.is_empty() {
+            return Ok(StreamEnd::Final);
         }
-
-        Ok(())
+        // ALL_HASHES adds an id and a version for every substate outside the value filter, which is
+        // what lets the substate cache tell a superseded or destroyed entry from a current one. It
+        // is pointless on the from-scratch stream: those shards have no cached entries to retire.
+        self.stream_shard_state(
+            incremental,
+            value_filters | SubstateValueFilterFlags::ALL_HASHES,
+            true,
+            progress,
+            shard_group,
+            session,
+        )
+        .await
     }
 
     /// Records a committee-validated tip into the verified-root store, after a fail-open epoch
@@ -543,36 +586,48 @@ impl NetworkWideStateSync {
         Ok(())
     }
 
-    /// Consumes a single `sync_state` stream covering `cursors`.
+    /// Consumes a single `sync_state` stream covering `cursors`, following the responder's tip if
+    /// `follow` is set.
     ///
     /// The responder streams each shard's updates contiguously and closes it off with a completion
     /// marker, so progress is recorded per shard as the stream advances - an interrupted stream keeps
-    /// everything already committed and simply resumes from the recorded cursors next round.
+    /// everything already committed and simply resumes from the recorded cursors when reopened. A
+    /// followed stream keeps going past the tip, closing off each burst of a shard's new versions
+    /// with a further marker; it ends when the responder has had nothing to send for the deadline,
+    /// or can no longer serve it.
     #[expect(clippy::too_many_lines)]
     async fn stream_shard_state(
         &mut self,
         cursors: Vec<rpc::ShardCursor>,
         value_filters: SubstateValueFilterFlags,
-        sync_plan_mut: &mut SyncPlan,
+        follow: bool,
+        progress: &SharedSyncProgress,
         shard_group: ShardGroup,
         session: &mut ValidatorRpcSession,
-    ) -> Result<(), NetworkStateSyncError> {
+    ) -> Result<StreamEnd, NetworkStateSyncError> {
         let mut order = StreamOrder::new(&cursors);
 
         info!(
             target: LOG_TARGET,
-            "🌍️ Starting state sync for {} shard(s) in shard group {shard_group} from peer {}",
+            "🌍️ Starting state sync for {} shard(s) in shard group {shard_group} from peer {} (follow: {follow})",
             cursors.len(),
             session.peer_address()
         );
 
+        let options = RpcRequestOptions::new()
+            .with_deadline(self.config.stream_deadline)
+            .with_keepalive_interval(self.config.keepalive_interval);
         let mut stream = session
-            .sync_state(rpc::SyncStateRequest {
-                cursors,
-                // Sync to latest epoch
-                until_epoch: None,
-                value_filters: value_filters.bits(),
-            })
+            .sync_state_with_options(
+                rpc::SyncStateRequest {
+                    cursors,
+                    // Sync to latest epoch
+                    until_epoch: None,
+                    value_filters: value_filters.bits(),
+                    follow,
+                },
+                options,
+            )
             .await?;
 
         // Buffers accumulate a single (shard, state version) at a time: the responder splits an
@@ -587,9 +642,17 @@ impl NetworkWideStateSync {
         let mut xtr_fees = Amount::zero();
         let mut xtr_receipt_burn = Amount::zero();
 
-        let mut saw_final = false;
         while let Some(result) = stream.next().await {
-            let msg = result?;
+            let msg = match result {
+                Ok(msg) => msg,
+                // A followed stream with nothing to send for the deadline is simply abandoned by the
+                // responder, which the client reports as a timeout.
+                Err(status) if follow && status.as_status_code().is_timeout() => {
+                    debug!(target: LOG_TARGET, "🌍️ State sync stream for shard group {shard_group} timed out: {status}");
+                    return Ok(StreamEnd::TimedOut);
+                },
+                Err(status) => return Err(status.into()),
+            };
             let batch = match msg.response {
                 Some(rpc::sync_state_response::Response::Batch(batch)) => batch,
                 Some(rpc::sync_state_response::Response::Complete(complete)) => {
@@ -611,20 +674,18 @@ impl NetworkWideStateSync {
                                 details: "Received sync completion without epoch".to_string(),
                             })?;
                     // Only persist when the watermark advances - a caught-up shard re-sends the same
-                    // version every round, and we must not write on every empty round.
-                    let already_synced = sync_plan_mut
-                        .sync_progress()
-                        .last_state_versions
-                        .get(&shard)
-                        .is_some_and(|(v, _)| synced_to <= *v);
+                    // version on every reopen, and we must not write on every empty one.
+                    let mut progress = progress.lock().await;
+                    let already_synced = progress.last_state_version(shard).is_some_and(|v| synced_to <= v);
                     if !already_synced {
-                        sync_plan_mut.add_state_sync_progress(shard, synced_to, msg_epoch);
-                        let sync_progress_snapshot = sync_plan_mut.sync_progress().clone();
+                        progress.record_state_version(shard, synced_to, msg_epoch);
+                        let sync_progress_snapshot = progress.clone();
                         self.store
                             .clone()
                             .with_write_tx(move |tx| tx.key_value_set(Key::SyncProgress, sync_progress_snapshot))
                             .await?;
                     }
+                    drop(progress);
                     // The completion marker is the only point at which this shard is known to be
                     // level with the committee, which is what the substate cache needs: mid-stream
                     // the indexer holds every transition up to some version while the chain is
@@ -633,8 +694,7 @@ impl NetworkWideStateSync {
                     self.shard_watermarks.confirm(shard, synced_to);
                     debug!(target: LOG_TARGET, "🌍️ Completed state sync for shard {shard} in shard group {shard_group} to epoch {msg_epoch} and state version {synced_to}");
                     if complete.is_final {
-                        saw_final = true;
-                        break;
+                        return Ok(StreamEnd::Final);
                     }
                     continue;
                 },
@@ -704,8 +764,9 @@ impl NetworkWideStateSync {
             let event_count: usize = transactions.iter().map(|(_, t)| t.events.len()).sum();
             self.stats.increase_events(event_count);
 
-            sync_plan_mut.add_state_sync_progress(shard, state_version, msg_epoch);
-            let sync_progress_snapshot = sync_plan_mut.sync_progress().clone();
+            let mut progress = progress.lock().await;
+            progress.record_state_version(shard, state_version, msg_epoch);
+            let sync_progress_snapshot = progress.clone();
 
             let network = self.network;
             let event_filters = self.config.event_filters.clone();
@@ -756,6 +817,7 @@ impl NetworkWideStateSync {
                     Ok(inserted)
                 })
                 .await?;
+            drop(progress);
 
             // The stream flushes (has_more == false) once per state version, so each commit must fold only
             // that version's delta. Reset the running totals here, mirroring the buffer drains above.
@@ -772,30 +834,62 @@ impl NetworkWideStateSync {
             }
         }
 
-        if !saw_final {
-            return Err(NetworkStateSyncError::InvalidStateUpdate {
-                details: format!(
-                    "State sync stream for shard group {shard_group} ended without a final completion marker"
-                ),
-            });
-        }
-
-        Ok(())
+        // A followed stream is only ever ended by the responder for want of its warrant, which it
+        // reports, or of consensus. Ending silently is the peer's failing either way.
+        Err(NetworkStateSyncError::InvalidStateUpdate {
+            details: if follow {
+                format!("Followed state sync stream for shard group {shard_group} was closed by the responder")
+            } else {
+                format!("State sync stream for shard group {shard_group} ended without a final completion marker")
+            },
+        })
     }
 }
 
-/// Enforces the ordering a `sync_state` stream promises across the shards it carries: each shard is
-/// streamed contiguously, its versions strictly advance, and nothing for it follows its completion
-/// marker.
+/// How a `sync_state` stream ended without failing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamEnd {
+    /// The responder closed it with a final completion marker: it streamed to its tip and does not
+    /// follow.
+    Final,
+    /// A followed stream was abandoned by the responder after it had nothing to send for the
+    /// deadline.
+    TimedOut,
+}
+
+/// Splits `shards` into cursors for those never synced, which want only the head state, and those
+/// with a version to resume from. Both lists keep the order of `shards`.
+fn partition_cursors(shards: &[Shard], progress: &SyncProgress) -> (Vec<rpc::ShardCursor>, Vec<rpc::ShardCursor>) {
+    let mut from_scratch = Vec::new();
+    let mut incremental = Vec::new();
+    for &shard in shards {
+        let prev_version = progress.last_state_version(shard).map_or(0, |v| v.as_u64());
+        let cursor = rpc::ShardCursor {
+            shard: shard.as_u32(),
+            start_state_version: prev_version + 1,
+        };
+        if prev_version == 0 {
+            from_scratch.push(cursor);
+        } else {
+            incremental.push(cursor);
+        }
+    }
+    (from_scratch, incremental)
+}
+
+/// Enforces the ordering a `sync_state` stream promises across the shards it carries: a shard's
+/// versions strictly advance, and a version split across chunks is delivered whole before anything
+/// else.
 ///
-/// The consumer relies on all three. Its buffers hold one `(shard, state version)` at a time, so an
-/// interleaved shard would mix two shards' updates into one commit; and because the running economic
-/// totals are read-modify-write, re-applying a version already committed would double-count it.
+/// The consumer relies on both. Its buffers hold one `(shard, state version)` at a time, so a shard
+/// interleaved mid-version would mix two shards' updates into one commit; and because the running
+/// economic totals are read-modify-write, re-applying a version already committed would double-count
+/// it. A completion marker closes off what was streamed so far for a shard and a followed stream
+/// carries more for it after, so a marker does not end a shard.
 struct StreamOrder {
     /// Highest version committed per requested shard, seeded from the cursor so a responder cannot
     /// replay versions the caller already holds.
     committed_versions: HashMap<Shard, StateVersion>,
-    completed: HashSet<Shard>,
     /// Set while a version is split across chunks, until the chunk that flushes it.
     pending_chunk: Option<(Shard, StateVersion)>,
 }
@@ -812,7 +906,6 @@ impl StreamOrder {
                     )
                 })
                 .collect(),
-            completed: HashSet::new(),
             pending_chunk: None,
         }
     }
@@ -821,9 +914,6 @@ impl StreamOrder {
         let Some(committed_version) = self.committed_versions.get(&shard).copied() else {
             return Err(format!("Received batch for unrequested shard {shard}"));
         };
-        if self.completed.contains(&shard) {
-            return Err(format!("Received batch for shard {shard} after its completion marker"));
-        }
         if state_version <= committed_version {
             return Err(format!(
                 "Received v{state_version} for shard {shard}, which is not ahead of the committed v{committed_version}"
@@ -856,9 +946,6 @@ impl StreamOrder {
                 "Received completion marker for shard {shard} while v{pending_version} of shard {pending_shard} is \
                  still incomplete"
             ));
-        }
-        if !self.completed.insert(shard) {
-            return Err(format!("Received a second completion marker for shard {shard}"));
         }
         Ok(())
     }
@@ -1122,9 +1209,14 @@ mod tests {
         }
 
         #[test]
-        fn it_rejects_a_batch_after_the_shards_marker() {
-            let mut o = order(&[(1, 1)]);
+        fn it_accepts_a_followed_shard_streamed_again_after_its_marker() {
+            let mut o = order(&[(1, 1), (2, 1)]);
             o.accept_batch(S1, v(2), false).unwrap();
+            o.accept_marker(S1).unwrap();
+            o.accept_marker(S2).unwrap();
+            o.accept_batch(S1, v(3), false).unwrap();
+            o.accept_marker(S1).unwrap();
+            // A forced marker on an epoch change closes off nothing new.
             o.accept_marker(S1).unwrap();
             assert!(o.accept_batch(S1, v(3), false).is_err());
         }
@@ -1140,13 +1232,6 @@ mod tests {
         fn it_rejects_a_marker_while_a_version_is_incomplete() {
             let mut o = order(&[(1, 1)]);
             o.accept_batch(S1, v(3), true).unwrap();
-            assert!(o.accept_marker(S1).is_err());
-        }
-
-        #[test]
-        fn it_rejects_a_second_marker_for_a_shard() {
-            let mut o = order(&[(1, 1)]);
-            o.accept_marker(S1).unwrap();
             assert!(o.accept_marker(S1).is_err());
         }
 
