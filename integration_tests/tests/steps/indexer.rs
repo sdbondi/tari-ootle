@@ -33,6 +33,39 @@ async fn given_validator_connects_to_other_vns(world: &mut TariWorld, name: Stri
     }
 }
 
+/// The number of shard groups follows the registered validator count divided by the committee size,
+/// so this is how a scenario states the shape of the network it has built - and waits for a
+/// registration to take effect at an epoch boundary.
+#[then(expr = "the network has {int} shard group(s) according to indexer {word}")]
+async fn network_has_shard_groups(world: &mut TariWorld, step: &Step, num_shard_groups: usize, name: String) {
+    cucumber_log!("=== Step:{}", step.value);
+    let client = world.get_indexer(&name).get_indexer_client();
+    let mut remaining = 20;
+    loop {
+        let state = client
+            .get_network_sync_state()
+            .await
+            .expect("Failed to get network sync state");
+        let shard_groups = &state.network_desc.shard_groups;
+        if shard_groups.len() == num_shard_groups {
+            return;
+        }
+
+        if remaining == 0 {
+            panic!(
+                "Indexer {} sees {} shard group(s) at epoch {}, expected {}: {:?}",
+                name,
+                shard_groups.len(),
+                state.network_desc.epoch,
+                num_shard_groups,
+                shard_groups
+            );
+        }
+        remaining -= 1;
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+}
+
 #[then(expr = "indexer {word} has scanned to at least height {int}")]
 pub async fn indexer_has_scanned_to_at_least_height(
     world: &mut TariWorld,

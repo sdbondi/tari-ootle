@@ -21,7 +21,7 @@
 //   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 mod steps;
-use std::{fs, future, io, panic, str::FromStr, time::Duration};
+use std::{env, fs, future, io, panic, str::FromStr, time::Duration};
 
 use anyhow::bail;
 use cucumber::{ScenarioType, World, WriterExt, gherkin::Step, given, then, when, writer, writer::Verbosity};
@@ -52,8 +52,28 @@ use tari_validator_node_client::types::AddPeerRequest;
 
 const LOG_TARGET: &str = "cucumber";
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    // Validators and indexers run in-process here, and each derives its consensus constants from the
+    // network, so the committee size that decides how many shard groups the network splits into is
+    // shared by every node in the run. A smaller committee than the devnet default lets a scenario
+    // reach a second shard group with a handful of nodes rather than fourteen, and leaves every
+    // scenario that registers five or fewer validators on a single committee as before.
+    // SAFETY: nothing has been spawned yet, so no other thread can be reading the environment.
+    if env::var(COMMITTEE_SIZE_VAR).is_err() {
+        unsafe { env::set_var(COMMITTEE_SIZE_VAR, "3") };
+    }
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build tokio runtime")
+        .block_on(run());
+}
+
+/// Overrides `committee_size_per_shard_group` for `LocalNet`, read by `ConsensusConstants::from`.
+const COMMITTEE_SIZE_VAR: &str = "TARI_DEVNET_COMMITTEE_SIZE";
+
+async fn run() {
     let log_path = create_log_config_file();
     let base_path = get_base_dir();
     initialize_logging(log_path.as_path(), &base_path, include_str!("./log4rs/cucumber.yml")).unwrap();
