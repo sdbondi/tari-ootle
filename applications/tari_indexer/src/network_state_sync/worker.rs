@@ -532,9 +532,6 @@ impl NetworkWideStateSync {
                 Ok(StreamEnd::Final) => {
                     wait("the validator closed the stream at its tip and does not follow").await;
                 },
-                Ok(StreamEnd::NothingToFollow) => {
-                    wait("no shard has a version to follow from").await;
-                },
                 Err(err) if err.is_peer_fault() => {
                     warn!(target: LOG_TARGET, "⚠️ State sync for shard group {} from {} failed: {}", shard_group, session.peer_address(), err);
                     wait("the peer failed").await;
@@ -549,9 +546,10 @@ impl NetworkWideStateSync {
     ///
     /// A shard that has never been synced wants only the current head state rather than its full
     /// history, which is expressed by the `UP_ONLY` filter. Filters apply to the whole request, so
-    /// such shards are streamed separately from the ones being caught up incrementally, and only the
-    /// incremental stream follows the tip: a shard leaves the from-scratch stream with a cursor and
-    /// joins the followed stream opened right after it.
+    /// such shards are streamed separately, on a stream that runs to its tip and closes. Every shard
+    /// then joins the followed stream: one the head fetch found nothing for follows from version one,
+    /// since its first transition is its head state, and it has to arrive while the stream is open
+    /// rather than on the reopen after the deadline.
     async fn sync_shard_group_state(
         &mut self,
         shards: impl Iterator<Item = Shard>,
@@ -567,7 +565,10 @@ impl NetworkWideStateSync {
             SubstateValueFilterFlags::TEMPLATE_METADATA;
 
         let shards = shards.collect::<Vec<_>>();
-        let (from_scratch, _) = partition_cursors(&shards, &*progress.lock().await);
+        let from_scratch = cursors_for(&shards, &*progress.lock().await)
+            .into_iter()
+            .filter(|cursor| cursor.start_state_version == 1)
+            .collect::<Vec<_>>();
         if !from_scratch.is_empty() {
             info!(
                 target: LOG_TARGET,
@@ -590,16 +591,12 @@ impl NetworkWideStateSync {
             }
         }
 
-        // A shard that had nothing to fetch from scratch is left for the next stream.
-        let (_, incremental) = partition_cursors(&shards, &*progress.lock().await);
-        if incremental.is_empty() {
-            return Ok(StreamEnd::NothingToFollow);
-        }
+        let cursors = cursors_for(&shards, &*progress.lock().await);
         // ALL_HASHES adds an id and a version for every substate outside the value filter, which is
         // what lets the substate cache tell a superseded or destroyed entry from a current one. It
         // is pointless on the from-scratch stream: those shards have no cached entries to retire.
         self.stream_shard_state(
-            incremental,
+            cursors,
             value_filters | SubstateValueFilterFlags::ALL_HASHES,
             true,
             progress,
@@ -919,30 +916,20 @@ enum StreamEnd {
     /// A followed stream was abandoned by the responder after it had nothing to send for the
     /// deadline.
     TimedOut,
-    /// No stream was opened to follow: every shard in the group is still at version zero.
-    NothingToFollow,
     /// The plan is being wound down.
     Cancelled,
 }
 
-/// Splits `shards` into cursors for those never synced, which want only the head state, and those
-/// with a version to resume from. Both lists keep the order of `shards`.
-fn partition_cursors(shards: &[Shard], progress: &SyncProgress) -> (Vec<rpc::ShardCursor>, Vec<rpc::ShardCursor>) {
-    let mut from_scratch = Vec::new();
-    let mut incremental = Vec::new();
-    for &shard in shards {
-        let prev_version = progress.last_state_version(shard).map_or(0, |v| v.as_u64());
-        let cursor = rpc::ShardCursor {
+/// A cursor per shard resuming after the version recorded for it, in the order of `shards`. A shard
+/// never synced resumes from version one.
+fn cursors_for(shards: &[Shard], progress: &SyncProgress) -> Vec<rpc::ShardCursor> {
+    shards
+        .iter()
+        .map(|&shard| rpc::ShardCursor {
             shard: shard.as_u32(),
-            start_state_version: prev_version + 1,
-        };
-        if prev_version == 0 {
-            from_scratch.push(cursor);
-        } else {
-            incremental.push(cursor);
-        }
-    }
-    (from_scratch, incremental)
+            start_state_version: progress.last_state_version(shard).map_or(0, |v| v.as_u64()) + 1,
+        })
+        .collect()
 }
 
 /// Enforces the ordering a `sync_state` stream promises across the shards it carries: a shard's
