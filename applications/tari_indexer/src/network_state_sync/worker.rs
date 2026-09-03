@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use futures::{StreamExt, future, stream::FuturesUnordered};
+use futures::{StreamExt, future::Either, stream::FuturesUnordered};
 use log::*;
 use ootle_network::Network;
 #[cfg(feature = "metrics")]
@@ -33,10 +33,11 @@ use tari_ootle_storage::{
     },
 };
 use tari_ootle_transaction::TransactionId;
-use tari_rpc_framework::{__macro_reexports::future::Either, RpcRequestOptions};
+use tari_rpc_framework::RpcRequestOptions;
 use tari_shutdown::ShutdownSignal;
 use tari_template_lib_types::{Amount, TemplateAddress, TransactionReceiptAddress};
 use tokio::{sync::broadcast, time};
+use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "metrics")]
 use crate::{network_state_sync::NetworkStateMetrics, store::ReadOnlyStore};
@@ -161,9 +162,17 @@ impl NetworkWideStateSync {
         loop {
             let sync_plan = self.initialize_sync_plan().await?;
             // A plan is drawn against the committees of one epoch: which shard group serves which
-            // shards, and who is in it. When the epoch moves, every stream is dropped and a new plan
-            // drawn; the cursors survive in the persisted progress, so nothing is re-streamed.
-            let mut sync = pin!(self.clone().sync_plan(sync_plan));
+            // shards, and who is in it. When the epoch moves, every stream is wound down and a new
+            // plan drawn; the cursors survive in the persisted progress, so nothing is re-streamed.
+            //
+            // Wound down, not dropped: a write transaction runs to its commit on a blocking thread
+            // whether or not the future awaiting it survives, and a plan drawn from progress read
+            // before that commit would carry a cursor the commit has moved past. Once persisted
+            // over the committed one, that cursor re-streams a version whose economic totals were
+            // already folded in. So every stream is told to stop, and the plan is awaited to the
+            // end before the next is read.
+            let cancel = CancellationToken::new();
+            let mut sync = pin!(self.clone().sync_plan(sync_plan, cancel.clone()));
             loop {
                 tokio::select! {
                     event = epoch_events.recv() => {
@@ -178,6 +187,8 @@ impl NetworkWideStateSync {
                                 });
                             },
                         }
+                        cancel.cancel();
+                        sync.await?;
                         break;
                     },
                     result = &mut sync => {
@@ -243,20 +254,26 @@ impl NetworkWideStateSync {
         ))
     }
 
-    /// Syncs the previous epoch's checkpoints, then follows every shard group's tip until the plan
-    /// is dropped. Returns only on an error that is not one shard group's alone.
-    async fn sync_plan(self, sync_plan: SyncPlan) -> Result<(), NetworkStateSyncError> {
+    /// Syncs the previous epoch's checkpoints, then follows every shard group's tip until `cancel`
+    /// is triggered, at which point it returns once every stream has stopped between messages.
+    /// Returns early only on an error that is not one shard group's alone.
+    async fn sync_plan(self, sync_plan: SyncPlan, cancel: CancellationToken) -> Result<(), NetworkStateSyncError> {
         if sync_plan.network_description().epoch.is_zero() {
             info!(target: LOG_TARGET, "🌍️ Current epoch is zero, nothing to sync.");
-            return future::pending().await;
+            cancel.cancelled().await;
+            return Ok(());
         }
         info!(target: LOG_TARGET, "🌍️ Starting network-wide state sync...");
-        self.sync_checkpoints(&sync_plan).await?;
-        self.follow_state(&sync_plan).await
+        self.sync_checkpoints(&sync_plan, &cancel).await?;
+        self.follow_state(&sync_plan, &cancel).await
     }
 
     #[expect(clippy::too_many_lines)]
-    async fn sync_checkpoints(&self, sync_plan: &SyncPlan) -> Result<(), NetworkStateSyncError> {
+    async fn sync_checkpoints(
+        &self,
+        sync_plan: &SyncPlan,
+        cancel: &CancellationToken,
+    ) -> Result<(), NetworkStateSyncError> {
         let prev_epoch = sync_plan
             .network_description()
             .epoch()
@@ -267,6 +284,9 @@ impl NetworkWideStateSync {
         let committee_pools = sync_plan.committee_pools().clone();
 
         for (shard_group, mut pool) in committee_pools {
+            if cancel.is_cancelled() {
+                return Ok(());
+            }
             let from_epoch = sync_plan
                 .sync_progress()
                 .lock()
@@ -407,10 +427,14 @@ impl NetworkWideStateSync {
         Ok(())
     }
 
-    /// Follows every shard group's tip at once, each on its own stream, until dropped. Returns only
-    /// on an error that is not one shard group's alone; a group whose peer fails is retried on its
-    /// own without disturbing the others.
-    async fn follow_state(&self, sync_plan: &SyncPlan) -> Result<(), NetworkStateSyncError> {
+    /// Follows every shard group's tip at once, each on its own stream, until cancelled. Returns
+    /// early only on an error that is not one shard group's alone; a group whose peer fails is
+    /// retried on its own without disturbing the others.
+    async fn follow_state(
+        &self,
+        sync_plan: &SyncPlan,
+        cancel: &CancellationToken,
+    ) -> Result<(), NetworkStateSyncError> {
         let mut committee_pools = sync_plan.committee_pools().iter().collect::<Vec<_>>();
         committee_pools.sort_by_key(|(shard_group, _)| **shard_group);
 
@@ -419,8 +443,13 @@ impl NetworkWideStateSync {
             .into_iter()
             .enumerate()
             .map(|(i, (shard_group, pool))| {
-                self.clone()
-                    .follow_shard_group(*shard_group, pool.clone(), i == 0, sync_plan.sync_progress().clone())
+                self.clone().follow_shard_group(
+                    *shard_group,
+                    pool.clone(),
+                    i == 0,
+                    sync_plan.sync_progress().clone(),
+                    cancel.clone(),
+                )
             })
             .collect::<FuturesUnordered<_>>();
 
@@ -431,7 +460,7 @@ impl NetworkWideStateSync {
     }
 
     /// Keeps one shard group synced: opens a stream from a committee member, follows it until it
-    /// ends, and opens another.
+    /// ends, and opens another, until cancelled.
     ///
     /// A stream that ends because the validator had nothing to send for the deadline is reopened at
     /// once - that is the ordinary end of a followed stream, and the reopen refreshes each shard's
@@ -443,13 +472,25 @@ impl NetworkWideStateSync {
         mut pool: ValidatorCommitteeRpcPool,
         syncs_global_shard: bool,
         progress: SharedSyncProgress,
+        cancel: CancellationToken,
     ) -> Result<(), NetworkStateSyncError> {
-        loop {
+        let interval = self.config.work_interval;
+        let wait = |reason: &'static str| {
+            let cancel = cancel.clone();
+            async move {
+                debug!(target: LOG_TARGET, "🌍️ Shard group {shard_group}: {reason}. Retrying in {interval:.0?}");
+                tokio::select! {
+                    _ = cancel.cancelled() => {},
+                    _ = time::sleep(interval) => {},
+                }
+            }
+        };
+        while !cancel.is_cancelled() {
             let mut session = match pool.new_session().await {
                 Ok(s) => s,
                 Err(e) => {
-                    warn!(target: LOG_TARGET, "⚠️ Failed to create session for shard group {}: {}. Retrying in {:.0?}", shard_group, e, self.config.work_interval);
-                    time::sleep(self.config.work_interval).await;
+                    warn!(target: LOG_TARGET, "⚠️ Failed to create session for shard group {}: {}", shard_group, e);
+                    wait("no session").await;
                     continue;
                 },
             };
@@ -464,8 +505,8 @@ impl NetworkWideStateSync {
                 Ok(None) => {},
                 // probe only returns Err for an invalid (forged) commit proof.
                 Err(e) => {
-                    warn!(target: LOG_TARGET, "⚠️ Validator {} for shard group {} served an INVALID commit proof: {}. Retrying in {:.0?}", session.peer_address(), shard_group, e, self.config.work_interval);
-                    time::sleep(self.config.work_interval).await;
+                    warn!(target: LOG_TARGET, "⚠️ Validator {} for shard group {} served an INVALID commit proof: {}", session.peer_address(), shard_group, e);
+                    wait("invalid commit proof").await;
                     continue;
                 },
             }
@@ -481,23 +522,27 @@ impl NetworkWideStateSync {
             // indexer resolved its committees at has moved on - costs this shard group a retry and
             // no more.
             match self
-                .sync_shard_group_state(shards, &progress, shard_group, &mut session)
+                .sync_shard_group_state(shards, &progress, shard_group, &mut session, &cancel)
                 .await
             {
+                Ok(StreamEnd::Cancelled) => return Ok(()),
                 Ok(StreamEnd::TimedOut) => {
                     debug!(target: LOG_TARGET, "🌍️ State sync stream for shard group {shard_group} from {} had nothing to send for the deadline. Reopening", session.peer_address());
                 },
                 Ok(StreamEnd::Final) => {
-                    debug!(target: LOG_TARGET, "🌍️ Validator {} closed the state sync stream for shard group {shard_group} at its tip. Reopening in {:.0?}", session.peer_address(), self.config.work_interval);
-                    time::sleep(self.config.work_interval).await;
+                    wait("the validator closed the stream at its tip and does not follow").await;
+                },
+                Ok(StreamEnd::NothingToFollow) => {
+                    wait("no shard has a version to follow from").await;
                 },
                 Err(err) if err.is_peer_fault() => {
-                    warn!(target: LOG_TARGET, "⚠️ State sync for shard group {} from {} failed: {}. Retrying in {:.0?}", shard_group, session.peer_address(), err, self.config.work_interval);
-                    time::sleep(self.config.work_interval).await;
+                    warn!(target: LOG_TARGET, "⚠️ State sync for shard group {} from {} failed: {}", shard_group, session.peer_address(), err);
+                    wait("the peer failed").await;
                 },
                 Err(err) => return Err(err),
             }
         }
+        Ok(())
     }
 
     /// Syncs every given shard from `session`, which serves them all over a single stream.
@@ -513,6 +558,7 @@ impl NetworkWideStateSync {
         progress: &SharedSyncProgress,
         shard_group: ShardGroup,
         session: &mut ValidatorRpcSession,
+        cancel: &CancellationToken,
     ) -> Result<StreamEnd, NetworkStateSyncError> {
         let value_filters = SubstateValueFilterFlags::UTXO |
             SubstateValueFilterFlags::VALIDATOR_FEE_POOL |
@@ -528,21 +574,26 @@ impl NetworkWideStateSync {
                 "🌍️ Syncing {} shard(s) in shard group {shard_group} from scratch. Only fetching the head state.",
                 from_scratch.len()
             );
-            self.stream_shard_state(
-                from_scratch,
-                value_filters | SubstateValueFilterFlags::UP_ONLY,
-                false,
-                progress,
-                shard_group,
-                session,
-            )
-            .await?;
+            let end = self
+                .stream_shard_state(
+                    from_scratch,
+                    value_filters | SubstateValueFilterFlags::UP_ONLY,
+                    false,
+                    progress,
+                    shard_group,
+                    session,
+                    cancel,
+                )
+                .await?;
+            if end == StreamEnd::Cancelled {
+                return Ok(end);
+            }
         }
 
         // A shard that had nothing to fetch from scratch is left for the next stream.
         let (_, incremental) = partition_cursors(&shards, &*progress.lock().await);
         if incremental.is_empty() {
-            return Ok(StreamEnd::Final);
+            return Ok(StreamEnd::NothingToFollow);
         }
         // ALL_HASHES adds an id and a version for every substate outside the value filter, which is
         // what lets the substate cache tell a superseded or destroyed entry from a current one. It
@@ -554,6 +605,7 @@ impl NetworkWideStateSync {
             progress,
             shard_group,
             session,
+            cancel,
         )
         .await
     }
@@ -595,7 +647,10 @@ impl NetworkWideStateSync {
     /// followed stream keeps going past the tip, closing off each burst of a shard's new versions
     /// with a further marker; it ends when the responder has had nothing to send for the deadline,
     /// or can no longer serve it.
-    #[expect(clippy::too_many_lines)]
+    ///
+    /// Cancellation is honoured between messages, so a version being committed when it arrives is
+    /// committed in full and the recorded progress reflects it.
+    #[expect(clippy::too_many_lines, clippy::too_many_arguments)]
     async fn stream_shard_state(
         &mut self,
         cursors: Vec<rpc::ShardCursor>,
@@ -604,6 +659,7 @@ impl NetworkWideStateSync {
         progress: &SharedSyncProgress,
         shard_group: ShardGroup,
         session: &mut ValidatorRpcSession,
+        cancel: &CancellationToken,
     ) -> Result<StreamEnd, NetworkStateSyncError> {
         let mut order = StreamOrder::new(&cursors);
 
@@ -642,7 +698,15 @@ impl NetworkWideStateSync {
         let mut xtr_fees = Amount::zero();
         let mut xtr_receipt_burn = Amount::zero();
 
-        while let Some(result) = stream.next().await {
+        loop {
+            let result = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Ok(StreamEnd::Cancelled),
+                next = stream.next() => match next {
+                    Some(result) => result,
+                    None => break,
+                },
+            };
             let msg = match result {
                 Ok(msg) => msg,
                 // A followed stream with nothing to send for the deadline is simply abandoned by the
@@ -855,6 +919,10 @@ enum StreamEnd {
     /// A followed stream was abandoned by the responder after it had nothing to send for the
     /// deadline.
     TimedOut,
+    /// No stream was opened to follow: every shard in the group is still at version zero.
+    NothingToFollow,
+    /// The plan is being wound down.
+    Cancelled,
 }
 
 /// Splits `shards` into cursors for those never synced, which want only the head state, and those

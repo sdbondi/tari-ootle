@@ -30,6 +30,17 @@ pub struct ShardCursor {
 }
 
 impl ShardCursor {
+    /// True if `tip` holds a version this cursor has yet to stream.
+    fn is_behind(&self, tip: Option<Version>) -> bool {
+        tip.is_some_and(|tip| tip >= self.start_state_version)
+    }
+
+    /// Moves the resume point past `synced_to_version`. A node behind the caller's cursor reports a
+    /// tip below it; the cursor only ever advances.
+    fn advance_past(&mut self, synced_to_version: Version) {
+        self.start_state_version = self.start_state_version.max(synced_to_version + 1);
+    }
+
     /// Validates a caller-supplied cursor list.
     ///
     /// Ascending order rules out duplicates and lets the responder stream each shard contiguously,
@@ -221,7 +232,15 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
         events: &mut broadcast::Receiver<HotstuffEvent>,
     ) -> Result<(), ()> {
         loop {
-            let force_marker = match events.recv().await {
+            // The client going away is otherwise only noticed by the next send, a block time later.
+            let event = tokio::select! {
+                event = events.recv() => event,
+                _ = self.sender.closed() => {
+                    debug!(target: LOG_TARGET, "Peer stream closed by client. Ending followed stream");
+                    return Err(());
+                },
+            };
+            let force_marker = match event {
                 Ok(HotstuffEvent::BlockCommitted { .. }) => false,
                 Ok(HotstuffEvent::EpochChanged { .. }) => true,
                 Ok(_) => continue,
@@ -240,8 +259,7 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
 
     async fn follow_shard(&mut self, cursor: &mut ShardCursor, force_marker: bool) -> Result<(), ()> {
         let tip_at_start = self.snapshot_tip(cursor.shard).await?;
-        let moved = tip_at_start.is_some_and(|tip| tip >= cursor.start_state_version);
-        if !moved && !force_marker {
+        if !cursor.is_behind(tip_at_start) && !force_marker {
             return Ok(());
         }
         self.stream_shard(cursor, tip_at_start, false).await
@@ -326,8 +344,7 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
         let synced_to_version = self
             .send_complete(cursor, tip_at_start, last_sent_version, is_final)
             .await?;
-        // A node behind the caller's cursor reports a tip below it; the cursor only ever advances.
-        cursor.start_state_version = cursor.start_state_version.max(synced_to_version + 1);
+        cursor.advance_past(synced_to_version);
         Ok(())
     }
 
@@ -577,6 +594,33 @@ mod tests {
         let authority = TipAuthority::new(Epoch(1), committee_info(9, 16));
         assert!(!authority.is_stale_at(Epoch(1)));
         assert!(authority.is_stale_at(Epoch(2)));
+    }
+
+    #[test]
+    fn a_cursor_is_behind_a_tip_at_or_past_its_resume_point() {
+        let cursor = ShardCursor {
+            shard: Shard::from_u32(1),
+            start_state_version: 5,
+        };
+        assert!(cursor.is_behind(Some(5)));
+        assert!(cursor.is_behind(Some(9)));
+        assert!(!cursor.is_behind(Some(4)));
+        assert!(!cursor.is_behind(None));
+    }
+
+    #[test]
+    fn a_cursor_advances_past_a_marker_and_never_moves_back() {
+        let mut cursor = ShardCursor {
+            shard: Shard::from_u32(1),
+            start_state_version: 5,
+        };
+        cursor.advance_past(9);
+        assert_eq!(cursor.start_state_version, 10);
+        // A node behind the cursor reports a lower tip.
+        cursor.advance_past(3);
+        assert_eq!(cursor.start_state_version, 10);
+        assert!(!cursor.is_behind(Some(9)));
+        assert!(cursor.is_behind(Some(10)));
     }
 
     #[test]
