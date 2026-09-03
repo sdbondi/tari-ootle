@@ -569,6 +569,13 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
         let store = self.store.clone();
         let network = self.config.network;
         let sidechain_id = self.config.sidechain_id;
+        // A validator whose shard group changes at this boundary holds no state for the shards it is
+        // about to serve, so it cannot open the next epoch from what it has: it state-syncs the new
+        // group first. The checkpoint is written either way, because it is what the committee taking
+        // these shards over syncs against - this node is one of the few sources of it - and what this
+        // node's own recovery reads to know the sync is worth attempting.
+        let eoe_shard_group = eoe_block.shard_group();
+        let shard_group_changed = next_shard_group.is_some_and(|sg| sg != eoe_shard_group);
         task::spawn_blocking(move || {
             store.with_write_tx(|tx| {
                 // Generate checkpoint
@@ -589,19 +596,7 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
                 }
                 checkpoint.save(tx)?;
 
-                if let Some(next_shard_group) = next_shard_group {
-                    // If this shard group remains the same, we can just continue. However, if shard groups change and
-                    // we now manage a shard we have not synced, we should to kick into sync.
-                    if next_shard_group != eoe_block.shard_group() {
-                        return Err(HotStuffError::NeedsSync {
-                            reason: format!(
-                                "Shard group changed from {} to {}. We need to sync the new shard group.",
-                                eoe_block.shard_group(),
-                                next_shard_group
-                            ),
-                        });
-                    }
-
+                if let Some(next_shard_group) = next_shard_group.filter(|_| !shard_group_changed) {
                     // Create the next genesis
                     let mut genesis = Block::genesis(
                         network,
@@ -628,6 +623,15 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
             })
         })
         .await??;
+
+        if let Some(next_shard_group) = next_shard_group.filter(|_| shard_group_changed) {
+            return Err(HotStuffError::NeedsSync {
+                reason: format!(
+                    "Shard group changed from {eoe_shard_group} to {next_shard_group} at {next_epoch}. We need to \
+                     sync the new shard group.",
+                ),
+            });
+        }
 
         self.pacemaker.set_epoch(next_epoch).await?;
         self.publish_event(HotstuffEvent::EpochChanged {
