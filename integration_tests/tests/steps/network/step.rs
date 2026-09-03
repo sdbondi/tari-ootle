@@ -21,6 +21,9 @@ use crate::{
 };
 
 async fn create_network(world: &mut TariWorld, step: &Step, spec: NetworkSpec) {
+    // Before anything is spawned: every node in the scenario reads the same constants file, and the
+    // world's own copy comes from it too.
+    world.set_consensus_constants(&spec.consensus_constants);
     spawn_base_node(world, spec.base_node.name.clone()).await;
     spawn_minotari_wallet(world, spec.minotari_wallet.name.clone(), spec.base_node.name.clone()).await;
     register_miner_process(

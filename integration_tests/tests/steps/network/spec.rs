@@ -1,6 +1,8 @@
 //   Copyright 2025 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
+use tari_ootle_app_utilities::consensus_constants_file::ConsensusConstantsFile;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkSpec {
@@ -16,6 +18,10 @@ pub struct NetworkSpec {
     pub walletds: Vec<WalletdSpec>,
     #[serde(default = "default_indexer")]
     pub indexer: NodeSpec,
+    /// Consensus constants for this network, applied over the LocalNet defaults. Written to one file
+    /// that every node in the scenario is pointed at, since constants have to agree across a network.
+    #[serde(default)]
+    pub consensus_constants: ConsensusConstantsFile,
 }
 
 impl Default for NetworkSpec {
@@ -27,6 +33,7 @@ impl Default for NetworkSpec {
             validators: default_validator(),
             walletds: default_walletd(),
             indexer: default_indexer(),
+            consensus_constants: ConsensusConstantsFile::default(),
         }
     }
 }

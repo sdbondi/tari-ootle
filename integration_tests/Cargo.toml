@@ -31,7 +31,7 @@ tari_shutdown = { workspace = true }
 tari_sidechain = { workspace = true }
 
 tari_crypto = { workspace = true }
-tari_ootle_app_utilities = { workspace = true, features = ["epoch_oracle", "p2p"] }
+tari_ootle_app_utilities = { workspace = true, features = ["consensus_constants", "epoch_oracle", "p2p"] }
 tari_ootle_common_types = { workspace = true }
 tari_engine = { workspace = true }
 tari_engine_types = { workspace = true }
@@ -76,6 +76,7 @@ rand = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true, features = ["default", "derive"] }
 serde_json = { workspace = true }
+toml = { workspace = true }
 time = { workspace = true }
 yaml_serde = "0.10"
 tokio = { workspace = true, features = [

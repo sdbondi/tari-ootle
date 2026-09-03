@@ -5396,6 +5396,7 @@ dependencies = [
  "tari_validator_rollback",
  "time",
  "tokio",
+ "toml 0.9.11+spec-1.1.0",
  "tonic 0.13.1",
  "yaml_serde",
 ]
@@ -11972,6 +11973,7 @@ dependencies = [
  "tari_ootle_transaction",
  "tari_template_lib",
  "tari_transaction_components",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "toml 0.9.11+spec-1.1.0",

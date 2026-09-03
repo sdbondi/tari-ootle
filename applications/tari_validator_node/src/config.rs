@@ -80,6 +80,11 @@ pub struct ValidatorNodeConfig {
     pub data_dir: PathBuf,
     /// An absolute or relative (to data_dir) path to the state database
     pub state_db_path: PathBuf,
+    /// An absolute or relative (to data_dir) path to a file of consensus constant overrides. Read
+    /// once at startup, and only on LocalNet: every other network's constants are part of what its
+    /// nodes agree on. Absent file means the network's own constants.
+    #[serde(default = "default_consensus_constants_file")]
+    pub consensus_constants_file: PathBuf,
     /// Database config
     // pub database: tari_any_state_store::Config,
     /// The p2p configuration settings
@@ -150,6 +155,10 @@ fn default_max_consensus_messaging_queue_bytes() -> usize {
     128 * 1024 * 1024
 }
 
+fn default_consensus_constants_file() -> PathBuf {
+    PathBuf::from("consensus_constants.toml")
+}
+
 impl ValidatorNodeConfig {
     pub fn set_base_path<P: AsRef<Path>>(&mut self, base_path: P) {
         if !self.shard_key_file.is_absolute() {
@@ -163,6 +172,9 @@ impl ValidatorNodeConfig {
         }
         if !self.state_db_path.is_absolute() {
             self.state_db_path = self.data_dir.join(&self.state_db_path);
+        }
+        if !self.consensus_constants_file.is_absolute() {
+            self.consensus_constants_file = self.data_dir.join(&self.consensus_constants_file);
         }
         // if !self.database.rocks_db.path.is_absolute() {
         //     self.database.rocks_db.path = self.data_dir.as_ref().join(&self.database.rocks_db.path);
@@ -185,6 +197,7 @@ impl Default for ValidatorNodeConfig {
             identity_file: PathBuf::from("validator_node_id.json"),
             data_dir: PathBuf::from("data/validator_node"),
             state_db_path: PathBuf::from("rocksdb"),
+            consensus_constants_file: default_consensus_constants_file(),
             // database: tari_any_state_store::Config {
             //     database_type: AnyDatabaseType::Sqlite,
             //     rocks_db: RocksConfig { path: "rocksdb".into() },

@@ -8,6 +8,10 @@ Feature: Committee split
   Scenario: Indexer keeps serving when an epoch change splits the committee
     Given a network with spec
     """
+    consensus_constants:
+      # One committee per three validators, so a sixth registration splits the network rather than
+      # needing the fourteen the devnet default would ask for.
+      committee_size_per_shard_group: 3
     validators:
       - name: VN1
       - name: VN2
