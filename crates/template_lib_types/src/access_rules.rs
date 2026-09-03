@@ -45,6 +45,36 @@ impl AccessRule {
             (Self::Restricted(rule), Self::DenyAll) | (Self::DenyAll, Self::Restricted(rule)) => Self::Restricted(rule),
         }
     }
+
+    /// Returns `true` if the rule contains a [`RuleRequirement`] for which `predicate` returns `true`.
+    pub fn contains_requirement(&self, predicate: &impl Fn(&RuleRequirement) -> bool) -> bool {
+        match self {
+            Self::AllowAll | Self::DenyAll => false,
+            Self::Restricted(rule) => rule.contains_requirement(predicate),
+        }
+    }
+
+    /// Returns `true` if the rule contains `ScopedToComponent` or `ScopedToTemplate`, which are constant
+    /// on component method rules (they always describe the current frame, i.e. the callee).
+    pub fn contains_scoped_to_component_or_template(&self) -> bool {
+        self.contains_requirement(&|r| {
+            matches!(
+                r,
+                RuleRequirement::ScopedToComponent(_) | RuleRequirement::ScopedToTemplate(_)
+            )
+        })
+    }
+
+    /// Returns `true` if the rule contains `CallerComponent` or `DirectCallerTemplate`, which always evaluate
+    /// to `false` in a current-frame context (resource rules and covenants).
+    pub fn contains_caller_component_or_template(&self) -> bool {
+        self.contains_requirement(&|r| {
+            matches!(
+                r,
+                RuleRequirement::CallerComponent(_) | RuleRequirement::DirectCallerTemplate(_)
+            )
+        })
+    }
 }
 
 /// An enum that represents the possible ways to restrict access to components or resources
@@ -79,6 +109,25 @@ impl RestrictedAccessRule {
 
     pub fn or(self, other: Self) -> Self {
         Self::AnyOf(Box::new([self, other]))
+    }
+
+    fn contains_requirement(&self, predicate: &impl Fn(&RuleRequirement) -> bool) -> bool {
+        match self {
+            Self::Require(rule) => rule.contains_requirement(predicate),
+            Self::AnyOf(rules) => rules.iter().any(|rule| rule.contains_requirement(predicate)),
+            Self::AllOf(rules) => rules.iter().any(|rule| rule.contains_requirement(predicate)),
+        }
+    }
+}
+
+impl RequireRule {
+    fn contains_requirement(&self, predicate: &impl Fn(&RuleRequirement) -> bool) -> bool {
+        match self {
+            Self::Require(requirement) => predicate(requirement),
+            Self::AnyOf(requirements) => requirements.iter().any(predicate),
+            Self::AllOf(requirements) => requirements.iter().any(predicate),
+            Self::MOfN(_, requirements) => requirements.iter().any(predicate),
+        }
     }
 }
 
@@ -176,12 +225,19 @@ pub enum RuleRequirement {
     /// Requires a proof of a specific non-fungible token
     #[n(1)]
     NonFungibleAddress(#[n(0)] NonFungibleAddress),
-    /// Requires execution within a specific component
+    /// Requires execution within a specific component (the current frame is that component)
     #[n(2)]
     ScopedToComponent(#[n(0)] ComponentAddress),
-    /// Requires execution within a specific template
+    /// Requires execution within a specific template (the current frame is that template)
     #[n(3)]
     ScopedToTemplate(#[n(0)] TemplateAddress),
+    /// Requires a call from a specific component: the caller of a component method is that component
+    #[n(4)]
+    CallerComponent(#[n(0)] ComponentAddress),
+    /// Requires that the immediate caller of a component method is code from a specific template: any component
+    /// instance of it, or any static function of it
+    #[n(5)]
+    DirectCallerTemplate(#[n(0)] TemplateAddress),
 }
 
 impl From<ResourceAddress> for RuleRequirement {
@@ -281,6 +337,11 @@ impl ComponentAccessRules {
 
     /// Add a new access rule for a particular method in the component
     pub fn add_method_rule<S: Into<String>>(mut self, name: S, rule: AccessRule) -> Self {
+        assert!(
+            !rule.contains_scoped_to_component_or_template(),
+            "`component(..)`/`template(..)` are constant on component method rules; use \
+             `caller_component(..)`/`direct_caller_template(..)` to gate on the caller"
+        );
         self.method_access.insert(name.into(), rule);
         self
     }
@@ -297,6 +358,11 @@ impl ComponentAccessRules {
 
     /// Set up the default access rule for all methods that do not have a specific rule
     pub fn default(mut self, rule: AccessRule) -> Self {
+        assert!(
+            !rule.contains_scoped_to_component_or_template(),
+            "`component(..)`/`template(..)` are constant on component method rules; use \
+             `caller_component(..)`/`direct_caller_template(..)` to gate on the caller"
+        );
         self.default = rule;
         self
     }
@@ -309,6 +375,16 @@ impl ComponentAccessRules {
     /// Return an iterator over the access rules of all methods
     pub fn method_access_rules_iter(&self) -> impl Iterator<Item = (&String, &AccessRule)> {
         self.method_access.iter()
+    }
+
+    /// Returns `true` if the default rule or any method rule contains `ScopedToComponent` or
+    /// `ScopedToTemplate`, which are constant on component method rules (they always describe the current
+    /// frame, i.e. the callee).
+    pub fn contains_scoped_to_component_or_template(&self) -> bool {
+        self.default.contains_scoped_to_component_or_template() ||
+            self.method_access
+                .values()
+                .any(AccessRule::contains_scoped_to_component_or_template)
     }
 }
 
@@ -409,6 +485,15 @@ pub struct ResourceAccessRules {
 }
 
 impl ResourceAccessRules {
+    /// Rejects rules that are meaningless in a resource (current-frame) context.
+    fn assert_no_caller_requirement(rule: &AccessRule) {
+        assert!(
+            !rule.contains_caller_component_or_template(),
+            "`caller_component(..)`/`direct_caller_template(..)` always evaluate to false on resource rules; use \
+             `component(..)`/`template(..)` or a proof requirement instead"
+        );
+    }
+
     /// Builds a new set of access rules for a resource.
     ///
     /// By default:
@@ -462,6 +547,7 @@ impl ResourceAccessRules {
 
     /// Sets up who can mint new tokens of the resource
     pub fn mintable<U: Into<UpdateRule>>(mut self, rule: AccessRule, updater: U) -> Self {
+        Self::assert_no_caller_requirement(&rule);
         self.mint = rule;
         self.mint_updater = updater.into();
         self
@@ -469,6 +555,7 @@ impl ResourceAccessRules {
 
     /// Sets up who can burn (destroy) tokens of the resource
     pub fn burnable<U: Into<UpdateRule>>(mut self, rule: AccessRule, updater: U) -> Self {
+        Self::assert_no_caller_requirement(&rule);
         self.burn = rule;
         self.burn_updater = updater.into();
         self
@@ -477,6 +564,7 @@ impl ResourceAccessRules {
     /// Sets up who can recall tokens of the resource.
     /// A recall is the forceful withdrawal of tokens from any external vault
     pub fn recallable<U: Into<UpdateRule>>(mut self, rule: AccessRule, updater: U) -> Self {
+        Self::assert_no_caller_requirement(&rule);
         self.recall = rule;
         self.recall_updater = updater.into();
         self
@@ -485,6 +573,7 @@ impl ResourceAccessRules {
     /// Sets up who can freeze a vault (or UTXO in the case of stealth) containing this resource, preventing
     /// withdrawals.
     pub fn freezable<U: Into<UpdateRule>>(mut self, rule: AccessRule, updater: U) -> Self {
+        Self::assert_no_caller_requirement(&rule);
         self.freeze = rule;
         self.freeze_updater = updater.into();
         self
@@ -492,6 +581,7 @@ impl ResourceAccessRules {
 
     /// Sets up who can withdraw tokens of the resource from any vault
     pub fn withdrawable<U: Into<UpdateRule>>(mut self, rule: AccessRule, updater: U) -> Self {
+        Self::assert_no_caller_requirement(&rule);
         self.withdraw = rule;
         self.withdraw_updater = updater.into();
         self
@@ -499,6 +589,7 @@ impl ResourceAccessRules {
 
     /// Sets up who can deposit tokens of the resource into any vault
     pub fn depositable<U: Into<UpdateRule>>(mut self, rule: AccessRule, updater: U) -> Self {
+        Self::assert_no_caller_requirement(&rule);
         self.deposit = rule;
         self.deposit_updater = updater.into();
         self
@@ -506,6 +597,7 @@ impl ResourceAccessRules {
 
     /// Sets up who can update the mutable data of the tokens in the resource
     pub fn update_non_fungible_data<U: Into<UpdateRule>>(mut self, rule: AccessRule, updater: U) -> Self {
+        Self::assert_no_caller_requirement(&rule);
         self.update_nft_data = rule;
         self.nft_data_updater = updater.into();
         self
@@ -513,6 +605,7 @@ impl ResourceAccessRules {
 
     /// Sets up who can update the resource's metadata. The token symbol remains immutable once set.
     pub fn update_metadata<U: Into<UpdateRule>>(mut self, rule: AccessRule, updater: U) -> Self {
+        Self::assert_no_caller_requirement(&rule);
         self.update_metadata = rule;
         self.metadata_updater = updater.into();
         self
@@ -574,6 +667,24 @@ impl Default for ResourceAccessRules {
 /// It allows for defining rules such as `allow_all`, `deny_all`, and more complex rules using `any_of`, `all_of` and
 /// `n_of` constructs.
 ///
+/// `component(addr)` / `template(addr)` require execution within a component/template, while
+/// `caller_component(addr)` / `direct_caller_template(addr)` require a call from that component/template and are
+/// intended for component method access rules. "Direct" means the immediate caller only: if A calls B and B calls C,
+/// C's rule sees B.
+///
+/// **Caution:** `caller_component` / `direct_caller_template` match the immediate caller's identity, which is only as
+/// trustworthy as the code that makes the call. A method that forwards a caller-supplied component and method (a
+/// "proxy" method) delegates that identity, so anyone who can call the proxy can act as the proxied component/template.
+/// `direct_caller_template` is a package identity: it matches any instance of the template (including ones anyone can
+/// create) and any static function of it (which anyone can call), so it is only as strong as the least careful outgoing
+/// call anywhere in that template.
+///
+/// `component(addr)` / `template(addr)` are constant on component **method** rules and owner rules (they always
+/// describe the current frame, i.e. the component itself), and `caller_component(addr)` /
+/// `direct_caller_template(addr)` always evaluate to `false` on **resource** rules. The builder methods reject both at
+/// construction, and the engine rejects them on component creation, `ComponentAction::SetAccessRules` and
+/// `ResourceAction::UpdateAccessRule`.
+///
 /// # Examples:
 ///
 /// ```rust
@@ -595,6 +706,10 @@ impl Default for ResourceAccessRules {
 /// // Restricted access to a template
 /// let template_address = tari_template_lib_types::TemplateAddress::default();
 /// let template_rule = rule!(template(template_address));
+/// // Restricted access to calls from a specific component (component method rules)
+/// let caller_component_rule = rule!(caller_component(component_address));
+/// // Restricted access to calls from a specific template (component method rules)
+/// let caller_template_rule = rule!(direct_caller_template(template_address));
 /// // Restricted access to a non-fungible token
 /// let non_fungible_address = tari_template_lib_types::NonFungibleAddress::from_public_key(
 ///     tari_template_lib_types::crypto::RistrettoPublicKeyBytes::default(),
@@ -667,6 +782,12 @@ macro_rules! __rule_requirement {
     };
     (template($x: expr)) => {
         $crate::access_rules::RuleRequirement::ScopedToTemplate($x)
+    };
+    (caller_component($x: expr)) => {
+        $crate::access_rules::RuleRequirement::CallerComponent($x)
+    };
+    (direct_caller_template($x: expr)) => {
+        $crate::access_rules::RuleRequirement::DirectCallerTemplate($x)
     };
 }
 
@@ -863,5 +984,75 @@ mod tests {
         // depth guard must reject it as a clean error long before the recursion can overflow.
         let bytes: Vec<u8> = (0..100_000).flat_map(|_| [0x82u8, 0x01, 0x81, 0x81]).collect();
         assert!(tari_bor::decode::<RestrictedAccessRule>(&bytes).is_err());
+    }
+
+    #[test]
+    #[should_panic(expected = "constant on component method rules")]
+    fn method_rule_rejects_scoped_component() {
+        let address = ComponentAddress::new(ObjectKey::default());
+        ComponentAccessRules::new().method("foo", rule!(component(address)));
+    }
+
+    #[test]
+    #[should_panic(expected = "constant on component method rules")]
+    fn method_rule_rejects_scoped_template() {
+        let address = TemplateAddress::default();
+        ComponentAccessRules::new().default(rule!(template(address)));
+    }
+
+    #[test]
+    #[should_panic(expected = "always evaluate to false on resource rules")]
+    fn resource_rule_rejects_caller_component() {
+        let address = ComponentAddress::new(ObjectKey::default());
+        ResourceAccessRules::new().mintable(rule!(caller_component(address)), LOCKED);
+    }
+
+    #[test]
+    #[should_panic(expected = "always evaluate to false on resource rules")]
+    fn resource_rule_rejects_direct_caller_template() {
+        let address = TemplateAddress::default();
+        ResourceAccessRules::new().withdrawable(rule!(direct_caller_template(address)), LOCKED);
+    }
+
+    #[test]
+    fn method_rule_allows_caller_requirements() {
+        let address = ComponentAddress::new(ObjectKey::default());
+        ComponentAccessRules::new().method("foo", rule!(caller_component(address)));
+    }
+
+    #[test]
+    fn resource_rule_allows_scoped_requirements() {
+        let address = ComponentAddress::new(ObjectKey::default());
+        ResourceAccessRules::new().mintable(rule!(component(address)), LOCKED);
+    }
+
+    #[test]
+    fn requirement_detection_is_recursive() {
+        let component = ComponentAddress::new(ObjectKey::default());
+        let rule = rule!(any_of(
+            resource(ResourceAddress::new(ObjectKey::default())),
+            caller_component(component)
+        ));
+        assert!(rule.contains_caller_component_or_template());
+        assert!(!rule.contains_scoped_to_component_or_template());
+    }
+
+    #[test]
+    fn component_access_rules_detects_scoped_requirement() {
+        let address = ComponentAddress::new(ObjectKey::default());
+
+        // A valid builder-constructed rule set has no scoped requirement.
+        assert!(
+            !ComponentAccessRules::new()
+                .method("foo", rule!(caller_component(address)))
+                .contains_scoped_to_component_or_template()
+        );
+
+        // A decoded (hand-written) rule set that bypasses the builder is still detected.
+        let mut degenerate = ComponentAccessRules::new();
+        degenerate
+            .method_access
+            .insert("foo".to_string(), rule!(component(address)));
+        assert!(degenerate.contains_scoped_to_component_or_template());
     }
 }

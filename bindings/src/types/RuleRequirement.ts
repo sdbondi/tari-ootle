@@ -11,4 +11,6 @@ export type RuleRequirement =
   | { Resource: ResourceAddress }
   | { NonFungibleAddress: NonFungibleAddress }
   | { ScopedToComponent: ComponentAddress }
-  | { ScopedToTemplate: Hash32 };
+  | { ScopedToTemplate: Hash32 }
+  | { CallerComponent: ComponentAddress }
+  | { DirectCallerTemplate: Hash32 };

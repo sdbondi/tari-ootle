@@ -23,23 +23,23 @@ The library is organized into several modules, each responsible for a specific a
 
 ### Key Structs and Builders
 
--   **`ComponentBuilder`**:
+-   **`Component` / `ComponentBuilder`**:
     -   **Purpose:** Used to define the properties of a new component and deploy it to the blockchain.
-    -   **Methods:** `new()`, `with_access_rules()`, `create_component()`, etc.
+    -   **Methods:** `Component::new()`, `with_access_rules()`, `with_owner_rule()`, `create()`, etc.
     -   **Usage:**
         ```rust
-        // ComponentBuilder::new().with_access_rules(...).create_component(...);
+        // Component::new(my_component).with_access_rules(rules).create();
         ```
 -   **`ResourceBuilder`**:
     -   **Purpose:** Used to define the properties of a new resource (fungible or non-fungible) and mint its initial supply.
-    -   **Methods:** `fungible()`, `non_fungible()`, `initial_supply()`, `initial_supply_non_fungible()`, `metadata()`, `mint_access()`, `burn_access()`, `build()`, etc.
+    -   **Methods:** `public_fungible()`, `non_fungible()`, `initial_supply()`, `metadata()`, `mintable()`, `burnable()`, `build()`, etc.
     -   **Usage:**
         ```rust
         // ResourceBuilder::public_fungible().with_token_symbol("TOK").initial_supply(Amount(100)).build();
         ```
--   **`AccessRules`**:
+-   **`ComponentAccessRules` / `ResourceAccessRules`**:
     -   **Purpose:** Defines the authorization policy for component methods or resource operations.
-    -   **Methods:** `new()`, `method()`, `default_access_rule()`, `allow_all()`, etc.
+    -   **Methods:** `new()`, `method()`, `default()`, `allow_all()`, etc.
 -   **`Vault`**:
     -   **Purpose:** A container for resources within a component.
     -   **Methods:** `deposit()`, `withdraw()`, `balance()`, etc.

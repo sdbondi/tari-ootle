@@ -21,6 +21,7 @@ use tari_template_lib::{
             ResourceAccessRules,
             ResourceAuthAction,
             RestrictedAccessRule,
+            RuleRequirement,
         },
         rule,
     },
@@ -221,6 +222,115 @@ mod component_access_rules {
         assert_reject_reason(reason, RuntimeError::AccessDeniedOwnerRequired {
             action: ComponentAction::SetAccessRules.into(),
         });
+    }
+
+    #[test]
+    fn set_access_rules_rejects_scoped_requirement() {
+        let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/access_rules"]);
+
+        let (owner_proof, _, owner_key) = test.create_owner_proof();
+
+        let access_rules_template = test.get_template_address("AccessRulesTest");
+
+        let result = test.execute_expect_success(
+            Transaction::builder_localnet(Epoch(1))
+                .call_function(access_rules_template, "with_configured_rules", args![
+                    OwnerRule::OwnedBySigner,
+                    ComponentAccessRules::new().default(AccessRule::AllowAll),
+                    ResourceAccessRules::new(),
+                    AccessRule::DenyAll,
+                ])
+                .build_and_seal(&owner_key),
+            vec![owner_proof.clone()],
+        );
+
+        let component_address = result.finalize.execution_results[0]
+            .decode::<ComponentAddress>()
+            .unwrap();
+
+        // Build a rule set that bypasses the builder lint, the way a hand-written or non-Rust template
+        // could, and confirm the engine rejects it rather than installing a constant method rule.
+        let degenerate = component_access_rules_with_scoped_method_rule(component_address);
+        assert!(degenerate.contains_scoped_to_component_or_template());
+
+        let reason = test.execute_expect_failure(
+            Transaction::builder_localnet(Epoch(1))
+                .call_method(component_address, "set_component_access_rules", args![degenerate])
+                .build_and_seal(&owner_key),
+            vec![owner_proof],
+        );
+
+        assert_reject_reason(reason, RuntimeError::InvalidArgument {
+            argument: "access_rules",
+            reason: "component(..)/template(..) cannot be used on a component method access rule".to_string(),
+        });
+    }
+
+    #[test]
+    fn create_component_rejects_scoped_owner_rule() {
+        let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/access_rules"]);
+
+        let (owner_proof, _, owner_key) = test.create_owner_proof();
+
+        let access_rules_template = test.get_template_address("AccessRulesTest");
+
+        let result = test.execute_expect_success(
+            Transaction::builder_localnet(Epoch(1))
+                .call_function(access_rules_template, "with_configured_rules", args![
+                    OwnerRule::OwnedBySigner,
+                    ComponentAccessRules::new().default(AccessRule::AllowAll),
+                    ResourceAccessRules::new(),
+                    AccessRule::DenyAll,
+                ])
+                .build_and_seal(&owner_key),
+            vec![owner_proof.clone()],
+        );
+        let some_component = result.finalize.execution_results[0]
+            .decode::<ComponentAddress>()
+            .unwrap();
+
+        // A `component(..)` owner rule is constant on a component (its own frame is always on top), so the
+        // engine rejects it at creation rather than installing an "owned by everyone" rule.
+        let reason = test.execute_expect_failure(
+            Transaction::builder_localnet(Epoch(1))
+                .call_function(access_rules_template, "with_configured_rules", args![
+                    OwnerRule::ByAccessRule(rule!(component(some_component))),
+                    ComponentAccessRules::new().default(AccessRule::AllowAll),
+                    ResourceAccessRules::new(),
+                    AccessRule::DenyAll,
+                ])
+                .build_and_seal(&owner_key),
+            vec![owner_proof],
+        );
+
+        assert_reject_reason(reason, RuntimeError::InvalidArgument {
+            argument: "owner_rule",
+            reason: "component(..)/template(..) cannot be used in a component owner rule".to_string(),
+        });
+    }
+
+    fn component_access_rules_with_scoped_method_rule(component: ComponentAddress) -> ComponentAccessRules {
+        use tari_bor::minicbor::{Encode, Encoder};
+
+        // Build the degenerate rule through the public enums and encode/decode it as a full
+        // `ComponentAccessRules`, bypassing the builder lint the way a hand-written or non-Rust template
+        // would.
+        let scoped_rule = AccessRule::Restricted(RestrictedAccessRule::Require(RequireRule::Require(
+            RuleRequirement::ScopedToComponent(component),
+        )));
+
+        let mut e = Encoder::new(Vec::new());
+        // ComponentAccessRules = [ method_access, default ] (positional struct array)
+        e.array(2).unwrap();
+        // method_access = { "set_value": scoped_rule }
+        e.map(1).unwrap();
+        e.str("set_value").unwrap();
+        Encode::encode(&scoped_rule, &mut e, &mut ()).unwrap();
+        // default = DenyAll
+        Encode::encode(&AccessRule::DenyAll, &mut e, &mut ()).unwrap();
+
+        let bytes = e.into_writer();
+        tari_bor::decode(&bytes).unwrap()
     }
 }
 
@@ -911,6 +1021,75 @@ mod resource_access_rules {
         );
     }
 
+    // The auth-hook path transfers the acting component's identity to the hook method's caller. The
+    // hook component is created by `AccessRulesTest::with_auth_hook_gated_on_caller`, whose
+    // `caller_gated_hook` method is gated on `caller_component(hook_caller)`. A built-in account acting
+    // on the resource (via `deposit`) is the caller the hook observes, even though the account's code
+    // never invoked the hook.
+    //
+    // Because any resource may bind the hook, the caller gate is satisfied whenever the gated account
+    // acts on *any* such resource. The hook body must therefore check `AuthHookCaller::resource`
+    // against the resources it manages; `caller_gated_hook` does, and that check is mandatory, not
+    // optional.
+    #[test]
+    fn it_transfers_caller_identity_through_auth_hook() {
+        let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/access_rules"]);
+
+        let (actor_account, actor_proof, actor_key) = test.create_empty_account();
+
+        let access_rules_template = test.get_template_address("AccessRulesTest");
+
+        // `take_tokens` withdraws into the workspace (the hook is skipped for the component's own
+        // resource), then `actor_account.deposit` triggers the hook. The deposit only succeeds if the
+        // hook observes `actor_account` as its caller.
+        test.execute_expect_success(
+            Transaction::builder_localnet(Epoch(1))
+                .call_function(access_rules_template, "with_auth_hook_gated_on_caller", args![
+                    actor_account
+                ])
+                .put_last_instruction_output_on_workspace("hook")
+                .call_method("hook", "take_tokens", args![10])
+                .put_last_instruction_output_on_workspace("tokens")
+                .call_method(actor_account, "deposit", args![Workspace("tokens")])
+                .build_and_seal(&actor_key),
+            vec![actor_proof],
+        );
+    }
+
+    #[test]
+    fn it_denies_auth_hook_when_acting_caller_is_not_gated() {
+        let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/access_rules"]);
+
+        let (gated_account, gated_proof, gated_key) = test.create_empty_account();
+        let (other_account, other_proof, other_key) = test.create_empty_account();
+
+        let access_rules_template = test.get_template_address("AccessRulesTest");
+
+        let result = test.execute_expect_success(
+            Transaction::builder_localnet(Epoch(1))
+                .call_function(access_rules_template, "with_auth_hook_gated_on_caller", args![
+                    gated_account
+                ])
+                .build_and_seal(&gated_key),
+            vec![gated_proof],
+        );
+
+        let component_address = result.finalize.execution_results[0]
+            .decode::<ComponentAddress>()
+            .unwrap();
+
+        let result = test.execute_expect_failure(
+            Transaction::builder_localnet(Epoch(1))
+                .call_method(component_address, "take_tokens", args![10])
+                .put_last_instruction_output_on_workspace("tokens")
+                .call_method(other_account, "deposit", args![Workspace("tokens")])
+                .build_and_seal(&other_key),
+            vec![other_proof],
+        );
+
+        assert_reject_reason(result, "Resource Auth Hook Denied Access");
+    }
+
     #[test]
     fn it_allows_resource_actions_if_auth_hook_passes() {
         let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/access_rules"]);
@@ -1260,6 +1439,49 @@ mod resource_access_rules {
                 .build_and_seal(&user_key),
             vec![user_proof],
         );
+    }
+
+    #[test]
+    fn update_access_rule_rejects_caller_requirement() {
+        let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/access_rules"]);
+
+        let (owner_proof, _, owner_key) = test.create_owner_proof();
+
+        let access_rules_template = test.get_template_address("AccessRulesTest");
+
+        let result = test.execute_expect_success(
+            Transaction::builder_localnet(Epoch(1))
+                .call_function(access_rules_template, "with_configured_rules", args![
+                    OwnerRule::OwnedBySigner,
+                    ComponentAccessRules::new().default(AccessRule::AllowAll),
+                    ResourceAccessRules::new().mintable(AccessRule::DenyAll, OWNER),
+                    AccessRule::DenyAll,
+                ])
+                .build_and_seal(&owner_key),
+            vec![owner_proof.clone()],
+        );
+
+        let component_address = result.finalize.execution_results[0]
+            .decode::<ComponentAddress>()
+            .unwrap();
+
+        // `update_access_rule` goes through the engine path (not the WASM builder), so it must reject a
+        // caller requirement with a recoverable `InvalidArgument` error rather than asserting/aborting the
+        // node the way a `panic!` in a WASM builder would be unreachable here.
+        let reason = test.execute_expect_failure(
+            Transaction::builder_localnet(Epoch(1))
+                .call_method(component_address, "update_tokens_access_rule", args![
+                    ResourceAuthAction::Mint,
+                    rule!(caller_component(component_address))
+                ])
+                .build_and_seal(&owner_key),
+            vec![owner_proof],
+        );
+
+        assert_reject_reason(reason, RuntimeError::InvalidArgument {
+            argument: "new_rule",
+            reason: "caller_component/direct_caller_template cannot be used on a resource access rule".to_string(),
+        });
     }
 
     #[test]

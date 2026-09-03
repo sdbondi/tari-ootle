@@ -4,7 +4,7 @@
 use minicbor::{CborLen, Decode, Encode};
 use tari_template_abi::rust::{fmt, prelude::*};
 
-use crate::{ComponentAddress, FunctionName, TemplateAddress};
+use crate::{ComponentAddress, FunctionName, ResourceAddress, TemplateAddress};
 
 #[derive(Debug, Clone, Encode, Decode, CborLen)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -42,15 +42,28 @@ pub struct AuthHookCaller {
     template_address: TemplateAddress,
     #[n(2)]
     component_state: Option<tari_bor::Value>,
+    /// The resource whose action triggered the hook. Any resource may bind any hook-shaped method, so a hook must
+    /// check this against the resources it manages before trusting the caller.
+    #[n(3)]
+    resource_address: ResourceAddress,
 }
 
 impl AuthHookCaller {
-    pub fn new(template_address: TemplateAddress, component_address: Option<ComponentAddress>) -> Self {
+    pub fn new(
+        resource_address: ResourceAddress,
+        template_address: TemplateAddress,
+        component_address: Option<ComponentAddress>,
+    ) -> Self {
         Self {
             component_address,
             template_address,
             component_state: None,
+            resource_address,
         }
+    }
+
+    pub fn resource(&self) -> &ResourceAddress {
+        &self.resource_address
     }
 
     pub fn with_component_state(&mut self, component_state: tari_bor::Value) -> &mut Self {

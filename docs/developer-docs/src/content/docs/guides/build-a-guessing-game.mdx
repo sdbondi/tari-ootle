@@ -351,12 +351,12 @@ Component::new(Self {
 
 <Aside type="tip">
   You don't need to specify access rules for every method. By default, all methods are only callable by the component
-  creator. You can override this default by using e.g. `.default(rule![require(any_of(admin, bob))])`
+  creator. You can override this default by using e.g. `.default(rule![any_of(non_fungible(admin), non_fungible(bob))])`
 
   ```rust
   let access_rules = ComponentAccessRules::new()
   .method("im_public", rule![allow_all])
-  .default(rule![require(admin)]); // "admin" is required for all other methods
+  .default(rule![non_fungible(admin)]); // "admin" is required for all other methods
   ```
 </Aside>
 

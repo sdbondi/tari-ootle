@@ -648,7 +648,7 @@ mod template {
                 manager: resource_address.into(),
                 supply_vault,
             })
-            .with_access_rules(AccessRules::allow_all())
+            .with_access_rules(ComponentAccessRules::allow_all())
             .create()
         }
 

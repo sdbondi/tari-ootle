@@ -192,6 +192,10 @@ impl CallScope {
         self.referenced.insert(address);
     }
 
+    pub fn remove_substate_from_referenced(&mut self, address: &SubstateId) -> bool {
+        self.referenced.swap_remove(address)
+    }
+
     pub fn update_from_parent(&mut self, _parent: &CallScope) {
         // Nothing to do? We bring things into scope via the args so that is why we don't need to move things across
         // here.

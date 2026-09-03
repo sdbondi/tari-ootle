@@ -50,6 +50,32 @@ impl<'a> ReadOnlyStateStore<'a> {
         Ok(components)
     }
 
+    pub fn get_component_addresses_by_template_address(
+        &self,
+        template_address: TemplateAddress,
+    ) -> Result<Vec<ComponentAddress>, StateStoreError> {
+        let mut components = Vec::new();
+        self.with_substates(|id, substate| {
+            if let SubstateId::Component(component_address) = id &&
+                let Some(component) = substate.substate_value().as_component() &&
+                *component.template_address() == template_address
+            {
+                components.push(*component_address);
+            }
+        })?;
+        Ok(components)
+    }
+
+    pub fn get_first_component_of(
+        &self,
+        template_address: TemplateAddress,
+    ) -> Result<Option<ComponentAddress>, StateStoreError> {
+        Ok(self
+            .get_component_addresses_by_template_address(template_address)?
+            .into_iter()
+            .next())
+    }
+
     pub fn get_account(&self, account_address: ComponentAddress) -> Result<Account, StateStoreError> {
         let account = self.get_component(account_address)?;
         Account::from_value(account.state()).map_err(|e| StateStoreError::CustomStr(e.to_string()))
