@@ -30,8 +30,10 @@ pub struct StealthUtxoWatchRequest {
     /// When true, only currently-unspent UTXOs are streamed (no `Spent`/`Burnt` frames).
     /// A monitor that must track spends has to set this to `false`.
     pub unspent_only: bool,
-    /// Maximum updates returned per shard per pass. `StartOfShard::num_updates == per_shard_limit`
-    /// indicates the shard has more updates to drain on a subsequent request.
+    /// Target number of updates returned per shard per pass. A pass may return fewer and still have
+    /// more to give, and may overrun this to keep one state version whole, so
+    /// [`StealthUtxoFrame::StartOfShard::has_more`] — not a count comparison — says whether the
+    /// shard has updates left to drain.
     pub per_shard_limit: u32,
 }
 
@@ -50,15 +52,18 @@ impl StealthUtxoWatchRequest {
 /// A single decoded frame from the stealth UTXO update stream.
 ///
 /// Frames arrive grouped per shard: a `StartOfShard`, then zero or more `Unspent`/`Spent`/`Burnt`
-/// updates, terminated by an `EndOfShard`. `EndOfShard::max_state_version` is always a safe resume
-/// point for that shard — every update at or below it has been delivered — so advance the cursor
-/// from it via [`ShardCursor::observe`].
+/// updates, terminated by an `EndOfShard`. `EndOfShard::max_state_version` is the shard's resume
+/// point — every update at or below it has either been delivered or was excluded by the request's
+/// own filters — so advance the cursor from it via [`ShardCursor::observe`].
 #[derive(Debug, Clone)]
 pub enum StealthUtxoFrame {
     StartOfShard {
         shard: Shard,
         max_state_version: StateVersion,
         num_updates: u32,
+        /// The shard has updates beyond this pass. Poll again to drain it rather than waiting for
+        /// the next scheduled pass.
+        has_more: bool,
     },
     /// A currently-unspent output. Carries only the `(tag, public_nonce)` fetch key — the commitment
     /// and viewable-balance ciphertext must be resolved via
@@ -75,9 +80,9 @@ pub enum StealthUtxoFrame {
         id: UtxoId,
         version: u32,
     },
-    /// Terminates a shard's updates. `max_state_version` is the resume point for the shard: the
-    /// last delivered version while the shard still has updates to drain, and the shard's high
-    /// watermark once it is drained.
+    /// Terminates a shard's updates. `max_state_version` is the resume point for the shard, chosen
+    /// by the indexer: the last delivered state version while the shard has more to drain, and the
+    /// shard's high watermark once it is drained.
     EndOfShard {
         shard: Shard,
         max_state_version: StateVersion,
@@ -124,7 +129,6 @@ impl StealthUtxoStream {
                 },
             };
 
-            let per_shard_limit = self.request.per_shard_limit;
             let mut stream = match client.stream_utxo_updates_protobuf(self.request.into_request()).await {
                 Ok(stream) => stream,
                 Err(err) => {
@@ -134,26 +138,21 @@ impl StealthUtxoStream {
                 },
             };
 
-            // `EndOfShard` on the wire carries neither the shard number nor any notion of how much
-            // of the shard was delivered; both come from the preceding `StartOfShard`, so each pass
-            // is remembered until its `EndOfShard` arrives.
-            let mut current_batch: Option<ShardBatch> = None;
+            // `EndOfShard` on the wire does not carry the shard number; stamp it from the preceding
+            // `StartOfShard` so each frame is self-describing.
+            let mut current_shard: Option<Shard> = None;
             loop {
                 match stream.next().await {
                     Some(Ok(payload)) => {
                         let UtxoUpdatePayload { sos, update, eos } = payload;
                         if let Some(sos) = sos {
                             let shard = Shard::from(sos.shard);
-                            let max_state_version = StateVersion::from(sos.max_state_version);
-                            current_batch = Some(ShardBatch {
-                                shard,
-                                max_state_version,
-                                is_truncated: sos.num_updates >= per_shard_limit,
-                            });
+                            current_shard = Some(shard);
                             yield Ok(StealthUtxoFrame::StartOfShard {
                                 shard,
-                                max_state_version,
+                                max_state_version: StateVersion::from(sos.max_state_version),
                                 num_updates: sos.num_updates,
+                                has_more: sos.has_more,
                             });
                         }
                         if let Some(update) = update {
@@ -166,21 +165,18 @@ impl StealthUtxoStream {
                             }
                         }
                         if let Some(eos) = eos {
-                            // Take the batch so a following `EndOfShard` (or any frame) that is not
+                            // Take the shard so a following `EndOfShard` (or any frame) that is not
                             // preceded by a fresh `StartOfShard` errors out rather than being
                             // misattributed to this shard and corrupting its cursor.
-                            let Some(batch) = current_batch.take() else {
+                            let Some(shard) = current_shard.take() else {
                                 yield Err(UtxoWatcherError::DecodeError(
                                     "EndOfShard received before any StartOfShard".to_string(),
                                 ));
                                 return;
                             };
-                            let shard = batch.shard;
-                            let max_state_version =
-                                resume_watermark(&batch, StateVersion::from(eos.max_state_version));
                             yield Ok(StealthUtxoFrame::EndOfShard {
                                 shard,
-                                max_state_version,
+                                max_state_version: StateVersion::from(eos.max_state_version),
                             });
                         }
                     },
@@ -193,33 +189,6 @@ impl StealthUtxoStream {
                 }
             }
         }
-    }
-}
-
-/// What one pass over a single shard delivered, carried from its `StartOfShard` to its
-/// `EndOfShard`.
-struct ShardBatch {
-    shard: Shard,
-    /// The highest state version actually delivered in the pass.
-    max_state_version: StateVersion,
-    /// The pass filled `per_shard_limit`, so the shard holds further updates above
-    /// `max_state_version`.
-    is_truncated: bool,
-}
-
-/// The state version a shard's cursor may resume from after a pass.
-///
-/// `high_watermark` is the newest state version the indexer holds for the shard, taken over the
-/// whole shard rather than over what the pass returned. It therefore sits above the updates a
-/// truncated pass left undelivered, and resuming from it would step over them for good. Such a pass
-/// resumes from its last delivered version instead; only a pass that drained the shard may take the
-/// high watermark, which additionally carries the cursor past updates the request's own filters
-/// excluded.
-fn resume_watermark(batch: &ShardBatch, high_watermark: StateVersion) -> StateVersion {
-    if batch.is_truncated {
-        batch.max_state_version
-    } else {
-        high_watermark
     }
 }
 
@@ -305,35 +274,6 @@ impl ShardCursor {
 mod tests {
     use super::*;
 
-    fn batch(max_state_version: u64, is_truncated: bool) -> ShardBatch {
-        ShardBatch {
-            shard: Shard::from(1u32),
-            max_state_version: StateVersion::from(max_state_version),
-            is_truncated,
-        }
-    }
-
-    #[test]
-    fn drained_shard_resumes_from_the_high_watermark() {
-        // Carries the cursor past updates the request's filters excluded, so they are not re-read.
-        let watermark = resume_watermark(&batch(100, false), StateVersion::from(250));
-        assert_eq!(watermark, StateVersion::from(250));
-    }
-
-    #[test]
-    fn truncated_pass_resumes_from_the_last_delivered_version() {
-        let watermark = resume_watermark(&batch(100, true), StateVersion::from(250));
-        assert_eq!(watermark, StateVersion::from(100));
-    }
-
-    #[test]
-    fn a_truncated_pass_leaves_every_undelivered_update_above_the_cursor() {
-        let watermark = resume_watermark(&batch(100, true), StateVersion::from(250));
-        for undelivered in [101u64, 175, 250] {
-            assert!(StateVersion::from(undelivered) > watermark);
-        }
-    }
-
     #[test]
     fn cursor_advances_monotonically() {
         let mut cursor = ShardCursor::default();
@@ -341,5 +281,13 @@ mod tests {
         cursor.observe(shard, StateVersion::from(250));
         cursor.observe(shard, StateVersion::from(100));
         assert_eq!(cursor.get(shard), StateVersion::from(250));
+    }
+
+    #[test]
+    fn genesis_covers_every_shard_at_zero() {
+        let cursor = ShardCursor::genesis(NumPreshards::P4);
+        let pairs = cursor.to_pairs();
+        assert_eq!(pairs.len(), 4);
+        assert!(pairs.iter().all(|(_, v)| *v == StateVersion::zero()));
     }
 }

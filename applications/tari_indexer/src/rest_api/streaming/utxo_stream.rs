@@ -49,6 +49,7 @@ impl UtxoUpdateStream {
                     updates,
                     max_state_version,
                     max_epoch,
+                    has_more,
                 } = substate_manager
                     .get_utxo_updates(
                         request.resource_address,
@@ -66,14 +67,23 @@ impl UtxoUpdateStream {
                     continue;
                 }
 
-                let high_watermark_state_version = substate_manager
-                    .get_max_state_version(&request.resource_address, shard)
-                    .await
-                    .map_err(anyhow::Error::from)?;
+                // The resume point the client stores for this shard. A drained pass hands back the
+                // shard's high watermark, which carries the cursor past versions this request's own
+                // `from_epoch`/`unspent_only` filters excluded so they are not re-read every pass. A
+                // pass with more to give can only offer its last delivered version — the high
+                // watermark sits above the undelivered remainder.
+                let resume_state_version = if has_more {
+                    max_state_version
+                } else {
+                    substate_manager
+                        .get_max_state_version(&request.resource_address, shard)
+                        .await
+                        .map_err(anyhow::Error::from)?
+                };
 
                 debug!(
                     target: LOG_TARGET,
-                    "Received {} updates for shard {shard}, max_epoch = {max_epoch}, max_state_version {max_state_version} -> {high_watermark_state_version}",
+                    "Received {} updates for shard {shard}, max_epoch = {max_epoch}, max_state_version {max_state_version} -> {resume_state_version} (has_more = {has_more})",
                     updates.len(),
                 );
 
@@ -81,7 +91,8 @@ impl UtxoUpdateStream {
                     sos_emitted: false,
                     shard,
                     updates_state_version: max_state_version,
-                    high_watermark_state_version,
+                    resume_state_version,
+                    has_more,
                     updates,
                     index: 0,
                 };
@@ -94,6 +105,7 @@ impl UtxoUpdateStream {
                             shard: pending.shard.as_u32(),
                             max_state_version: pending.updates_state_version.as_u64(),
                             num_updates: u32::try_from(pending.updates_len()).expect("loaded more than u32::MAX updates"),
+                            has_more: pending.has_more,
                         });
                         pending.sos_emitted = true;
                     }
@@ -104,7 +116,7 @@ impl UtxoUpdateStream {
 
                     if pending.is_empty() {
                         payload.eos = Some(protobuf::EndOfShard {
-                            max_state_version: pending.high_watermark_state_version.as_u64(),
+                            max_state_version: pending.resume_state_version.as_u64(),
                         });
                     }
 
@@ -158,7 +170,8 @@ struct PendingUpdates {
     pub sos_emitted: bool,
     pub shard: Shard,
     pub updates_state_version: StateVersion,
-    pub high_watermark_state_version: StateVersion,
+    pub resume_state_version: StateVersion,
+    pub has_more: bool,
     pub updates: Vec<WalletUtxoUpdate>,
     pub index: usize,
 }

@@ -7,4 +7,5 @@ export type UtxoStateUpdateSet = {
   updates: Array<WalletUtxoUpdate>;
   max_state_version: StateVersion;
   max_epoch: Epoch;
+  has_more: boolean;
 };
