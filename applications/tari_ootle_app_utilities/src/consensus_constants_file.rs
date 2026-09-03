@@ -70,6 +70,10 @@ impl ConsensusConstantsFile {
             constants.pacemaker_block_time = Duration::from_secs(secs);
         }
 
+        if constants.committee_size_per_shard_group == 0 {
+            return Err(ConsensusConstantsFileError::CommitteeSizeIsZero);
+        }
+
         if let Some(bps) = self.exhaust_burn_rate_bps {
             if bps > MAX_EXHAUST_BURN_RATE_BPS {
                 return Err(ConsensusConstantsFileError::ExhaustBurnRateTooHigh {
@@ -135,6 +139,8 @@ pub enum ConsensusConstantsFileError {
     Read { path: PathBuf, source: std::io::Error },
     #[error("Failed to parse consensus constants file {path}: {source}")]
     Parse { path: PathBuf, source: toml::de::Error },
+    #[error("Committee size must be greater than zero")]
+    CommitteeSizeIsZero,
     #[error("Exhaust burn rate {bps}bps is above the maximum of {max}bps")]
     ExhaustBurnRateTooHigh { bps: u16, max: u16 },
 }
@@ -171,6 +177,19 @@ mod tests {
         assert_eq!(constants.committee_size_per_shard_group, 3);
         assert_eq!(constants.max_block_weight, defaults.max_block_weight);
         assert_eq!(constants.num_preshards, defaults.num_preshards);
+    }
+
+    #[test]
+    fn a_committee_size_of_zero_is_refused() {
+        let mut constants = ConsensusConstants::from(Network::LocalNet);
+        let overrides = ConsensusConstantsFile {
+            committee_size_per_shard_group: Some(0),
+            ..Default::default()
+        };
+        assert!(matches!(
+            overrides.apply_to(&mut constants),
+            Err(ConsensusConstantsFileError::CommitteeSizeIsZero)
+        ));
     }
 
     #[test]

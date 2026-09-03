@@ -30,6 +30,7 @@ pub struct ProcessContext<'a> {
     envs: &'a [(String, String)],
     base_path: PathBuf,
     processes_path: PathBuf,
+    swarm_path: PathBuf,
     network: Network,
     listen_ip: IpAddr,
     port_allocator: &'a mut AllocatedPorts,
@@ -44,6 +45,7 @@ impl<'a> ProcessContext<'a> {
         envs: &'a [(String, String)],
         base_path: PathBuf,
         processes_path: PathBuf,
+        swarm_path: PathBuf,
         network: Network,
         listen_ip: IpAddr,
         port_allocator: &'a mut AllocatedPorts,
@@ -56,6 +58,7 @@ impl<'a> ProcessContext<'a> {
             envs,
             base_path,
             processes_path,
+            swarm_path,
             network,
             listen_ip,
             port_allocator,
@@ -82,9 +85,7 @@ impl<'a> ProcessContext<'a> {
 
     /// The swarm's own directory, which holds the files shared by every instance in it.
     pub fn swarm_path(&self) -> &Path {
-        self.processes_path
-            .parent()
-            .expect("INVARIANT: the processes directory is always inside the swarm directory")
+        &self.swarm_path
     }
 
     /// The consensus constants every node in this swarm reads. Constants have to agree across a

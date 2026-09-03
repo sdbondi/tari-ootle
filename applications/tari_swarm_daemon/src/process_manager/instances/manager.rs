@@ -32,17 +32,18 @@ const CONSENSUS_CONSTANTS_TEMPLATE: &str = r#"# Consensus constants for this swa
 # start-up by every node in it. Only LocalNet reads this file at all. Uncomment a line to change it
 # and restart the swarm; anything left commented keeps the network's own value.
 #
-# The number of committees is the registered validator count divided by the committee size, so a
-# smaller committee splits the shard space across fewer nodes.
-# committee_size_per_shard_group = 3
+# Every value below is the one this network already uses, so uncommenting a line as it stands changes
+# nothing. The number of committees is the registered validator count divided by the committee size,
+# so a smaller committee splits the shard space across fewer nodes.
+# committee_size_per_shard_group = 7
 
 # pacemaker_block_time_secs = 10
 # base_layer_confirmations = 3
 # missed_proposal_suspend_threshold = 5
 # missed_proposal_evict_threshold = 10
 # missed_proposal_recovery_threshold = 5
-# max_transaction_validity_epochs = 10
-# epoch_end_spread_blocks = 0
+# max_transaction_validity_epochs = 2160
+# epoch_end_spread_blocks = 1
 "#;
 use crate::{
     config::{InstanceConfig, InstanceType},
@@ -236,6 +237,7 @@ impl InstanceManager {
             &instance_envs,
             base_path.clone(),
             processes_path,
+            self.base_path.clone(),
             self.network,
             listen_ip,
             &mut allocated_ports,
