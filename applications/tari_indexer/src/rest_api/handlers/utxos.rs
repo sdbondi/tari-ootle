@@ -80,7 +80,8 @@ pub async fn stream_utxo_updates(
     let encoder = match accept_header {
         Some(mime) => encoding::from_media_type(mime).ok_or_else(|| {
             ErrorResponse::bad_request(format!(
-                "Unsupported Accept header '{}', supported types are 'application/x-protobuf' and 'application/json'",
+                "Unsupported Accept header '{}', supported types are 'application/x-protobuf', 'application/x-ndjson' \
+                 and 'application/json'",
                 mime
             ))
         })?,

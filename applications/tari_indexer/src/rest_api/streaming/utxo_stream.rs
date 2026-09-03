@@ -7,7 +7,10 @@ use std::{
 };
 
 use async_stream::try_stream;
-use axum::response::{IntoResponse, Response};
+use axum::{
+    http::{HeaderValue, header},
+    response::{IntoResponse, Response},
+};
 use bytes::{Bytes, BytesMut};
 use futures::{Stream, StreamExt};
 use log::*;
@@ -25,11 +28,13 @@ use crate::{
 const LOG_TARGET: &str = "tari::indexer::rest_api::streaming::utxo_stream";
 
 pub struct UtxoUpdateStream {
+    content_type: HeaderValue,
     inner: Pin<Box<dyn Stream<Item = anyhow::Result<Bytes>> + Send>>,
 }
 
 impl UtxoUpdateStream {
     pub fn new(substate_manager: SubstateManager, request: GetUtxoUpdatesRequest, encoder: MimeTypeEncoder) -> Self {
+        let content_type = encoder.media_type();
         let inner = try_stream! {
             let mut buffer = BytesMut::with_capacity(1024);
             for &(shard, state_version) in &request.shard_state_versions {
@@ -121,7 +126,10 @@ impl UtxoUpdateStream {
             }
         };
 
-        Self { inner: Box::pin(inner) }
+        Self {
+            content_type,
+            inner: Box::pin(inner),
+        }
     }
 }
 
@@ -135,10 +143,11 @@ impl Stream for UtxoUpdateStream {
 
 impl IntoResponse for UtxoUpdateStream {
     fn into_response(self) -> Response {
+        let content_type = self.content_type.clone();
         let stream_body = axum::body::Body::from_stream(self);
 
         axum::response::Response::builder()
-            .header("Content-Type", "application/octet-stream")
+            .header(header::CONTENT_TYPE, content_type)
             .body(stream_body)
             .map_err(ErrorResponse::anyhow)
             .into_response()
