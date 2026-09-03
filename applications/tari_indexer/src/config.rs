@@ -82,12 +82,19 @@ impl ApplicationConfig {
         self.to_data_dir().join("state.db")
     }
 
-    pub fn consensus_constants_path(&self) -> PathBuf {
-        if self.indexer.consensus_constants_file.is_absolute() {
-            return self.indexer.consensus_constants_file.clone();
+    /// The configured consensus constants file, resolved against the data directory.
+    pub fn localnet_consensus_constants_path(&self) -> Option<PathBuf> {
+        let path = self.indexer.localnet_consensus_constants_file.as_ref()?;
+        if path.is_absolute() {
+            return Some(path.clone());
         }
 
-        self.to_data_dir().join(&self.indexer.consensus_constants_file)
+        Some(self.to_data_dir().join(path))
+    }
+
+    /// Where a consensus constants file is picked up from when none is configured.
+    pub fn default_localnet_consensus_constants_path(&self) -> PathBuf {
+        self.to_data_dir().join("consensus_constants.toml")
     }
 
     pub fn global_db_path(&self) -> PathBuf {
@@ -104,11 +111,12 @@ pub struct IndexerConfig {
     pub identity_file: PathBuf,
     /// The relative path to store persistent data
     pub data_dir: PathBuf,
-    /// An absolute or relative (to data_dir) path to a file of consensus constant overrides. Read
-    /// once at startup, and only on LocalNet: every other network's constants are part of what its
-    /// nodes agree on. Absent file means the network's own constants.
-    #[serde(default = "default_consensus_constants_file")]
-    pub consensus_constants_file: PathBuf,
+    /// An absolute or relative (to data_dir) path to a file of consensus constant overrides, read
+    /// once at startup and only on LocalNet. Setting it says the file is expected, so an indexer that
+    /// cannot find it refuses to start. Leave it unset to pick up
+    /// `<data_dir>/consensus_constants.toml` if it happens to be there.
+    #[serde(default)]
+    pub localnet_consensus_constants_file: Option<PathBuf>,
     /// The p2p configuration settings
     pub p2p: P2pConfig,
     /// Listening address for the indexer API server
@@ -261,10 +269,6 @@ impl From<&IndexerConfig> for PublishedIndexerConfig {
     }
 }
 
-fn default_consensus_constants_file() -> PathBuf {
-    PathBuf::from("consensus_constants.toml")
-}
-
 fn default_transaction_retention_epochs() -> Option<u64> {
     Some(50)
 }
@@ -365,7 +369,7 @@ impl Default for IndexerConfig {
             override_from: None,
             identity_file: PathBuf::from("indexer_id.json"),
             data_dir: PathBuf::from("data/indexer"),
-            consensus_constants_file: default_consensus_constants_file(),
+            localnet_consensus_constants_file: None,
             p2p: P2pConfig::default(),
             api_listen_address: Some("127.0.0.1:18300".parse().unwrap()),
             metrics_listen_address: Some("127.0.0.1:18302".parse().unwrap()),

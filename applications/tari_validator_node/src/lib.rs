@@ -130,8 +130,11 @@ pub async fn run_validator_node(
     #[cfg(feature = "metrics")]
     let metrics_registry = create_metrics_registry(keypair.public_key(), &mut base_registry);
 
-    let consensus_constants =
-        load_consensus_constants(config.network, &config.validator_node.consensus_constants_file)?;
+    let consensus_constants = load_consensus_constants(
+        config.network,
+        config.validator_node.localnet_consensus_constants_file.as_deref(),
+        &config.validator_node.default_localnet_consensus_constants_file(),
+    )?;
     let mut services = spawn_services(
         config.clone(),
         shutdown.to_signal(),

@@ -84,19 +84,35 @@ impl ConsensusConstantsFile {
     }
 }
 
-/// Loads the consensus constants for `network`, applying the overrides in `path` if that file exists.
+/// Loads the consensus constants for `network`.
 ///
-/// Only a LocalNet reads the file at all. Every other network's constants are part of what its nodes
+/// Only a LocalNet reads a file at all. Every other network's constants are part of what its nodes
 /// agree on, so there is nothing a local file could say about them that would be safe to act on, and
 /// a file left behind by a devnet cannot reach a node that is not on one.
+///
+/// A `configured` path is one an operator named, so its absence is a misconfiguration and is
+/// reported. `default_path` is a convenience - a file may be dropped there to take effect, and its
+/// absence is the ordinary case.
 pub fn load_consensus_constants(
     network: Network,
-    path: &Path,
+    configured: Option<&Path>,
+    default_path: &Path,
 ) -> Result<ConsensusConstants, ConsensusConstantsFileError> {
     let mut constants = ConsensusConstants::from(network);
-    if !matches!(network, Network::LocalNet) || !path.exists() {
+    if !matches!(network, Network::LocalNet) {
         return Ok(constants);
     }
+
+    let path = match configured {
+        Some(path) if !path.exists() => {
+            return Err(ConsensusConstantsFileError::ConfiguredFileNotFound {
+                path: path.to_path_buf(),
+            });
+        },
+        Some(path) => path,
+        None if default_path.exists() => default_path,
+        None => return Ok(constants),
+    };
 
     let contents = fs::read_to_string(path).map_err(|source| ConsensusConstantsFileError::Read {
         path: path.to_path_buf(),
@@ -113,6 +129,8 @@ pub fn load_consensus_constants(
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConsensusConstantsFileError {
+    #[error("Consensus constants file {path} is configured but does not exist")]
+    ConfiguredFileNotFound { path: PathBuf },
     #[error("Failed to read consensus constants file {path}: {source}")]
     Read { path: PathBuf, source: std::io::Error },
     #[error("Failed to parse consensus constants file {path}: {source}")]
@@ -168,14 +186,19 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn a_network_that_is_not_local_does_not_read_the_file() {
-        let dir = tempfile::tempdir().unwrap();
+    fn write_constants_file(dir: &tempfile::TempDir) -> PathBuf {
         let path = dir.path().join("consensus_constants.toml");
         fs::write(&path, "committee_size_per_shard_group = 3").unwrap();
+        path
+    }
+
+    #[test]
+    fn a_network_that_is_not_local_reads_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_constants_file(&dir);
 
         for network in [Network::MainNet, Network::Esmeralda, Network::StageNet] {
-            let constants = load_consensus_constants(network, &path).unwrap();
+            let constants = load_consensus_constants(network, Some(&path), &path).unwrap();
             assert_eq!(
                 constants.committee_size_per_shard_group,
                 ConsensusConstants::from(network).committee_size_per_shard_group
@@ -184,13 +207,35 @@ mod tests {
     }
 
     #[test]
-    fn a_local_network_reads_the_file() {
+    fn a_file_at_the_default_location_is_read() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("consensus_constants.toml");
-        fs::write(&path, "committee_size_per_shard_group = 3").unwrap();
+        let path = write_constants_file(&dir);
 
-        let constants = load_consensus_constants(Network::LocalNet, &path).unwrap();
+        let constants = load_consensus_constants(Network::LocalNet, None, &path).unwrap();
         assert_eq!(constants.committee_size_per_shard_group, 3);
+    }
+
+    #[test]
+    fn nothing_at_the_default_location_is_the_ordinary_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("consensus_constants.toml");
+
+        let constants = load_consensus_constants(Network::LocalNet, None, &missing).unwrap();
+        assert_eq!(
+            constants.committee_size_per_shard_group,
+            ConsensusConstants::DEFAULT_DEVNET_COMMITTEE_SIZE
+        );
+    }
+
+    #[test]
+    fn a_configured_file_that_is_not_there_is_a_misconfiguration() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("elsewhere.toml");
+
+        assert!(matches!(
+            load_consensus_constants(Network::LocalNet, Some(&missing), &missing),
+            Err(ConsensusConstantsFileError::ConfiguredFileNotFound { .. })
+        ));
     }
 
     #[test]

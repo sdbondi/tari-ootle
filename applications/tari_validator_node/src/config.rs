@@ -80,11 +80,12 @@ pub struct ValidatorNodeConfig {
     pub data_dir: PathBuf,
     /// An absolute or relative (to data_dir) path to the state database
     pub state_db_path: PathBuf,
-    /// An absolute or relative (to data_dir) path to a file of consensus constant overrides. Read
-    /// once at startup, and only on LocalNet: every other network's constants are part of what its
-    /// nodes agree on. Absent file means the network's own constants.
-    #[serde(default = "default_consensus_constants_file")]
-    pub consensus_constants_file: PathBuf,
+    /// An absolute or relative (to data_dir) path to a file of consensus constant overrides, read
+    /// once at startup and only on LocalNet. Setting it says the file is expected, so a node that
+    /// cannot find it refuses to start. Leave it unset to pick up
+    /// `<data_dir>/consensus_constants.toml` if it happens to be there.
+    #[serde(default)]
+    pub localnet_consensus_constants_file: Option<PathBuf>,
     /// Database config
     // pub database: tari_any_state_store::Config,
     /// The p2p configuration settings
@@ -155,10 +156,6 @@ fn default_max_consensus_messaging_queue_bytes() -> usize {
     128 * 1024 * 1024
 }
 
-fn default_consensus_constants_file() -> PathBuf {
-    PathBuf::from("consensus_constants.toml")
-}
-
 impl ValidatorNodeConfig {
     pub fn set_base_path<P: AsRef<Path>>(&mut self, base_path: P) {
         if !self.shard_key_file.is_absolute() {
@@ -173,8 +170,12 @@ impl ValidatorNodeConfig {
         if !self.state_db_path.is_absolute() {
             self.state_db_path = self.data_dir.join(&self.state_db_path);
         }
-        if !self.consensus_constants_file.is_absolute() {
-            self.consensus_constants_file = self.data_dir.join(&self.consensus_constants_file);
+        if let Some(path) = self
+            .localnet_consensus_constants_file
+            .as_ref()
+            .filter(|p| !p.is_absolute())
+        {
+            self.localnet_consensus_constants_file = Some(self.data_dir.join(path));
         }
         // if !self.database.rocks_db.path.is_absolute() {
         //     self.database.rocks_db.path = self.data_dir.as_ref().join(&self.database.rocks_db.path);
@@ -182,6 +183,11 @@ impl ValidatorNodeConfig {
         // if !self.database.sqlite.path.is_absolute() {
         //     self.database.sqlite.path = self.data_dir.as_ref().join(&self.database.sqlite.path);
         // }
+    }
+
+    /// Where a consensus constants file is picked up from when none is configured.
+    pub fn default_localnet_consensus_constants_file(&self) -> PathBuf {
+        self.data_dir.join("consensus_constants.toml")
     }
 
     pub fn get_global_db_path(&self) -> PathBuf {
@@ -197,7 +203,7 @@ impl Default for ValidatorNodeConfig {
             identity_file: PathBuf::from("validator_node_id.json"),
             data_dir: PathBuf::from("data/validator_node"),
             state_db_path: PathBuf::from("rocksdb"),
-            consensus_constants_file: default_consensus_constants_file(),
+            localnet_consensus_constants_file: None,
             // database: tari_any_state_store::Config {
             //     database_type: AnyDatabaseType::Sqlite,
             //     rocks_db: RocksConfig { path: "rocksdb".into() },

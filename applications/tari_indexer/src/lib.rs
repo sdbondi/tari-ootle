@@ -106,7 +106,11 @@ where
     #[cfg(feature = "metrics")]
     let mut registry = create_metrics_registry(keypair.public_key());
 
-    let consensus_constants = load_consensus_constants(config.network, &config.consensus_constants_path())?;
+    let consensus_constants = load_consensus_constants(
+        config.network,
+        config.localnet_consensus_constants_path().as_deref(),
+        &config.default_localnet_consensus_constants_path(),
+    )?;
     let services = spawn_services(
         &config,
         shutdown_signal.clone(),

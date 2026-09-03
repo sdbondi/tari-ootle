@@ -184,8 +184,8 @@ impl TariWorld {
         )
         .expect("Failed to write consensus constants file");
 
-        self.consensus_constants =
-            load_consensus_constants(Network::LocalNet, &path).expect("Failed to load consensus constants");
+        self.consensus_constants = load_consensus_constants(Network::LocalNet, Some(&path), &path)
+            .expect("Failed to load consensus constants");
         self.consensus_constants_file = Some(path);
     }
 

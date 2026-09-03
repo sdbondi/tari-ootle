@@ -1,7 +1,11 @@
 //   Copyright 2024 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::{collections::HashMap, net::IpAddr, path::PathBuf};
+use std::{
+    collections::HashMap,
+    net::IpAddr,
+    path::{Path, PathBuf},
+};
 
 use tari_ootle_wallet_sdk::Network;
 use url::Url;
@@ -15,6 +19,10 @@ use crate::process_manager::{
     MinoTariWalletProcess,
     ValidatorNodeProcess,
 };
+
+/// Name of the swarm-wide consensus constants file. It is written on start-up so that it can simply
+/// be edited, and every node the swarm forks is pointed at it.
+pub const CONSENSUS_CONSTANTS_FILE_NAME: &str = "consensus_constants.toml";
 
 pub struct ProcessContext<'a> {
     instance_id: InstanceId,
@@ -70,6 +78,19 @@ impl<'a> ProcessContext<'a> {
 
     pub fn processes_path(&self) -> &PathBuf {
         &self.processes_path
+    }
+
+    /// The swarm's own directory, which holds the files shared by every instance in it.
+    pub fn swarm_path(&self) -> &Path {
+        self.processes_path
+            .parent()
+            .expect("INVARIANT: the processes directory is always inside the swarm directory")
+    }
+
+    /// The consensus constants every node in this swarm reads. Constants have to agree across a
+    /// network, so this is one file for the swarm rather than one per instance.
+    pub fn consensus_constants_file(&self) -> PathBuf {
+        self.swarm_path().join(CONSENSUS_CONSTANTS_FILE_NAME)
     }
 
     pub fn network(&self) -> Network {
