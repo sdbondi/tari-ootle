@@ -21,7 +21,7 @@
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 
 use crate::{method_info::RpcMethodInfo, options::RpcTraitOptions};
 
@@ -186,10 +186,33 @@ impl RpcCodeGenerator {
                     quote!(request: #request_type)
                 };
 
+                // Only streaming methods take per-request options. Holding a response open is what
+                // needs a deadline of its own; a unary call is served within the session's.
+                let with_options = if m.is_server_streaming {
+                    let name_with_options = format_ident!("{}_with_options", name);
+                    let params_with_options = if is_unit {
+                        quote!(options: #dep_mod::RpcRequestOptions)
+                    } else {
+                        quote!(request: #request_type, options: #dep_mod::RpcRequestOptions)
+                    };
+                    quote! {
+                        pub async fn #name_with_options(
+                            &mut self,
+                            #params_with_options
+                        ) -> Result<#ok_type, #dep_mod::RpcError> {
+                            self.inner.server_streaming_with_options(#var, #method_num, options).await
+                        }
+                    }
+                } else {
+                    TokenStream::new()
+                };
+
                 quote! {
                     pub async fn #name(&mut self,#params) -> Result<#ok_type, #dep_mod::RpcError> {
                         #body
                     }
+
+                    #with_options
                 }
             })
             .collect::<TokenStream>();

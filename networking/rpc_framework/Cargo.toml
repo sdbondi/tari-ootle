@@ -28,6 +28,8 @@ libp2p = { workspace = true }
 libp2p-substream = { workspace = true }
 
 [dev-dependencies]
+tari_rpc_macros = { workspace = true }
+
 tokio = { workspace = true, features = ["io-util", "rt-multi-thread"] }
 
 [build-dependencies]

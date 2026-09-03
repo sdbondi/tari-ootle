@@ -24,6 +24,8 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::{
+    AsyncRead,
+    AsyncWrite,
     FutureExt,
     future::BoxFuture,
     task::{Context, Poll},
@@ -36,7 +38,6 @@ use crate::{
     RpcError,
     RpcServer,
     RpcStatus,
-    Substream,
     body::Body,
     either::Either,
     message::{Request, Response},
@@ -123,7 +124,13 @@ where
     <B::Service as Service<Request<Bytes>>>::Future: Send + 'static,
 {
     /// Start all services
-    pub async fn serve(self, protocol_notifications: ProtocolNotificationRx<Substream>) -> Result<(), RpcError> {
+    pub async fn serve<TSubstream>(
+        self,
+        protocol_notifications: ProtocolNotificationRx<TSubstream>,
+    ) -> Result<(), RpcError>
+    where
+        TSubstream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
         self.server
             .serve(self.routes, protocol_notifications)
             .await

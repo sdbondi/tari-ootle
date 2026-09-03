@@ -46,6 +46,14 @@ impl RpcStatus {
         }
     }
 
+    /// The server refused the session rather than answering the request.
+    pub fn handshake_denied<T: Into<String>>(details: T) -> Self {
+        Self {
+            code: RpcStatusCode::HandshakeDenied,
+            details: details.into(),
+        }
+    }
+
     /// Returns a general error. As with all other errors care should be taken not to leak sensitive data to remote
     /// peers through error messages.
     pub fn general<T: Into<String>>(details: T) -> Self {

@@ -12492,6 +12492,7 @@ dependencies = [
  "prost 0.14.3",
  "proto_builder",
  "tari_metrics",
+ "tari_rpc_macros",
  "tari_shutdown",
  "thiserror 2.0.18",
  "tokio",
@@ -12505,8 +12506,10 @@ name = "tari_rpc_macros"
 version = "0.40.0"
 dependencies = [
  "proc-macro2",
+ "prost 0.14.3",
  "quote",
  "syn 2.0.117",
+ "tari_rpc_framework",
 ]
 
 [[package]]

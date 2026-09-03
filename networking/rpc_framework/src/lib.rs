@@ -25,12 +25,21 @@
 //! Provides a request/response protocol that supports streaming.
 //! Available with the `rpc` crate feature.
 
-// #[cfg(test)]
-// mod test;
+// The `#[tari_rpc]` macro emits `::tari_rpc_framework` paths, which only resolve inside this crate
+// under its own name.
+#[cfg(test)]
+extern crate self as tari_rpc_framework;
+
+#[cfg(test)]
+mod test;
 
 /// Maximum frame size of each RPC message. This is enforced in tokio's length delimited codec.
 /// This can be thought of as the hard limit on message size.
 pub const RPC_MAX_FRAME_SIZE: usize = 6 * 1024 * 1024; // 6 MiB
+
+/// The shortest keepalive interval a server serves unless configured otherwise, and the interval a
+/// client assumes a peer may clamp up to when it asks for a shorter one.
+pub const DEFAULT_MINIMUM_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The maximum request payload size
 const fn max_request_size() -> usize {
@@ -60,13 +69,7 @@ mod server;
 pub use server::{NamedProtocolService, RpcServer, RpcServerBuilder, RpcServerError, RpcServerHandle};
 
 mod client;
-pub use client::{
-    // pool,
-    // pool::{RpcClientLease, RpcClientPool, RpcClientPoolError, RpcPoolClient},
-    RpcClient,
-    RpcClientBuilder,
-    RpcClientConfig,
-};
+pub use client::{RpcClient, RpcClientBuilder, RpcClientConfig, RpcRequestOptions};
 
 mod either;
 
@@ -107,6 +110,7 @@ pub mod __macro_reexports {
         RpcClient,
         RpcClientBuilder,
         RpcError,
+        RpcRequestOptions,
         RpcStatus,
         framing::CanonicalFraming,
         message::{Request, Response},

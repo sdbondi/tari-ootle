@@ -30,9 +30,6 @@ use handle::RpcServerRequest;
 #[cfg(feature = "metrics")]
 mod metrics;
 
-// TODO: Tests
-// pub mod mock;
-
 mod early_close;
 mod router;
 
@@ -61,7 +58,6 @@ use tracing::{Instrument, Level, debug, error, instrument, span, trace, warn};
 use super::{
     Handshake,
     RPC_MAX_FRAME_SIZE,
-    Substream,
     body::Body,
     error::HandshakeRejectReason,
     max_response_payload_size,
@@ -126,12 +122,13 @@ impl RpcServer {
         RpcServerHandle::new(self.request_tx.clone())
     }
 
-    pub(super) async fn serve<S>(
+    pub(super) async fn serve<S, TSubstream>(
         self,
         service: S,
-        notifications: ProtocolNotificationRx<Substream>,
+        notifications: ProtocolNotificationRx<TSubstream>,
     ) -> Result<(), RpcServerError>
     where
+        TSubstream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
         S: MakeService<
                 StreamProtocol,
                 Request<Bytes>,
@@ -227,24 +224,25 @@ impl Default for RpcServerBuilder {
             maximum_simultaneous_sessions: None,
             maximum_sessions_per_client: None,
             minimum_client_deadline: Duration::from_secs(1),
-            minimum_keepalive_interval: Duration::from_secs(5),
+            minimum_keepalive_interval: crate::DEFAULT_MINIMUM_KEEPALIVE_INTERVAL,
             handshake_timeout: Duration::from_secs(15),
         }
     }
 }
 
-pub(super) struct PeerRpcServer<TSvc> {
+pub(super) struct PeerRpcServer<TSvc, TSubstream> {
     executor: BoundedExecutor,
     config: RpcServerBuilder,
     service: TSvc,
-    protocol_notifications: Option<ProtocolNotificationRx<Substream>>,
+    protocol_notifications: Option<ProtocolNotificationRx<TSubstream>>,
     request_rx: mpsc::Receiver<RpcServerRequest>,
     sessions: HashMap<PeerId, usize>,
     tasks: FuturesUnordered<JoinHandle<PeerId>>,
 }
 
-impl<TSvc> PeerRpcServer<TSvc>
+impl<TSvc, TSubstream> PeerRpcServer<TSvc, TSubstream>
 where
+    TSubstream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     TSvc: MakeService<
             StreamProtocol,
             Request<Bytes>,
@@ -260,7 +258,7 @@ where
     fn new(
         config: RpcServerBuilder,
         service: TSvc,
-        protocol_notifications: ProtocolNotificationRx<Substream>,
+        protocol_notifications: ProtocolNotificationRx<TSubstream>,
         request_rx: mpsc::Receiver<RpcServerRequest>,
     ) -> Self {
         Self {
@@ -353,7 +351,7 @@ where
 
     async fn handle_protocol_notification(
         &mut self,
-        notification: ProtocolNotification<Substream>,
+        notification: ProtocolNotification<TSubstream>,
     ) -> Result<(), RpcServerError> {
         match notification.event {
             ProtocolEvent::NewInboundSubstream { peer_id, substream } => {
@@ -415,7 +413,7 @@ where
         &mut self,
         protocol: StreamProtocol,
         peer_id: PeerId,
-        mut framed: CanonicalFraming<Substream>,
+        mut framed: CanonicalFraming<TSubstream>,
     ) -> Result<(), RpcServerError> {
         let mut handshake = Handshake::new(&mut framed).with_timeout(self.config.handshake_timeout);
 
@@ -890,11 +888,14 @@ fn err_to_log_level(err: &io::Error) -> log::Level {
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::DuplexStream;
+    use tokio_util::compat::Compat;
+
     use super::*;
 
     #[tokio::test]
     async fn serve_drains_in_flight_sessions_before_returning() {
-        let (notify_tx, notify_rx) = mpsc::unbounded_channel();
+        let (notify_tx, notify_rx) = mpsc::unbounded_channel::<ProtocolNotification<Compat<DuplexStream>>>();
         let (_request_tx, request_rx) = mpsc::channel(1);
         let server = PeerRpcServer::new(RpcServerBuilder::new(), ProtocolServiceNotFound, notify_rx, request_rx);
 
