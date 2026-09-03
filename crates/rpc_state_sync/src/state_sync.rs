@@ -749,6 +749,23 @@ enum ProbeOutcome {
 impl<TConsensusSpec> RpcStateSyncClientProtocol<TConsensusSpec>
 where TConsensusSpec: ConsensusSpec<Addr = PeerAddress> + Send + Sync + 'static
 {
+    /// The shard group this node serves at `epoch`, when a committee change has moved it off the one
+    /// `leaf` was committed under.
+    ///
+    /// A node in that position holds none of the state for the shards it has been handed, which no
+    /// agreement with the committee it is leaving can tell it: that committee is level with it on the
+    /// shards they shared, and silent about the rest.
+    async fn shard_group_moved_since(
+        &self,
+        epoch: Epoch,
+        leaf: &LeafBlock,
+    ) -> Result<Option<ShardGroup>, RpcStateSyncError> {
+        let info = self.epoch_manager.get_local_committee_info(epoch).await.optional()?;
+        Ok(info
+            .map(|info| info.shard_group())
+            .filter(|shard_group| *shard_group != leaf.shard_group()))
+    }
+
     /// Probe committee members for their highest QCs and classify the result. See `ProbeOutcome`.
     #[expect(clippy::too_many_lines)]
     async fn probe_high_qcs_at_leaf(
@@ -965,6 +982,11 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress> + Send + Sync + 'static
         // Fast path: oracle hasn't advanced past our leaf — nothing to do.
         if oracle_epoch <= leaf.epoch() {
             return Ok(SyncStatus::UpToDate);
+        }
+
+        if let Some(shard_group) = self.shard_group_moved_since(oracle_epoch, &leaf).await? {
+            info!(target: LOG_TARGET, "🛜 Our shard group changed from {} to {shard_group} at {oracle_epoch}; will state-sync the new group.", leaf.shard_group());
+            return Ok(SyncStatus::Behind { target_epoch: None });
         }
 
         // Fast path: we have a finalised epoch checkpoint at our leaf's epoch. The committee
