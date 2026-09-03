@@ -51,6 +51,12 @@ pub async fn stream_utxo_updates(
         ));
     }
 
+    // A shard's updates are served in whole state versions, so a limit of zero would still return
+    // one version rather than the empty response it asks for.
+    if req.per_shard_limit == 0 {
+        return Err(ErrorResponse::bad_request("per_shard_limit must be greater than 0"));
+    }
+
     if req.shard_state_versions.len() > NumPreshards::MAX_SHARD.as_u32() as usize {
         return Err(ErrorResponse::bad_request(format!(
             "shard_state_versions cannot contain more than {} entries",

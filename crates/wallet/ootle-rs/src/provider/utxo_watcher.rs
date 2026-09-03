@@ -129,6 +129,7 @@ impl StealthUtxoStream {
                 },
             };
 
+            let per_shard_limit = self.request.per_shard_limit;
             let mut stream = match client.stream_utxo_updates_protobuf(self.request.into_request()).await {
                 Ok(stream) => stream,
                 Err(err) => {
@@ -138,19 +139,25 @@ impl StealthUtxoStream {
                 },
             };
 
-            // `EndOfShard` on the wire does not carry the shard number; stamp it from the preceding
-            // `StartOfShard` so each frame is self-describing.
-            let mut current_shard: Option<Shard> = None;
+            // `EndOfShard` on the wire carries neither the shard number nor what the pass returned;
+            // both come from the preceding `StartOfShard`, so each pass is held until its
+            // `EndOfShard` arrives.
+            let mut current_pass: Option<ShardPass> = None;
             loop {
                 match stream.next().await {
                     Some(Ok(payload)) => {
                         let UtxoUpdatePayload { sos, update, eos } = payload;
                         if let Some(sos) = sos {
                             let shard = Shard::from(sos.shard);
-                            current_shard = Some(shard);
+                            let max_state_version = StateVersion::from(sos.max_state_version);
+                            current_pass = Some(ShardPass {
+                                shard,
+                                max_state_version,
+                                filled_limit: sos.num_updates >= per_shard_limit,
+                            });
                             yield Ok(StealthUtxoFrame::StartOfShard {
                                 shard,
-                                max_state_version: StateVersion::from(sos.max_state_version),
+                                max_state_version,
                                 num_updates: sos.num_updates,
                                 has_more: sos.has_more,
                             });
@@ -165,18 +172,18 @@ impl StealthUtxoStream {
                             }
                         }
                         if let Some(eos) = eos {
-                            // Take the shard so a following `EndOfShard` (or any frame) that is not
+                            // Take the pass so a following `EndOfShard` (or any frame) that is not
                             // preceded by a fresh `StartOfShard` errors out rather than being
                             // misattributed to this shard and corrupting its cursor.
-                            let Some(shard) = current_shard.take() else {
+                            let Some(pass) = current_pass.take() else {
                                 yield Err(UtxoWatcherError::DecodeError(
                                     "EndOfShard received before any StartOfShard".to_string(),
                                 ));
                                 return;
                             };
                             yield Ok(StealthUtxoFrame::EndOfShard {
-                                shard,
-                                max_state_version: StateVersion::from(eos.max_state_version),
+                                shard: pass.shard,
+                                max_state_version: pass.resume_from(StateVersion::from(eos.max_state_version)),
                             });
                         }
                     },
@@ -188,6 +195,32 @@ impl StealthUtxoStream {
                     None => return,
                 }
             }
+        }
+    }
+}
+
+/// What one pass over a single shard returned, held from its `StartOfShard` to its `EndOfShard`.
+struct ShardPass {
+    shard: Shard,
+    /// The highest state version delivered in the pass.
+    max_state_version: StateVersion,
+    /// The pass returned `per_shard_limit` updates or more.
+    filled_limit: bool,
+}
+
+impl ShardPass {
+    /// The state version to resume this shard from, given the `EndOfShard` watermark.
+    ///
+    /// An indexer that chooses the resume point itself already accounts for what it withheld, and
+    /// the cap below is inert against one. An indexer predating that reports the shard's high
+    /// watermark unconditionally — the newest version it holds, taken over the whole shard — which
+    /// on a pass that filled the limit sits above updates it did not send. A pass that filled the
+    /// limit is therefore never resumed above its own last delivered version.
+    fn resume_from(&self, watermark: StateVersion) -> StateVersion {
+        if self.filled_limit {
+            watermark.min(self.max_state_version)
+        } else {
+            watermark
         }
     }
 }
@@ -273,6 +306,41 @@ impl ShardCursor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pass(max_state_version: u64, filled_limit: bool) -> ShardPass {
+        ShardPass {
+            shard: Shard::from(1u32),
+            max_state_version: StateVersion::from(max_state_version),
+            filled_limit,
+        }
+    }
+
+    #[test]
+    fn a_pass_that_filled_the_limit_is_capped_at_its_last_delivered_version() {
+        // An indexer that reports the shard's high watermark regardless of what it withheld.
+        assert_eq!(
+            pass(100, true).resume_from(StateVersion::from(250)),
+            StateVersion::from(100)
+        );
+    }
+
+    #[test]
+    fn a_short_pass_takes_the_watermark_whole() {
+        // Nothing was withheld, so the watermark also carries the cursor past filtered-out versions.
+        assert_eq!(
+            pass(100, false).resume_from(StateVersion::from(250)),
+            StateVersion::from(250)
+        );
+    }
+
+    #[test]
+    fn the_cap_is_inert_when_the_indexer_chose_the_resume_point() {
+        // Such an indexer sends its last delivered version as the watermark on a truncated pass.
+        assert_eq!(
+            pass(100, true).resume_from(StateVersion::from(100)),
+            StateVersion::from(100)
+        );
+    }
 
     #[test]
     fn cursor_advances_monotonically() {
