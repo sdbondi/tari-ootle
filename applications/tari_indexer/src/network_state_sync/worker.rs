@@ -17,7 +17,11 @@ use tari_engine_types::{
     substate::{SubstateId, SubstateValue},
     transaction_receipt::TransactionReceipt,
 };
-use tari_epoch_manager::{EpochManagerEvent, EpochManagerReader, service::EpochManagerHandle};
+use tari_epoch_manager::{
+    EpochManagerEvent,
+    EpochManagerReader,
+    service::{EpochManagerHandle, NetworkDescription},
+};
 use tari_indexer_client::event::{IndexerEvent, NewEpochEvent, TransactionEvent, TransactionFinalizedEvent};
 use tari_networking::NetworkingHandle;
 use tari_ootle_common_types::{Epoch, ShardGroup, StateVersion, VotePower, optional::Optional, shard::Shard};
@@ -164,11 +168,12 @@ impl NetworkWideStateSync {
 
         loop {
             let sync_plan = self.initialize_sync_plan().await?;
+            let plan_epoch = sync_plan.network_description().epoch();
             let partition = sync_plan
                 .network_description()
                 .shard_groups_iter()
                 .collect::<BTreeSet<_>>();
-            let (epoch_tx, epoch_rx) = watch::channel(sync_plan.network_description().epoch());
+            let (epoch_tx, epoch_rx) = watch::channel(plan_epoch);
             // A plan is drawn against one partition of the shards into groups. An epoch that keeps
             // the partition is handled by each group on its own: it winds its stream down, syncs its
             // checkpoints, re-resolves its committee and reopens from the cursor it holds. Only a
@@ -193,9 +198,7 @@ impl NetworkWideStateSync {
                                 info!(target: LOG_TARGET, "🌍️ Epoch changed to {}.", epoch);
                                 self.notify.notify(NewEpochEvent { epoch });
                                 match self.epoch_manager.get_network_description().await {
-                                    Ok(network_desc)
-                                        if network_desc.shard_groups_iter().collect::<BTreeSet<_>>() == partition =>
-                                    {
+                                    Ok(network_desc) if plan_absorbs_epoch(plan_epoch, &partition, &network_desc) => {
                                         let epoch = network_desc.epoch();
                                         epoch_tx.send_if_modified(|current| {
                                             let moved = *current != epoch;
@@ -205,10 +208,15 @@ impl NetworkWideStateSync {
                                         continue;
                                     },
                                     Ok(_) => {
-                                        info!(target: LOG_TARGET, "🌍️ Shard groups changed at epoch {}. Re-planning the state sync", epoch);
+                                        info!(target: LOG_TARGET, "🌍️ Re-planning the state sync at epoch {}", epoch);
                                         Ok(())
                                     },
-                                    Err(err) => Err(err.into()),
+                                    // The plan is re-drawn from a fresh description a work interval
+                                    // later rather than every stream being torn down for good.
+                                    Err(err) => {
+                                        warn!(target: LOG_TARGET, "⚠️ Failed to read the network description at epoch {}: {}. Re-planning the state sync", epoch, err);
+                                        Ok(())
+                                    },
                                 }
                             },
                             Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -988,6 +996,17 @@ impl NetworkWideStateSync {
     }
 }
 
+/// Whether a plan drawn at `plan_epoch` against `partition` carries on into the epoch `network_desc`
+/// describes, with each shard group reopening on its own.
+///
+/// It does so only while the partition of shards into groups is unchanged: a group loop serves one
+/// set of shards for its lifetime. A plan drawn at epoch zero has no group loops at all - it waits
+/// for the network to start - so the first real epoch always draws a new plan, whatever partition
+/// epoch zero reported.
+fn plan_absorbs_epoch(plan_epoch: Epoch, partition: &BTreeSet<ShardGroup>, network_desc: &NetworkDescription) -> bool {
+    !plan_epoch.is_zero() && network_desc.shard_groups_iter().collect::<BTreeSet<_>>() == *partition
+}
+
 /// How a `sync_state` stream ended without failing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StreamEnd {
@@ -1283,6 +1302,58 @@ fn extend_bufs_from_substate_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod plan_absorbs_epoch {
+        use tari_epoch_manager::service::ShardGroupInfo;
+        use tari_ootle_common_types::NumPreshards;
+
+        use super::*;
+
+        fn network(epoch: u64, groups: &[ShardGroup]) -> NetworkDescription {
+            NetworkDescription {
+                epoch: Epoch(epoch),
+                shard_groups: groups.iter().map(|g| (*g, ShardGroupInfo { num_members: 1 })).collect(),
+                num_preshards: NumPreshards::P256,
+            }
+        }
+
+        fn partition(groups: &[ShardGroup]) -> BTreeSet<ShardGroup> {
+            groups.iter().copied().collect()
+        }
+
+        fn whole() -> ShardGroup {
+            ShardGroup::new(1u32, 256)
+        }
+
+        #[test]
+        fn an_epoch_that_keeps_the_partition_is_absorbed() {
+            assert!(plan_absorbs_epoch(
+                Epoch(3),
+                &partition(&[whole()]),
+                &network(4, &[whole()])
+            ));
+        }
+
+        #[test]
+        fn a_changed_partition_draws_a_new_plan() {
+            let split = [ShardGroup::new(1u32, 128), ShardGroup::new(129u32, 256)];
+            assert!(!plan_absorbs_epoch(
+                Epoch(3),
+                &partition(&[whole()]),
+                &network(4, &split)
+            ));
+        }
+
+        #[test]
+        fn a_plan_drawn_at_epoch_zero_never_absorbs_the_first_epoch() {
+            // Epoch zero reports a partition, but the plan drawn against it runs no group loops.
+            assert!(!plan_absorbs_epoch(
+                Epoch(0),
+                &partition(&[whole()]),
+                &network(1, &[whole()])
+            ));
+        }
+    }
 
     mod stream_order {
         use super::*;
