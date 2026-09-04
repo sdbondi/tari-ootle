@@ -420,6 +420,7 @@ impl InstanceManager {
             .find(|i| i.id() == id)
             .ok_or_else(|| anyhow!("Instance not found"))?;
 
+        info!("🛑 Stopping {} (id: {})", instance.instance_type(), instance.id());
         instance.terminate().await?;
         instance.check_running()?;
         Ok(())
