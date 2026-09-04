@@ -10,12 +10,27 @@ use axum::{
 };
 use tari_engine_types::substate::SubstateId;
 use tari_indexer_client::types::{GetSubstateRequest, GetSubstateResponse, GetSubstatesRequest, GetSubstatesResponse};
-use tari_ootle_common_types::SubstateRequirementRef;
+use tari_ootle_common_types::{SubstateRequirementRef, optional::IsNotFoundError};
 
 use crate::{
     rest_api::{context::HandlerContext, error::ErrorResponse, handlers::HandlerResult},
-    substate_manager::FetchedSubstate,
+    substate_manager::{FetchedSubstate, SubstateManagerError},
 };
+
+/// Maps a lookup failure to a status the caller can act on.
+///
+/// A substate that is not there, and a version that has since been spent, are both answers about the
+/// thing that was asked for rather than failures of the indexer. A caller has to be able to tell
+/// those from the indexer being unable to answer at all, which is the only case left as a server
+/// error.
+fn substate_lookup_error(e: SubstateManagerError) -> ErrorResponse {
+    // A down is never undone, so naming a spent version is permanent for that version: the caller
+    // has to resolve the substate again rather than retry what it asked for.
+    if matches!(e, SubstateManagerError::InputSubstateIsDown { .. }) || e.is_not_found_error() {
+        return ErrorResponse::not_found(e.to_string());
+    }
+    ErrorResponse::internal_error(format!("Error getting substate: {e}"))
+}
 
 #[utoipa::path(
     get,
@@ -28,7 +43,11 @@ use crate::{
     ),
     responses(
         (status = 200, description = "Substate details", body = GetSubstateResponse),
-        (status = 404, description = "Substate not found", body = ErrorResponse),
+        (
+            status = 404,
+            description = "No such substate, or the version asked for has been spent",
+            body = ErrorResponse
+        ),
         (status = SERVICE_UNAVAILABLE, description = "Indexer is still syncing", body = ErrorResponse),
         (status = INTERNAL_SERVER_ERROR, description = "Failed to fetch substate", body = ErrorResponse),
     )
@@ -63,13 +82,13 @@ pub async fn get_substate(
                         verified: false,
                     })
             })
-            .map_err(|e| ErrorResponse::internal_error(format!("Error getting substate: {}", e)))?
+            .map_err(substate_lookup_error)?
     } else {
         manager
             .get_substates(iter::once(requirement))
             .await
             .map(|a| a.into_iter().next().map(|(_, fetched)| fetched))
-            .map_err(|e| ErrorResponse::internal_error(format!("Error getting substate: {}", e)))?
+            .map_err(substate_lookup_error)?
     };
 
     match maybe_substate {
@@ -127,4 +146,48 @@ pub async fn fetch_substates(
         .map_err(|e| ErrorResponse::internal_error(format!("Error getting substates: {}", e)))?;
 
     Ok(Json(GetSubstatesResponse { substates }))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use tari_ootle_storage::StorageError;
+
+    use super::*;
+
+    fn substate() -> SubstateId {
+        format!("component_{:064x}", 1).parse().unwrap()
+    }
+
+    /// Naming a version that has since been superseded says something about the substate, not about
+    /// the indexer, so the caller is told what it asked for is gone rather than that we broke.
+    #[test]
+    fn a_spent_version_is_not_found() {
+        let e = SubstateManagerError::InputSubstateIsDown {
+            substate_id: substate(),
+            version: 0,
+        };
+        let resp = substate_lookup_error(e);
+        assert_eq!(resp.status, StatusCode::NOT_FOUND);
+        // The version the caller named has to survive into the message for it to re-resolve.
+        assert!(resp.error.contains("v0"), "{}", resp.error);
+    }
+
+    #[test]
+    fn a_substate_that_does_not_exist_is_not_found() {
+        let resp = substate_lookup_error(SubstateManagerError::InputSubstateDoesNotExist {
+            substate_id: substate(),
+        });
+        assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    }
+
+    /// Only the indexer being unable to answer is a server error, or a caller cannot tell the two
+    /// apart and retries something that will never succeed.
+    #[test]
+    fn a_failure_to_answer_stays_a_server_error() {
+        let resp = substate_lookup_error(SubstateManagerError::StorageError(StorageError::QueryError {
+            reason: "boom".to_string(),
+        }));
+        assert_eq!(resp.status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
 }
