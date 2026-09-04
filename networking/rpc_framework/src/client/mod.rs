@@ -138,7 +138,7 @@ impl RpcClient {
         let call = ClientCall::new(BaseRequest::new(method.into(), req_bytes.into()));
 
         let mut resp = self.call_inner(call).await?;
-        let resp = resp.recv().await.ok_or(RpcError::ServerClosedRequest)??;
+        let resp = resp.messages.recv().await.ok_or(RpcError::ServerClosedRequest)??;
         let resp = R::decode(resp.into_message())?;
 
         Ok(resp)
@@ -173,7 +173,7 @@ impl RpcClient {
 
         let resp = self.call_inner(call).await?;
 
-        Ok(ClientStreaming::new(resp))
+        Ok(ClientStreaming::new(resp.messages, resp.keepalives))
     }
 
     /// Close the RPC session. Any subsequent calls will error.
@@ -195,10 +195,7 @@ impl RpcClient {
         self.connector.send_ping()
     }
 
-    async fn call_inner(
-        &mut self,
-        call: ClientCall,
-    ) -> Result<mpsc::Receiver<Result<Response<Bytes>, RpcStatus>>, RpcError> {
+    async fn call_inner(&mut self, call: ClientCall) -> Result<ResponseChannels, RpcError> {
         let svc = self.connector.ready().await?;
         let resp = svc.call(call).await?;
         Ok(resp)
@@ -428,6 +425,13 @@ struct ReadBounds {
     keepalives_due: bool,
 }
 
+/// What a caller receives for a request: the response messages, and word of each keepalive the
+/// peer sends while it has none.
+pub struct ResponseChannels {
+    pub messages: mpsc::Receiver<Result<Response<Bytes>, RpcStatus>>,
+    pub keepalives: watch::Receiver<u64>,
+}
+
 /// A request and the per-request overrides to send it with.
 pub(crate) struct ClientCall {
     request: BaseRequest<Bytes>,
@@ -502,7 +506,7 @@ impl fmt::Debug for ClientConnector {
 impl Service<ClientCall> for ClientConnector {
     type Error = RpcError;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
-    type Response = mpsc::Receiver<Result<Response<Bytes>, RpcStatus>>;
+    type Response = ResponseChannels;
 
     fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -766,7 +770,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
     async fn do_request_response(
         &mut self,
         call: ClientCall,
-        reply: oneshot::Sender<mpsc::Receiver<Result<Response<Bytes>, RpcStatus>>>,
+        reply: oneshot::Sender<ResponseChannels>,
     ) -> Result<(), RpcError> {
         let ClientCall { request, options } = call;
         let config = options.apply_to(self.config);
@@ -795,14 +799,18 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
         }
 
         let (response_tx, response_rx) = mpsc::channel(5);
-        if let Err(mut rx) = reply.send(response_rx) {
+        let (keepalive_tx, keepalive_rx) = watch::channel(0u64);
+        if let Err(mut channels) = reply.send(ResponseChannels {
+            messages: response_rx,
+            keepalives: keepalive_rx,
+        }) {
             warn!(
                 target: LOG_TARGET,
                 "Client request was cancelled after request was sent. This means that you are making an RPC request \
                  and then immediately dropping the response! (protocol = {})",
                 self.protocol_name(),
             );
-            rx.close();
+            channels.messages.close();
             return Ok(());
         }
 
@@ -841,7 +849,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
 
             // Check if the response receiver has been dropped while receiving messages
             let resp_result = {
-                let resp_fut = self.read_response(request_id, config, bounds);
+                let resp_fut = self.read_response(request_id, config, bounds, &keepalive_tx);
                 tokio::pin!(resp_fut);
                 let closed_fut = response_tx.closed();
                 tokio::pin!(closed_fut);
@@ -972,6 +980,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
         request_id: u16,
         config: RpcClientConfig,
         bounds: ReadBounds,
+        keepalive_tx: &watch::Sender<u64>,
     ) -> Result<(proto::RpcResponse, Option<Duration>), RpcError> {
         let peer_id = self.peer_id;
         let protocol_name = self.protocol_name().to_string();
@@ -979,7 +988,8 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
         let may_be_session_rejection = !self.has_read_a_response;
         let mut reader = RpcResponseReader::new(&mut self.framed, config, request_id)
             .watching_for_session_rejection(may_be_session_rejection)
-            .bounded_by(bounds);
+            .bounded_by(bounds)
+            .reporting_keepalives_to(keepalive_tx);
         let resp = loop {
             match reader.read_response().await {
                 Ok(resp) => {
@@ -1046,7 +1056,7 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin + Send
 pub enum ClientRequest {
     SendRequest {
         call: ClientCall,
-        reply: oneshot::Sender<mpsc::Receiver<Result<Response<Bytes>, RpcStatus>>>,
+        reply: oneshot::Sender<ResponseChannels>,
     },
     SendPing(oneshot::Sender<Result<Duration, RpcStatus>>),
 }
@@ -1060,6 +1070,8 @@ struct RpcResponseReader<'a, TSubstream> {
     /// one-way, so a server that refuses the session answers the first request rather than the
     /// handshake, and the refusal has to be recognised where a response was expected.
     may_be_session_rejection: bool,
+    /// Told of each keepalive addressed to this request.
+    keepalive_tx: Option<&'a watch::Sender<u64>>,
     bytes_read: usize,
     time_to_first_msg: Option<Duration>,
 }
@@ -1074,9 +1086,15 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
             request_id,
             bounds: ReadBounds::default(),
             may_be_session_rejection: false,
+            keepalive_tx: None,
             bytes_read: 0,
             time_to_first_msg: None,
         }
+    }
+
+    pub fn reporting_keepalives_to(mut self, keepalive_tx: &'a watch::Sender<u64>) -> Self {
+        self.keepalive_tx = Some(keepalive_tx);
+        self
     }
 
     pub fn bounded_by(mut self, bounds: ReadBounds) -> Self {
@@ -1103,13 +1121,20 @@ where TSubstream: AsyncRead + AsyncWrite + Unpin
             let resp = self.next().await?;
             if resp.is_keepalive() {
                 // A keepalive carries neither payload nor stream position, so its request id is not
-                // policed: one left over from an abandoned request is as harmless as one for this
-                // request. A peer that sends one unasked cannot gain anything by it either, since
-                // only a frame carrying a response moves the deadline.
+                // policed for the read: one left over from an abandoned request is as harmless as
+                // one for this request. A peer that sends one unasked cannot gain anything by it
+                // either, since only a frame carrying a response moves the deadline.
                 //
                 // It is also evidence that the peer has begun streaming, and the only such evidence
                 // that is not id-policed, so this is a guess where the rest is not.
                 self.bounds.keepalives_due = true;
+                // What the consumer is told is a claim about this response - the peer is there and
+                // has nothing more to send on it - so only a keepalive addressed to it counts.
+                if let Some(tx) = self.keepalive_tx &&
+                    self.check_response(&resp).is_ok()
+                {
+                    tx.send_modify(|count| *count += 1);
+                }
                 continue;
             }
             break resp;
@@ -1317,6 +1342,52 @@ mod keepalive_tests {
         assert_eq!(request.keepalive_interval, 11);
         assert_eq!(received.len(), 1);
         assert_eq!(received[0].as_ref().unwrap().supported_versions, vec![7]);
+    }
+
+    #[tokio::test]
+    async fn keepalives_for_this_request_are_reported_to_the_consumer_and_others_are_not() {
+        let (server, client) = tokio::io::duplex(RPC_MAX_FRAME_SIZE);
+        let reply = proto::RpcSession {
+            supported_versions: vec![7],
+        };
+        let message: Bytes = reply.encode_to_vec().into();
+        let server = tokio::spawn(async move {
+            let mut framed = framing::canonical(server.compat(), RPC_MAX_FRAME_SIZE);
+            let request = read_request(&mut framed).await;
+            for _ in 0..3 {
+                send_response(&mut framed, RpcResponse::keepalive(request.request_id)).await;
+            }
+            // Left over from a request this client abandoned: not this response's liveness.
+            send_response(&mut framed, RpcResponse::keepalive(9999)).await;
+            send_message(&mut framed, request.request_id, message).await;
+            request
+        });
+
+        let config = RpcClientConfig {
+            keepalive_interval: Some(Duration::from_secs(5)),
+            ..Default::default()
+        };
+        let mut rpc_client = RpcClient::connect(
+            config,
+            PeerId::random(),
+            framing::canonical(client.compat(), RPC_MAX_FRAME_SIZE),
+            StreamProtocol::new(PROTOCOL),
+        )
+        .await
+        .unwrap();
+
+        let stream = rpc_client
+            .server_streaming::<_, _, proto::RpcSession>(proto::RpcSession::default(), 1u32)
+            .await
+            .unwrap();
+        let mut keepalives = stream.keepalives();
+        let received = stream.collect::<Vec<_>>().await;
+        server.await.unwrap();
+
+        assert_eq!(received.len(), 1);
+        assert_eq!(*keepalives.borrow_and_update(), 3);
+        // The response is over, so its sender is gone and nothing more will be reported.
+        assert!(keepalives.changed().await.is_err());
     }
 
     #[tokio::test]

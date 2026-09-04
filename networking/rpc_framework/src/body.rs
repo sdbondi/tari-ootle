@@ -13,7 +13,7 @@ use futures::{
 };
 use pin_project::pin_project;
 use prost::bytes::Buf;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use super::{Response, RpcStatus};
 
@@ -241,15 +241,26 @@ impl<T: prost::Message + 'static> IntoBody for Streaming<T> {
 #[derive(Debug)]
 pub struct ClientStreaming<T> {
     inner: mpsc::Receiver<Result<Response<Bytes>, RpcStatus>>,
+    keepalives: watch::Receiver<u64>,
     _out: PhantomData<T>,
 }
 
 impl<T> ClientStreaming<T> {
-    pub fn new(inner: mpsc::Receiver<Result<Response<Bytes>, RpcStatus>>) -> Self {
+    pub fn new(inner: mpsc::Receiver<Result<Response<Bytes>, RpcStatus>>, keepalives: watch::Receiver<u64>) -> Self {
         Self {
             inner,
+            keepalives,
             _out: PhantomData,
         }
+    }
+
+    /// A count of the keepalives the peer has sent for this response, which moves each time one
+    /// arrives. A keepalive says the peer is there and has nothing to send, so a consumer that
+    /// treats silence as staleness can wait on this alongside the stream. It is only sent when
+    /// asked for (see `RpcRequestOptions::with_keepalive_interval`), and the sender is dropped once
+    /// the response is over.
+    pub fn keepalives(&self) -> watch::Receiver<u64> {
+        self.keepalives.clone()
     }
 }
 
