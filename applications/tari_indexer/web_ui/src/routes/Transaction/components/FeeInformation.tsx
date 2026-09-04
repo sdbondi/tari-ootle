@@ -48,7 +48,6 @@ const FEE_SOURCE_LABELS: Record<string, string> = {
   SubstateCreate: "Substate creation",
   WasmExecution: "WASM execution",
   TemplatePublish: "Template publish",
-  ExhaustBurn: "Exhaust burn",
 };
 
 interface FeeInformationProps extends FeeReceipt {
