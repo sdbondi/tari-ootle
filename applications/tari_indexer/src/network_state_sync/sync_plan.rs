@@ -4,20 +4,22 @@
 use std::collections::HashMap;
 
 use tari_epoch_manager::service::NetworkDescription;
-use tari_ootle_common_types::{Epoch, ShardGroup, StateVersion, shard::Shard};
+use tari_ootle_common_types::ShardGroup;
 
-use crate::network_state_sync::{committee_client::ValidatorCommitteeRpcPool, sync_progress::SyncProgress};
+use crate::network_state_sync::{committee_client::ValidatorCommitteeRpcPool, sync_progress::SharedSyncProgress};
 
+/// What one epoch's worth of syncing is drawn against: the committees as they stand, a session pool
+/// for each, and the progress every stream advances.
 pub struct SyncPlan {
     network_description: NetworkDescription,
-    sync_progress: SyncProgress,
+    sync_progress: SharedSyncProgress,
     committee_pools: HashMap<ShardGroup, ValidatorCommitteeRpcPool>,
 }
 
 impl SyncPlan {
     pub fn new(
         network_description: NetworkDescription,
-        sync_progress: SyncProgress,
+        sync_progress: SharedSyncProgress,
         committee_pools: HashMap<ShardGroup, ValidatorCommitteeRpcPool>,
     ) -> Self {
         Self {
@@ -27,17 +29,7 @@ impl SyncPlan {
         }
     }
 
-    pub fn add_checkpoint_sync_progress(&mut self, shard_group: ShardGroup, epoch: Epoch) {
-        self.sync_progress.checkpoint_progress.insert(shard_group, epoch);
-    }
-
-    pub fn add_state_sync_progress(&mut self, shard: Shard, state_version: StateVersion, epoch: Epoch) {
-        self.sync_progress
-            .last_state_versions
-            .insert(shard, (state_version, epoch));
-    }
-
-    pub fn sync_progress(&self) -> &SyncProgress {
+    pub fn sync_progress(&self) -> &SharedSyncProgress {
         &self.sync_progress
     }
 

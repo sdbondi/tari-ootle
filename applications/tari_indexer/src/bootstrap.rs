@@ -274,6 +274,8 @@ pub async fn spawn_services(
         NetworkWideStateSyncConfig {
             event_filters: Arc::from(config.indexer.event_filters.clone()),
             work_interval: config.indexer.state_scanning_interval,
+            stream_deadline: config.indexer.state_sync_stream_deadline,
+            keepalive_interval: config.indexer.state_sync_keepalive_interval,
             watched_templates: watched_templates.clone(),
         },
         event_notifier.clone(),

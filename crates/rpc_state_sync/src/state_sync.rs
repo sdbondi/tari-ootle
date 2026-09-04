@@ -201,6 +201,7 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
                 }],
                 until_epoch: Some(checkpoint.epoch().into()),
                 value_filters: SubstateValueFilterFlags::all_substates().bits(),
+                follow: false,
             })
             .await?;
 

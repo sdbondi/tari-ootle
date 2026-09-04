@@ -271,6 +271,13 @@ message SyncStateRequest {
   // ordered by ascending shard - the responder streams them in this order and the caller relies on a
   // shard's updates being contiguous.
   repeated ShardCursor cursors = 5;
+  // Keep the stream open once every cursor has reached this node's tip, streaming each shard's new
+  // versions as they commit and closing each such burst with a further SyncComplete for that shard.
+  // No marker on a followed stream carries is_final; the stream ends only when the responder can no
+  // longer serve it (it left the committee, consensus stopped) or the request deadline passes with
+  // nothing to send. Only valid for an unbounded request. A responder that does not support following
+  // closes the stream at the tip as usual, final marker included.
+  bool follow = 6;
 }
 
 message SyncStateResponse {
@@ -293,6 +300,8 @@ message SubstateBatch {
 
 // Emitted once per requested cursor, after that shard's last batch, stating the version the shard is
 // now synced to. The message for the final cursor carries is_final = true and terminates the stream.
+// On a followed stream a shard is closed off again after each burst of new versions, and none of
+// its markers is final.
 // For an unbounded (sync-to-tip) request synced_to_version is the committed state-tree tip and is
 // authoritative for the client's cursor - it advances the client over trailing versions that streamed
 // no updates (filtered out, or tree-only bumps). For a bounded (checkpoint) request the client

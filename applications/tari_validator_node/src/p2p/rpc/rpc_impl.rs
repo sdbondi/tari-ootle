@@ -483,6 +483,13 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
 
         let end_epoch = req.until_epoch.map(Epoch::from);
 
+        // A bounded stream is answered out of history, which has no tip to follow.
+        if req.follow && end_epoch.is_some() {
+            return Err(RpcStatus::bad_request(
+                "A bounded (until_epoch) request cannot follow the tip",
+            ));
+        }
+
         // An unbounded request asks for this node's tip, which only a member of the committee that
         // currently stores those shards can answer: a non-member receives no further transitions for
         // them and streams silence, which the caller cannot tell apart from being caught up. A bounded
@@ -524,12 +531,13 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
 
         debug!(
             target: LOG_TARGET,
-            "🌍 peer initiated sync with this node for {} shard(s) ({} to {}) to {} (values: {:?})",
+            "🌍 peer initiated sync with this node for {} shard(s) ({} to {}) to {} (values: {:?}, follow: {})",
             cursors.len(),
             cursors.first().map(|c| c.shard).display(),
             cursors.last().map(|c| c.shard).display(),
             end_epoch.display(),
-            value_filter_flags
+            value_filter_flags,
+            req.follow,
         );
 
         task::spawn(
@@ -541,6 +549,7 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
                 self.consensus.clone(),
                 self.epoch_manager.clone(),
                 tip_authority,
+                req.follow,
                 STATE_SYNC_MAX_BATCH_SIZE
                     .try_into()
                     .expect("STATE_SYNC_MAX_BATCH_SIZE is not zero"),
