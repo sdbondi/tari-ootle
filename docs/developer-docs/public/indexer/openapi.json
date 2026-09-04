@@ -10,7 +10,7 @@
       "name": "BSD-3-Clause",
       "identifier": "BSD-3-Clause"
     },
-    "version": "0.40.0"
+    "version": "0.41.0"
   },
   "paths": {
     "/epoch-checkpoints": {
@@ -559,7 +559,7 @@
             }
           },
           "404": {
-            "description": "Substate not found",
+            "description": "No such substate, or the version asked for has been spent",
             "content": {
               "application/json": {
                 "schema": {
