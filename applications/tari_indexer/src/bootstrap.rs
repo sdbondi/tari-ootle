@@ -115,6 +115,15 @@ const SUBSTATE_CACHE_JOURNAL_RETENTION: Duration = Duration::from_secs(300);
 
 const SUBSTATE_CACHE_PRUNE_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Keepalives a shard's stream may miss before a record that a substate does not exist stops being
+/// served for it.
+///
+/// Derived from the keepalive interval rather than configured: the bound is not a staleness budget
+/// but a liveness test - a negative is only as true as the stream that would retract it - and a
+/// standalone setting could be left behind when that interval changes. Two may be lost before the
+/// cache closes, which is enough to ride out an ordinary reopen without holding a dead stream open.
+const NEGATIVE_SERVE_KEEPALIVES: u32 = 3;
+
 #[allow(clippy::too_many_lines)]
 pub async fn spawn_services(
     config: &ApplicationConfig,
@@ -294,6 +303,7 @@ pub async fn spawn_services(
         store.clone(),
         shard_watermarks,
         config.indexer.substate_cache_max_serve_lag,
+        config.indexer.state_sync_keepalive_interval * NEGATIVE_SERVE_KEEPALIVES,
         SUBSTATE_CACHE_JOURNAL_RETENTION,
         DEFAULT_CACHE_TTL,
         config.indexer.substate_cache_max_entries,

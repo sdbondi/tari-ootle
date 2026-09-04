@@ -57,11 +57,21 @@ fn now_unix_secs() -> Result<u64, SubstateCacheError> {
 /// An entry with no version settles nothing below it. Nonexistence says only that the substate has
 /// no live version now, and since a destroyed substate whose history has been pruned reports the
 /// same thing, it cannot be read as "never created": a versioned read goes to the committee.
+///
+/// It is also the one entry that needs the stream to be current, rather than merely recent, which is
+/// why `negative_serve_lag` is tighter than `max_serve_lag`. A head that is behind is still a lower
+/// bound on the real one, so age only makes it more certainly true; nonexistence is correct at the
+/// instant it is taken and false ever after if the substate has since been created. Every version
+/// the stream has not yet delivered is a version in which it may already be wrong, so it is served
+/// only while the stream is demonstrably alive.
 #[derive(Clone)]
 pub struct SqliteSubstateCache {
     store: SqliteIndexerStore,
     watermarks: Arc<ShardWatermarks>,
     max_serve_lag: Duration,
+    /// How recently the shard's stream must have been heard from before a record that a substate does
+    /// not exist may be served. See [`SqliteSubstateCache`].
+    negative_serve_lag: Duration,
     /// How long a substate stays journalled as recently changed. Only has to span a committee fetch.
     journal_retention: Duration,
     /// How long a recorded head is treated as evidence. The backstop for a head no transition can
@@ -74,6 +84,7 @@ impl std::fmt::Debug for SqliteSubstateCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SqliteSubstateCache")
             .field("max_serve_lag", &self.max_serve_lag)
+            .field("negative_serve_lag", &self.negative_serve_lag)
             .field("head_ttl", &self.head_ttl)
             .field("max_entries", &self.max_entries)
             .finish_non_exhaustive()
@@ -85,6 +96,7 @@ impl SqliteSubstateCache {
         store: SqliteIndexerStore,
         watermarks: Arc<ShardWatermarks>,
         max_serve_lag: Duration,
+        negative_serve_lag: Duration,
         journal_retention: Duration,
         head_ttl: Duration,
         max_entries: usize,
@@ -93,6 +105,7 @@ impl SqliteSubstateCache {
             store,
             watermarks,
             max_serve_lag,
+            negative_serve_lag,
             journal_retention,
             head_ttl,
             max_entries,
@@ -168,7 +181,11 @@ impl SubstateCache for SqliteSubstateCache {
             if version.is_some() {
                 return Ok(None);
             }
-            if self.watermarks.get(Self::shard_of(id), self.max_serve_lag).is_none() {
+            if self
+                .watermarks
+                .get(Self::shard_of(id), self.negative_serve_lag)
+                .is_none()
+            {
                 return Ok(None);
             }
             return Ok(Some(entry));
@@ -250,6 +267,7 @@ mod tests {
     use crate::storage_sqlite::SqliteIndexerStore;
 
     const MAX_SERVE_LAG: Duration = Duration::from_secs(60);
+    const NEGATIVE_SERVE_LAG: Duration = Duration::from_secs(30);
     const HEAD_TTL: Duration = Duration::from_secs(900);
 
     fn substate(n: u8) -> SubstateId {
@@ -272,6 +290,7 @@ mod tests {
             store,
             watermarks,
             MAX_SERVE_LAG,
+            NEGATIVE_SERVE_LAG,
             Duration::from_secs(300),
             HEAD_TTL,
             1000,
@@ -330,6 +349,13 @@ mod tests {
     }
 
     async fn cache_with_nonexistence(confirm_shard: bool) -> (tempfile::TempDir, SqliteSubstateCache, SubstateId) {
+        cache_with_nonexistence_at(confirm_shard, NEGATIVE_SERVE_LAG).await
+    }
+
+    async fn cache_with_nonexistence_at(
+        confirm_shard: bool,
+        negative_serve_lag: Duration,
+    ) -> (tempfile::TempDir, SqliteSubstateCache, SubstateId) {
         let dir = tempfile::tempdir().unwrap();
         let store = SqliteIndexerStore::try_create(dir.path().join("indexer.db")).unwrap();
         let watermarks = Arc::new(ShardWatermarks::new());
@@ -341,6 +367,7 @@ mod tests {
             store,
             watermarks,
             MAX_SERVE_LAG,
+            negative_serve_lag,
             Duration::from_secs(300),
             HEAD_TTL,
             1000,
@@ -385,6 +412,19 @@ mod tests {
     async fn a_cached_nonexistence_needs_a_watermark() {
         let (_d, cache, id) = cache_with_nonexistence(false).await;
         assert!(cache.read(&id, None).await.unwrap().is_none());
+    }
+
+    /// The two gates are independent, and nonexistence gets the tighter one. A head that is behind
+    /// is still a lower bound on the real one; nonexistence is true only while nothing has been
+    /// created since, which the stream is what tells us.
+    #[tokio::test]
+    async fn a_nonexistence_stops_being_served_before_a_head_does() {
+        let (_d, cache, id) = cache_with_nonexistence_at(true, Duration::ZERO).await;
+        assert!(cache.read(&id, None).await.unwrap().is_none());
+
+        // The same shard, at the same age, still answers for a head.
+        let (_d2, head_cache, head_id) = cache_with_head(6, true, Duration::ZERO).await;
+        assert!(head_cache.read(&head_id, None).await.unwrap().is_some());
     }
 
     /// Above the head the cache knows nothing: this indexer is behind, or the substate never got there.
