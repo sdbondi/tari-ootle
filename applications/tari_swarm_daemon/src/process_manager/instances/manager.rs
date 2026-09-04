@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use indexmap::IndexMap;
-use log::info;
+use log::{debug, info};
 use slug::slugify;
 use tari_ootle_wallet_sdk::Network;
 use tokio::{
@@ -261,7 +261,7 @@ impl InstanceManager {
             .stderr(Stdio::piped())
             // Any attempt to use stdin will fail immediately
             .stdin(Stdio::null());
-        info!("Command: {:?}", command);
+        debug!("Command: {:?}", command);
         let mut child = command.spawn().with_context(|| format!("spawn {instance_type}"))?;
 
         self.port_allocator.register(instance_id, allocated_ports.clone());
