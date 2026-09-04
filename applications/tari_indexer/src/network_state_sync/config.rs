@@ -26,7 +26,7 @@ impl Default for NetworkWideStateSyncConfig {
     fn default() -> Self {
         Self {
             work_interval: Duration::from_secs(30),
-            stream_deadline: Duration::from_secs(120),
+            stream_deadline: Duration::from_secs(600),
             keepalive_interval: Duration::from_secs(10),
             event_filters: Arc::new([]),
             watched_templates: Arc::new(HashSet::new()),

@@ -68,13 +68,14 @@ Main indexer application settings.
 
 # The longest, in seconds, a validator holds a state sync stream open with no transition to send. The
 # stream follows the validator's tip and is reopened once this passes, one completion marker per
-# shard. The substate cache serves a quiet shard only while its last marker arrived within
-# substate_cache_max_serve_lag, so keep this comfortably shorter than that (default: 120)
-#state_sync_stream_deadline = 120
+# shard. Keepalives show the validator is still there while the stream is quiet, so this only sets
+# how often a quiet stream is reopened (default: 600)
+#state_sync_stream_deadline = 600
 
 # How often, in seconds, a validator is asked to show it is still there while the state sync stream
-# has nothing to send. Must be well under state_sync_stream_deadline; validators serve no shorter
-# than their own minimum (5s by default) (default: 10)
+# has nothing to send. Each keepalive re-confirms the shards the stream has caught up, which keeps the
+# substate cache serving quiet shards. Must be well under state_sync_stream_deadline; validators serve
+# no shorter than their own minimum (5s by default) (default: 10)
 #state_sync_keepalive_interval = 10
 
 # How many epochs past its terminal epoch a transaction submitted through this indexer is retained.

@@ -145,19 +145,16 @@ pub struct IndexerConfig {
     pub state_scanning_interval: Duration,
     /// The longest a validator holds a state sync stream open without a transition to send. The
     /// stream stays open past the validator's tip, streaming transitions as they commit, and is
-    /// reopened once this passes - at the cost of one completion marker per shard - so it need not
-    /// be long.
-    ///
-    /// The substate cache serves a shard that has seen no transition only while its last completion
-    /// marker arrived within `substate_cache_max_serve_lag`, and a quiet shard's next marker is the
-    /// reopen, which follows up to a minute after this passes. This must therefore be comfortably
-    /// shorter than that lag.
+    /// reopened once this passes at the cost of one completion marker per shard. While it is open
+    /// and quiet the validator's keepalives are what show it is still there, so this only sets how
+    /// often a quiet stream is reopened.
     #[serde(default = "default_state_sync_stream_deadline", with = "serializers::seconds")]
     pub state_sync_stream_deadline: Duration,
     /// How often a validator is asked to show it is still there while the state sync stream has
-    /// nothing to send. Must be well under `state_sync_stream_deadline`. A validator serves no
-    /// shorter an interval than its own minimum (5s by default), and the stream is given up after
-    /// several missed keepalives.
+    /// nothing to send. Each keepalive re-confirms every shard the stream has caught up, which is
+    /// what keeps the substate cache serving a quiet shard. Must be well under
+    /// `state_sync_stream_deadline`. A validator serves no shorter an interval than its own minimum
+    /// (5s by default), and the stream is given up after several missed keepalives.
     #[serde(default = "default_state_sync_keepalive_interval", with = "serializers::seconds")]
     pub state_sync_keepalive_interval: Duration,
     /// The sidechain to listen on. Also identifies this chain for L1 burn-claim binding.
@@ -176,13 +173,14 @@ pub struct IndexerConfig {
     /// could supersede or destroy it has already reached this indexer through that shard's transition
     /// stream, which only holds while the stream is being kept up with.
     ///
-    /// A shard that sees no transition is confirmed only when its stream is reopened, so this must
-    /// comfortably exceed `state_sync_stream_deadline` plus the minute or so a reopen can take, or
-    /// the cache closes for quiet shards between reopens and every read costs a validator round
-    /// trip. It is also the only bound on a validator that has stopped serving transitions: until
-    /// it expires, values that the withheld transitions would have retracted are still served.
-    /// Ordinary staleness is bounded by how promptly the validator streams its commits, not by
-    /// this.
+    /// A shard that sees no transition is re-confirmed by each keepalive on its stream, every
+    /// `state_sync_keepalive_interval`. A validator that goes quiet is given up on after several
+    /// missed keepalives and the stream reopened from another, which takes a minute or two, so this
+    /// must comfortably exceed that or the cache closes for every shard of a group whose validator
+    /// went away. It is also the only bound on a validator that has stopped serving transitions:
+    /// until it expires, values that the withheld transitions would have retracted are still
+    /// served. Ordinary staleness is bounded by how promptly the validator streams its commits,
+    /// not by this.
     #[serde(default = "default_substate_cache_max_serve_lag", with = "serializers::seconds")]
     pub substate_cache_max_serve_lag: Duration,
     /// Maximum substates held in the cache - one entry each, its head version. Beyond this the oldest
@@ -257,7 +255,7 @@ fn default_verify_substate_proofs() -> bool {
 }
 
 fn default_state_sync_stream_deadline() -> Duration {
-    Duration::from_secs(120)
+    Duration::from_secs(600)
 }
 
 fn default_state_sync_keepalive_interval() -> Duration {

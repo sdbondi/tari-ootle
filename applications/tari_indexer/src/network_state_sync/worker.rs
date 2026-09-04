@@ -2,7 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     pin::pin,
     sync::Arc,
 };
@@ -17,7 +17,11 @@ use tari_engine_types::{
     substate::{SubstateId, SubstateValue},
     transaction_receipt::TransactionReceipt,
 };
-use tari_epoch_manager::{EpochManagerEvent, EpochManagerReader, service::EpochManagerHandle};
+use tari_epoch_manager::{
+    EpochManagerEvent,
+    EpochManagerReader,
+    service::{EpochManagerHandle, NetworkDescription},
+};
 use tari_indexer_client::event::{IndexerEvent, NewEpochEvent, TransactionEvent, TransactionFinalizedEvent};
 use tari_networking::NetworkingHandle;
 use tari_ootle_common_types::{Epoch, ShardGroup, StateVersion, VotePower, optional::Optional, shard::Shard};
@@ -36,7 +40,10 @@ use tari_ootle_transaction::TransactionId;
 use tari_rpc_framework::RpcRequestOptions;
 use tari_shutdown::ShutdownSignal;
 use tari_template_lib_types::{Amount, TemplateAddress, TransactionReceiptAddress};
-use tokio::{sync::broadcast, time};
+use tokio::{
+    sync::{broadcast, watch},
+    time,
+};
 use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "metrics")]
@@ -161,9 +168,18 @@ impl NetworkWideStateSync {
 
         loop {
             let sync_plan = self.initialize_sync_plan().await?;
-            // A plan is drawn against the committees of one epoch: which shard group serves which
-            // shards, and who is in it. When the epoch moves, every stream is wound down and a new
-            // plan drawn; the cursors survive in the persisted progress, so nothing is re-streamed.
+            let plan_epoch = sync_plan.network_description().epoch();
+            let partition = sync_plan
+                .network_description()
+                .shard_groups_iter()
+                .collect::<BTreeSet<_>>();
+            let (epoch_tx, epoch_rx) = watch::channel(plan_epoch);
+            // A plan is drawn against one partition of the shards into groups. An epoch that keeps
+            // the partition is handled by each group on its own: it winds its stream down, syncs its
+            // checkpoints, re-resolves its committee and reopens from the cursor it holds. Only a
+            // change to the partition itself - which shards each group serves - draws a new plan,
+            // and then every stream is wound down first; the cursors survive in the persisted
+            // progress, so nothing is re-streamed.
             //
             // Wound down, not dropped: a write transaction runs to its commit on a blocking thread
             // whether or not the future awaiting it survives, and a plan drawn from progress read
@@ -172,23 +188,48 @@ impl NetworkWideStateSync {
             // already folded in. So every stream is told to stop, and the plan is awaited to the
             // end before the next is read.
             let cancel = CancellationToken::new();
-            let mut sync = pin!(self.clone().sync_plan(sync_plan, cancel.clone()));
+            let mut sync = pin!(self.clone().sync_plan(sync_plan, cancel.clone(), epoch_rx));
             loop {
                 tokio::select! {
                     event = epoch_events.recv() => {
-                        match event {
-                            Ok(event) => self.handle_epoch_event(event),
+                        // Every way out of here winds the plan down first, for the reason above.
+                        let outcome: Result<(), NetworkStateSyncError> = match event {
+                            Ok(EpochManagerEvent::EpochChanged { epoch, .. }) => {
+                                info!(target: LOG_TARGET, "🌍️ Epoch changed to {}.", epoch);
+                                self.notify.notify(NewEpochEvent { epoch });
+                                match self.epoch_manager.get_network_description().await {
+                                    Ok(network_desc) if plan_absorbs_epoch(plan_epoch, &partition, &network_desc) => {
+                                        let epoch = network_desc.epoch();
+                                        epoch_tx.send_if_modified(|current| {
+                                            let moved = *current != epoch;
+                                            *current = epoch;
+                                            moved
+                                        });
+                                        continue;
+                                    },
+                                    Ok(_) => {
+                                        info!(target: LOG_TARGET, "🌍️ Re-planning the state sync at epoch {}", epoch);
+                                        Ok(())
+                                    },
+                                    // The plan is re-drawn from a fresh description a work interval
+                                    // later rather than every stream being torn down for good.
+                                    Err(err) => {
+                                        warn!(target: LOG_TARGET, "⚠️ Failed to read the network description at epoch {}: {}. Re-planning the state sync", epoch, err);
+                                        Ok(())
+                                    },
+                                }
+                            },
                             Err(broadcast::error::RecvError::Lagged(n)) => {
                                 warn!(target: LOG_TARGET, "⚠️ Missed {n} epoch event(s). Re-planning the state sync");
+                                Ok(())
                             },
-                            Err(broadcast::error::RecvError::Closed) => {
-                                return Err(NetworkStateSyncError::InvariantError {
-                                    details: "Epoch manager stopped publishing events".to_string(),
-                                });
-                            },
-                        }
+                            Err(broadcast::error::RecvError::Closed) => Err(NetworkStateSyncError::InvariantError {
+                                details: "Epoch manager stopped publishing events".to_string(),
+                            }),
+                        };
                         cancel.cancel();
                         sync.await?;
+                        outcome?;
                         break;
                     },
                     result = &mut sync => {
@@ -223,15 +264,6 @@ impl NetworkWideStateSync {
         }
     }
 
-    fn handle_epoch_event(&self, event: EpochManagerEvent) {
-        match event {
-            EpochManagerEvent::EpochChanged { epoch, .. } => {
-                info!(target: LOG_TARGET, "🌍️ Epoch changed to {}.", epoch);
-                self.notify.notify(NewEpochEvent { epoch });
-            },
-        }
-    }
-
     async fn initialize_sync_plan(&self) -> Result<SyncPlan, NetworkStateSyncError> {
         let network_desc = self.epoch_manager.get_network_description().await?;
         let sync_progress = self
@@ -254,176 +286,172 @@ impl NetworkWideStateSync {
         ))
     }
 
-    /// Syncs the previous epoch's checkpoints, then follows every shard group's tip until `cancel`
-    /// is triggered, at which point it returns once every stream has stopped between messages.
-    /// Returns early only on an error that is not one shard group's alone.
-    async fn sync_plan(self, sync_plan: SyncPlan, cancel: CancellationToken) -> Result<(), NetworkStateSyncError> {
+    /// Follows every shard group's tip until `cancel` is triggered, at which point it returns once
+    /// every stream has stopped between messages. `epoch` carries the epoch each group is to serve;
+    /// a group answers a change to it on its own. Returns early only on an error that is not one
+    /// shard group's alone.
+    async fn sync_plan(
+        self,
+        sync_plan: SyncPlan,
+        cancel: CancellationToken,
+        epoch: watch::Receiver<Epoch>,
+    ) -> Result<(), NetworkStateSyncError> {
         if sync_plan.network_description().epoch.is_zero() {
             info!(target: LOG_TARGET, "🌍️ Current epoch is zero, nothing to sync.");
             cancel.cancelled().await;
             return Ok(());
         }
         info!(target: LOG_TARGET, "🌍️ Starting network-wide state sync...");
-        self.sync_checkpoints(&sync_plan, &cancel).await?;
-        self.follow_state(&sync_plan, &cancel).await
+        self.follow_state(&sync_plan, &cancel, &epoch).await
     }
 
+    /// Syncs `shard_group`'s checkpoints up to the epoch before `epoch`, from wherever it left off.
+    /// Nothing to do once they are recorded, so this is run before every stream the group opens.
     #[expect(clippy::too_many_lines)]
-    async fn sync_checkpoints(
+    async fn sync_group_checkpoints(
         &self,
-        sync_plan: &SyncPlan,
-        cancel: &CancellationToken,
+        shard_group: ShardGroup,
+        pool: &mut ValidatorCommitteeRpcPool,
+        epoch: Epoch,
+        progress: &SharedSyncProgress,
     ) -> Result<(), NetworkStateSyncError> {
-        let prev_epoch = sync_plan
-            .network_description()
-            .epoch()
-            .checked_sub(Epoch(1))
-            .ok_or_else(|| NetworkStateSyncError::InvariantError {
-                details: "current epoch is zero, there are no checkpoints to sync".to_string(),
-            })?;
-        let committee_pools = sync_plan.committee_pools().clone();
-
-        for (shard_group, mut pool) in committee_pools {
-            if cancel.is_cancelled() {
-                return Ok(());
-            }
-            let from_epoch = sync_plan
-                .sync_progress()
-                .lock()
-                .await
-                .checkpoint_epoch(shard_group)
-                .unwrap_or_else(Epoch::zero);
-            if from_epoch >= prev_epoch {
-                info!(target: LOG_TARGET, "🌍️ No checkpoints to sync for shard group {shard_group} from epoch {from_epoch}");
-                continue;
-            }
-            info!(target: LOG_TARGET, "🌍️ Syncing checkpoints from {from_epoch} for shard group {shard_group}");
-            // Perform sync operations using the pool and checkpoint
-            let validator_status = self.validator_status.clone();
-            let checkpoints: Vec<_> = pool
-                .try_with_random_members(|mut session| {
-                    let validator_status = validator_status.clone();
-                    async move {
-                        // Verify how far this peer has committed before trusting it as a sync source.
-                        // `probe` only returns Err for a forged/malformed proof (other failures are
-                        // logged internally and return Ok(None)), which disqualifies the peer so
-                        // another committee member is tried.
-                        if let Err(e) = validator_status.probe(&mut session, shard_group).await {
-                            return Err(NetworkStateSyncError::InvalidCommitProof {
-                                details: format!("shard group {shard_group}: {e}"),
-                            });
-                        }
-                        let resp = session
-                            .get_checkpoints(rpc::GetCheckpointsRequest {
-                                from_epoch: Some(from_epoch.into()),
-                                num_to_return: 100,
-                            })
-                            .await?;
-
-                        debug!(target: LOG_TARGET, "🌍️ Received {} checkpoints for shard group {} from peer {}", resp.checkpoints.len(), shard_group, session.peer_address());
-
-                        resp.checkpoints
-                            .into_iter()
-                            .map(|cp| {
-                                EpochCheckpoint::try_from(cp).map_err(|e| {
-                                    NetworkStateSyncError::InvalidCheckpoint {
-                                        details: format!(
-                                            "Failed to convert checkpoint for shard group {}: {}",
-                                            shard_group, e
-                                        ),
-                                    }
-                                })
-                            })
-                            .collect()
+        let Some(prev_epoch) = epoch.checked_sub(Epoch(1)) else {
+            return Ok(());
+        };
+        let from_epoch = progress
+            .lock()
+            .await
+            .checkpoint_epoch(shard_group)
+            .unwrap_or_else(Epoch::zero);
+        if from_epoch >= prev_epoch {
+            debug!(target: LOG_TARGET, "🌍️ No checkpoints to sync for shard group {shard_group} from epoch {from_epoch}");
+            return Ok(());
+        }
+        info!(target: LOG_TARGET, "🌍️ Syncing checkpoints from {from_epoch} for shard group {shard_group}");
+        // Perform sync operations using the pool and checkpoint
+        let validator_status = self.validator_status.clone();
+        let checkpoints: Vec<_> = pool
+            .try_with_random_members(|mut session| {
+                let validator_status = validator_status.clone();
+                async move {
+                    // Verify how far this peer has committed before trusting it as a sync source.
+                    // `probe` only returns Err for a forged/malformed proof (other failures are
+                    // logged internally and return Ok(None)), which disqualifies the peer so
+                    // another committee member is tried.
+                    if let Err(e) = validator_status.probe(&mut session, shard_group).await {
+                        return Err(NetworkStateSyncError::InvalidCommitProof {
+                            details: format!("shard group {shard_group}: {e}"),
+                        });
                     }
-                })
-                .await?;
-
-            if checkpoints.is_empty() {
-                info!(target: LOG_TARGET, "🌍️ No checkpoints found for shard group {shard_group} from epoch {from_epoch} (prev_epoch {prev_epoch})");
-                let mut progress = sync_plan.sync_progress().lock().await;
-                progress.record_checkpoint(shard_group, prev_epoch);
-                let sync_progress_snapshot = progress.clone();
-                self.store
-                    .with_write_tx(move |tx| tx.key_value_set(Key::SyncProgress, sync_progress_snapshot))
-                    .await?;
-                continue;
-            }
-
-            info!(target: LOG_TARGET, "🌍️ Found {} checkpoints for shard group {shard_group} from epoch {from_epoch}", checkpoints.len());
-
-            for checkpoint in checkpoints {
-                info!(target: LOG_TARGET, "🌍️ Validating checkpoint for shard group {shard_group}: {}", checkpoint.header().calculate_hash());
-
-                let checkpoint_shard_group =
-                    checkpoint
-                        .checked_shard_group()
-                        .map_err(|e| NetworkStateSyncError::InvalidCheckpoint {
-                            details: format!("Checkpoint for shard group {} is not valid: {}", shard_group, e),
-                        })?;
-
-                // TODO: we require historical committees to validate older checkpoints. Figure out the best way to
-                //       avoid needing the full historical validator data (e.g. VN merkle inclusion proof + historic L1
-                // block MR), or,       decide it is ok to require this data to be locally stored by all
-                // indexers. For now, to avoid       complexity that may be removed later, we'll skip
-                // validating them and only validate prev_epochs       checkpoint.
-                if checkpoint.epoch() == prev_epoch {
-                    // Use the checkpoint's own shard group, not the iterator's: the network may have
-                    // had a different shard-group structure at prev_epoch than the current epoch we
-                    // are iterating, so the QC is signed by the committee for `checkpoint_shard_group`,
-                    // not `shard_group`.
-                    let committee = self
-                        .epoch_manager
-                        .get_committee_by_shard_group(checkpoint.epoch(), checkpoint_shard_group)
-                        .await?;
-                    checkpoint
-                        .validate(checkpoint.epoch(), committee.quorum_threshold(), |pk| {
-                            Ok(committee.get_power_by_public_key(pk).unwrap_or_else(VotePower::zero))
+                    let resp = session
+                        .get_checkpoints(rpc::GetCheckpointsRequest {
+                            from_epoch: Some(from_epoch.into()),
+                            num_to_return: 100,
                         })
-                        .map_err(|e| NetworkStateSyncError::InvalidCheckpoint {
-                            details: format!(
-                                "Failed to validate checkpoint for shard group {}: {}",
-                                checkpoint_shard_group, e
-                            ),
-                        })?;
-                } else {
-                    checkpoint
-                        .validate_well_formed()
-                        .map_err(|e| NetworkStateSyncError::InvalidCheckpoint {
-                            details: format!(
-                                "Failed to validate well-formedness of checkpoint for shard group {}: {}",
-                                checkpoint_shard_group, e
-                            ),
-                        })?;
-                    debug!(target: LOG_TARGET, "🌍️ Skipping checkpoint for shard group {shard_group} with epoch {} (expected {})", checkpoint.epoch(), prev_epoch);
+                        .await?;
+
+                    debug!(target: LOG_TARGET, "🌍️ Received {} checkpoints for shard group {} from peer {}", resp.checkpoints.len(), shard_group, session.peer_address());
+
+                    resp.checkpoints
+                        .into_iter()
+                        .map(|cp| {
+                            EpochCheckpoint::try_from(cp).map_err(|e| {
+                                NetworkStateSyncError::InvalidCheckpoint {
+                                    details: format!(
+                                        "Failed to convert checkpoint for shard group {}: {}",
+                                        shard_group, e
+                                    ),
+                                }
+                            })
+                        })
+                        .collect()
                 }
+            })
+            .await?;
 
-                info!(target: LOG_TARGET, "🌍️ Inserting checkpoint for {}, shard group {}", checkpoint.epoch(), checkpoint_shard_group);
-
-                self.stats.increment_checkpoints();
-                let xtr_exhausted = Amount::from(checkpoint.header().accumulated_data().total_exhaust_burn);
-                let checkpoint_epoch = checkpoint.epoch();
-                let mut progress = sync_plan.sync_progress().lock().await;
-                progress.record_checkpoint(shard_group, checkpoint_epoch);
-                let sync_progress_snapshot = progress.clone();
-                self.store
-                    .with_write_tx(move |tx| {
-                        if !tx.epoch_checkpoint_exists(shard_group, checkpoint_epoch)? {
-                            tx.insert_or_ignore_epoch_checkpoint(&checkpoint)?;
-
-                            let exhausted = tx
-                                .key_value_get_value::<_, Amount>(Key::TariAccumulatedExhaustBurn)
-                                .optional()?;
-
-                            let new_exhausted = exhausted.unwrap_or_else(Amount::zero) + xtr_exhausted;
-                            tx.key_value_set(Key::TariAccumulatedExhaustBurn, new_exhausted)?;
-                        }
-                        tx.key_value_set(Key::SyncProgress, sync_progress_snapshot)
-                    })
-                    .await?;
-            }
+        if checkpoints.is_empty() {
+            info!(target: LOG_TARGET, "🌍️ No checkpoints found for shard group {shard_group} from epoch {from_epoch} (prev_epoch {prev_epoch})");
+            let mut progress = progress.lock().await;
+            progress.record_checkpoint(shard_group, prev_epoch);
+            let sync_progress_snapshot = progress.clone();
+            self.store
+                .with_write_tx(move |tx| tx.key_value_set(Key::SyncProgress, sync_progress_snapshot))
+                .await?;
+            return Ok(());
         }
 
+        info!(target: LOG_TARGET, "🌍️ Found {} checkpoints for shard group {shard_group} from epoch {from_epoch}", checkpoints.len());
+
+        for checkpoint in checkpoints {
+            info!(target: LOG_TARGET, "🌍️ Validating checkpoint for shard group {shard_group}: {}", checkpoint.header().calculate_hash());
+
+            let checkpoint_shard_group =
+                checkpoint
+                    .checked_shard_group()
+                    .map_err(|e| NetworkStateSyncError::InvalidCheckpoint {
+                        details: format!("Checkpoint for shard group {} is not valid: {}", shard_group, e),
+                    })?;
+
+            // TODO: we require historical committees to validate older checkpoints. Figure out the best way to
+            //       avoid needing the full historical validator data (e.g. VN merkle inclusion proof + historic L1
+            // block MR), or,       decide it is ok to require this data to be locally stored by all
+            // indexers. For now, to avoid       complexity that may be removed later, we'll skip
+            // validating them and only validate prev_epochs       checkpoint.
+            if checkpoint.epoch() == prev_epoch {
+                // Use the checkpoint's own shard group, not the iterator's: the network may have
+                // had a different shard-group structure at prev_epoch than the current epoch we
+                // are iterating, so the QC is signed by the committee for `checkpoint_shard_group`,
+                // not `shard_group`.
+                let committee = self
+                    .epoch_manager
+                    .get_committee_by_shard_group(checkpoint.epoch(), checkpoint_shard_group)
+                    .await?;
+                checkpoint
+                    .validate(checkpoint.epoch(), committee.quorum_threshold(), |pk| {
+                        Ok(committee.get_power_by_public_key(pk).unwrap_or_else(VotePower::zero))
+                    })
+                    .map_err(|e| NetworkStateSyncError::InvalidCheckpoint {
+                        details: format!(
+                            "Failed to validate checkpoint for shard group {}: {}",
+                            checkpoint_shard_group, e
+                        ),
+                    })?;
+            } else {
+                checkpoint
+                    .validate_well_formed()
+                    .map_err(|e| NetworkStateSyncError::InvalidCheckpoint {
+                        details: format!(
+                            "Failed to validate well-formedness of checkpoint for shard group {}: {}",
+                            checkpoint_shard_group, e
+                        ),
+                    })?;
+                debug!(target: LOG_TARGET, "🌍️ Skipping checkpoint for shard group {shard_group} with epoch {} (expected {})", checkpoint.epoch(), prev_epoch);
+            }
+
+            info!(target: LOG_TARGET, "🌍️ Inserting checkpoint for {}, shard group {}", checkpoint.epoch(), checkpoint_shard_group);
+
+            self.stats.increment_checkpoints();
+            let xtr_exhausted = Amount::from(checkpoint.header().accumulated_data().total_exhaust_burn);
+            let checkpoint_epoch = checkpoint.epoch();
+            let mut progress = progress.lock().await;
+            progress.record_checkpoint(shard_group, checkpoint_epoch);
+            let sync_progress_snapshot = progress.clone();
+            self.store
+                .with_write_tx(move |tx| {
+                    if !tx.epoch_checkpoint_exists(shard_group, checkpoint_epoch)? {
+                        tx.insert_or_ignore_epoch_checkpoint(&checkpoint)?;
+
+                        let exhausted = tx
+                            .key_value_get_value::<_, Amount>(Key::TariAccumulatedExhaustBurn)
+                            .optional()?;
+
+                        let new_exhausted = exhausted.unwrap_or_else(Amount::zero) + xtr_exhausted;
+                        tx.key_value_set(Key::TariAccumulatedExhaustBurn, new_exhausted)?;
+                    }
+                    tx.key_value_set(Key::SyncProgress, sync_progress_snapshot)
+                })
+                .await?;
+        }
         Ok(())
     }
 
@@ -434,6 +462,7 @@ impl NetworkWideStateSync {
         &self,
         sync_plan: &SyncPlan,
         cancel: &CancellationToken,
+        epoch: &watch::Receiver<Epoch>,
     ) -> Result<(), NetworkStateSyncError> {
         let mut committee_pools = sync_plan.committee_pools().iter().collect::<Vec<_>>();
         committee_pools.sort_by_key(|(shard_group, _)| **shard_group);
@@ -449,6 +478,7 @@ impl NetworkWideStateSync {
                     i == 0,
                     sync_plan.sync_progress().clone(),
                     cancel.clone(),
+                    epoch.clone(),
                 )
             })
             .collect::<FuturesUnordered<_>>();
@@ -459,13 +489,15 @@ impl NetworkWideStateSync {
         Ok(())
     }
 
-    /// Keeps one shard group synced: opens a stream from a committee member, follows it until it
-    /// ends, and opens another, until cancelled.
+    /// Keeps one shard group synced: syncs its checkpoints, opens a stream from a committee member,
+    /// follows it until it ends, and goes round again, until cancelled.
     ///
     /// A stream that ends because the validator had nothing to send for the deadline is reopened at
     /// once - that is the ordinary end of a followed stream, and the reopen refreshes each shard's
-    /// watermark. One closed by a validator that does not follow, or failed by the peer, waits the
-    /// work interval first: the former is polling, the latter wants a different peer.
+    /// watermark. So is one wound down because the epoch moved: the next round syncs the new
+    /// checkpoints and resolves the committee at the new epoch. One closed by a validator that does
+    /// not follow, or failed by the peer, waits the work interval first: the former is polling, the
+    /// latter wants a different peer.
     async fn follow_shard_group(
         mut self,
         shard_group: ShardGroup,
@@ -473,24 +505,27 @@ impl NetworkWideStateSync {
         syncs_global_shard: bool,
         progress: SharedSyncProgress,
         cancel: CancellationToken,
+        mut epoch: watch::Receiver<Epoch>,
     ) -> Result<(), NetworkStateSyncError> {
-        let interval = self.config.work_interval;
-        let wait = |reason: &'static str| {
-            let cancel = cancel.clone();
-            async move {
-                debug!(target: LOG_TARGET, "🌍️ Shard group {shard_group}: {reason}. Retrying in {interval:.0?}");
-                tokio::select! {
-                    _ = cancel.cancelled() => {},
-                    _ = time::sleep(interval) => {},
-                }
-            }
-        };
         while !cancel.is_cancelled() {
+            let current_epoch = *epoch.borrow_and_update();
+            if let Err(err) = self
+                .sync_group_checkpoints(shard_group, &mut pool, current_epoch, &progress)
+                .await
+            {
+                if !err.is_peer_fault() {
+                    return Err(err);
+                }
+                warn!(target: LOG_TARGET, "⚠️ Checkpoint sync for shard group {} failed: {}", shard_group, err);
+                self.pause(shard_group, "checkpoint sync failed", &cancel, &mut epoch)
+                    .await;
+                continue;
+            }
             let mut session = match pool.new_session().await {
                 Ok(s) => s,
                 Err(e) => {
                     warn!(target: LOG_TARGET, "⚠️ Failed to create session for shard group {}: {}", shard_group, e);
-                    wait("no session").await;
+                    self.pause(shard_group, "no session", &cancel, &mut epoch).await;
                     continue;
                 },
             };
@@ -506,7 +541,8 @@ impl NetworkWideStateSync {
                 // probe only returns Err for an invalid (forged) commit proof.
                 Err(e) => {
                     warn!(target: LOG_TARGET, "⚠️ Validator {} for shard group {} served an INVALID commit proof: {}", session.peer_address(), shard_group, e);
-                    wait("invalid commit proof").await;
+                    self.pause(shard_group, "invalid commit proof", &cancel, &mut epoch)
+                        .await;
                     continue;
                 },
             }
@@ -522,24 +558,52 @@ impl NetworkWideStateSync {
             // indexer resolved its committees at has moved on - costs this shard group a retry and
             // no more.
             match self
-                .sync_shard_group_state(shards, &progress, shard_group, &mut session, &cancel)
+                .sync_shard_group_state(shards, &progress, shard_group, &mut session, &cancel, &mut epoch)
                 .await
             {
                 Ok(StreamEnd::Cancelled) => return Ok(()),
                 Ok(StreamEnd::TimedOut) => {
                     debug!(target: LOG_TARGET, "🌍️ State sync stream for shard group {shard_group} from {} had nothing to send for the deadline. Reopening", session.peer_address());
                 },
+                Ok(StreamEnd::EpochAdvanced) => {
+                    info!(target: LOG_TARGET, "🌍️ Epoch advanced to {}. Reopening state sync for shard group {shard_group}", *epoch.borrow());
+                },
                 Ok(StreamEnd::Final) => {
-                    wait("the validator closed the stream at its tip and does not follow").await;
+                    self.pause(
+                        shard_group,
+                        "the validator closed the stream at its tip and does not follow",
+                        &cancel,
+                        &mut epoch,
+                    )
+                    .await;
                 },
                 Err(err) if err.is_peer_fault() => {
                     warn!(target: LOG_TARGET, "⚠️ State sync for shard group {} from {} failed: {}", shard_group, session.peer_address(), err);
-                    wait("the peer failed").await;
+                    self.pause(shard_group, "the peer failed", &cancel, &mut epoch).await;
                 },
                 Err(err) => return Err(err),
             }
         }
         Ok(())
+    }
+
+    /// Waits the work interval before a shard group tries again, or less if the plan is wound down
+    /// or the epoch moves - the new epoch wants its checkpoints synced and its committee resolved
+    /// before anything is retried.
+    async fn pause(
+        &self,
+        shard_group: ShardGroup,
+        reason: &str,
+        cancel: &CancellationToken,
+        epoch: &mut watch::Receiver<Epoch>,
+    ) {
+        let interval = self.config.work_interval;
+        debug!(target: LOG_TARGET, "🌍️ Shard group {shard_group}: {reason}. Retrying in {interval:.0?}");
+        tokio::select! {
+            _ = cancel.cancelled() => {},
+            Ok(()) = epoch.changed() => {},
+            _ = time::sleep(interval) => {},
+        }
     }
 
     /// Syncs every given shard from `session`, which serves them all over a single stream.
@@ -557,6 +621,7 @@ impl NetworkWideStateSync {
         shard_group: ShardGroup,
         session: &mut ValidatorRpcSession,
         cancel: &CancellationToken,
+        epoch: &mut watch::Receiver<Epoch>,
     ) -> Result<StreamEnd, NetworkStateSyncError> {
         let value_filters = SubstateValueFilterFlags::UTXO |
             SubstateValueFilterFlags::VALIDATOR_FEE_POOL |
@@ -584,9 +649,10 @@ impl NetworkWideStateSync {
                     shard_group,
                     session,
                     cancel,
+                    epoch,
                 )
                 .await?;
-            if end == StreamEnd::Cancelled {
+            if matches!(end, StreamEnd::Cancelled | StreamEnd::EpochAdvanced) {
                 return Ok(end);
             }
         }
@@ -603,6 +669,7 @@ impl NetworkWideStateSync {
             shard_group,
             session,
             cancel,
+            epoch,
         )
         .await
     }
@@ -645,8 +712,8 @@ impl NetworkWideStateSync {
     /// with a further marker; it ends when the responder has had nothing to send for the deadline,
     /// or can no longer serve it.
     ///
-    /// Cancellation is honoured between messages, so a version being committed when it arrives is
-    /// committed in full and the recorded progress reflects it.
+    /// Cancellation and an epoch change are honoured between messages, so a version being committed
+    /// when either arrives is committed in full and the recorded progress reflects it.
     #[expect(clippy::too_many_lines, clippy::too_many_arguments)]
     async fn stream_shard_state(
         &mut self,
@@ -657,6 +724,7 @@ impl NetworkWideStateSync {
         shard_group: ShardGroup,
         session: &mut ValidatorRpcSession,
         cancel: &CancellationToken,
+        epoch: &mut watch::Receiver<Epoch>,
     ) -> Result<StreamEnd, NetworkStateSyncError> {
         let mut order = StreamOrder::new(&cursors);
 
@@ -683,6 +751,14 @@ impl NetworkWideStateSync {
             )
             .await?;
 
+        // A keepalive says the responder is there and has nothing to send: for every shard it has
+        // closed off on this stream, that is the claim a further marker would make, so each one
+        // re-stamps those shards' watermarks. A shard not yet closed off is still being caught up
+        // and is not level, keepalive or not.
+        let mut keepalives = stream.keepalives();
+        let mut keepalives_open = true;
+        let mut level_shards = HashSet::new();
+
         // Buffers accumulate a single (shard, state version) at a time: the responder splits an
         // oversized version into chunks flagged `has_more`, and the last chunk flushes them.
         let mut update_buf = Vec::new();
@@ -699,9 +775,21 @@ impl NetworkWideStateSync {
             let result = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => return Ok(StreamEnd::Cancelled),
+                Ok(()) = epoch.changed() => return Ok(StreamEnd::EpochAdvanced),
                 next = stream.next() => match next {
                     Some(result) => result,
                     None => break,
+                },
+                changed = keepalives.changed(), if keepalives_open => {
+                    match changed {
+                        Ok(()) => {
+                            for shard in &level_shards {
+                                self.shard_watermarks.refresh(*shard);
+                            }
+                        },
+                        Err(_) => keepalives_open = false,
+                    }
+                    continue;
                 },
             };
             let msg = match result {
@@ -753,6 +841,7 @@ impl NetworkWideStateSync {
                     // arbitrarily far ahead of it. Confirmed even when the watermark did not move -
                     // a quiet shard is still one this indexer is keeping up with.
                     self.shard_watermarks.confirm(shard, synced_to);
+                    level_shards.insert(shard);
                     debug!(target: LOG_TARGET, "🌍️ Completed state sync for shard {shard} in shard group {shard_group} to epoch {msg_epoch} and state version {synced_to}");
                     if complete.is_final {
                         return Ok(StreamEnd::Final);
@@ -907,6 +996,17 @@ impl NetworkWideStateSync {
     }
 }
 
+/// Whether a plan drawn at `plan_epoch` against `partition` carries on into the epoch `network_desc`
+/// describes, with each shard group reopening on its own.
+///
+/// It does so only while the partition of shards into groups is unchanged: a group loop serves one
+/// set of shards for its lifetime. A plan drawn at epoch zero has no group loops at all - it waits
+/// for the network to start - so the first real epoch always draws a new plan, whatever partition
+/// epoch zero reported.
+fn plan_absorbs_epoch(plan_epoch: Epoch, partition: &BTreeSet<ShardGroup>, network_desc: &NetworkDescription) -> bool {
+    !plan_epoch.is_zero() && network_desc.shard_groups_iter().collect::<BTreeSet<_>>() == *partition
+}
+
 /// How a `sync_state` stream ended without failing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StreamEnd {
@@ -916,6 +1016,9 @@ enum StreamEnd {
     /// A followed stream was abandoned by the responder after it had nothing to send for the
     /// deadline.
     TimedOut,
+    /// The epoch moved while the stream was open. The group syncs the new checkpoints and reopens
+    /// from a committee member at the new epoch.
+    EpochAdvanced,
     /// The plan is being wound down.
     Cancelled,
 }
@@ -1199,6 +1302,58 @@ fn extend_bufs_from_substate_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod plan_absorbs_epoch {
+        use tari_epoch_manager::service::ShardGroupInfo;
+        use tari_ootle_common_types::NumPreshards;
+
+        use super::*;
+
+        fn network(epoch: u64, groups: &[ShardGroup]) -> NetworkDescription {
+            NetworkDescription {
+                epoch: Epoch(epoch),
+                shard_groups: groups.iter().map(|g| (*g, ShardGroupInfo { num_members: 1 })).collect(),
+                num_preshards: NumPreshards::P256,
+            }
+        }
+
+        fn partition(groups: &[ShardGroup]) -> BTreeSet<ShardGroup> {
+            groups.iter().copied().collect()
+        }
+
+        fn whole() -> ShardGroup {
+            ShardGroup::new(1u32, 256)
+        }
+
+        #[test]
+        fn an_epoch_that_keeps_the_partition_is_absorbed() {
+            assert!(plan_absorbs_epoch(
+                Epoch(3),
+                &partition(&[whole()]),
+                &network(4, &[whole()])
+            ));
+        }
+
+        #[test]
+        fn a_changed_partition_draws_a_new_plan() {
+            let split = [ShardGroup::new(1u32, 128), ShardGroup::new(129u32, 256)];
+            assert!(!plan_absorbs_epoch(
+                Epoch(3),
+                &partition(&[whole()]),
+                &network(4, &split)
+            ));
+        }
+
+        #[test]
+        fn a_plan_drawn_at_epoch_zero_never_absorbs_the_first_epoch() {
+            // Epoch zero reports a partition, but the plan drawn against it runs no group loops.
+            assert!(!plan_absorbs_epoch(
+                Epoch(0),
+                &partition(&[whole()]),
+                &network(1, &[whole()])
+            ));
+        }
+    }
 
     mod stream_order {
         use super::*;
