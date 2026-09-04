@@ -72,17 +72,22 @@ pub fn init_logger(log_to_file: Option<PathBuf>) -> Result<(), log::SetLoggerErr
                 log
             ))
         })
-        .level(log::LevelFilter::Debug)
-        .chain(std::io::stdout());
+        .chain(
+            fern::Dispatch::new()
+                .level(log::LevelFilter::Info)
+                .chain(std::io::stdout()),
+        );
     if let Some(log) = log_to_file {
         logger = logger.chain(
-            fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                // Files get massive, so we truncate on each start
-                .truncate(true)
-                .open(log.join("swarm.log"))
-                .expect("Failed to open log file"),
+            fern::Dispatch::new().level(log::LevelFilter::Debug).chain(
+                fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    // Files get massive, so we truncate on each start
+                    .truncate(true)
+                    .open(log.join("swarm.log"))
+                    .expect("Failed to open log file"),
+            ),
         );
     }
     logger.apply()

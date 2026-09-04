@@ -218,6 +218,13 @@ async fn start(cli: &Cli) -> anyhow::Result<()> {
 
     init_logger(config.log_to_file.then_some(config.base_dir.join("logs/")))?;
 
+    log::info!(
+        "🐝 Starting swarm on {} (base dir: {}, start port: {})",
+        config.network,
+        config.base_dir.display(),
+        config.start_port
+    );
+
     let mut shutdown = Shutdown::new();
     let signal = shutdown.to_signal().select(exit_signal().context("exit_signal")?);
     let (task_handle, pm_handle) = process_manager::spawn(&config, config_path.clone(), shutdown.to_signal());

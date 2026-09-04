@@ -160,6 +160,7 @@ impl ProcessManager {
         layer_one_transaction_service: Option<&mut LayerOneTransactionService>,
     ) -> anyhow::Result<()> {
         if self.skip_registration {
+            info!("⏭️ Skipping validator node and template registration");
             return Ok(());
         }
 
@@ -682,6 +683,8 @@ impl ProcessManager {
             .find(|vn| vn.instance().id() == instance_id)
             .ok_or_else(|| anyhow!("Validator node with ID '{}' not found", instance_id))?;
 
+        info!("🟡 Registering validator node {}", vn.instance().name());
+
         if !vn.instance().is_running() {
             log::error!(
                 "Skipping registration for validator node {}: {} since it is not running",
@@ -837,6 +840,7 @@ impl ProcessManager {
         if blocks == 0 {
             return Ok(());
         }
+        info!("⛏️ Mining {blocks} block(s)");
         let executable = self
             .executable_manager
             .get_executable(InstanceType::MinoTariMiner)
