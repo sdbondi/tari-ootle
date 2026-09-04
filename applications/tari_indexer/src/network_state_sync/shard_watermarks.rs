@@ -52,6 +52,15 @@ impl ShardWatermarks {
         entry.confirmed_at = now;
     }
 
+    /// Re-stamps `shard`'s watermark as confirmed now, at the version it already holds. A shard that
+    /// was never confirmed stays unconfirmed: liveness alone says nothing about what it holds.
+    pub fn refresh(&self, shard: Shard) {
+        let now = Instant::now();
+        if let Some(entry) = self.write().get_mut(&shard) {
+            entry.confirmed_at = now;
+        }
+    }
+
     /// The watermark for `shard`, or `None` if it has never been confirmed in this run or was last
     /// confirmed longer than `max_lag` ago.
     pub fn get(&self, shard: Shard, max_lag: Duration) -> Option<StateVersion> {
@@ -98,5 +107,20 @@ mod tests {
         let watermarks = ShardWatermarks::new();
         watermarks.confirm(SHARD, StateVersion::new(10));
         assert!(watermarks.get(SHARD, Duration::ZERO).is_none());
+    }
+
+    #[test]
+    fn a_refresh_keeps_a_shard_open_at_its_version() {
+        let watermarks = ShardWatermarks::new();
+        watermarks.confirm(SHARD, StateVersion::new(7));
+        watermarks.refresh(SHARD);
+        assert_eq!(watermarks.get(SHARD, MAX_LAG), Some(StateVersion::new(7)));
+    }
+
+    #[test]
+    fn a_refresh_does_not_confirm_a_shard_that_never_was() {
+        let watermarks = ShardWatermarks::new();
+        watermarks.refresh(SHARD);
+        assert_eq!(watermarks.get(SHARD, MAX_LAG), None);
     }
 }
