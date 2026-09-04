@@ -39,9 +39,10 @@ fn now_unix_secs() -> Result<u64, SubstateCacheError> {
 /// Substate cache backed by the indexer's own database, so that an entry and the sync watermark it
 /// is justified by are written and read under one transaction.
 ///
-/// Holds one entry per substate: its head version. An entry is served until the substate's shard
-/// carries a transition that retires it - not until a timer expires - and that holds only for a shard
-/// whose stream this indexer is demonstrably keeping up with, which [`ShardWatermarks`] decides.
+/// Holds one entry per substate: its head version, or no version at all where the substate does not
+/// exist. An entry is served until the substate's shard carries a transition that retires it - not
+/// until a timer expires - and that holds only for a shard whose stream this indexer is demonstrably
+/// keeping up with, which [`ShardWatermarks`] decides.
 ///
 /// A cached head also settles every version below it, without a validator and without a watermark.
 /// Versions are contiguous and upping a substate downs its predecessor, so a substate that ever
@@ -52,11 +53,25 @@ fn now_unix_secs() -> Result<u64, SubstateCacheError> {
 /// What can be wrong is `L` itself, if it was recorded above any version the substate reached. No
 /// transition corrects that - every transition retires versions below the head, never above it - so
 /// `head_ttl` retires the head instead, and the next lookup replaces it.
+///
+/// An entry with no version settles nothing below it. Nonexistence says only that the substate has
+/// no live version now, and since a destroyed substate whose history has been pruned reports the
+/// same thing, it cannot be read as "never created": a versioned read goes to the committee.
+///
+/// It is also the one entry that needs the stream to be current, rather than merely recent, which is
+/// why `negative_serve_lag` is tighter than `max_serve_lag`. A head that is behind is still a lower
+/// bound on the real one, so age only makes it more certainly true; nonexistence is correct at the
+/// instant it is taken and false ever after if the substate has since been created. Every version
+/// the stream has not yet delivered is a version in which it may already be wrong, so it is served
+/// only while the stream is demonstrably alive.
 #[derive(Clone)]
 pub struct SqliteSubstateCache {
     store: SqliteIndexerStore,
     watermarks: Arc<ShardWatermarks>,
     max_serve_lag: Duration,
+    /// How recently the shard's stream must have been heard from before a record that a substate does
+    /// not exist may be served. See [`SqliteSubstateCache`].
+    negative_serve_lag: Duration,
     /// How long a substate stays journalled as recently changed. Only has to span a committee fetch.
     journal_retention: Duration,
     /// How long a recorded head is treated as evidence. The backstop for a head no transition can
@@ -69,6 +84,7 @@ impl std::fmt::Debug for SqliteSubstateCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SqliteSubstateCache")
             .field("max_serve_lag", &self.max_serve_lag)
+            .field("negative_serve_lag", &self.negative_serve_lag)
             .field("head_ttl", &self.head_ttl)
             .field("max_entries", &self.max_entries)
             .finish_non_exhaustive()
@@ -80,6 +96,7 @@ impl SqliteSubstateCache {
         store: SqliteIndexerStore,
         watermarks: Arc<ShardWatermarks>,
         max_serve_lag: Duration,
+        negative_serve_lag: Duration,
         journal_retention: Duration,
         head_ttl: Duration,
         max_entries: usize,
@@ -88,6 +105,7 @@ impl SqliteSubstateCache {
             store,
             watermarks,
             max_serve_lag,
+            negative_serve_lag,
             journal_retention,
             head_ttl,
             max_entries,
@@ -156,8 +174,25 @@ impl SubstateCache for SqliteSubstateCache {
             return Ok(None);
         };
 
+        let Some(head) = entry.version else {
+            // Nonexistence is a claim about the substate's current state and nothing more. It says
+            // there is no live version, never what was true at some version below, so a versioned
+            // read has to go to the committee.
+            if version.is_some() {
+                return Ok(None);
+            }
+            if self
+                .watermarks
+                .get(Self::shard_of(id), self.negative_serve_lag)
+                .is_none()
+            {
+                return Ok(None);
+            }
+            return Ok(Some(entry));
+        };
+
         if let Some(version) = version &&
-            version < entry.version
+            version < head
         {
             // The conclusion does not age, but the head it rests on does: one recorded above the real
             // version is retired by no transition, so it is aged out here instead.
@@ -165,7 +200,7 @@ impl SubstateCache for SqliteSubstateCache {
                 return Ok(None);
             }
             return Ok(Some(SubstateCacheEntry {
-                version,
+                version: Some(version),
                 substate_result: SubstateResult::Down { version },
                 // Derived now rather than when the head was fetched. The head only has to have been
                 // real at some point for this to hold, so the answer does not age.
@@ -182,7 +217,7 @@ impl SubstateCache for SqliteSubstateCache {
 
         // A version above the head is not something the cache knows anything about: this indexer is
         // behind, or the substate never reached it.
-        if version.is_some_and(|version| version > entry.version) {
+        if version.is_some_and(|version| version > head) {
             return Ok(None);
         }
 
@@ -232,6 +267,7 @@ mod tests {
     use crate::storage_sqlite::SqliteIndexerStore;
 
     const MAX_SERVE_LAG: Duration = Duration::from_secs(60);
+    const NEGATIVE_SERVE_LAG: Duration = Duration::from_secs(30);
     const HEAD_TTL: Duration = Duration::from_secs(900);
 
     fn substate(n: u8) -> SubstateId {
@@ -254,6 +290,7 @@ mod tests {
             store,
             watermarks,
             MAX_SERVE_LAG,
+            NEGATIVE_SERVE_LAG,
             Duration::from_secs(300),
             HEAD_TTL,
             1000,
@@ -264,7 +301,7 @@ mod tests {
             .write(
                 &id,
                 SubstateCacheEntryRef {
-                    version,
+                    version: Some(version),
                     substate_result: &result,
                     cached_at: now_unix_secs().unwrap() - head_age.as_secs(),
                     verified: true,
@@ -280,7 +317,7 @@ mod tests {
     async fn a_version_below_the_head_is_reported_down_without_a_committee() {
         let (_d, cache, id) = cache_with_head(6, true, Duration::ZERO).await;
         let entry = cache.read(&id, Some(3)).await.unwrap().expect("no entry");
-        assert_eq!(entry.version, 3);
+        assert_eq!(entry.version, Some(3));
         assert!(matches!(entry.substate_result, SubstateResult::Down { version: 3 }));
     }
 
@@ -299,8 +336,8 @@ mod tests {
     #[tokio::test]
     async fn the_head_answers_for_itself_and_for_an_unversioned_read() {
         let (_d, cache, id) = cache_with_head(6, true, Duration::ZERO).await;
-        assert_eq!(cache.read(&id, None).await.unwrap().unwrap().version, 6);
-        assert_eq!(cache.read(&id, Some(6)).await.unwrap().unwrap().version, 6);
+        assert_eq!(cache.read(&id, None).await.unwrap().unwrap().version, Some(6));
+        assert_eq!(cache.read(&id, Some(6)).await.unwrap().unwrap().version, Some(6));
     }
 
     /// A head recorded above any version the substate reached is retired by no transition, so the
@@ -309,6 +346,85 @@ mod tests {
     async fn the_inference_stops_once_the_head_ages_out() {
         let (_d, cache, id) = cache_with_head(6, true, HEAD_TTL + Duration::from_secs(1)).await;
         assert!(cache.read(&id, Some(3)).await.unwrap().is_none());
+    }
+
+    async fn cache_with_nonexistence(confirm_shard: bool) -> (tempfile::TempDir, SqliteSubstateCache, SubstateId) {
+        cache_with_nonexistence_at(confirm_shard, NEGATIVE_SERVE_LAG).await
+    }
+
+    async fn cache_with_nonexistence_at(
+        confirm_shard: bool,
+        negative_serve_lag: Duration,
+    ) -> (tempfile::TempDir, SqliteSubstateCache, SubstateId) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteIndexerStore::try_create(dir.path().join("indexer.db")).unwrap();
+        let watermarks = Arc::new(ShardWatermarks::new());
+        let id = substate(1);
+        if confirm_shard {
+            watermarks.confirm(SqliteSubstateCache::shard_of(&id), StateVersion::new(100));
+        }
+        let cache = SqliteSubstateCache::new(
+            store,
+            watermarks,
+            MAX_SERVE_LAG,
+            negative_serve_lag,
+            Duration::from_secs(300),
+            HEAD_TTL,
+            1000,
+        );
+        cache
+            .write(
+                &id,
+                SubstateCacheEntryRef {
+                    version: None,
+                    substate_result: &SubstateResult::DoesNotExist,
+                    cached_at: now_unix_secs().unwrap(),
+                    verified: false,
+                },
+                FetchWatermark::new(100),
+            )
+            .await
+            .unwrap();
+        (dir, cache, id)
+    }
+
+    #[tokio::test]
+    async fn a_cached_nonexistence_answers_an_unversioned_read() {
+        let (_d, cache, id) = cache_with_nonexistence(true).await;
+        let entry = cache.read(&id, None).await.unwrap().expect("no entry");
+        assert_eq!(entry.version, None);
+        assert!(matches!(entry.substate_result, SubstateResult::DoesNotExist));
+    }
+
+    /// Nonexistence says the substate has no live version now, never what was true at some version
+    /// below - and after a destroyed substate is pruned, a substate that did have those versions can
+    /// answer `DoesNotExist` too. The versioned read goes to the committee.
+    #[tokio::test]
+    async fn a_cached_nonexistence_does_not_answer_a_versioned_read() {
+        let (_d, cache, id) = cache_with_nonexistence(true).await;
+        assert!(cache.read(&id, Some(0)).await.unwrap().is_none());
+        assert!(cache.read(&id, Some(3)).await.unwrap().is_none());
+    }
+
+    /// Unlike the down inference, nonexistence is a claim about current state, so it holds only while
+    /// the shard that would retract it is being kept up with.
+    #[tokio::test]
+    async fn a_cached_nonexistence_needs_a_watermark() {
+        let (_d, cache, id) = cache_with_nonexistence(false).await;
+        assert!(cache.read(&id, None).await.unwrap().is_none());
+    }
+
+    /// The two gates are independent, and nonexistence gets the tighter one. A head that is behind
+    /// is still a lower bound on the real one; nonexistence is true only while nothing has been
+    /// created since, which the stream is what tells us.
+    #[tokio::test]
+    async fn a_nonexistence_stops_being_served_before_a_head_does() {
+        let (_d, cache, id) = cache_with_nonexistence_at(true, Duration::ZERO).await;
+        assert!(cache.read(&id, None).await.unwrap().is_none());
+
+        // The same shard, at the same age, still answers for a head.
+        let (_d2, head_cache, head_id) = cache_with_head(6, true, Duration::ZERO).await;
+        assert!(head_cache.read(&head_id, None).await.unwrap().is_some());
     }
 
     /// Above the head the cache knows nothing: this indexer is behind, or the substate never got there.

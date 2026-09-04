@@ -143,7 +143,7 @@ diesel::table! {
 diesel::table! {
     substate_cache (substate_id) {
         substate_id -> Text,
-        version -> Integer,
+        version -> Nullable<Integer>,
         verified -> Bool,
         substate_result -> Binary,
         cached_at -> BigInt,

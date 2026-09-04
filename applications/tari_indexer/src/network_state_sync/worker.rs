@@ -1170,8 +1170,8 @@ fn process_watched_substate_events(
 
 /// Sorts one streamed transition into the buffers a commit is assembled from.
 ///
-/// A transition that retires a cached version reaches `invalidations_buf`; a substate's first
-/// creation retires nothing and is dropped. Only those whose substate `value_filters` selects carry a
+/// A transition that retires anything cached reaches `invalidations_buf`, which for a substate's
+/// first creation is the record that it did not exist. Only those whose substate `value_filters` selects carry a
 /// value; the rest arrive as an id and a version under `ALL_HASHES` and must reach nothing else -
 /// indexing one, counting it in the economic totals or emitting an event for it would all be reading
 /// a value that was never sent.

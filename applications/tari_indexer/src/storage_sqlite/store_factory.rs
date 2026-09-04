@@ -164,7 +164,7 @@ mod tests {
         transaction_receipt::{FinalizeOutcome, TransactionReceipt},
     };
     use tari_indexer_client::types::TransactionSource;
-    use tari_indexer_lib::substate_cache::{FetchWatermark, SubstateCacheEntryRef};
+    use tari_indexer_lib::substate_cache::{FetchWatermark, SubstateCacheEntry, SubstateCacheEntryRef};
     use tari_ootle_common_types::{Epoch, NodeHeight, ShardGroup, StateVersion};
     use tari_ootle_transaction::{Transaction, TransactionId};
     use tari_validator_node_rpc::client::SubstateResult;
@@ -1109,7 +1109,7 @@ mod tests {
                 tx.substate_cache_put(
                     &id,
                     SubstateCacheEntryRef {
-                        version,
+                        version: Some(version),
                         substate_result: &result,
                         cached_at,
                         verified,
@@ -1126,13 +1126,40 @@ mod tests {
         put_entry(store, id, version, true, now_secs(), watermark).await
     }
 
+    /// The cached head version. `None` covers both no row at all and a row recording that the
+    /// substate does not exist; use [`read_entry`] where the two must be told apart.
     async fn read(store: &SqliteIndexerStore, id: &SubstateId) -> Option<u32> {
+        read_entry(store, id).await.and_then(|entry| entry.version)
+    }
+
+    async fn read_entry(store: &SqliteIndexerStore, id: &SubstateId) -> Option<SubstateCacheEntry> {
+        let id = id.clone();
+        store.with_read_tx(move |tx| tx.substate_cache_get(&id)).await.unwrap()
+    }
+
+    /// Records that `id` does not exist, as an unversioned entry.
+    async fn put_nonexistent(store: &SqliteIndexerStore, id: &SubstateId, watermark: u64) -> bool {
         let id = id.clone();
         store
-            .with_read_tx(move |tx| tx.substate_cache_get(&id))
+            .with_write_tx(move |tx| {
+                tx.substate_cache_put(
+                    &id,
+                    SubstateCacheEntryRef {
+                        version: None,
+                        substate_result: &SubstateResult::DoesNotExist,
+                        cached_at: now_secs(),
+                        verified: false,
+                    },
+                    FetchWatermark::new(watermark),
+                    HEAD_TTL,
+                )
+            })
             .await
             .unwrap()
-            .map(|entry| entry.version)
+    }
+
+    fn is_nonexistent(entry: &SubstateCacheEntry) -> bool {
+        entry.version.is_none() && matches!(entry.substate_result, SubstateResult::DoesNotExist)
     }
 
     async fn invalidate(store: &SqliteIndexerStore, invalidation: SubstateCacheInvalidation, at: u64) {
@@ -1140,6 +1167,79 @@ mod tests {
             .with_write_tx(move |tx| tx.substate_cache_invalidate([invalidation], StateVersion::new(at)))
             .await
             .unwrap();
+    }
+
+    /// The point of journalling a first creation: it is the only transition that can retract the
+    /// claim that a substate does not exist.
+    #[tokio::test]
+    async fn a_first_creation_retires_the_nonexistence_it_denies() {
+        let (_d, store) = temp_store().await;
+        let id = substate(1);
+        assert!(put_nonexistent(&store, &id, 100).await);
+        assert!(is_nonexistent(&read_entry(&store, &id).await.unwrap()));
+
+        invalidate(&store, SubstateCacheInvalidation::created(id.clone(), 0).unwrap(), 105).await;
+        assert!(read_entry(&store, &id).await.is_none());
+    }
+
+    /// A creation retires the nonexistence whatever version it lands at, not only the first.
+    #[tokio::test]
+    async fn a_later_creation_also_retires_the_nonexistence() {
+        let (_d, store) = temp_store().await;
+        let id = substate(1);
+        assert!(put_nonexistent(&store, &id, 100).await);
+
+        invalidate(&store, SubstateCacheInvalidation::created(id.clone(), 6).unwrap(), 105).await;
+        assert!(read_entry(&store, &id).await.is_none());
+    }
+
+    /// `DoesNotExist` says the substate has no live version, which a destroy makes more true.
+    #[tokio::test]
+    async fn a_destroy_leaves_a_cached_nonexistence_alone() {
+        let (_d, store) = temp_store().await;
+        let id = substate(1);
+        assert!(put_nonexistent(&store, &id, 100).await);
+
+        invalidate(&store, SubstateCacheInvalidation::destroyed(id.clone(), 6), 105).await;
+        assert!(is_nonexistent(&read_entry(&store, &id).await.unwrap()));
+    }
+
+    /// The race the journal exists to close: the substate is created while the committee fetch that
+    /// answered `DoesNotExist` is still in flight, so the delete runs before there is a row to
+    /// delete and only the journal can stop the write.
+    #[tokio::test]
+    async fn a_creation_landing_mid_fetch_vetoes_the_nonexistence() {
+        let (_d, store) = temp_store().await;
+        let id = substate(1);
+
+        // The fetch captured the watermark at 100; the creation commits at 105 while it is in flight.
+        invalidate(&store, SubstateCacheInvalidation::created(id.clone(), 0).unwrap(), 105).await;
+        assert!(!put_nonexistent(&store, &id, 100).await);
+        assert!(read_entry(&store, &id).await.is_none());
+    }
+
+    /// Nothing would ever retract a nonexistence recorded for a substate no first creation journals,
+    /// so the write is refused rather than left to age out.
+    #[tokio::test]
+    async fn a_nonexistence_is_refused_where_no_transition_would_retract_it() {
+        let (_d, store) = temp_store().await;
+        let receipt: SubstateId = format!("txreceipt_{:064x}", 1).parse().unwrap();
+        assert!(!put_nonexistent(&store, &receipt, 100).await);
+        assert!(read_entry(&store, &receipt).await.is_none());
+    }
+
+    /// Nonexistence ranks below every version: a real head displaces it, and it never walks one back.
+    #[tokio::test]
+    async fn a_nonexistence_yields_to_any_head() {
+        let (_d, store) = temp_store().await;
+        let id = substate(1);
+        assert!(put_nonexistent(&store, &id, 100).await);
+        assert!(put(&store, &id, 0, 100).await);
+        assert_eq!(read(&store, &id).await, Some(0));
+
+        // ...and cannot displace one that is verified and current.
+        assert!(!put_nonexistent(&store, &id, 100).await);
+        assert_eq!(read(&store, &id).await, Some(0));
     }
 
     #[tokio::test]

@@ -1178,7 +1178,7 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
 
         row.map(|row| {
             Ok(SubstateCacheEntry {
-                version: row.version as u32,
+                version: row.version.map(|v| v as u32),
                 substate_result: deserialize_bincode(&row.substate_result)?,
                 cached_at: row.cached_at as u64,
                 verified: row.verified,

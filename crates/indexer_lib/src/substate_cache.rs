@@ -49,18 +49,38 @@ impl FetchWatermark {
     }
 }
 
+/// Whether the cache holds `DoesNotExist` for this substate.
+///
+/// A cached negative saves the most expensive lookup there is: `DoesNotExist` is the one answer that
+/// cannot short-circuit on the first good response, so it costs a walk of `f + 1` committee members
+/// every time. It is correct only while the transition stream can retract it, and each retraction
+/// costs a journal row for a creation that would otherwise write none, so it is worth holding only
+/// where the saving is repeated.
+///
+/// Transaction receipts are excluded. They are created once and never updated - the bulk of the
+/// stream by count - so they carry nearly all of that journal cost, and a receipt the indexer has
+/// synced is answered from its own tables without a committee walk at all. What is left is the
+/// caller polling for a receipt that does not exist yet, which is the one case a cached negative
+/// delays rather than serves.
+pub fn caches_nonexistence(id: &SubstateId) -> bool {
+    !id.is_transaction_receipt()
+}
+
 #[derive(Debug, Clone)]
 pub struct SubstateCacheEntry {
-    pub version: u32,
+    /// The substate's head version, or `None` when the substate does not exist.
+    pub version: Option<u32>,
     pub substate_result: SubstateResult,
     pub cached_at: u64,
-    /// True if the value was committee-verified when it was fetched.
+    /// True if the value was committee-verified when it was fetched. Never true for a substate that
+    /// does not exist: absence has nothing to prove against the state tree.
     pub verified: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct SubstateCacheEntryRef<'a> {
-    pub version: u32,
+    /// The substate's head version, or `None` when the substate does not exist.
+    pub version: Option<u32>,
     pub substate_result: &'a SubstateResult,
     pub cached_at: u64,
     pub verified: bool,
@@ -80,6 +100,9 @@ pub trait SubstateCache: Send + Sync {
     ///
     /// A version below the cached one is answered without any watermark: see
     /// [`SubstateCache::write`] for what the cache holds and why that conclusion cannot go stale.
+    ///
+    /// A cached nonexistence answers an unversioned read only. It says the substate has no live
+    /// version, never what was true at some version below, so a versioned read misses.
     fn read(
         &self,
         id: &SubstateId,
@@ -94,6 +117,11 @@ pub trait SubstateCache: Send + Sync {
     /// be written: an `Up` version is always the head, since upping a substate downs its predecessor,
     /// and a lookup that named no version answers with the head by definition. A named version that
     /// came back `Down` establishes only that the head is higher, not what it is.
+    ///
+    /// An entry with no version records that the substate does not exist, which an unversioned
+    /// lookup establishes as much as any version does. Only substates [`caches_nonexistence`] admits
+    /// may be written that way: the stream retracts such an entry through a journal row that a
+    /// creation writes for no other reason.
     fn write(
         &self,
         id: &SubstateId,
