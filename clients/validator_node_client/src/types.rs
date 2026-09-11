@@ -417,7 +417,8 @@ pub struct GetStateResponse {
 )]
 pub struct GetSubstateRequest {
     pub address: SubstateId,
-    pub version: u32,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub version: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

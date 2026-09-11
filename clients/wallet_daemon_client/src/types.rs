@@ -1422,7 +1422,8 @@ pub struct WalletSubstateInfo {
     pub substate_id: SubstateId,
     pub parent_id: Option<SubstateId>,
     pub module_name: Option<String>,
-    pub version: u32,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub version: u64,
     pub template_address: Option<TemplateAddress>,
 }
 
