@@ -4171,6 +4171,11 @@ where
         Ok(())
     }
 
+    fn charge_template_instantiation(&mut self, data_segment_bytes: u64) -> Result<(), RuntimeError> {
+        self.tracker
+            .charge_native_execution(tari_engine_types::limits::instantiation_points(data_segment_bytes))
+    }
+
     fn wasm_points_consumed(&self) -> u64 {
         self.tracker.accumulated_wasm_points()
     }
