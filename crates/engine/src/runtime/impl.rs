@@ -134,7 +134,7 @@ use tari_template_lib::{
         ValidatorFeePoolAddress,
         access_rules::{ComponentAccessRules, ResourceAuthAction, UpdateRule},
         bytes::Bytes,
-        constants::{IMAGE_URL, TARI_TOKEN, TOKEN_SYMBOL},
+        constants::{TARI_TOKEN, TOKEN_SYMBOL},
         crypto::{PedersenCommitmentBytes, RistrettoPublicKeyBytes, UtxoTag},
         engine_args::IntrinsicId,
         metadata,
@@ -397,6 +397,19 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         Ok(())
     }
 
+    /// Emits one of the engine's builtin `std.*` events.
+    ///
+    /// Events are persisted in the transaction receipt and priced by their encoded length, so a
+    /// `payload` entry is paid for by every caller of the instruction that emits it. A payload must
+    /// therefore carry only what a reader cannot recover from the substates the same transaction
+    /// ups: the amount moved, which rule changed, which vault was reached. Anything the reader can
+    /// read off `substate_id` or off a substate it names — a resource's type, symbol or metadata —
+    /// is charged for twice and must stay out.
+    ///
+    /// An entry earns its place despite that only when a consumer has to match on it while
+    /// streaming, with no substate in hand yet. `std.vault.{deposit,withdraw}` carry
+    /// `resource_address` for that reason: their `substate_id` is the vault, so the indexer's
+    /// `EventFilter` has nothing else to filter a subscription on.
     fn emit_std_event<T: Into<SubstateId>>(
         object_name: &str,
         action: &str,
@@ -1606,15 +1619,7 @@ where
                         });
                     }
 
-                    let mut payload = Metadata::from_iter([("resource_type", resource.resource_type().to_string())]);
-                    if let Some(symbol) = resource.metadata().get(TOKEN_SYMBOL) {
-                        payload.insert(TOKEN_SYMBOL, symbol);
-                    }
-                    if let Some(image_url) = resource.metadata().get(IMAGE_URL) {
-                        payload.insert(IMAGE_URL, image_url);
-                    }
-
-                    Self::emit_std_event("resource", "create", resource_address, payload, state_mut)?;
+                    Self::emit_std_event("resource", "create", resource_address, Metadata::new(), state_mut)?;
 
                     state_mut.new_substate(resource_address, resource)?;
                     let resource_lock = state_mut.write_lock_substate(SubstateId::Resource(resource_address))?;
@@ -1719,10 +1724,7 @@ where
                     let resource = state_mut.mint_resource(&resource_lock, mint_arg)?;
                     let bucket_id = state_mut.id_provider()?.new_bucket_id();
 
-                    let payload = Metadata::from_iter([
-                        ("resource_type", resource.resource_type().to_string()),
-                        ("amount", resource.unlocked_amount().to_string()),
-                    ]);
+                    let payload = Metadata::from_iter([("amount", resource.unlocked_amount().to_string())]);
                     Self::emit_std_event("resource", "mint", resource_address, payload, state_mut)?;
 
                     state_mut.new_bucket(bucket_id, resource)?;
@@ -1781,7 +1783,6 @@ where
                     let resource = state_mut.recall_resource_from_vault(&vault_lock, &arg.resource)?;
 
                     let payload = Metadata::from_iter([
-                        ("resource_type", resource.resource_type().to_string()),
                         ("vault_id", arg.vault_id.to_string()),
                         ("recall_desc", arg.resource.to_string()),
                     ]);
@@ -1878,12 +1879,11 @@ where
                         })?;
                     contents.set_mutable_data(arg.data);
 
-                    let payload = Metadata::from_iter([("resource_type", ResourceType::NonFungible.to_string())]);
                     Self::emit_std_event(
                         "resource",
                         "update_nonfungible_data",
                         resource_address,
-                        payload,
+                        Metadata::new(),
                         state_mut,
                     )?;
 
@@ -1926,10 +1926,7 @@ where
                 self.tracker.write_with(|state_mut| {
                     let resource_mut = state_mut.get_resource_mut(&resource_lock)?;
                     resource_mut.update_access_rule(action, new_rule);
-                    let payload = Metadata::from_iter([
-                        ("resource_type", resource_mut.resource_type().to_string()),
-                        ("action", format!("{:?}", action)),
-                    ]);
+                    let payload = Metadata::from_iter([("action", format!("{:?}", action))]);
                     Self::emit_std_event("resource", "update_access_rule", resource_address, payload, state_mut)?;
 
                     state_mut.unlock_substate(resource_lock)?;
@@ -1976,13 +1973,12 @@ where
 
                 self.tracker.write_with(|state_mut| {
                     let resource_mut = state_mut.get_resource_mut(&resource_lock)?;
-                    let payload = Metadata::from_iter([
-                        ("resource_type", resource_mut.resource_type().to_string()),
-                        (
-                            "auth_hook",
-                            auth_hook.as_ref().map_or_else(|| "none".to_string(), |h| h.to_string()),
-                        ),
-                    ]);
+                    // An absent key says the hook was removed, so a reader sees the removal without
+                    // fetching the resource.
+                    let mut payload = Metadata::new();
+                    if let Some(hook) = auth_hook.as_ref() {
+                        payload.insert("auth_hook", hook.to_string());
+                    }
                     resource_mut.set_auth_hook(auth_hook);
                     Self::emit_std_event("resource", "update_auth_hook", resource_address, payload, state_mut)?;
 
@@ -2039,12 +2035,13 @@ where
                 self.tracker.write_with(|state_mut| {
                     let resource_mut = state_mut.get_resource_mut(&resource_lock)?;
                     resource_mut.set_metadata(new_metadata);
-                    let mut payload =
-                        Metadata::from_iter([("resource_type", resource_mut.resource_type().to_string())]);
-                    if let Some(symbol) = resource_mut.token_symbol() {
-                        payload.insert(TOKEN_SYMBOL, symbol);
-                    }
-                    Self::emit_std_event("resource", "update_metadata", resource_address, payload, state_mut)?;
+                    Self::emit_std_event(
+                        "resource",
+                        "update_metadata",
+                        resource_address,
+                        Metadata::new(),
+                        state_mut,
+                    )?;
 
                     state_mut.unlock_substate(resource_lock)?;
 
@@ -2489,7 +2486,6 @@ where
                     // Emit a builtin event for the deposit
                     let payload = Metadata::from_iter([
                         ("resource_address", bucket.resource_address().to_string()),
-                        ("resource_type", bucket.resource_type().to_string()),
                         ("amount", bucket.unlocked_amount().to_string()),
                     ]);
 
@@ -2607,7 +2603,6 @@ where
                     // Emit a builtin event for the withdraw
                     let payload = Metadata::from_iter([
                         ("resource_address", resource_container.resource_address().to_string()),
-                        ("resource_type", resource_container.resource_type().to_string()),
                         ("amount", public_amount.to_string()),
                     ]);
 
