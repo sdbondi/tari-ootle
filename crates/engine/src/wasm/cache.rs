@@ -59,6 +59,10 @@ const LOG_TARGET: &str = "tari::engine::wasm::cache";
 ///   spec).
 /// - The layout of the file's own header (`HEADER_BYTES` and the fields it carries). A reader that disagrees with the
 ///   writer about the header slices the artifact at the wrong offset and reads the fields from the wrong bytes.
+/// - How the header's values are derived — `validate_module_structure`'s segment tally. A cache hit serves these
+///   verbatim rather than recomputing them, and `instantiation_points` prices a call off them, so a node reading a file
+///   written under an older derivation charges a different fee for the same transaction than one that compiled fresh.
+///   These are consensus values, not accounting hints.
 ///
 /// On a bump, old cache files become orphans (different filename suffix)
 /// and the next compile-from-source rewrites under the new key.
