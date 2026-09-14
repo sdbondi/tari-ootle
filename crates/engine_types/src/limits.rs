@@ -410,7 +410,7 @@ mod publish_budget_tests {
             compile + FREE_COMPUTE_GRACE_POINTS <= MAX_NATIVE_POINTS_PER_TRANSACTION,
             "a {largest}-byte publish costs {compile} points and leaves {} of the {MAX_NATIVE_POINTS_PER_TRANSACTION} \
              budget, under the {FREE_COMPUTE_GRACE_POINTS} a fee intent may spend",
-            MAX_NATIVE_POINTS_PER_TRANSACTION - compile,
+            MAX_NATIVE_POINTS_PER_TRANSACTION.saturating_sub(compile),
         );
 
         // Without an upper bound the reserve could swallow the cap and nobody would notice.

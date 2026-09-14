@@ -407,15 +407,16 @@ pub const LITERAL_BYTE_DIVISOR: u64 = 3;
 /// ([`tari_engine_types::limits::instantiation_points`]), which is real work before any of the
 /// template's own code runs. The execution-point budget is what prices that work; this floor is
 /// what keeps the weight cap a bound on instruction count at all.
-pub const INVOCATION_FLOOR: u64 = 35;
+pub const INVOCATION_FLOOR: u64 = 30;
 
-/// Smallest number of encoded bytes an instruction that invokes a template can occupy — a bare
-/// `CreateAccount`, which carries one public key and three absent options. `CallMethod`,
-/// `CallFunction` and `UpdateComponentTemplate` all encode wider.
+/// Smallest number of encoded bytes an instruction that invokes a template can occupy — a
+/// `CallMethod` naming its component by workspace slot rather than by address, which is the whole
+/// instruction in ten bytes. One `PutLastInstructionOutputOnWorkspace` followed by a run of these
+/// is a valid transaction, and every one of them instantiates a template.
 ///
 /// Paired with [`INVOCATION_FLOOR`], this is what turns the transaction byte cap into a bound on
-/// invocation count. `the_recorded_minimum_instruction_sizes_still_hold` keeps it honest.
-pub const MIN_INVOCATION_ENCODED_BYTES: usize = 37;
+/// invocation count. `no_invocation_encodes_smaller_than_the_recorded_minimum` keeps it honest.
+pub const MIN_INVOCATION_ENCODED_BYTES: usize = 10;
 
 fn calc_args_weight(args: &[InstructionArg]) -> u64 {
     // Workspace and blob refs are cheap — just an index. Blob payloads are charged at the
@@ -750,6 +751,16 @@ mod weight_tests {
     use super::*;
     use crate::MigrateFunction;
 
+    /// The smallest invocation there is: the component comes from a workspace slot, so the
+    /// instruction carries no address at all.
+    fn workspace_call() -> Instruction {
+        Instruction::CallMethod {
+            call: crate::ComponentReference::Workspace(0),
+            method: FunctionName::try_from("m").expect("a one-character method name fits"),
+            args: vec![],
+        }
+    }
+
     fn no_arg_call() -> Instruction {
         Instruction::CallMethod {
             call: ComponentAddress::new(ObjectKey::default()).into(),
@@ -787,6 +798,7 @@ mod weight_tests {
     /// processor must carry it.
     #[test]
     fn every_instruction_that_invokes_a_template_weighs_the_floor() {
+        assert_eq!(calc_instruction_weight(&workspace_call()), INVOCATION_FLOOR);
         assert_eq!(calc_instruction_weight(&no_arg_call()), INVOCATION_FLOOR);
         assert_eq!(calc_instruction_weight(&bare_create_account()), INVOCATION_FLOOR);
         assert_eq!(calc_instruction_weight(&bare_template_update()), INVOCATION_FLOOR);
@@ -796,8 +808,14 @@ mod weight_tests {
     /// back to check the floor against the byte cap, which lives in a crate downstream of this one,
     /// so it has to be the smallest encoding of any instruction that invokes a template.
     #[test]
+    #[test]
     fn no_invocation_encodes_smaller_than_the_recorded_minimum() {
-        for instruction in [no_arg_call(), bare_create_account(), bare_template_update()] {
+        for instruction in [
+            workspace_call(),
+            no_arg_call(),
+            bare_create_account(),
+            bare_template_update(),
+        ] {
             let encoded = tari_bor::encode(&instruction).unwrap().len();
             assert!(
                 encoded >= MIN_INVOCATION_ENCODED_BYTES,
@@ -805,7 +823,7 @@ mod weight_tests {
             );
         }
         assert_eq!(
-            tari_bor::encode(&bare_create_account()).unwrap().len(),
+            tari_bor::encode(&workspace_call()).unwrap().len(),
             MIN_INVOCATION_ENCODED_BYTES
         );
     }

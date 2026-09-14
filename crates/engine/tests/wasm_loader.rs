@@ -587,3 +587,28 @@ fn element_segment_entries_are_charged_per_instantiation() {
         "a {ENTRIES}-entry table was not charged for its entries"
     );
 }
+
+/// A passive segment is not written into the instance at build time — only a `memory.init` or
+/// `table.init` reaching for it does that, and those are charged where they run. Counting one as
+/// instantiation work would charge the same bytes twice, against a call that may never touch them.
+#[test]
+fn passive_segments_are_not_instantiation_work() {
+    let code = template_module(
+        r#"
+        (table 4 4 funcref)
+        (data "passive bytes that no instantiation copies")
+        (elem func 0 0 0 0)
+        (func (export "tari_alloc") (param i32) (result i32) (i32.const 1024))
+        (func (export "tari_free") (param i32))
+        (func (export "Buggy_main") (param i32 i32) (result i32) (i32.const 20))
+        "#,
+    );
+
+    let shape = match WasmModule::load_template_from_code(&code).expect("module was rejected") {
+        tari_engine::template::LoadedTemplate::Wasm(loaded) => loaded.shape(),
+    };
+
+    // `template_module` contributes one active data segment of its own; the passive one adds nothing.
+    assert_eq!(shape.data_segment_bytes, 5);
+    assert_eq!(shape.element_segment_entries, 0);
+}

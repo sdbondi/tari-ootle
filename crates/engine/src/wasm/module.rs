@@ -36,7 +36,7 @@ use wasmer::{
     WasmPtr,
     imports,
     sys::{BaseTunables, CompilerConfig, Cranelift, CraneliftOptLevel, EngineBuilder},
-    wasmparser::{ElementItems, Parser, Payload},
+    wasmparser::{DataKind, ElementItems, ElementKind, Parser, Payload},
 };
 
 use crate::{
@@ -475,13 +475,22 @@ fn validate_module_structure(code: &[u8]) -> Result<ModuleShape, WasmValidationE
                     });
                 }
             },
+            // Only active segments are written into the instance's storage when it is built. A
+            // passive segment stays in the module until a `memory.init` or `table.init` reaches for
+            // it, and those are charged by the byte where they run, so counting one here would
+            // price the same bytes twice and price them against a call that may never touch them.
             Payload::DataSection(reader) => {
                 for segment in reader.into_iter().flatten() {
-                    shape.data_segment_bytes = shape.data_segment_bytes.saturating_add(segment.data.len() as u64);
+                    if matches!(segment.kind, DataKind::Active { .. }) {
+                        shape.data_segment_bytes = shape.data_segment_bytes.saturating_add(segment.data.len() as u64);
+                    }
                 }
             },
             Payload::ElementSection(reader) => {
                 for segment in reader.into_iter().flatten() {
+                    if !matches!(segment.kind, ElementKind::Active { .. }) {
+                        continue;
+                    }
                     let entries = match segment.items {
                         ElementItems::Functions(items) => u64::from(items.count()),
                         ElementItems::Expressions(_, items) => u64::from(items.count()),
