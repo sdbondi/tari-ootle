@@ -6,7 +6,7 @@ use tari_ootle_transaction::Transaction;
 
 use crate::{TransactionValidationError, Validator};
 
-const LOG_TARGET: &str = "tari::ootle::mempool::validators::input_substates";
+const LOG_TARGET: &str = "tari::ootle::mempool::validators::inputs_are_not_virtual";
 
 /// Rejects a transaction that declares a substate the engine reserves and never stores — a public-key identity, a
 /// caller badge, or one of the two resources those badges are namespaced by — as an input.
@@ -19,15 +19,15 @@ const LOG_TARGET: &str = "tari::ootle::mempool::validators::input_substates";
 /// `AuthorizationScope` that badges are checked against, and both badge resources are empty by invariant. This
 /// rejects the request as nonsense, earlier and with a reason that names the mistake.
 #[derive(Debug, Clone, Default)]
-pub struct InputSubstateValidator;
+pub struct InputsAreNotVirtualValidator;
 
-impl InputSubstateValidator {
+impl InputsAreNotVirtualValidator {
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Validator<Transaction> for InputSubstateValidator {
+impl Validator<Transaction> for InputsAreNotVirtualValidator {
     type Context = ();
     type Error = TransactionValidationError;
 
@@ -37,14 +37,14 @@ impl Validator<Transaction> for InputSubstateValidator {
             .find(|input| input.substate_id().is_virtual())
         {
             let substate_id = input.substate_id().clone();
-            warn!(target: LOG_TARGET, "InputSubstateValidator - FAIL: reserved substate {substate_id} declared as an input");
+            warn!(target: LOG_TARGET, "InputsAreNotVirtualValidator - FAIL: reserved substate {substate_id} declared as an input");
             return Err(TransactionValidationError::ReservedSubstateInput {
                 transaction_id: transaction.calculate_id(),
                 substate_id,
             });
         }
 
-        debug!(target: LOG_TARGET, "InputSubstateValidator - OK");
+        debug!(target: LOG_TARGET, "InputsAreNotVirtualValidator - OK");
         Ok(())
     }
 }
@@ -77,7 +77,7 @@ mod tests {
     }
 
     fn validate(input: SubstateId) -> Result<(), TransactionValidationError> {
-        InputSubstateValidator::new().validate(&(), &transaction_with_input(input))
+        InputsAreNotVirtualValidator::new().validate(&(), &transaction_with_input(input))
     }
 
     #[test]

@@ -8,7 +8,7 @@ use crate::{
     BasicValidations,
     BlobReferenceValidator,
     EpochRangeValidator,
-    InputSubstateValidator,
+    InputsAreNotVirtualValidator,
     PublishTemplateLimitValidator,
     SignatureLimitValidator,
     StealthTransactionLimitsValidator,
@@ -44,7 +44,7 @@ pub fn create_structural_transaction_validator(
         // transaction failing it could not have been relayed regardless of what it weighs.
         .and_then(TransactionSizeValidator::new(max_transaction_size_bytes))
         .and_then(BlobReferenceValidator::new())
-        .and_then(InputSubstateValidator::new())
+        .and_then(InputsAreNotVirtualValidator::new())
         .and_then(TransactionWeightValidator::new(max_transaction_weight))
         .and_then(StealthTransactionLimitsValidator::new())
         .and_then(PublishTemplateLimitValidator::new())
