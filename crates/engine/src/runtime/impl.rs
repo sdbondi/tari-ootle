@@ -4171,9 +4171,16 @@ where
         Ok(())
     }
 
-    fn charge_template_instantiation(&mut self, data_segment_bytes: u64) -> Result<(), RuntimeError> {
+    fn charge_template_instantiation(
+        &mut self,
+        data_segment_bytes: u64,
+        element_segment_entries: u64,
+    ) -> Result<(), RuntimeError> {
         self.tracker
-            .charge_native_execution(tari_engine_types::limits::instantiation_points(data_segment_bytes))
+            .charge_native_execution(tari_engine_types::limits::instantiation_points(
+                data_segment_bytes,
+                element_segment_entries,
+            ))
     }
 
     fn charge_template_compile(&mut self, binary_bytes: u64) -> Result<(), RuntimeError> {

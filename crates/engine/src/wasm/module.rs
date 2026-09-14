@@ -36,7 +36,7 @@ use wasmer::{
     WasmPtr,
     imports,
     sys::{BaseTunables, CompilerConfig, Cranelift, CraneliftOptLevel, EngineBuilder},
-    wasmparser::{Parser, Payload},
+    wasmparser::{ElementItems, Parser, Payload},
 };
 
 use crate::{
@@ -426,13 +426,16 @@ fn validate_export_signature(
     }
 }
 
-//// What a module's binary says about the work instantiating it will cost.
-/// Compiled code is laid down once at publish; what every instantiation repeats is copying the
-/// data segments into a fresh linear memory, so that byte count — not the binary size — is what
+/// What a module's binary says about the work instantiating it will cost.
+///
+/// Compiled code is laid down once at publish; what every instantiation repeats is writing the
+/// module's segments into fresh instance storage — data segments into linear memory, element
+/// segments into the tables. Those two counts, not the binary size, are what
 /// [`tari_engine_types::limits::instantiation_points`] prices.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ModuleShape {
     pub data_segment_bytes: u64,
+    pub element_segment_entries: u64,
 }
 
 /// Checks what only the module bytes show: that the module declares no start function, and no more
@@ -475,6 +478,15 @@ fn validate_module_structure(code: &[u8]) -> Result<ModuleShape, WasmValidationE
             Payload::DataSection(reader) => {
                 for segment in reader.into_iter().flatten() {
                     shape.data_segment_bytes = shape.data_segment_bytes.saturating_add(segment.data.len() as u64);
+                }
+            },
+            Payload::ElementSection(reader) => {
+                for segment in reader.into_iter().flatten() {
+                    let entries = match segment.items {
+                        ElementItems::Functions(items) => u64::from(items.count()),
+                        ElementItems::Expressions(_, items) => u64::from(items.count()),
+                    };
+                    shape.element_segment_entries = shape.element_segment_entries.saturating_add(entries);
                 }
             },
             _ => {},

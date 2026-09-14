@@ -142,23 +142,6 @@ pub const PER_TEMPLATE_COMPILE: u64 = 140_000_000;
 /// Each byte of the published binary. The marginal measured cost is ~2000 points/byte.
 pub const PER_TEMPLATE_COMPILE_BYTE: u64 = 2_100;
 
-/// Largest binary a `PublishTemplate` instruction may carry.
-///
-/// Distinct from [`EngineLimits::max_template_binary_size_bytes`], which is the width of the
-/// `TemplateBlob` type and so governs whether a stored template *decodes*. Narrowing that would
-/// make an already-committed template unreadable — its substate would stop decoding on upgrade, and
-/// the network-wide transaction size cap derived from it would move under a rolling upgrade. This
-/// bound applies only to what a new publish may carry.
-///
-/// Set to the largest binary whose compile charge ([`template_compile_points`]) a transaction can
-/// afford, so a publish too expensive to pay for is refused for its size rather than part-way
-/// through paying. Asserted by `the_largest_publishable_binary_fits_the_native_budget`; the largest
-/// built-in template is ~530 KiB.
-pub const MAX_PUBLISHABLE_TEMPLATE_BINARY_SIZE_BYTES: usize = 1024 * 1024;
-
-/// A publishable binary must fit the type that stores it.
-const _: () = assert!(MAX_PUBLISHABLE_TEMPLATE_BINARY_SIZE_BYTES <= ENGINE_LIMITS.max_template_binary_size_bytes);
-
 /// Fixed cost of one instantiation: mapping the memory, wiring the imports and building the tables.
 /// Measured at 0.008 to 0.010 ms across runs, taken at the top of that spread.
 pub const PER_TEMPLATE_INSTANTIATION: u64 = 100_000;
@@ -169,11 +152,21 @@ pub const PER_TEMPLATE_INSTANTIATION: u64 = 100_000;
 /// largest data segment a publish admits ~2.1x.
 pub const PER_TEMPLATE_DATA_SEGMENT_BYTE: u64 = 5;
 
+/// Each element-segment entry written into a table.
+///
+/// Active element segments initialise the instance's tables at every instantiation, the same class
+/// of work as copying the data segments but per funcref rather than per byte, and an author controls
+/// how many entries there are: `max_tables` x `max_table_elements` is 65,536 of them, which measures
+/// at ~0.20 ms — twenty times the fixed cost of an instantiation. Measured between 26 and 39 points
+/// per entry depending on the run; set above that spread.
+pub const PER_TEMPLATE_ELEMENT_ENTRY: u64 = 40;
+
 /// Points charged for building the `Store` and `Instance` a template call runs in, before its first
 /// metered operator.
 ///
 /// Every instruction that calls a template instantiates it afresh: linear memory is mapped, the
-/// module's data segments are copied into it, and the tables and imports are wired up. Compiled
+/// module's data segments are copied into it, its element segments are written into its tables, and
+/// the imports are wired up. Compiled
 /// code is laid down once at publish and costs nothing to instantiate, so the only part that scales
 /// with the binary is the data copy — measured across the built-in templates, a 150 KiB and a 520
 /// KiB module instantiate in the same ~0.015 ms because both carry a few KiB of data. Pricing this
@@ -181,8 +174,10 @@ pub const PER_TEMPLATE_DATA_SEGMENT_BYTE: u64 = 5;
 ///
 /// Both figures from `cargo run -p tari_engine --release --example instantiation_points_calibrate`,
 /// rounded up.
-pub const fn instantiation_points(data_segment_bytes: u64) -> u64 {
-    PER_TEMPLATE_INSTANTIATION.saturating_add(PER_TEMPLATE_DATA_SEGMENT_BYTE.saturating_mul(data_segment_bytes))
+pub const fn instantiation_points(data_segment_bytes: u64, element_segment_entries: u64) -> u64 {
+    PER_TEMPLATE_INSTANTIATION
+        .saturating_add(PER_TEMPLATE_DATA_SEGMENT_BYTE.saturating_mul(data_segment_bytes))
+        .saturating_add(PER_TEMPLATE_ELEMENT_ENTRY.saturating_mul(element_segment_entries))
 }
 
 /// Metering-point prices for native (non-WASM) verification work, charged against the same
@@ -284,7 +279,13 @@ pub const ENGINE_LIMITS: EngineLimits = EngineLimits {
     max_events: 256,
     max_event_size_bytes: 2 * 1024, // 2 KiB; 256 * 2 KiB = 512 KiB of the 1 MiB substate budget
     max_panic_message_size: 32 * 1024, // 32 KiB
-    max_template_binary_size_bytes: 3 * 512 * 1024, // 1.5 MiB
+    // Sized by what a publish costs, not by what a binary could hold: every validator
+    // Cranelift-compiles it, that compile is charged by `template_compile_points`, and the charge
+    // has to leave a whole fee intent's worth of compute inside `MAX_NATIVE_POINTS_PER_TRANSACTION`
+    // so publishing and sourcing the fee confidentially remain possible in one transaction. Asserted
+    // by `the_largest_publishable_binary_leaves_room_to_source_a_fee`. The largest built-in template
+    // is ~530 KiB.
+    max_template_binary_size_bytes: 1024 * 1024, // 1 MiB
     max_template_name_length: 64,
     max_call_depth: 10,
     max_random_bytes_len: 1024, // 1 KiB per call
@@ -397,20 +398,26 @@ pub const CONFIDENTIAL_LIMITS: ConfidentialLimits = ConfidentialLimits {
 mod publish_budget_tests {
     use super::*;
 
-    /// `max_template_binary_size_bytes` must name a binary whose compile charge a transaction can
-    /// actually afford, so an oversized publish is refused for its size rather than reaching the
-    /// compile and failing to pay for it.
+    /// The publish cap must leave a transaction enough of the native budget to source its fee
+    /// confidentially, since that budget is a hard cap and a publisher has no way to discover that
+    /// the binary size is what made the transaction unaffordable.
     #[test]
-    fn the_largest_publishable_binary_fits_the_native_budget() {
-        let largest = MAX_PUBLISHABLE_TEMPLATE_BINARY_SIZE_BYTES as u64;
+    fn the_largest_publishable_binary_leaves_room_to_source_a_fee() {
+        let largest = ENGINE_LIMITS.max_template_binary_size_bytes as u64;
+        let compile = template_compile_points(largest);
+
         assert!(
-            template_compile_points(largest) <= MAX_NATIVE_POINTS_PER_TRANSACTION,
-            "a {largest}-byte publish costs {} points against a {MAX_NATIVE_POINTS_PER_TRANSACTION} budget",
-            template_compile_points(largest)
+            compile + FREE_COMPUTE_GRACE_POINTS <= MAX_NATIVE_POINTS_PER_TRANSACTION,
+            "a {largest}-byte publish costs {compile} points and leaves {} of the {MAX_NATIVE_POINTS_PER_TRANSACTION} \
+             budget, under the {FREE_COMPUTE_GRACE_POINTS} a fee intent may spend",
+            MAX_NATIVE_POINTS_PER_TRANSACTION - compile,
         );
+
+        // Without an upper bound the reserve could swallow the cap and nobody would notice.
         assert!(
-            template_compile_points(largest + 1024 * 1024) > MAX_NATIVE_POINTS_PER_TRANSACTION,
-            "the size cap is far below what the budget admits and is costing publishers room"
+            template_compile_points(largest + 128 * 1024) + FREE_COMPUTE_GRACE_POINTS >
+                MAX_NATIVE_POINTS_PER_TRANSACTION,
+            "the publish cap is well under what the budget admits and is costing publishers room"
         );
     }
 }

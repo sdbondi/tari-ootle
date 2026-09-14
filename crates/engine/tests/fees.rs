@@ -147,7 +147,7 @@ fn deposit_from_faucet_then_pay() {
                 builder
                     // Faucet deposits free coins into the account
                     .call_method(xtr_faucet_component(), "take", args![account])
-                    .call_method(account, "pay_fee", args![3000])
+                    .call_method(account, "pay_fee", args![4000])
             })
             .call_function(test.get_template_address("State"), "new", args![])
             .build_and_seal(&private_key),

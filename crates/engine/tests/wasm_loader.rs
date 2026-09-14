@@ -554,3 +554,36 @@ fn a_zero_length_copy_pays_for_the_charge_sequence() {
         "a zero-length copy was charged {marginal} points, less than the sequence it runs"
     );
 }
+
+/// Element segments are written into the instance's tables at every instantiation, just as data
+/// segments are copied into its memory, and the module author chooses how many entries there are.
+/// Charging only the flat instantiation cost would let a table-heavy template buy that work for
+/// nothing.
+#[test]
+fn element_segment_entries_are_charged_per_instantiation() {
+    use tari_engine_types::limits::{PER_TEMPLATE_ELEMENT_ENTRY, instantiation_points};
+
+    const ENTRIES: u64 = 4096;
+
+    let funcrefs = vec!["0"; ENTRIES as usize].join(" ");
+    let code = template_module(&format!(
+        r#"
+        (table {ENTRIES} {ENTRIES} funcref)
+        (func (export "tari_alloc") (param i32) (result i32) (i32.const 1024))
+        (func (export "tari_free") (param i32))
+        (func (export "Buggy_main") (param i32 i32) (result i32) (i32.const 20))
+        (elem (i32.const 0) func {funcrefs})
+        "#
+    ));
+
+    let shape = match WasmModule::load_template_from_code(&code).expect("module was rejected") {
+        tari_engine::template::LoadedTemplate::Wasm(loaded) => loaded.shape(),
+    };
+
+    assert_eq!(shape.element_segment_entries, ENTRIES);
+    assert!(
+        instantiation_points(shape.data_segment_bytes, shape.element_segment_entries) >=
+            ENTRIES * PER_TEMPLATE_ELEMENT_ENTRY,
+        "a {ENTRIES}-entry table was not charged for its entries"
+    );
+}

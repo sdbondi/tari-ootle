@@ -64,16 +64,17 @@ const LOG_TARGET: &str = "tari::engine::wasm::cache";
 /// and the next compile-from-source rewrites under the new key.
 pub const ENGINE_FINGERPRINT: &str = "v6";
 
-/// Two 8-byte LE fields at the head of each cache file: the original WASM source byte count and
-/// the module's data-segment byte total. `wasmer::Module::serialize` preserves neither, and both
-/// are needed after a cache hit — the first for accounting (e.g. moka weighing), the second to
-/// price instantiation.
-const HEADER_BYTES: usize = 16;
+/// Three 8-byte LE fields at the head of each cache file: the original WASM source byte count, the
+/// module's data-segment byte total and its element-segment entry count. `wasmer::Module::serialize`
+/// preserves none of them, and all are needed after a cache hit — the first for accounting (e.g.
+/// moka weighing), the others to price instantiation.
+const HEADER_BYTES: usize = 24;
 
 /// Low-level on-disk cache for compiled wasmer modules.
 ///
 /// Files live at `{dir}/{template_address}_{ENGINE_FINGERPRINT}.bin`.
-/// The body is `[u64 LE: code_size][u64 LE: data_segment_bytes] || wasmer::Module::serialize(...)`.
+/// The body is `[u64 LE: code_size][u64 LE: data_segment_bytes][u64 LE: element_segment_entries] ||
+/// wasmer::Module::serialize(...)`.
 ///
 /// Writes are atomic (tempfile + rename). Read failures (missing file,
 /// deserialize errors, format changes) are non-fatal: the corrupt file is
@@ -157,9 +158,12 @@ impl WasmModuleCache {
         let mut field = [0u8; 8];
         field.copy_from_slice(&mmap[..8]);
         let code_size = u64::from_le_bytes(field) as usize;
-        field.copy_from_slice(&mmap[8..HEADER_BYTES]);
+        field.copy_from_slice(&mmap[8..16]);
+        let data_segment_bytes = u64::from_le_bytes(field);
+        field.copy_from_slice(&mmap[16..HEADER_BYTES]);
         let shape = ModuleShape {
-            data_segment_bytes: u64::from_le_bytes(field),
+            data_segment_bytes,
+            element_segment_entries: u64::from_le_bytes(field),
         };
 
         // Wrap the mmap as a Bytes that owns it, then slice past the
@@ -218,6 +222,7 @@ impl WasmModuleCache {
         let mut bytes = Vec::with_capacity(HEADER_BYTES + serialized.len());
         bytes.extend_from_slice(&(wasm.code_size() as u64).to_le_bytes());
         bytes.extend_from_slice(&wasm.shape().data_segment_bytes.to_le_bytes());
+        bytes.extend_from_slice(&wasm.shape().element_segment_entries.to_le_bytes());
         bytes.extend_from_slice(&serialized);
 
         if let Err(e) = fs::write(&tmp, &bytes) {

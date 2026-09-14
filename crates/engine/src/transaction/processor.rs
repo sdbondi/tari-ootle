@@ -201,9 +201,6 @@ where
 
         let instructions = executable.into_instructions();
 
-        // A transaction may publish at most one template. Enforced here during execution — a consensus rule every
-        // validator applies deterministically — so it holds even for transactions that reach execution without
-        // passing the mempool ingress validator that mirrors it.
         // A fee intent may not publish. The compile a publish pays for costs two orders of magnitude
         // more than the fee intent's compute credit, and `checkpoint_fee_intent` enforces payment
         // only after the instruction has run. No way of sourcing a fee involves publishing.
@@ -226,6 +223,9 @@ where
             });
         }
 
+        // A transaction may publish at most one template. Enforced here during execution — a consensus rule every
+        // validator applies deterministically — so it holds even for transactions that reach execution without
+        // passing the mempool ingress validator that mirrors it.
         let publish_template_count = instructions
             .fee
             .iter()
@@ -687,10 +687,10 @@ where
         binary: &[u8],
         metadata_hash: Option<MetadataHash>,
     ) -> Result<InstructionResult, TransactionErrorKind> {
-        if binary.len() > limits::MAX_PUBLISHABLE_TEMPLATE_BINARY_SIZE_BYTES {
+        if binary.len() > limits::ENGINE_LIMITS.max_template_binary_size_bytes {
             return Err(TransactionErrorKind::WasmBinaryTooBig {
                 size: binary.len(),
-                max: limits::MAX_PUBLISHABLE_TEMPLATE_BINARY_SIZE_BYTES,
+                max: limits::ENGINE_LIMITS.max_template_binary_size_bytes,
             });
         }
 
@@ -999,9 +999,10 @@ where
             LoadedTemplate::Wasm(loaded) => {
                 // Instantiation runs before the first metered operator, so it is charged against
                 // the same allowance and per-block budget the call's execution draws on.
-                runtime
-                    .interface_mut()
-                    .charge_template_instantiation(loaded.shape().data_segment_bytes)?;
+                runtime.interface_mut().charge_template_instantiation(
+                    loaded.shape().data_segment_bytes,
+                    loaded.shape().element_segment_entries,
+                )?;
                 let mut store = loaded.create_store();
                 let mut process = WasmProcess::init(&mut store, loaded, runtime)?;
                 process.invoke(&mut store, function_def, args)?

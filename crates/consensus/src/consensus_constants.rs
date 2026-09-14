@@ -22,22 +22,24 @@
 
 use std::time::Duration;
 
-use tari_engine_types::{fees::ExhaustBurnRate, limits::ENGINE_LIMITS};
+use tari_engine_types::fees::ExhaustBurnRate;
 use tari_ootle_common_types::{Epoch, NumPreshards};
 use tari_ootle_transaction::Network;
 
-/// Room above a template binary for the rest of the transaction carrying it: its other instructions,
-/// inputs, signatures and CBOR framing.
+/// The byte cap every network uses. Keeping it uniform is what lets one gossip limit serve the whole
+/// network.
 ///
-/// Deliberately loose against those — a real max-size publish encodes to a couple of hundred bytes
-/// over its binary, and a single instruction is capped at `ENGINE_LIMITS.max_call_size` — because a
-/// legitimate transaction refused at ingress is a worse failure than the bytes a larger allowance
-/// costs. `max_transaction_size_admits_max_template_publish` is what holds it to that.
-const TRANSACTION_ENVELOPE_ALLOWANCE: usize = 256 * 1024;
-
-/// The byte cap every network uses, derived so that it moves with the template binary limit it has
-/// to admit. Keeping it uniform is what lets one gossip limit serve the whole network.
-const MAX_TRANSACTION_SIZE_BYTES: usize = ENGINE_LIMITS.max_template_binary_size_bytes + TRANSACTION_ENVELOPE_ALLOWANCE;
+/// Stated outright rather than derived from `ENGINE_LIMITS.max_template_binary_size_bytes`, even
+/// though it has to admit a max-size template publish. Deriving it made this — and the gossip frame
+/// limit built on it (`tari_ootle_p2p::max_gossip_message_size`) — move silently whenever the
+/// template limit moved, and the two are not the same decision: the template limit is about what one
+/// instruction costs to execute, this is about what the whole network agrees to relay, and a node
+/// that disagrees with its peers about it rejects their transactions as codec errors rather than as
+/// invalid ones.
+///
+/// `the_transaction_size_cap_still_admits_a_max_size_publish` fails if the two drift apart, so a
+/// change to either is reviewed against the other rather than inherited.
+const MAX_TRANSACTION_SIZE_BYTES: usize = 1_310_720; // 1 MiB + 256 KiB
 
 #[derive(Clone, Debug)]
 pub struct ConsensusConstants {
@@ -354,6 +356,15 @@ impl From<Network> for ConsensusConstants {
 
 #[cfg(test)]
 mod tests {
+    /// Room above a template binary for the rest of the transaction carrying it: its other
+    /// instructions, inputs, signatures and CBOR framing.
+    ///
+    /// Deliberately loose against those — a real max-size publish encodes to a couple of hundred
+    /// bytes over its binary, and a single instruction is capped at `ENGINE_LIMITS.max_call_size` —
+    /// because a legitimate transaction refused at ingress is a worse failure than the bytes a
+    /// larger allowance costs. `max_transaction_size_admits_max_template_publish` holds it to that.
+    const TRANSACTION_ENVELOPE_ALLOWANCE: usize = 256 * 1024;
+
     use tari_common_types::types::PrivateKey;
     use tari_engine_types::limits::{
         ENGINE_LIMITS,
@@ -489,6 +500,24 @@ mod tests {
     ///
     /// Derived from the constants rather than restated, so moving either cap fails here instead of
     /// silently reopening the hole.
+    /// `MAX_TRANSACTION_SIZE_BYTES` is stated rather than derived so that the gossip frame limit
+    /// does not move on its own, which means nothing else forces it to keep admitting a max-size
+    /// template publish. This is what does.
+    ///
+    /// A failure here is not automatically a bug: it means the template limit moved and somebody
+    /// has to decide, deliberately, whether the network-wide byte cap and the gossip frame limit
+    /// move with it.
+    #[test]
+    fn the_transaction_size_cap_still_admits_a_max_size_publish() {
+        let derived = ENGINE_LIMITS.max_template_binary_size_bytes + TRANSACTION_ENVELOPE_ALLOWANCE;
+        assert_eq!(
+            MAX_TRANSACTION_SIZE_BYTES, derived,
+            "the transaction byte cap ({MAX_TRANSACTION_SIZE_BYTES}) has drifted from the template binary limit plus \
+             its envelope ({derived}). Changing either is a network-wide decision — it moves the gossip frame limit \
+             with it — so update this constant deliberately rather than to make this pass."
+        );
+    }
+
     #[test]
     fn the_weight_cap_bounds_the_instructions_the_size_cap_admits() {
         for constants in [

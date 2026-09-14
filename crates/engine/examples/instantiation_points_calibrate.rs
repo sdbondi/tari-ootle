@@ -103,6 +103,61 @@ fn instantiate_ms(segment_len: usize) -> (f64, usize) {
     (best, code_size)
 }
 
+/// A module whose tables are filled by active element segments, which `Instance::new` writes out on
+/// every instantiation just as it copies the data segments. `tables` x `entries` funcref writes.
+fn module_with_element_segments(tables: usize, entries: usize) -> Vec<u8> {
+    let funcrefs = vec!["0"; entries].join(" ");
+    let table_decls = (0..tables)
+        .map(|_| format!("(table {entries} {entries} funcref)"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let elem_decls = (0..tables)
+        .map(|i| format!("(elem (table {i}) (i32.const 0) func {funcrefs})"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let wat = format!(
+        r#"
+        (module
+          (memory (export "memory") {pages})
+          (data (i32.const 16) "\05\00\00\00\80")
+          {table_decls}
+          (func (export "tari_alloc") (param i32) (result i32) (i32.const 1024))
+          (func (export "tari_free") (param i32))
+          (func (export "Buggy_main") (param i32 i32) (result i32) (i32.const 20))
+          {elem_decls}
+          (@custom "tari_tdef" "{def}")
+        )
+        "#,
+        pages = limits::WASM_LIMITS.max_memory_pages,
+        def = wat_bytes(TEMPLATE_DEF),
+    );
+    wat::parse_str(&wat).expect("hand-written module is valid wat")
+}
+
+/// Milliseconds one instantiation of `code` takes, minimum over `TRIALS`.
+fn instantiate_code_ms(code: &[u8]) -> f64 {
+    let tari_engine::template::LoadedTemplate::Wasm(loaded) =
+        WasmModule::load_template_from_code(code).expect("module was rejected");
+    let mut best = f64::MAX;
+    for _ in 0..TRIALS {
+        let start = Instant::now();
+        let mut store = loaded.create_store();
+        let imports = wasmer::imports! {
+            "env" => {
+                "tari_engine" => wasmer::Function::new_typed(&mut store, |_: i32, _: i32, _: i32| -> i32 { 0 }),
+                "tari_debug" => wasmer::Function::new_typed(&mut store, |_: i32, _: i32| {}),
+                "on_panic" => wasmer::Function::new_typed(&mut store, |_: i32, _: i32, _: i32, _: i32| {}),
+            }
+        };
+        let instance = wasmer::Instance::new(&mut store, loaded.wasm_module(), &imports).expect("instantiation failed");
+        let elapsed = start.elapsed().as_nanos() as f64 / 1e6;
+        drop(instance);
+        drop(store);
+        best = best.min(elapsed);
+    }
+    best
+}
+
 /// The points-per-millisecond rate, derived exactly as `native_points_calibrate` derives it: two
 /// round counts of the same metered loop, fitted on the marginal points over the marginal time.
 fn wasm_rate_points_per_ms() -> f64 {
@@ -153,7 +208,7 @@ fn wasm_rate_points_per_ms() -> f64 {
 
 /// Times instantiation of a real compiled template, so the price a `code_size`-based charge would
 /// ask can be compared against what the template actually costs.
-fn real_template_ms(path: &str) -> (f64, usize, u64, f64) {
+fn real_template_ms(path: &str) -> (f64, usize, u64, u64, f64) {
     let code = std::fs::read(path).expect("template wasm");
     let code_size = code.len();
     let mut compile_ms = f64::MAX;
@@ -181,7 +236,13 @@ fn real_template_ms(path: &str) -> (f64, usize, u64, f64) {
         drop(store);
         best = best.min(elapsed);
     }
-    (best, code_size, loaded.shape().data_segment_bytes, compile_ms)
+    (
+        best,
+        code_size,
+        loaded.shape().data_segment_bytes,
+        loaded.shape().element_segment_entries,
+        compile_ms,
+    )
 }
 
 fn main() {
@@ -211,6 +272,18 @@ fn main() {
         per_byte_ms * 1024.0,
     );
 
+    // Element segments are the other thing copied per instantiation.
+    let tables = limits::WASM_LIMITS.max_tables;
+    let entries = limits::WASM_LIMITS.max_table_elements as usize;
+    let none = instantiate_code_ms(&module_with_element_segments(0, 0));
+    let full = instantiate_code_ms(&module_with_element_segments(tables, entries));
+    println!();
+    println!(
+        "element segments: none {none:.4} ms, {tables}x{entries} {full:.4} ms -> {} points for {} writes",
+        ((full - none) * rate).ceil() as i64,
+        tables * entries,
+    );
+
     println!();
     if let Ok(dir) = std::env::var("TEMPLATE_WASM_DIR") {
         for entry in std::fs::read_dir(dir).expect("template dir").flatten() {
@@ -219,12 +292,13 @@ fn main() {
                 continue;
             }
             let Some(path) = path.to_str() else { continue };
-            let (ms, size, data, compile_ms) = real_template_ms(path);
+            let (ms, size, data, elements, compile_ms) = real_template_ms(path);
             let measured = (ms * rate).ceil() as u64;
-            let charged = limits::instantiation_points(data);
+            let charged = limits::instantiation_points(data, elements);
             println!(
-                "{path}: {size} code / {data} data bytes\n  instantiate {ms:.4} ms = {measured} points measured, \
-                 {charged} charged ({:.2}x)\n  compile {compile_ms:.3} ms = {} points, {:.1} points/code byte",
+                "{path}: {size} code / {data} data bytes / {elements} elements\n  instantiate {ms:.4} ms = {measured} \
+                 points measured, {charged} charged ({:.2}x)\n  compile {compile_ms:.3} ms = {} points, {:.1} \
+                 points/code byte",
                 charged as f64 / measured as f64,
                 (compile_ms * rate).ceil() as u64,
                 compile_ms * rate / size as f64,

@@ -2,23 +2,23 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 use log::warn;
-use tari_engine_types::limits::MAX_PUBLISH_TEMPLATES_PER_TRANSACTION;
+use tari_engine_types::limits::{ENGINE_LIMITS, MAX_PUBLISH_TEMPLATES_PER_TRANSACTION};
 use tari_ootle_transaction::{Instruction, Transaction};
 
 use crate::{TransactionValidationError, Validator};
 
 const LOG_TARGET: &str = "tari::ootle::mempool::validators::publish_template_limits";
 
-/// Rejects transactions carrying more than [`MAX_PUBLISH_TEMPLATES_PER_TRANSACTION`] `PublishTemplate` instructions,
-/// or publishing a template from their fee instructions.
+/// Rejects transactions that break one of the engine's publish rules: more than
+/// [`MAX_PUBLISH_TEMPLATES_PER_TRANSACTION`] `PublishTemplate` instructions, a template published from the fee
+/// instructions, or a binary larger than [`ENGINE_LIMITS::max_template_binary_size_bytes`].
 ///
 /// A publish compiles the binary, which costs two orders of magnitude more than the compute credit a fee intent runs
 /// on, and it is charged only once the fee intent has been paid for. Fee instructions exist to source the fee, and no
 /// way of sourcing a fee involves publishing a template.
 ///
-/// This mirrors the engine's execution-time cap at ingress, rejecting such transactions before they are gossiped,
-/// stored and executed. The engine remains the consensus authority; see
-/// [`tari_engine_types::limits::MAX_PUBLISH_TEMPLATES_PER_TRANSACTION`].
+/// Each is a pure function of the transaction, so deciding them at ingress keeps a transaction that can never succeed
+/// from being gossiped, stored and executed. The engine remains the consensus authority; these only mirror it.
 #[derive(Debug, Clone, Default)]
 pub struct PublishTemplateLimitValidator;
 
@@ -53,6 +53,27 @@ impl Validator<Transaction> for PublishTemplateLimitValidator {
             .chain(transaction.fee_instructions())
             .filter(|instruction| matches!(instruction, Instruction::PublishTemplate { .. }))
             .count();
+
+        // The binary is charged for the Cranelift compile it makes every validator run, and that charge is what
+        // sets the size bound, so a binary past it can never be published however much fee it carries.
+        let max_binary_size = ENGINE_LIMITS.max_template_binary_size_bytes;
+        if let Some(size) = transaction
+            .publish_templates_iter()
+            .map(<[u8]>::len)
+            .find(|size| *size > max_binary_size)
+        {
+            let transaction_id = transaction.calculate_id();
+            warn!(
+                target: LOG_TARGET,
+                "PublishTemplateLimitValidator - FAIL: {transaction_id} publishes a {size}-byte binary, maximum is \
+                 {max_binary_size}"
+            );
+            return Err(TransactionValidationError::PublishTemplateBinaryTooLarge {
+                transaction_id,
+                max: max_binary_size,
+                actual: size,
+            });
+        }
 
         if count > MAX_PUBLISH_TEMPLATES_PER_TRANSACTION {
             let transaction_id = transaction.calculate_id();
@@ -133,6 +154,33 @@ mod tests {
                 .map(|_| publish_template())
                 .collect(),
         );
+        PublishTemplateLimitValidator::new().validate(&(), &tx).unwrap();
+    }
+
+    /// A binary past the publish cap can never succeed however much fee it carries, and the
+    /// transaction byte cap is derived from the wider storage limit, so nothing else at ingress
+    /// stops it being gossiped and stored first.
+    #[test]
+    fn rejects_a_binary_over_the_publish_cap() {
+        let over = ENGINE_LIMITS.max_template_binary_size_bytes + 1;
+        let tx = Transaction::builder_localnet(Epoch(1))
+            .publish_template(vec![0u8; over])
+            .build_and_seal(&Default::default());
+
+        let err = PublishTemplateLimitValidator::new().validate(&(), &tx).unwrap_err();
+        assert!(matches!(
+            err,
+            TransactionValidationError::PublishTemplateBinaryTooLarge { max, actual, .. }
+            if max == ENGINE_LIMITS.max_template_binary_size_bytes && actual == over
+        ));
+    }
+
+    #[test]
+    fn accepts_a_binary_at_the_publish_cap() {
+        let tx = Transaction::builder_localnet(Epoch(1))
+            .publish_template(vec![0u8; ENGINE_LIMITS.max_template_binary_size_bytes])
+            .build_and_seal(&Default::default());
+
         PublishTemplateLimitValidator::new().validate(&(), &tx).unwrap();
     }
 

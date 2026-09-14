@@ -356,7 +356,7 @@ fn calc_instruction_weight(instruction: &Instruction) -> u64 {
         Instruction::StealthTransfer { statement, .. } => calc_stealth_statement_weight(statement),
         Instruction::PayFeeFromBucket { .. } => 1,
         Instruction::UpdateComponentTemplate { migrate, .. } => {
-            1 + migrate.as_ref().map(|m| calc_args_weight(&m.args)).unwrap_or(0)
+            (1 + migrate.as_ref().map(|m| calc_args_weight(&m.args)).unwrap_or(0)).max(INVOCATION_FLOOR)
         },
     }
 }
@@ -407,10 +407,11 @@ pub const LITERAL_BYTE_DIVISOR: u64 = 3;
 /// ([`tari_engine_types::limits::instantiation_points`]), which is real work before any of the
 /// template's own code runs. The execution-point budget is what prices that work; this floor is
 /// what keeps the weight cap a bound on instruction count at all.
-pub const INVOCATION_FLOOR: u64 = 30;
+pub const INVOCATION_FLOOR: u64 = 35;
 
 /// Smallest number of encoded bytes an instruction that invokes a template can occupy — a bare
-/// `CreateAccount`, which carries one public key and three absent options.
+/// `CreateAccount`, which carries one public key and three absent options. `CallMethod`,
+/// `CallFunction` and `UpdateComponentTemplate` all encode wider.
 ///
 /// Paired with [`INVOCATION_FLOOR`], this is what turns the transaction byte cap into a bound on
 /// invocation count. `the_recorded_minimum_instruction_sizes_still_hold` keeps it honest.
@@ -744,9 +745,10 @@ mod transaction_id_tests {
 
 #[cfg(test)]
 mod weight_tests {
-    use tari_template_lib_types::{FunctionName, ObjectKey};
+    use tari_template_lib_types::{FunctionName, ObjectKey, TemplateAddress};
 
     use super::*;
+    use crate::MigrateFunction;
 
     fn no_arg_call() -> Instruction {
         Instruction::CallMethod {
@@ -767,20 +769,41 @@ mod weight_tests {
         }
     }
 
-    /// A call carrying no arguments weighs nothing by argument alone, so the floor is what stops an
-    /// instruction list from being free.
+    /// A migration whose function takes no arguments: it still pushes a call frame and instantiates
+    /// the target template.
+    fn bare_template_update() -> Instruction {
+        Instruction::UpdateComponentTemplate {
+            component: ComponentAddress::new(ObjectKey::default()).into(),
+            new_template: TemplateAddress::default(),
+            migrate: Some(MigrateFunction {
+                name: FunctionName::try_from("m").expect("a one-character function name fits"),
+                args: vec![],
+            }),
+        }
+    }
+
+    /// An instruction carrying no arguments weighs nothing by argument alone, so the floor is what
+    /// stops a list of them from being free. Every instruction that reaches `invoke_template` in the
+    /// processor must carry it.
     #[test]
     fn every_instruction_that_invokes_a_template_weighs_the_floor() {
         assert_eq!(calc_instruction_weight(&no_arg_call()), INVOCATION_FLOOR);
         assert_eq!(calc_instruction_weight(&bare_create_account()), INVOCATION_FLOOR);
+        assert_eq!(calc_instruction_weight(&bare_template_update()), INVOCATION_FLOOR);
     }
 
     /// `consensus_constants::the_weight_cap_bounds_the_instructions_the_size_cap_admits` reads these
-    /// back to check the floor against the byte cap, which lives in a crate downstream of this one.
-    /// They are the smallest encodings of the two instructions that invoke a template.
+    /// back to check the floor against the byte cap, which lives in a crate downstream of this one,
+    /// so it has to be the smallest encoding of any instruction that invokes a template.
     #[test]
-    fn the_recorded_minimum_instruction_sizes_still_hold() {
-        assert_eq!(tari_bor::encode(&no_arg_call()).unwrap().len(), 45);
+    fn no_invocation_encodes_smaller_than_the_recorded_minimum() {
+        for instruction in [no_arg_call(), bare_create_account(), bare_template_update()] {
+            let encoded = tari_bor::encode(&instruction).unwrap().len();
+            assert!(
+                encoded >= MIN_INVOCATION_ENCODED_BYTES,
+                "{instruction:?} encodes to {encoded} bytes"
+            );
+        }
         assert_eq!(
             tari_bor::encode(&bare_create_account()).unwrap().len(),
             MIN_INVOCATION_ENCODED_BYTES
