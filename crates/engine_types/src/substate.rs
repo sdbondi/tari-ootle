@@ -983,6 +983,7 @@ pub struct SubstateDiff {
     #[n(0)]
     up_substates: Vec<(SubstateId, Substate)>,
     #[n(1)]
+    #[cfg_attr(feature = "ts", ts(type = "Array<[string, number]>"))]
     down_substates: Vec<(SubstateId, u64)>,
     #[n(2)]
     fee_withdrawals: Vec<ValidatorFeeWithdrawal>,
