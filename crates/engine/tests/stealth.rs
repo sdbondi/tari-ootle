@@ -415,7 +415,7 @@ fn transfer_rejects_a_revealed_funds_bucket_with_locked_funds() {
     );
 
     let reason = test.execute_expect_failure(
-        Transaction::builder_localnet(Epoch(1))
+        test.transaction()
             .stealth_transfer(faucet_resx, transfer_from_faucet.statement)
             .put_last_instruction_output_on_workspace("withdrawn")
             .call_method(alice, "deposit", args![Workspace("withdrawn")])

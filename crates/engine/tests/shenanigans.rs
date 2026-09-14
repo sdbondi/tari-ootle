@@ -501,19 +501,11 @@ fn it_rejects_joining_a_bucket_with_locked_funds() {
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
     let template_addr = test.get_template_address(TEMPLATE_NAME);
 
-    let result = test.execute_expect_success(
-        test.transaction()
-            .call_function(template_addr, "with_fungible_vault", args![])
-            .build_and_seal(test.secret_key()),
-        vec![],
-    );
-    let component = result.finalize.execution_results[0]
-        .decode::<ComponentAddress>()
-        .unwrap();
-
     let reason = test.execute_expect_failure(
         test.transaction()
-            .call_method(component, "join_locked_bucket", args![])
+            .call_function(template_addr, "with_fungible_vault", args![])
+            .put_workspace("component")
+            .call_method("component", "join_locked_bucket", args![])
             .build_and_seal(test.secret_key()),
         vec![],
     );
