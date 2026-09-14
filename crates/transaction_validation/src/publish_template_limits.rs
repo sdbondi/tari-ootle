@@ -157,9 +157,8 @@ mod tests {
         PublishTemplateLimitValidator::new().validate(&(), &tx).unwrap();
     }
 
-    /// A binary past the publish cap can never succeed however much fee it carries, and the
-    /// transaction byte cap is derived from the wider storage limit, so nothing else at ingress
-    /// stops it being gossiped and stored first.
+    /// A binary past the cap can never succeed however much fee it carries, and the transaction byte
+    /// cap sits above it, so nothing else at ingress stops it being gossiped and stored first.
     #[test]
     fn rejects_a_binary_over_the_publish_cap() {
         let over = ENGINE_LIMITS.max_template_binary_size_bytes + 1;

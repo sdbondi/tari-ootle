@@ -169,6 +169,21 @@ pub const PER_TEMPLATE_INSTANTIATION: u64 = 100_000;
 /// largest data segment a publish admits ~2.1x.
 pub const PER_TEMPLATE_DATA_SEGMENT_BYTE: u64 = 5;
 
+/// Each active data segment, whatever its length.
+///
+/// The per-byte price alone would make a zero-length segment free, and a module's data section is
+/// not capped: ~5 bytes of binary buys one such segment, and `Instance::new` still evaluates its
+/// offset expression, bounds-checks it against linear memory and calls into the copy. 10,000 of them
+/// measure at 0.685 ms — 58x what the flat instantiation cost covers. Measured at ~590 points each.
+pub const PER_TEMPLATE_DATA_SEGMENT: u64 = 700;
+
+/// Each slot a declared table claims, whether or not anything is written into it.
+///
+/// Allocating and zeroing the tables is separate from filling them: four tables of
+/// `max_table_elements` with no element section at all measure at 0.114 ms against 192 bytes of
+/// binary. Measured at ~13 points per slot.
+pub const PER_TEMPLATE_TABLE_SLOT: u64 = 16;
+
 /// Each element-segment entry written into a table.
 ///
 /// Active element segments initialise the instance's tables at every instantiation, the same class
@@ -181,10 +196,29 @@ pub const PER_TEMPLATE_DATA_SEGMENT_BYTE: u64 = 5;
 /// index, so roughly a byte of binary buys one: a publish at
 /// [`EngineLimits::max_template_binary_size_bytes`] can carry on the order of a million.
 ///
-/// 65,536 entries measure at ~0.20 ms, i.e. ~26 points each at the calibrated rate, and between 26
-/// and 39 across runs. Set above that spread, so the worst case a binary can hold is still charged
-/// above what it costs.
-pub const PER_TEMPLATE_ELEMENT_ENTRY: u64 = 40;
+/// 65,536 entries measure at ~0.21 ms once the table allocation they used to be conflated with is
+/// priced separately by [`PER_TEMPLATE_TABLE_SLOT`], i.e. ~28 points each. Set above that.
+pub const PER_TEMPLATE_ELEMENT_ENTRY: u64 = 32;
+
+/// What a module's binary says about the work instantiating it will cost.
+///
+/// Compiled code is laid down once at publish; what every instantiation repeats is building the
+/// instance's storage from the module — allocating its tables, and writing its active segments into
+/// memory and into those tables. Those counts, not the binary size, are what
+/// [`instantiation_points`] prices. Populated by `tari_engine`'s module loader.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ModuleShape {
+    /// Bytes across all active data segments.
+    pub data_segment_bytes: u64,
+    /// Number of active data segments. Each is walked, its offset evaluated and bounds-checked,
+    /// whatever its length — a zero-length segment costs ~5 bytes of binary and does real work.
+    pub data_segment_count: u64,
+    /// Entries across all active element segments.
+    pub element_segment_entries: u64,
+    /// Slots the module's tables claim at instantiation, summed over its declared tables. Allocating
+    /// and zeroing them happens whether or not any element segment writes to them.
+    pub declared_table_slots: u64,
+}
 
 /// Points charged for building the `Store` and `Instance` a template call runs in, before its first
 /// metered operator.
@@ -199,10 +233,12 @@ pub const PER_TEMPLATE_ELEMENT_ENTRY: u64 = 40;
 ///
 /// Both figures from `cargo run -p tari_engine --release --example instantiation_points_calibrate`,
 /// rounded up.
-pub const fn instantiation_points(data_segment_bytes: u64, element_segment_entries: u64) -> u64 {
+pub const fn instantiation_points(shape: &ModuleShape) -> u64 {
     PER_TEMPLATE_INSTANTIATION
-        .saturating_add(PER_TEMPLATE_DATA_SEGMENT_BYTE.saturating_mul(data_segment_bytes))
-        .saturating_add(PER_TEMPLATE_ELEMENT_ENTRY.saturating_mul(element_segment_entries))
+        .saturating_add(PER_TEMPLATE_DATA_SEGMENT_BYTE.saturating_mul(shape.data_segment_bytes))
+        .saturating_add(PER_TEMPLATE_DATA_SEGMENT.saturating_mul(shape.data_segment_count))
+        .saturating_add(PER_TEMPLATE_ELEMENT_ENTRY.saturating_mul(shape.element_segment_entries))
+        .saturating_add(PER_TEMPLATE_TABLE_SLOT.saturating_mul(shape.declared_table_slots))
 }
 
 /// Metering-point prices for native (non-WASM) verification work, charged against the same

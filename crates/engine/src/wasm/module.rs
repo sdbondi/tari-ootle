@@ -22,7 +22,7 @@
 
 use std::{fmt, fmt::Formatter, sync::Arc};
 
-use tari_engine_types::limits;
+use tari_engine_types::limits::{self, ModuleShape};
 use tari_template_abi::{FunctionDef, TEMPLATE_DEF_CUSTOM_SECTION, TemplateDef, Type, WASM_PTR_SIZE};
 use wasmer::{
     Engine,
@@ -444,18 +444,6 @@ fn validate_export_signature(
     }
 }
 
-/// What a module's binary says about the work instantiating it will cost.
-///
-/// Compiled code is laid down once at publish; what every instantiation repeats is writing the
-/// module's segments into fresh instance storage — data segments into linear memory, element
-/// segments into the tables. Those two counts, not the binary size, are what
-/// [`tari_engine_types::limits::instantiation_points`] prices.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ModuleShape {
-    pub data_segment_bytes: u64,
-    pub element_segment_entries: u64,
-}
-
 /// Checks what only the module bytes show: that the module declares no start function, and no more
 /// tables or globals than the limits.
 ///
@@ -483,6 +471,9 @@ fn validate_module_structure(code: &[u8]) -> Result<ModuleShape, WasmValidationE
                         max_tables: limits::WASM_LIMITS.max_tables,
                     });
                 }
+                for table in reader.into_iter().flatten() {
+                    shape.declared_table_slots = shape.declared_table_slots.saturating_add(table.ty.initial);
+                }
             },
             Payload::GlobalSection(reader) => {
                 let count = reader.count() as usize;
@@ -495,12 +486,13 @@ fn validate_module_structure(code: &[u8]) -> Result<ModuleShape, WasmValidationE
             },
             // Only active segments are written into the instance's storage when it is built. A
             // passive segment stays in the module until a `memory.init` or `table.init` reaches for
-            // it, and those are charged by the byte where they run, so counting one here would
-            // price the same bytes twice and price them against a call that may never touch them.
+            // it, so its bytes are a cost of that operator rather than of instantiation, and a call
+            // that never executes one must not pay for it.
             Payload::DataSection(reader) => {
                 for segment in reader.into_iter().flatten() {
                     if matches!(segment.kind, DataKind::Active { .. }) {
                         shape.data_segment_bytes = shape.data_segment_bytes.saturating_add(segment.data.len() as u64);
+                        shape.data_segment_count = shape.data_segment_count.saturating_add(1);
                     }
                 }
             },

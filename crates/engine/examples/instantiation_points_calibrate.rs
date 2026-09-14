@@ -134,6 +134,63 @@ fn module_with_element_segments(tables: usize, entries: usize) -> Vec<u8> {
     wat::parse_str(&wat).expect("hand-written module is valid wat")
 }
 
+/// A module declaring tables but no element segments: the tables are still allocated and zeroed at
+/// every instantiation, with nothing written into them.
+fn module_with_tables_only(tables: usize, entries: usize) -> Vec<u8> {
+    let table_decls = (0..tables)
+        .map(|_| format!("(table {entries} {entries} funcref)"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let wat = format!(
+        r#"
+        (module
+          (memory (export "memory") {pages})
+          (data (i32.const 16) "\05\00\00\00\80")
+          {table_decls}
+          (func (export "tari_alloc") (param i32) (result i32) (i32.const 1024))
+          (func (export "tari_free") (param i32))
+          (func (export "Buggy_main") (param i32 i32) (result i32) (i32.const 20))
+          (@custom "tari_tdef" "{def}")
+        )
+        "#,
+        pages = limits::WASM_LIMITS.max_memory_pages,
+        def = wat_bytes(TEMPLATE_DEF),
+    );
+    wat::parse_str(&wat).expect("hand-written module is valid wat")
+}
+
+/// A module whose data section is `count` zero-length active segments. Each contributes nothing to
+/// `data_segment_bytes`, but `Instance::new` still evaluates and bounds-checks every one.
+fn module_with_empty_data_segments(count: usize) -> Vec<u8> {
+    let segments = (0..count)
+        .map(|_| "(data (i32.const 0) \"\")".to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let wat = format!(
+        r#"
+        (module
+          (memory (export "memory") {pages})
+          (data (i32.const 16) "\05\00\00\00\80")
+          {segments}
+          (func (export "tari_alloc") (param i32) (result i32) (i32.const 1024))
+          (func (export "tari_free") (param i32))
+          (func (export "Buggy_main") (param i32 i32) (result i32) (i32.const 20))
+          (@custom "tari_tdef" "{def}")
+        )
+        "#,
+        pages = limits::WASM_LIMITS.max_memory_pages,
+        def = wat_bytes(TEMPLATE_DEF),
+    );
+    wat::parse_str(&wat).expect("hand-written module is valid wat")
+}
+
+/// The charge `code` attracts, read back from the shape its own loader derives.
+fn charged_points(code: &[u8]) -> u64 {
+    let tari_engine::template::LoadedTemplate::Wasm(loaded) =
+        WasmModule::load_template_from_code(code).expect("module was rejected");
+    limits::instantiation_points(&loaded.shape())
+}
+
 /// Milliseconds one instantiation of `code` takes, minimum over `TRIALS`.
 fn instantiate_code_ms(code: &[u8]) -> f64 {
     let tari_engine::template::LoadedTemplate::Wasm(loaded) =
@@ -284,6 +341,28 @@ fn main() {
         tables * entries,
     );
 
+    // Declared table capacity, with nothing written into it.
+    let tables_only = module_with_tables_only(tables, entries);
+    let tables_only_ms = instantiate_code_ms(&tables_only);
+    println!(
+        "tables only ({tables}x{entries}, {} bytes): {tables_only_ms:.4} ms -> {} points, charged {}",
+        tables_only.len(),
+        ((tables_only_ms - none) * rate).ceil() as i64,
+        charged_points(&tables_only),
+    );
+
+    // Zero-length active data segments.
+    for count in [10_000usize, 100_000] {
+        let code = module_with_empty_data_segments(count);
+        let ms = instantiate_code_ms(&code);
+        println!(
+            "{count} empty data segments ({} bytes): {ms:.4} ms -> {} points, charged {}",
+            code.len(),
+            ((ms - none) * rate).ceil() as i64,
+            charged_points(&code),
+        );
+    }
+
     println!();
     if let Ok(dir) = std::env::var("TEMPLATE_WASM_DIR") {
         for entry in std::fs::read_dir(dir).expect("template dir").flatten() {
@@ -301,7 +380,7 @@ fn main() {
                 artifact as f64 / size as f64
             );
             let measured = (ms * rate).ceil() as u64;
-            let charged = limits::instantiation_points(data, elements);
+            let charged = limits::instantiation_points(&l.shape());
             println!(
                 "{path}: {size} code / {data} data bytes / {elements} elements\n  instantiate {ms:.4} ms = {measured} \
                  points measured, {charged} charged ({:.2}x)\n  compile {compile_ms:.3} ms = {} points, {:.1} \

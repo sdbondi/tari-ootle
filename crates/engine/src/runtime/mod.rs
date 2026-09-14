@@ -62,6 +62,7 @@ use tari_engine_types::{
     confidential::{ClaimBurnOutputData, MinotariBurnClaimProof},
     fees::FeeReceipt,
     indexed_value::{IndexedValue, IndexedWellKnownTypes},
+    limits::ModuleShape,
     lock::LockFlag,
     published_template::TemplateBlob,
 };
@@ -274,11 +275,7 @@ pub trait RuntimeInterface {
     /// [`tari_engine_types::limits::instantiation_points`] and charged against the same compute
     /// allowance as native verification, so a call that cannot cover it fails having done none of
     /// the work.
-    fn charge_template_instantiation(
-        &mut self,
-        data_segment_bytes: u64,
-        element_segment_entries: u64,
-    ) -> Result<(), RuntimeError>;
+    fn charge_template_instantiation(&mut self, shape: &ModuleShape) -> Result<(), RuntimeError>;
 
     /// Charges the Cranelift compile a `PublishTemplate` instruction makes every validator run,
     /// before the compile starts. Priced by [`tari_engine_types::limits::template_compile_points`].

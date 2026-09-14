@@ -41,6 +41,7 @@ use tari_engine_types::{
     indexed_value::{IndexedValue, IndexedWellKnownTypes},
     instruction_result::InstructionResult,
     limits,
+    limits::ModuleShape,
     lock::LockFlag,
     logs::LogEntry,
     proof::{ContainerRef, LockedResource},
@@ -4171,16 +4172,9 @@ where
         Ok(())
     }
 
-    fn charge_template_instantiation(
-        &mut self,
-        data_segment_bytes: u64,
-        element_segment_entries: u64,
-    ) -> Result<(), RuntimeError> {
+    fn charge_template_instantiation(&mut self, shape: &ModuleShape) -> Result<(), RuntimeError> {
         self.tracker
-            .charge_native_execution(tari_engine_types::limits::instantiation_points(
-                data_segment_bytes,
-                element_segment_entries,
-            ))
+            .charge_native_execution(tari_engine_types::limits::instantiation_points(shape))
     }
 
     fn charge_template_compile(&mut self, binary_bytes: u64) -> Result<(), RuntimeError> {

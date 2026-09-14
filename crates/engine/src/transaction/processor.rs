@@ -1003,10 +1003,7 @@ where
             LoadedTemplate::Wasm(loaded) => {
                 // Instantiation runs before the first metered operator, so it is charged against
                 // the same allowance and per-block budget the call's execution draws on.
-                runtime.interface_mut().charge_template_instantiation(
-                    loaded.shape().data_segment_bytes,
-                    loaded.shape().element_segment_entries,
-                )?;
+                runtime.interface_mut().charge_template_instantiation(&loaded.shape())?;
                 let mut store = loaded.create_store();
                 let mut process = WasmProcess::init(&mut store, loaded, runtime)?;
                 process.invoke(&mut store, function_def, args)?
