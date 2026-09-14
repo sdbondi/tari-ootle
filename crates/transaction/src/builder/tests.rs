@@ -124,3 +124,38 @@ fn merge_remaps_publish_template_blob_index() {
         metadata_hash: None,
     });
 }
+
+/// The fee builder indexes its blobs from zero, independently of the main builder's. Carrying its
+/// instructions across without its blobs leaves them pointing at whatever happens to sit at that
+/// index in the main list, or at nothing at all.
+#[test]
+fn fee_instruction_blobs_are_carried_over_and_remapped() {
+    let tx = Transaction::builder_localnet(Epoch(1))
+        .add_blob("main", vec![0u8; 4])
+        .with_fee_instructions_builder(|builder| builder.publish_template(vec![9u8, 9, 9]))
+        .build_unsigned();
+
+    let blobs = tx.blobs();
+    assert_eq!(blobs.len(), 2, "the fee builder's blob was dropped");
+    assert_eq!(blobs.get(0).unwrap().as_bytes(), &[0u8; 4][..]);
+    assert_eq!(blobs.get(1).unwrap().as_bytes(), &[9u8, 9, 9]);
+
+    assert_eq!(tx.fee_instructions()[0], Instruction::PublishTemplate {
+        binary: 1,
+        metadata_hash: None,
+    });
+}
+
+/// A blob referenced only from a fee instruction still has to resolve.
+#[test]
+fn a_fee_instruction_blob_resolves_when_nothing_else_carries_one() {
+    let tx = Transaction::builder_localnet(Epoch(1))
+        .with_fee_instructions_builder(|builder| builder.publish_template(vec![4u8, 5, 6]))
+        .build_unsigned();
+
+    assert_eq!(tx.blobs().len(), 1);
+    assert_eq!(tx.fee_instructions()[0], Instruction::PublishTemplate {
+        binary: 0,
+        metadata_hash: None,
+    });
+}

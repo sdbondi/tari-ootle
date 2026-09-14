@@ -175,6 +175,15 @@ impl Blobs {
     }
 }
 
+impl IntoIterator for Blobs {
+    type IntoIter = <Vec<Blob> as IntoIterator>::IntoIter;
+    type Item = Blob;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
 /// A typed collection of per-blob commitments — the prunable surrogate of `Blobs` in the
 /// signing domain.
 ///

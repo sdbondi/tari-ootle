@@ -56,6 +56,10 @@ impl Validator<Transaction> for PublishTemplateLimitValidator {
 
         // The binary is charged for the Cranelift compile it makes every validator run, and that charge is what
         // sets the size bound, so a binary past it can never be published however much fee it carries.
+        //
+        // `publish_templates_iter` covers both instruction lists, so this holds independently of the fee-instruction
+        // rule above. A publish whose blob index does not resolve contributes no size and passes here;
+        // `validate_blob_references` is what rejects that, and the engine re-checks the size at execution either way.
         let max_binary_size = ENGINE_LIMITS.max_template_binary_size_bytes;
         if let Some(size) = transaction
             .publish_templates_iter()

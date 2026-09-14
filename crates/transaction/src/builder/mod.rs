@@ -234,6 +234,11 @@ impl TransactionBuilder<MainIntent> {
     }
 
     /// Moves the fee instructions from the fee builder into the unsigned transaction.
+    ///
+    /// The fee builder holds its own blob list indexed from zero, so its blobs are appended here and
+    /// every index its instructions carry is shifted past the blobs already present — the same
+    /// treatment [`Self::merge`] gives a merged builder. Without it a fee instruction referencing a
+    /// blob points at whatever sits at that index in the main list, or at nothing.
     fn apply_fee_instructions(&mut self) {
         let mut fee_builder = self
             .fee_instruction_builder
@@ -242,9 +247,32 @@ impl TransactionBuilder<MainIntent> {
         self.unsigned_transaction
             .inputs_mut()
             .extend(fee_builder.unsigned_transaction.inputs_mut().drain(..));
-        self.unsigned_transaction
-            .fee_instructions_mut()
-            .extend(fee_builder.unsigned_transaction.into_instructions());
+
+        let blob_id_offset: BlobIndex = self
+            .unsigned_transaction
+            .blobs()
+            .len()
+            .try_into()
+            .expect("blob count exceeds BlobIndex range");
+        let fee_blobs = std::mem::take(fee_builder.unsigned_transaction.blobs_mut());
+        for blob in fee_blobs {
+            self.unsigned_transaction
+                .add_blob(blob)
+                .expect("fee blob count exceeds BlobIndex range");
+        }
+
+        for (name, idx) in fee_builder.blob_ids.iter() {
+            assert!(
+                self.blob_ids.get(name).is_none(),
+                "blob name '{name}' collides with a fee instruction blob",
+            );
+            self.blob_ids.insert(name.clone(), idx + blob_id_offset);
+        }
+
+        for mut instruction in fee_builder.unsigned_transaction.into_instructions() {
+            instruction.remap_blob_ids(blob_id_offset);
+            self.unsigned_transaction.fee_instructions_mut().push(instruction);
+        }
     }
 
     pub fn finish(mut self) -> UnsealedTransaction {
@@ -390,7 +418,7 @@ impl<D> TransactionBuilder<D> {
         // Move other's blobs over, appending in order so existing indices on `other`'s
         // instructions just shift by `blob_id_offset` after remapping.
         let other_blobs = std::mem::take(other_tx.blobs_mut());
-        for blob in other_blobs.as_slice().iter().cloned() {
+        for blob in other_blobs {
             self.unsigned_transaction
                 .add_blob(blob)
                 .expect("blob count checked above");
