@@ -16,6 +16,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use tari_engine_types::limits;
 use tari_wasmer_middlewares::Metering;
 use wasmer::{
     GlobalInit,
@@ -134,28 +135,55 @@ struct FunctionBulkMetering {
     scratch: ScratchGlobals,
 }
 
-/// Points charged per unit of the operand sitting on top of the stack, or `None` for an operator
-/// whose cost the static table already prices in full.
-fn rate_for(operator: &Operator) -> Option<i64> {
+/// How an operator's runtime operand turns into a charge.
+#[derive(Debug, Clone, Copy)]
+pub struct Charge {
+    /// Points per unit of the operand on top of the stack.
+    rate: i64,
+    /// Largest operand value that can do any work, where the engine's tunables impose one.
+    ///
+    /// `grow` is the only bulk operator with a defined refusal: past the tunables' cap it returns
+    /// `-1` having moved nothing. Charging the requested delta would bill a refusal at the price of
+    /// a success, and a large enough request would exhaust the meter and trap where the module is
+    /// entitled to a `-1`. The charge is therefore taken on the delta the tunables could actually
+    /// grant.
+    grantable_units: Option<i32>,
+}
+
+/// The charge for an operator whose work is a runtime operand, or `None` for one the static cost
+/// table in [`super::metering`] prices in full.
+///
+/// This is the authority on which operators carry an inline charge: `metering::cost_function` reads
+/// it back so the static half and the length-aware half cannot drift apart.
+pub fn charge_for(operator: &Operator) -> Option<Charge> {
+    let charge = |rate, grantable_units| Some(Charge { rate, grantable_units });
     match operator {
-        // `[dst, src, len]` / `[dst, value, len]` / `[dst, offset, len]`: bytes.
+        // `[dst, src, len]` / `[dst, value, len]` / `[dst, offset, len]`: bytes. An out-of-range
+        // length traps on the bounds check, which ends the call, so there is no refusal to price.
         Operator::MemoryCopy { .. } | Operator::MemoryFill { .. } | Operator::MemoryInit { .. } => {
-            Some(POINTS_PER_MEMORY_BYTE)
+            charge(POINTS_PER_MEMORY_BYTE, None)
         },
-        // `[dst, src, len]` / `[dst, value, len]` / `[value, delta]`: table elements.
-        Operator::TableCopy { .. } |
-        Operator::TableFill { .. } |
-        Operator::TableInit { .. } |
-        Operator::TableGrow { .. } => Some(POINTS_PER_TABLE_ELEMENT),
-        // `[delta]`: 64 KiB pages.
-        Operator::MemoryGrow { .. } => Some(POINTS_PER_MEMORY_PAGE),
+        // `[dst, src, len]` / `[dst, value, len]`: table elements.
+        Operator::TableCopy { .. } | Operator::TableFill { .. } | Operator::TableInit { .. } => {
+            charge(POINTS_PER_TABLE_ELEMENT, None)
+        },
+        // `[value, delta]`: table elements, bounded by what a table may hold.
+        Operator::TableGrow { .. } => charge(
+            POINTS_PER_TABLE_ELEMENT,
+            Some(i32::try_from(limits::WASM_LIMITS.max_table_elements).unwrap_or(i32::MAX)),
+        ),
+        // `[delta]`: 64 KiB pages, bounded by what linear memory may hold.
+        Operator::MemoryGrow { .. } => charge(
+            POINTS_PER_MEMORY_PAGE,
+            Some(i32::try_from(limits::WASM_LIMITS.max_memory_pages).unwrap_or(i32::MAX)),
+        ),
         _ => None,
     }
 }
 
 impl<'a> FunctionMiddleware<'a> for FunctionBulkMetering {
     fn feed(&mut self, operator: Operator<'a>, state: &mut MiddlewareReaderState<'a>) -> Result<(), MiddlewareError> {
-        let Some(rate) = rate_for(&operator) else {
+        let Some(charge) = charge_for(&operator) else {
             state.push_operator(operator);
             return Ok(());
         };
@@ -163,15 +191,32 @@ impl<'a> FunctionMiddleware<'a> for FunctionBulkMetering {
         // Every operator priced here leaves its count — bytes, elements or pages — on top of the
         // stack, so the charge is computed from the value popped here and the value is pushed back
         // unchanged before the operator runs.
-        state.extend(&[
-            Operator::GlobalSet {
+        state.extend([Operator::GlobalSet {
+            global_index: self.scratch.len,
+        }]);
+
+        // `min(units, grantable)`, leaving the charged count on the stack.
+        match charge.grantable_units {
+            Some(grantable) => state.extend([
+                Operator::GlobalGet {
+                    global_index: self.scratch.len,
+                },
+                Operator::I32Const { value: grantable },
+                Operator::GlobalGet {
+                    global_index: self.scratch.len,
+                },
+                Operator::I32Const { value: grantable },
+                Operator::I32LtU,
+                Operator::Select,
+            ]),
+            None => state.extend([Operator::GlobalGet {
                 global_index: self.scratch.len,
-            },
-            Operator::GlobalGet {
-                global_index: self.scratch.len,
-            },
+            }]),
+        }
+
+        state.extend([
             Operator::I64ExtendI32U,
-            Operator::I64Const { value: rate },
+            Operator::I64Const { value: charge.rate },
             Operator::I64Mul,
             Operator::GlobalSet {
                 global_index: self.scratch.cost,

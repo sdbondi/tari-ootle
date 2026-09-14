@@ -489,3 +489,68 @@ fn an_unbounded_memory_copy_traps_on_the_meter() {
         "the copy did not trap on the meter: {reason}"
     );
 }
+
+/// `memory.grow` past what the tunables can grant returns -1 having moved nothing, so the charge is
+/// taken on the pages that could actually be granted. Billing the requested delta would price a
+/// refusal like a success, and a large enough request would exhaust the meter and trap where the
+/// module is entitled to its -1.
+#[test]
+fn an_impossible_memory_grow_is_charged_only_for_what_could_be_granted() {
+    fn points_for_grow_of(pages: i64) -> Result<u64, RejectReason> {
+        load_and_call(template_module(&format!(
+            r#"
+            (func (export "tari_alloc") (param i32) (result i32) (i32.const 1024))
+            (func (export "tari_free") (param i32))
+            (func (export "Buggy_main") (param i32 i32) (result i32)
+              (if (i32.ne (memory.grow (i32.const {pages})) (i32.const -1))
+                (then unreachable))
+              (i32.const 20))
+            "#
+        )))
+    }
+
+    // Both are refused by the tunables — the module declares 3 of the 32 pages it may have — so both
+    // do the same zero work and must cost the same.
+    let just_over = points_for_grow_of(limits::WASM_LIMITS.max_memory_pages as i64).expect("call failed");
+    let absurd = points_for_grow_of(1_000_000).expect("call failed");
+
+    assert_eq!(
+        absurd, just_over,
+        "a 1,000,000-page request cost {absurd} against {just_over} for one just over the cap"
+    );
+}
+
+/// The charge sequence `BulkMetering` emits is invisible to the static cost function by
+/// construction, so the static cost of the operators it instruments has to cover it. Otherwise a
+/// module repeating a zero-length copy executes that sequence for free.
+#[test]
+fn a_zero_length_copy_pays_for_the_charge_sequence() {
+    const COPIES: u64 = 100;
+
+    fn points_for_copies(n: u64) -> u64 {
+        let body = (0..n)
+            .map(|_| "(memory.copy (i32.const 65536) (i32.const 0) (i32.const 0))")
+            .collect::<Vec<_>>()
+            .join("\n");
+        load_and_call(template_module(&format!(
+            r#"
+            (func (export "tari_alloc") (param i32) (result i32) (i32.const 1024))
+            (func (export "tari_free") (param i32))
+            (func (export "Buggy_main") (param i32 i32) (result i32)
+              {body}
+              (i32.const 20))
+            "#
+        )))
+        .expect("call failed")
+    }
+
+    // Three `i32.const` operands at 1 point each accompany every copy.
+    const OPERAND_COST: u64 = 3;
+    let marginal = (points_for_copies(COPIES) - points_for_copies(0)) / COPIES - OPERAND_COST;
+
+    // The executed sequence is ~12 points; the charge must at least cover it.
+    assert!(
+        marginal >= 12,
+        "a zero-length copy was charged {marginal} points, less than the sequence it runs"
+    );
+}
