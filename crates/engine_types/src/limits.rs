@@ -172,10 +172,18 @@ pub const PER_TEMPLATE_DATA_SEGMENT_BYTE: u64 = 5;
 /// Each element-segment entry written into a table.
 ///
 /// Active element segments initialise the instance's tables at every instantiation, the same class
-/// of work as copying the data segments but per funcref rather than per byte, and an author controls
-/// how many entries there are: `max_tables` x `max_table_elements` is 65,536 of them, which measures
-/// at ~0.20 ms — twenty times the fixed cost of an instantiation. Measured between 26 and 39 points
-/// per entry depending on the run; set above that spread.
+/// of work as copying the data segments but per funcref rather than per byte.
+///
+/// What bounds the entry count is the binary size, not the table limits. Nothing caps how many
+/// element segments a module declares, and several may target one table at overlapping offsets —
+/// each is written out in turn — so `max_tables` x `max_table_elements` (65,536) is the widest a
+/// single pass over the tables can be, not the most a module can ask for. An entry is a LEB128 func
+/// index, so roughly a byte of binary buys one: a publish at
+/// [`EngineLimits::max_template_binary_size_bytes`] can carry on the order of a million.
+///
+/// 65,536 entries measure at ~0.20 ms, i.e. ~26 points each at the calibrated rate, and between 26
+/// and 39 across runs. Set above that spread, so the worst case a binary can hold is still charged
+/// above what it costs.
 pub const PER_TEMPLATE_ELEMENT_ENTRY: u64 = 40;
 
 /// Points charged for building the `Store` and `Instance` a template call runs in, before its first

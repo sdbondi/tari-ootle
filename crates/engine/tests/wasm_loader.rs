@@ -612,3 +612,34 @@ fn passive_segments_are_not_instantiation_work() {
     assert_eq!(shape.data_segment_bytes, 5);
     assert_eq!(shape.element_segment_entries, 0);
 }
+
+/// Nothing caps how many element segments a module declares, and several may target one table at
+/// overlapping offsets — each is written out in turn at instantiation. The entry count a charge is
+/// taken on is therefore bounded by the binary, not by the table limits.
+#[test]
+fn overlapping_element_segments_each_count() {
+    const SEGMENTS: u64 = 8;
+    const ENTRIES: u64 = 512;
+
+    let funcrefs = vec!["0"; ENTRIES as usize].join(" ");
+    let segments = (0..SEGMENTS)
+        .map(|_| format!("(elem (i32.const 0) func {funcrefs})"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let code = template_module(&format!(
+        r#"
+        (table {ENTRIES} {ENTRIES} funcref)
+        (func (export "tari_alloc") (param i32) (result i32) (i32.const 1024))
+        (func (export "tari_free") (param i32))
+        (func (export "Buggy_main") (param i32 i32) (result i32) (i32.const 20))
+        {segments}
+        "#
+    ));
+
+    let shape = match WasmModule::load_template_from_code(&code).expect("module was rejected") {
+        tari_engine::template::LoadedTemplate::Wasm(loaded) => loaded.shape(),
+    };
+
+    // Every segment is counted, even though the table only ever holds `ENTRIES` of them at once.
+    assert_eq!(shape.element_segment_entries, SEGMENTS * ENTRIES);
+}
