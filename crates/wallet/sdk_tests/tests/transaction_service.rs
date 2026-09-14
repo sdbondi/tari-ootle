@@ -10,7 +10,7 @@ use std::{
         Mutex,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use futures::StreamExt;
@@ -82,10 +82,14 @@ impl TransactionStatusResponseError for ScriptedError {
 /// A network that answers each result query with the next scripted result (the last one repeats) and lets the test
 /// push finalization notifications onto the subscription stream. Only the first subscription succeeds: once its
 /// sender is dropped the stream ends and every re-subscription fails, which is how a test takes the stream down.
+///
+/// A test that needs to know which query saw a result scripts a single repeating one and swaps it with
+/// [`Self::set_result`] at the moment of its choosing, rather than relying on queries arriving in a fixed order.
 #[derive(Debug, Clone)]
 struct ScriptedNetwork {
     results: Arc<Mutex<VecDeque<TransactionFinalizedResult>>>,
     query_count: Arc<AtomicUsize>,
+    subscribe_count: Arc<AtomicUsize>,
     notifications: Arc<Mutex<Option<mpsc::UnboundedReceiver<TransactionFinalizedNotification>>>>,
 }
 
@@ -97,6 +101,7 @@ impl ScriptedNetwork {
         let network = Self {
             results: Arc::new(Mutex::new(results.into())),
             query_count: Arc::new(AtomicUsize::new(0)),
+            subscribe_count: Arc::new(AtomicUsize::new(0)),
             notifications: Arc::new(Mutex::new(Some(rx))),
         };
         (network, tx)
@@ -104,6 +109,19 @@ impl ScriptedNetwork {
 
     fn query_count(&self) -> usize {
         self.query_count.load(Ordering::SeqCst)
+    }
+
+    /// Subscription attempts, refused ones included. The first tells a test the service is listening; a second
+    /// tells it the service has noticed the stream end and fallen back to polling.
+    fn subscribe_count(&self) -> usize {
+        self.subscribe_count.load(Ordering::SeqCst)
+    }
+
+    /// Makes `result` the answer to every query from now on.
+    fn set_result(&self, result: TransactionFinalizedResult) {
+        let mut results = self.results.lock().unwrap();
+        results.clear();
+        results.push_back(result);
     }
 }
 
@@ -150,6 +168,7 @@ impl WalletNetworkInterface for ScriptedNetwork {
     }
 
     async fn subscribe_transaction_finalized(&self) -> Result<TransactionFinalizedStream<Self::Error>, Self::Error> {
+        self.subscribe_count.fetch_add(1, Ordering::SeqCst);
         match self.notifications.lock().unwrap().take() {
             Some(rx) => Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx).map(Ok).boxed()),
             None => Err(ScriptedError("finalization stream unavailable")),
@@ -249,8 +268,10 @@ struct Running {
     _test: TestWithNetwork<ScriptedNetwork>,
 }
 
-/// Starts the service and waits for its startup subscription and the poll that follows it to settle.
+/// Starts the service and waits for it to subscribe to the finalization stream, so that a test that pushes a
+/// notification knows there is something listening for it.
 async fn start(config: TransactionServiceConfig, network: ScriptedNetwork) -> Running {
+    let watched = network.clone();
     let test = TestWithNetwork::with_network(network);
     let notify = Notify::new(16);
     let shutdown = Shutdown::new();
@@ -258,7 +279,10 @@ async fn start(config: TransactionServiceConfig, network: ScriptedNetwork) -> Ru
         TransactionService::with_config(config, notify.clone(), test.sdk().clone(), shutdown.to_signal());
     let events = notify.subscribe();
     tokio::spawn(service.run());
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        wait_until(|| watched.subscribe_count() >= 1).await,
+        "service never subscribed to the finalization stream"
+    );
     Running {
         handle,
         events,
@@ -267,13 +291,48 @@ async fn start(config: TransactionServiceConfig, network: ScriptedNetwork) -> Ru
     }
 }
 
+/// How long a test waits for the service to do something before calling it stuck. This is a deadlock detector,
+/// not a performance assertion: the suite runs its tests in parallel, each on its own multi-threaded runtime, so a
+/// loaded machine can starve any one of them for seconds at a time. It sits far above the work it covers, because
+/// a deadline that merely exceeds the expected duration fails the run instead of the code.
+const WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a test watches for something that must *not* happen. Starvation can only cut such a window short,
+/// weakening the check, never failing it, so this stays small.
+const QUIET_WINDOW: Duration = Duration::from_millis(300);
+
+/// Waits until the network stops being queried and returns the count it settled at. The subscription catch-up
+/// poll and the post-submit check race each other, so the number of queries a test has seen by the time it is
+/// ready to act is not fixed; what is fixed is that the count stops moving once both have run.
+async fn wait_until_queries_settle(network: &ScriptedNetwork) -> usize {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let before = network.query_count();
+        tokio::time::sleep(QUIET_WINDOW).await;
+        if network.query_count() == before {
+            return before;
+        }
+        assert!(Instant::now() < deadline, "the network never stopped being queried");
+    }
+}
+
+/// Polls until `condition` holds. Returns false if it has not held within [`WAIT_TIMEOUT`].
+async fn wait_until(mut condition: impl FnMut() -> bool) -> bool {
+    tokio::time::timeout(WAIT_TIMEOUT, async {
+        while !condition() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .is_ok()
+}
+
 /// Waits for the wallet to report `transaction_id` finalized, returning its status.
 async fn wait_for_finalized(
     events: &mut broadcast::Receiver<WalletEvent>,
     transaction_id: TransactionId,
-    timeout: Duration,
 ) -> Option<TransactionStatus> {
-    tokio::time::timeout(timeout, async {
+    tokio::time::timeout(WAIT_TIMEOUT, async {
         loop {
             match events.recv().await.unwrap() {
                 WalletEvent::TransactionFinalized(event) if event.transaction_id == transaction_id => {
@@ -303,14 +362,17 @@ fn fast_config() -> TransactionServiceConfig {
 async fn finalization_notification_is_acted_on_without_waiting_for_the_poll() {
     let transaction = build_transaction();
     let transaction_id = transaction.calculate_id();
-    let (network, notifications) =
-        ScriptedNetwork::new(vec![TransactionFinalizedResult::Pending, committed(transaction_id)]);
+    let (network, notifications) = ScriptedNetwork::new(vec![TransactionFinalizedResult::Pending]);
     let mut running = start(fast_config(), network.clone()).await;
 
     running.handle.submit_transaction(transaction).await.unwrap();
-    // The post-submit check finds it pending; nothing else queries a transaction younger than the silent timeout.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(network.query_count(), 1);
+    // The post-submit check finds it pending, and nothing then queries a transaction younger than the silent
+    // timeout, so the count settles. Every query so far has seen `Pending`, so none of them can have finalized it.
+    let settled = wait_until_queries_settle(&network).await;
+    assert!(settled >= 1, "post-submit check never ran");
+
+    // Only a query made from here on can see the commit, which is what makes the next one attributable.
+    network.set_result(committed(transaction_id));
 
     // A notification for someone else's transaction is ignored.
     notifications
@@ -326,9 +388,11 @@ async fn finalization_notification_is_acted_on_without_waiting_for_the_poll() {
         })
         .unwrap();
 
-    let status = wait_for_finalized(&mut running.events, transaction_id, Duration::from_secs(5)).await;
+    let status = wait_for_finalized(&mut running.events, transaction_id).await;
     assert_eq!(status, Some(TransactionStatus::Accepted));
-    assert_eq!(network.query_count(), 2);
+    // One further query, and the notification is the only thing that could have caused it: the poll skips a
+    // transaction younger than the silent timeout.
+    assert_eq!(network.query_count(), settled + 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -344,10 +408,11 @@ async fn abort_is_reported_without_a_notification() {
 
     running.handle.submit_transaction(transaction).await.unwrap();
 
-    let status = wait_for_finalized(&mut running.events, transaction_id, Duration::from_secs(10)).await;
+    let status = wait_for_finalized(&mut running.events, transaction_id).await;
     assert_eq!(status, Some(TransactionStatus::Rejected));
-    // One post-submit query, then one after the transaction had been silent for the timeout.
-    assert_eq!(network.query_count(), 2);
+    // The post-submit check found it pending and a later poll, once it had been silent for the timeout, found the
+    // abort. How many queries the subscription catch-up adds alongside those is not fixed.
+    assert!(network.query_count() >= 2, "the abort was reported without a poll");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -359,11 +424,15 @@ async fn every_pending_transaction_is_polled_while_the_stream_is_down() {
     let mut running = start(fast_config(), network.clone()).await;
 
     drop(notifications);
-    // Wait for the service to observe the disconnect.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // The stream ends and the service re-subscribes. This network refuses every subscription after the first, so
+    // the attempt marks the point from which the service has only the poll.
+    assert!(
+        wait_until(|| network.subscribe_count() >= 2).await,
+        "service never re-subscribed after the stream ended"
+    );
 
     running.handle.submit_transaction(transaction).await.unwrap();
 
-    let status = wait_for_finalized(&mut running.events, transaction_id, Duration::from_secs(5)).await;
+    let status = wait_for_finalized(&mut running.events, transaction_id).await;
     assert_eq!(status, Some(TransactionStatus::Accepted));
 }
