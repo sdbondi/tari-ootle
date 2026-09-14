@@ -62,27 +62,38 @@ impl WasmModule {
         Self { code: code.into() }
     }
 
-    /// The publish-only admission rules a module must pass before anything pays to compile it.
+    /// Every admission rule a published module must pass that the module bytes alone can answer.
     ///
-    /// Split out from [`Self::validate_code`] so the caller can run it, charge for the compile, and
-    /// only then compile: a module refused here never reaches cranelift, so it must not be billed
-    /// as though it had.
-    pub fn prevalidate_code(code: &[u8]) -> Result<(), TemplateLoaderError> {
+    /// Split out from [`Self::validate_code`] so a publisher can be charged for the compile between
+    /// this and [`Self::compile_prevalidated`]: cranelift is the expensive half, and a module
+    /// refused by a rule here never reaches it, so it must not be billed as though it had.
+    pub fn prevalidate_code(code: &[u8]) -> Result<ModuleShape, TemplateLoaderError> {
         // Reject custom sections the engine does not consume. Only the registration path runs this;
         // already-stored templates (and built-ins) load via `load_template_from_code` without it.
         reject_disallowed_custom_sections(code).map_err(WasmExecutionError::from)?;
-        Ok(())
+        let shape = validate_module_structure(code).map_err(WasmExecutionError::from)?;
+        Ok(shape)
+    }
+
+    /// Compiles a module whose [`Self::prevalidate_code`] pass has already run, so neither of that
+    /// pass's two walks over the binary is repeated.
+    pub fn compile_prevalidated(code: &[u8], shape: ModuleShape) -> Result<TemplateDef, TemplateLoaderError> {
+        // TODO: evaluate if there are acceptable cheaper ways to fully validate
+        let loaded = Self::compile(code, shape)?;
+        Ok(loaded.into_template_def())
     }
 
     pub fn validate_code(code: &[u8]) -> Result<TemplateDef, TemplateLoaderError> {
-        Self::prevalidate_code(code)?;
-        // TODO: evaluate if there are acceptable cheaper ways to fully validate
-        let loaded = Self::load_template_from_code(code)?;
-        Ok(loaded.into_template_def())
+        let shape = Self::prevalidate_code(code)?;
+        Self::compile_prevalidated(code, shape)
     }
 
     pub fn load_template_from_code(code: &[u8]) -> Result<LoadedTemplate, TemplateLoaderError> {
         let shape = validate_module_structure(code).map_err(WasmExecutionError::from)?;
+        Self::compile(code, shape)
+    }
+
+    fn compile(code: &[u8], shape: ModuleShape) -> Result<LoadedTemplate, TemplateLoaderError> {
         let engine = Self::create_engine();
         let module = wasmer::Module::new(&engine, code)?;
         Self::finalize_loaded_module(engine, module, code.len(), shape)

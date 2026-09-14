@@ -209,3 +209,48 @@ fn the_compile_a_publish_pays_for_is_charged_before_it_runs() {
         "a {binary_len}-byte publish charged {native_points} native points, under the {compile} its compile costs"
     );
 }
+
+/// Every admission rule the module bytes alone can answer runs before the compile is charged for,
+/// so a module refused by one of them pays nothing for cranelift. Points accumulated before a
+/// failure are still charged, so charging first would bill a large rejected binary for a compile
+/// that never ran.
+#[test]
+fn a_module_refused_before_the_compile_is_not_charged_for_it() {
+    use tari_engine_types::limits::template_compile_points;
+
+    // Rejected by `validate_module_structure`, which needs no compile: the start section is refused
+    // before cranelift is reached.
+    let code = wat::parse_str(
+        r#"
+        (module
+          (memory (export "memory") 3)
+          (func (export "tari_alloc") (param i32) (result i32) (i32.const 1024))
+          (func (export "tari_free") (param i32))
+          (func (export "Buggy_main") (param i32 i32) (result i32) (i32.const 20))
+          (func)
+          (start 3)
+        )
+        "#,
+    )
+    .unwrap();
+
+    let mut test = TemplateTest::new(CRATE_PATH, &[] as &[&str]);
+    let (account, owner_proof, key, _) = test.create_funded_account_with_keypair();
+    test.enable_fees();
+
+    let result = test
+        .try_execute(
+            Transaction::builder_localnet(Epoch(1))
+                .pay_fee_from_component(account, 2_000_000u64)
+                .publish_template(code.clone())
+                .build_and_seal(&key),
+            vec![owner_proof],
+        )
+        .expect("execution failed");
+
+    assert!(
+        result.native_execution_points < template_compile_points(code.len() as u64),
+        "a module refused before the compile was charged {} native points",
+        result.native_execution_points
+    );
+}

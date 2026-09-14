@@ -27,7 +27,8 @@ transaction room to source its fee.
 at the per-byte storage rate, plus `100 µT × units²` for every whole KiB beyond that allowance — so
 it grows quadratically. On top of that, the compile charge pays for the Cranelift compile every
 validator runs: 140M points plus 2,100 per binary byte, billed at 1 µT per 1,000 points. The compile
-term is linear, so it dominates at small sizes and the storage term takes over above ~256 KiB.
+term is linear where the storage premium is quadratic, so it roughly doubles the cost of a small
+publish and is negligible against storage past ~128 KiB.
 
 | Binary size | Storage charge | Compile charge | Total publish charge | `TemplateLoad` charged to each caller |
 |---|---|---|---|---|
