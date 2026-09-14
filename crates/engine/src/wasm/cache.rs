@@ -66,7 +66,7 @@ const LOG_TARGET: &str = "tari::engine::wasm::cache";
 ///
 /// On a bump, old cache files become orphans (different filename suffix)
 /// and the next compile-from-source rewrites under the new key.
-pub const ENGINE_FINGERPRINT: &str = "v7";
+pub const ENGINE_FINGERPRINT: &str = "v5";
 
 /// Five 8-byte LE fields at the head of each cache file: the original WASM source byte count
 /// followed by the four counts of [`ModuleShape`]. `wasmer::Module::serialize` preserves none of
