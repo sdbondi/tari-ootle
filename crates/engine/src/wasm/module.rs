@@ -426,6 +426,15 @@ fn validate_export_signature(
     }
 }
 
+//// What a module's binary says about the work instantiating it will cost.
+/// Compiled code is laid down once at publish; what every instantiation repeats is copying the
+/// data segments into a fresh linear memory, so that byte count — not the binary size — is what
+/// [`tari_engine_types::limits::instantiation_points`] prices.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ModuleShape {
+    pub data_segment_bytes: u64,
+}
+
 /// Checks what only the module bytes show: that the module declares no start function, and no more
 /// tables or globals than the limits.
 ///
@@ -437,16 +446,6 @@ fn validate_export_signature(
 /// declaration far smaller than what it claims. Each table's element count is bounded by the
 /// tunables, which see one table at a time, so the number of tables is what bounds the storage all
 /// of them together claim; a global's slot is fixed, so its count is the whole bound.
-/// What a module's binary says about the work instantiating it will cost.
-///
-/// Compiled code is laid down once at publish; what every instantiation repeats is copying the
-/// data segments into a fresh linear memory, so that byte count — not the binary size — is what
-/// [`tari_engine_types::limits::instantiation_points`] prices.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ModuleShape {
-    pub data_segment_bytes: u64,
-}
-
 fn validate_module_structure(code: &[u8]) -> Result<ModuleShape, WasmValidationError> {
     let mut shape = ModuleShape::default();
     for payload in Parser::new(0).parse_all(code) {

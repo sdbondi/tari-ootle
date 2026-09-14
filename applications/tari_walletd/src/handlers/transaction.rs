@@ -760,7 +760,7 @@ pub async fn handle_publish_template(
         },
     };
 
-    if wasm_binary.len() > tari_engine_types::limits::ENGINE_LIMITS.max_template_binary_size_bytes {
+    if wasm_binary.len() > tari_engine_types::limits::MAX_PUBLISHABLE_TEMPLATE_BINARY_SIZE_BYTES {
         return Err(invalid_params("binary", Some("WASM binary too large".to_string())));
     }
 

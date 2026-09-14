@@ -83,7 +83,7 @@ fn publish_template_invalid_binary() {
 fn publish_template_too_big_binary() {
     let mut test = TemplateTest::new(CRATE_PATH, &[] as &[&str]);
     let (account_address, owner_proof, account_key, _) = test.create_funded_account_with_keypair();
-    let random_wasm_binary = generate_random_binary(limits::ENGINE_LIMITS.max_template_binary_size_bytes + 1);
+    let random_wasm_binary = generate_random_binary(limits::MAX_PUBLISHABLE_TEMPLATE_BINARY_SIZE_BYTES + 1);
     let wasm_binary_size = random_wasm_binary.len();
     let reason = test.execute_expect_failure(
         Transaction::builder_localnet(Epoch(1))
@@ -96,7 +96,7 @@ fn publish_template_too_big_binary() {
 
     assert_reject_reason(reason, TransactionErrorKind::WasmBinaryTooBig {
         size: wasm_binary_size,
-        max: limits::ENGINE_LIMITS.max_template_binary_size_bytes,
+        max: limits::MAX_PUBLISHABLE_TEMPLATE_BINARY_SIZE_BYTES,
     });
 }
 

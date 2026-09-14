@@ -119,29 +119,6 @@ pub const MAX_NATIVE_POINTS_PER_TRANSACTION: u64 = 2_400_000_000;
 /// `cargo run -p tari_engine --example native_points_calibrate --release`.
 pub const FREE_COMPUTE_GRACE_POINTS: u64 = 32_000_000;
 
-/// Metering-point prices for native (non-WASM) verification work, charged against the same
-/// payment-funded allowance as WASM execution ([`FREE_COMPUTE_GRACE_POINTS`] of credit, then
-/// payments fund the rest). Native crypto runs outside the Wasmer meter, so these price it by
-/// wall-clock equivalence: measured milliseconds × the measured points-per-millisecond rate of
-/// real metered WASM on the same hardware. Both sides are CPU-bound, so the ratio holds across
-/// validator classes. Values from `cargo run -p tari_engine --example native_points_calibrate
-/// --release` (~8.4M points/ms), rounded up.
-/// Points charged for building the `Store` and `Instance` a template call runs in, before its first
-/// metered operator.
-///
-/// Every instruction that calls a template instantiates it afresh: linear memory is mapped, the
-/// module's data segments are copied into it, and the tables and imports are wired up. Compiled
-/// code is laid down once at publish and costs nothing to instantiate, so the only part that scales
-/// with the binary is the data copy — measured across the built-in templates, a 150 KiB and a 520
-/// KiB module instantiate in the same ~0.015 ms because both carry a few KiB of data. Pricing this
-/// off the binary size would therefore overcharge a code-heavy template by an order of magnitude.
-///
-/// Both figures from `cargo run -p tari_engine --release --example instantiation_points_calibrate`,
-/// rounded up.
-pub const fn instantiation_points(data_segment_bytes: u64) -> u64 {
-    PER_TEMPLATE_INSTANTIATION.saturating_add(PER_TEMPLATE_DATA_SEGMENT_BYTE.saturating_mul(data_segment_bytes))
-}
-
 /// Points charged for compiling a published template binary, before the compile runs.
 ///
 /// A publish hands the engine a binary and makes every validator Cranelift-compile it. That is by
@@ -165,6 +142,23 @@ pub const PER_TEMPLATE_COMPILE: u64 = 140_000_000;
 /// Each byte of the published binary. The marginal measured cost is ~2000 points/byte.
 pub const PER_TEMPLATE_COMPILE_BYTE: u64 = 2_100;
 
+/// Largest binary a `PublishTemplate` instruction may carry.
+///
+/// Distinct from [`EngineLimits::max_template_binary_size_bytes`], which is the width of the
+/// `TemplateBlob` type and so governs whether a stored template *decodes*. Narrowing that would
+/// make an already-committed template unreadable — its substate would stop decoding on upgrade, and
+/// the network-wide transaction size cap derived from it would move under a rolling upgrade. This
+/// bound applies only to what a new publish may carry.
+///
+/// Set to the largest binary whose compile charge ([`template_compile_points`]) a transaction can
+/// afford, so a publish too expensive to pay for is refused for its size rather than part-way
+/// through paying. Asserted by `the_largest_publishable_binary_fits_the_native_budget`; the largest
+/// built-in template is ~530 KiB.
+pub const MAX_PUBLISHABLE_TEMPLATE_BINARY_SIZE_BYTES: usize = 1024 * 1024;
+
+/// A publishable binary must fit the type that stores it.
+const _: () = assert!(MAX_PUBLISHABLE_TEMPLATE_BINARY_SIZE_BYTES <= ENGINE_LIMITS.max_template_binary_size_bytes);
+
 /// Fixed cost of one instantiation: mapping the memory, wiring the imports and building the tables.
 /// Measured at 0.008 to 0.010 ms across runs, taken at the top of that spread.
 pub const PER_TEMPLATE_INSTANTIATION: u64 = 100_000;
@@ -175,6 +169,29 @@ pub const PER_TEMPLATE_INSTANTIATION: u64 = 100_000;
 /// largest data segment a publish admits ~2.1x.
 pub const PER_TEMPLATE_DATA_SEGMENT_BYTE: u64 = 5;
 
+/// Points charged for building the `Store` and `Instance` a template call runs in, before its first
+/// metered operator.
+///
+/// Every instruction that calls a template instantiates it afresh: linear memory is mapped, the
+/// module's data segments are copied into it, and the tables and imports are wired up. Compiled
+/// code is laid down once at publish and costs nothing to instantiate, so the only part that scales
+/// with the binary is the data copy — measured across the built-in templates, a 150 KiB and a 520
+/// KiB module instantiate in the same ~0.015 ms because both carry a few KiB of data. Pricing this
+/// off the binary size would therefore overcharge a code-heavy template by an order of magnitude.
+///
+/// Both figures from `cargo run -p tari_engine --release --example instantiation_points_calibrate`,
+/// rounded up.
+pub const fn instantiation_points(data_segment_bytes: u64) -> u64 {
+    PER_TEMPLATE_INSTANTIATION.saturating_add(PER_TEMPLATE_DATA_SEGMENT_BYTE.saturating_mul(data_segment_bytes))
+}
+
+/// Metering-point prices for native (non-WASM) verification work, charged against the same
+/// payment-funded allowance as WASM execution ([`FREE_COMPUTE_GRACE_POINTS`] of credit, then
+/// payments fund the rest). Native crypto runs outside the Wasmer meter, so these price it by
+/// wall-clock equivalence: measured milliseconds × the measured points-per-millisecond rate of
+/// real metered WASM on the same hardware. Both sides are CPU-bound, so the ratio holds across
+/// validator classes. Values from `cargo run -p tari_engine --example native_points_calibrate
+/// --release` (~8.4M points/ms), rounded up.
 pub struct NativeExecutionPoints;
 
 impl NativeExecutionPoints {
@@ -267,13 +284,7 @@ pub const ENGINE_LIMITS: EngineLimits = EngineLimits {
     max_events: 256,
     max_event_size_bytes: 2 * 1024, // 2 KiB; 256 * 2 KiB = 512 KiB of the 1 MiB substate budget
     max_panic_message_size: 32 * 1024, // 32 KiB
-    // A publish is charged for the compile it makes every validator run
-    // ([`template_compile_points`]), and that charge is bounded by
-    // [`MAX_NATIVE_POINTS_PER_TRANSACTION`]. This is the largest binary that still fits the budget,
-    // so a publish that cannot be paid for is refused here rather than after partially paying.
-    // Asserted by `the_largest_publishable_binary_fits_the_native_budget`. The largest built-in
-    // template is ~530 KiB, so this leaves ample room.
-    max_template_binary_size_bytes: 1024 * 1024, // 1 MiB
+    max_template_binary_size_bytes: 3 * 512 * 1024, // 1.5 MiB
     max_template_name_length: 64,
     max_call_depth: 10,
     max_random_bytes_len: 1024, // 1 KiB per call
@@ -391,7 +402,7 @@ mod publish_budget_tests {
     /// compile and failing to pay for it.
     #[test]
     fn the_largest_publishable_binary_fits_the_native_budget() {
-        let largest = ENGINE_LIMITS.max_template_binary_size_bytes as u64;
+        let largest = MAX_PUBLISHABLE_TEMPLATE_BINARY_SIZE_BYTES as u64;
         assert!(
             template_compile_points(largest) <= MAX_NATIVE_POINTS_PER_TRANSACTION,
             "a {largest}-byte publish costs {} points against a {MAX_NATIVE_POINTS_PER_TRANSACTION} budget",

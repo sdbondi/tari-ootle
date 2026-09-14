@@ -687,10 +687,10 @@ where
         binary: &[u8],
         metadata_hash: Option<MetadataHash>,
     ) -> Result<InstructionResult, TransactionErrorKind> {
-        if binary.len() > limits::ENGINE_LIMITS.max_template_binary_size_bytes {
+        if binary.len() > limits::MAX_PUBLISHABLE_TEMPLATE_BINARY_SIZE_BYTES {
             return Err(TransactionErrorKind::WasmBinaryTooBig {
                 size: binary.len(),
-                max: limits::ENGINE_LIMITS.max_template_binary_size_bytes,
+                max: limits::MAX_PUBLISHABLE_TEMPLATE_BINARY_SIZE_BYTES,
             });
         }
 

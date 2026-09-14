@@ -361,7 +361,7 @@ mod tests {
         MAX_WASM_POINTS_PER_TRANSACTION,
         MIN_MAX_COMPUTE_TRANSACTIONS_PER_BLOCK,
     };
-    use tari_ootle_transaction::Transaction;
+    use tari_ootle_transaction::{INVOCATION_FLOOR, MIN_INVOCATION_ENCODED_BYTES, Transaction};
 
     use super::*;
 
@@ -478,6 +478,32 @@ mod tests {
                  would never reject anything",
                 constants.max_transaction_size_bytes,
                 bytes_the_weight_cap_admits,
+            );
+        }
+    }
+
+    /// The byte cap is what bounds how many instructions a transaction can carry, and
+    /// `INVOCATION_FLOOR` is what turns that into weight. If the floor is too low for the byte cap,
+    /// a transaction packed with minimal template invocations passes the weight cap while still
+    /// making every validator instantiate a template for each one.
+    ///
+    /// Derived from the constants rather than restated, so moving either cap fails here instead of
+    /// silently reopening the hole.
+    #[test]
+    fn the_weight_cap_bounds_the_instructions_the_size_cap_admits() {
+        for constants in [
+            ConsensusConstants::mainnet(),
+            ConsensusConstants::devnet(7),
+            ConsensusConstants::esmeralda(),
+            ConsensusConstants::testnet(),
+        ] {
+            let invocations = constants.max_transaction_size_bytes / MIN_INVOCATION_ENCODED_BYTES;
+            let weight = invocations as u64 * INVOCATION_FLOOR;
+            assert!(
+                weight > constants.max_transaction_weight,
+                "{invocations} minimal invocations fit the {}-byte cap and weigh {weight}, within the {} weight cap",
+                constants.max_transaction_size_bytes,
+                constants.max_transaction_weight,
             );
         }
     }

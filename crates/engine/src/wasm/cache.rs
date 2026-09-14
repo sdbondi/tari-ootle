@@ -57,6 +57,8 @@ const LOG_TARGET: &str = "tari::engine::wasm::cache";
 ///   so a node serving a stale artifact meters against the old cap and diverges from one that compiled fresh.
 /// - The `wasmer` crate version (the serialized artifact format is internal to wasmer and not part of any stable wire
 ///   spec).
+/// - The layout of the file's own header (`HEADER_BYTES` and the fields it carries). A reader that disagrees with the
+///   writer about the header slices the artifact at the wrong offset and reads the fields from the wrong bytes.
 ///
 /// On a bump, old cache files become orphans (different filename suffix)
 /// and the next compile-from-source rewrites under the new key.

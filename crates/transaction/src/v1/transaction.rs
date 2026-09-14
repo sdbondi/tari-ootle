@@ -337,10 +337,9 @@ fn calc_instruction_weight(instruction: &Instruction) -> u64 {
             access_rules,
             bucket_workspace_id: workspace_id,
             ..
-        } => {
-            access_rules.as_ref().map(|a| a.num_access_rules() as u64).unwrap_or(0) +
-                workspace_id.as_ref().map(|_| 1).unwrap_or(0)
-        },
+        } => (access_rules.as_ref().map(|a| a.num_access_rules() as u64).unwrap_or(0) +
+            workspace_id.as_ref().map(|_| 1).unwrap_or(0))
+        .max(INVOCATION_FLOOR),
         Instruction::CallFunction { args, .. } => calc_args_weight(args).max(INVOCATION_FLOOR),
         Instruction::CallMethod { args, .. } => calc_args_weight(args).max(INVOCATION_FLOOR),
         Instruction::PutLastInstructionOutputOnWorkspace { .. } => 0, // Call already costs
@@ -409,6 +408,13 @@ pub const LITERAL_BYTE_DIVISOR: u64 = 3;
 /// template's own code runs. The execution-point budget is what prices that work; this floor is
 /// what keeps the weight cap a bound on instruction count at all.
 pub const INVOCATION_FLOOR: u64 = 30;
+
+/// Smallest number of encoded bytes an instruction that invokes a template can occupy — a bare
+/// `CreateAccount`, which carries one public key and three absent options.
+///
+/// Paired with [`INVOCATION_FLOOR`], this is what turns the transaction byte cap into a bound on
+/// invocation count. `the_recorded_minimum_instruction_sizes_still_hold` keeps it honest.
+pub const MIN_INVOCATION_ENCODED_BYTES: usize = 37;
 
 fn calc_args_weight(args: &[InstructionArg]) -> u64 {
     // Workspace and blob refs are cheap — just an index. Blob payloads are charged at the
@@ -750,26 +756,34 @@ mod weight_tests {
         }
     }
 
+    /// The permissionless shape: no owner rule, no access rules, no bucket. It still reaches
+    /// `invoke_template` in the processor, so it is an invocation like any other.
+    fn bare_create_account() -> Instruction {
+        Instruction::CreateAccount {
+            owner_public_key: tari_template_lib_types::crypto::RistrettoPublicKeyBytes::zero(),
+            owner_rule: None,
+            access_rules: None,
+            bucket_workspace_id: None,
+        }
+    }
+
     /// A call carrying no arguments weighs nothing by argument alone, so the floor is what stops an
     /// instruction list from being free.
     #[test]
-    fn a_no_argument_call_weighs_the_floor() {
+    fn every_instruction_that_invokes_a_template_weighs_the_floor() {
         assert_eq!(calc_instruction_weight(&no_arg_call()), INVOCATION_FLOOR);
+        assert_eq!(calc_instruction_weight(&bare_create_account()), INVOCATION_FLOOR);
     }
 
-    /// The weight a transaction's size cap admits must be bounded by the weight cap, so that
-    /// packing the size cap full of minimal calls is not free.
+    /// `consensus_constants::the_weight_cap_bounds_the_instructions_the_size_cap_admits` reads these
+    /// back to check the floor against the byte cap, which lives in a crate downstream of this one.
+    /// They are the smallest encodings of the two instructions that invoke a template.
     #[test]
-    fn a_size_cap_of_minimal_calls_exceeds_the_transaction_weight_cap() {
-        // A `CallMethod` with an empty method name and no args encodes in well under 45 bytes, so
-        // this many is what the size cap admits at worst.
-        const CALLS_IN_THE_SIZE_CAP: u64 = 1_750_000 / 45;
-        const MAX_TRANSACTION_WEIGHT: u64 = 1_000_000;
-
-        let weight = CALLS_IN_THE_SIZE_CAP * calc_instruction_weight(&no_arg_call());
-        assert!(
-            weight > MAX_TRANSACTION_WEIGHT,
-            "{CALLS_IN_THE_SIZE_CAP} minimal calls weigh {weight}"
+    fn the_recorded_minimum_instruction_sizes_still_hold() {
+        assert_eq!(tari_bor::encode(&no_arg_call()).unwrap().len(), 45);
+        assert_eq!(
+            tari_bor::encode(&bare_create_account()).unwrap().len(),
+            MIN_INVOCATION_ENCODED_BYTES
         );
     }
 }

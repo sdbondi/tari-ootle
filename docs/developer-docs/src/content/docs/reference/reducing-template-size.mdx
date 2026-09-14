@@ -17,8 +17,11 @@ testnet fee table. Your numbers will differ, but the ratios hold.
 
 ## Why size matters
 
-**There is a hard cap.** `ENGINE_LIMITS.max_template_binary_size_bytes` is **1.5 MiB**. A larger
-binary is rejected at publish time, and a transaction may publish at most one template.
+**There is a hard cap.** `MAX_PUBLISHABLE_TEMPLATE_BINARY_SIZE_BYTES` is **1 MiB**. A larger binary
+is rejected at publish time, and a transaction may publish at most one template. The cap is set by
+what a publish costs: every validator Cranelift-compiles the binary, that compile is charged against
+`MAX_NATIVE_POINTS_PER_TRANSACTION`, and 1 MiB is the largest binary whose compile a transaction can
+afford.
 
 **Publishing is priced quadratically above 96 KiB.** The publish charge is a flat
 250,000 µT, plus the first 96 KiB at the per-byte storage rate, plus `100 µT × units²` for every
@@ -26,12 +29,12 @@ whole KiB beyond that allowance:
 
 | Binary size | Publish charge (testnet) | `TemplateLoad` charged to each caller |
 |---|---|---|
-| 72 KiB | ~0.32 tTARI | 240 µT |
-| 96 KiB | ~0.35 tTARI | 320 µT |
-| 128 KiB | ~0.45 tTARI | 430 µT |
-| 256 KiB | ~2.9 tTARI | 870 µT |
-| 512 KiB | ~17.7 tTARI | 1,740 µT |
-| 1.5 MiB | ~208 tTARI | 5,240 µT |
+| 72 KiB | ~0.32 TARI | 240 µT |
+| 96 KiB | ~0.35 TARI | 320 µT |
+| 128 KiB | ~0.45 TARI | 430 µT |
+| 256 KiB | ~2.9 TARI | 870 µT |
+| 512 KiB | ~17.7 TARI | 1,740 µT |
+| 1 MiB | ~92 TARI | 3,500 µT |
 
 The 96 KiB allowance is deliberately set just above the floor for a minimal component template, so
 the premium prices *your* code rather than the fixed `tari_template_lib` machinery. A template that
