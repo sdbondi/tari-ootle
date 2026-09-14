@@ -91,8 +91,15 @@ pub const MIN_MAX_COMPUTE_TRANSACTIONS_PER_BLOCK: u64 = 18;
 /// get honest blocks rejected.
 ///
 /// Sized just above the most expensive statement set the structural caps allow ([`STEALTH_LIMITS`]: 64 transfers,
-/// 256 outputs each carrying the view-key surcharge, 1024 inputs ≈ 2.23e9), so no transaction the other limits
-/// admit can trip this one. Tightening it means tightening those caps first.
+/// 256 outputs each carrying the view-key surcharge, 1024 inputs ≈ 2.23e9). Tightening it means tightening those
+/// caps first.
+///
+/// A template publish is the one charge sized *against* this cap rather than bounded independently of it:
+/// [`template_compile_points`] for a binary at [`EngineLimits::max_template_binary_size_bytes`] comes to ~2.34e9,
+/// and that limit is chosen so the remainder still covers a fee intent (see
+/// `the_largest_publishable_binary_leaves_room_to_source_a_fee`). So a max-size publish *can* reach this cap, by
+/// construction — it is what makes the publish limit binding — whereas every other flow stays under it on the
+/// structural caps alone.
 pub const MAX_NATIVE_POINTS_PER_TRANSACTION: u64 = 2_400_000_000;
 
 /// Execution metering points the fee intent may consume, whatever it has paid. A transaction sources
@@ -140,6 +147,16 @@ pub const fn template_compile_points(binary_bytes: u64) -> u64 {
 pub const PER_TEMPLATE_COMPILE: u64 = 140_000_000;
 
 /// Each byte of the published binary. The marginal measured cost is ~2000 points/byte.
+///
+/// This price carries a thinner margin over its measurement (~1.06x) than the other native prices
+/// here, which sit at 1.8x and above because the points-per-millisecond conversion moves with the
+/// validator's microarchitecture. Cranelift's throughput relative to the Wasmer meter is exactly
+/// that kind of ratio, so on hardware below the published recommended specification a max-size
+/// publish costs more wall-clock than it is charged for. That is accepted: the margin is what sets
+/// [`EngineLimits::max_template_binary_size_bytes`], since
+/// [`MAX_NATIVE_POINTS_PER_TRANSACTION`] bounds the charge, and widening it to 2x would put the
+/// publish limit below the size of the built-in account template. A validator under-specified
+/// enough for this to bite should expect to miss its leader slots for the same reason.
 pub const PER_TEMPLATE_COMPILE_BYTE: u64 = 2_100;
 
 /// Fixed cost of one instantiation: mapping the memory, wiring the imports and building the tables.

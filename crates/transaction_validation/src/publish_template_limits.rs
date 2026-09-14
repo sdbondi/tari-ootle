@@ -11,7 +11,7 @@ const LOG_TARGET: &str = "tari::ootle::mempool::validators::publish_template_lim
 
 /// Rejects transactions that break one of the engine's publish rules: more than
 /// [`MAX_PUBLISH_TEMPLATES_PER_TRANSACTION`] `PublishTemplate` instructions, a template published from the fee
-/// instructions, or a binary larger than [`ENGINE_LIMITS::max_template_binary_size_bytes`].
+/// instructions, or a binary larger than `ENGINE_LIMITS.max_template_binary_size_bytes`.
 ///
 /// A publish compiles the binary, which costs two orders of magnitude more than the compute credit a fee intent runs
 /// on, and it is charged only once the fee intent has been paid for. Fee instructions exist to source the fee, and no

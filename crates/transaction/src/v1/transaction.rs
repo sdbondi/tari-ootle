@@ -804,10 +804,9 @@ mod weight_tests {
         assert_eq!(calc_instruction_weight(&bare_template_update()), INVOCATION_FLOOR);
     }
 
-    /// `consensus_constants::the_weight_cap_bounds_the_instructions_the_size_cap_admits` reads these
+    /// `consensus_constants::the_weight_cap_bounds_the_instructions_the_size_cap_admits` reads this
     /// back to check the floor against the byte cap, which lives in a crate downstream of this one,
     /// so it has to be the smallest encoding of any instruction that invokes a template.
-    #[test]
     #[test]
     fn no_invocation_encodes_smaller_than_the_recorded_minimum() {
         for instruction in [

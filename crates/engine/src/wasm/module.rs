@@ -62,13 +62,20 @@ impl WasmModule {
         Self { code: code.into() }
     }
 
-    pub fn validate_code(code: &[u8]) -> Result<TemplateDef, TemplateLoaderError> {
-        // Admission rule for externally-published templates: reject custom
-        // sections the engine does not consume before paying for the cranelift
-        // compile below. Only the registration path runs this; already-stored
-        // templates (and built-ins) load via `load_template_from_code` without
-        // it.
+    /// The publish-only admission rules a module must pass before anything pays to compile it.
+    ///
+    /// Split out from [`Self::validate_code`] so the caller can run it, charge for the compile, and
+    /// only then compile: a module refused here never reaches cranelift, so it must not be billed
+    /// as though it had.
+    pub fn prevalidate_code(code: &[u8]) -> Result<(), TemplateLoaderError> {
+        // Reject custom sections the engine does not consume. Only the registration path runs this;
+        // already-stored templates (and built-ins) load via `load_template_from_code` without it.
         reject_disallowed_custom_sections(code).map_err(WasmExecutionError::from)?;
+        Ok(())
+    }
+
+    pub fn validate_code(code: &[u8]) -> Result<TemplateDef, TemplateLoaderError> {
+        Self::prevalidate_code(code)?;
         // TODO: evaluate if there are acceptable cheaper ways to fully validate
         let loaded = Self::load_template_from_code(code)?;
         Ok(loaded.into_template_def())

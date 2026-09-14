@@ -493,13 +493,6 @@ mod tests {
         }
     }
 
-    /// The byte cap is what bounds how many instructions a transaction can carry, and
-    /// `INVOCATION_FLOOR` is what turns that into weight. If the floor is too low for the byte cap,
-    /// a transaction packed with minimal template invocations passes the weight cap while still
-    /// making every validator instantiate a template for each one.
-    ///
-    /// Derived from the constants rather than restated, so moving either cap fails here instead of
-    /// silently reopening the hole.
     /// `MAX_TRANSACTION_SIZE_BYTES` is stated rather than derived so that the gossip frame limit
     /// does not move on its own, which means nothing else forces it to keep admitting a max-size
     /// template publish. This is what does.
@@ -518,6 +511,13 @@ mod tests {
         );
     }
 
+    /// The byte cap is what bounds how many instructions a transaction can carry, and
+    /// `INVOCATION_FLOOR` is what turns that into weight. If the floor is too low for the byte cap,
+    /// a transaction packed with minimal template invocations passes the weight cap while still
+    /// making every validator instantiate a template for each one.
+    ///
+    /// Derived from the constants rather than restated, so moving either cap fails here instead of
+    /// silently reopening the hole.
     #[test]
     fn the_weight_cap_bounds_the_instructions_the_size_cap_admits() {
         for constants in [

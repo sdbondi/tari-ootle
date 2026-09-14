@@ -694,6 +694,10 @@ where
             });
         }
 
+        // The admission rules that need no compile run first, so a module refused by one of them is
+        // not billed for work nothing did.
+        WasmModule::prevalidate_code(binary)?;
+
         // The compile is the most expensive thing a single instruction can ask of a validator, so it
         // is paid for before it runs. The size cap above is what keeps this charge affordable.
         runtime.interface_mut().charge_template_compile(binary.len() as u64)?;

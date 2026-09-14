@@ -293,6 +293,13 @@ fn main() {
             }
             let Some(path) = path.to_str() else { continue };
             let (ms, size, data, elements, compile_ms) = real_template_ms(path);
+            let tari_engine::template::LoadedTemplate::Wasm(l) =
+                WasmModule::load_template_from_code(&std::fs::read(path).unwrap()).unwrap();
+            let artifact = l.wasm_module().serialize().unwrap().len();
+            println!(
+                "  artifact {artifact} bytes = {:.1}x the {size}-byte source",
+                artifact as f64 / size as f64
+            );
             let measured = (ms * rate).ceil() as u64;
             let charged = limits::instantiation_points(data, elements);
             println!(
