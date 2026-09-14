@@ -14,7 +14,7 @@
 //! previous stage's output, so pushing second means the metering global indexes are already
 //! recorded and the operators emitted here bypass static costing.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, OnceLock};
 
 use tari_engine_types::limits;
 use tari_wasmer_middlewares::Metering;
@@ -67,7 +67,11 @@ struct ScratchGlobals {
 
 pub struct BulkMetering {
     metering: Arc<Metering<CostFunction>>,
-    scratch: Mutex<Option<ScratchGlobals>>,
+    /// Written once by `transform_module_info`, then read by every
+    /// `generate_function_middleware`. Cranelift translates a module's functions across a rayon
+    /// pool, so those reads happen on several threads at once and the cell has to be `Sync`;
+    /// write-once is what lets them be lock-free.
+    scratch: OnceLock<ScratchGlobals>,
 }
 
 impl BulkMetering {
@@ -76,7 +80,7 @@ impl BulkMetering {
     pub fn new(metering: Arc<Metering<CostFunction>>) -> Self {
         Self {
             metering,
-            scratch: Mutex::new(None),
+            scratch: OnceLock::new(),
         }
     }
 }
@@ -93,10 +97,9 @@ impl ModuleMiddleware for BulkMetering {
             .metering
             .global_indexes()
             .expect("Metering::transform_module_info must run before BulkMetering generates a function middleware");
-        let scratch = self
+        let scratch = *self
             .scratch
-            .lock()
-            .expect("BulkMetering scratch lock")
+            .get()
             .expect("BulkMetering::transform_module_info must run before it generates a function middleware");
 
         Box::new(FunctionBulkMetering {
@@ -107,22 +110,18 @@ impl ModuleMiddleware for BulkMetering {
     }
 
     fn transform_module_info(&self, module_info: &mut ModuleInfo) -> Result<(), MiddlewareError> {
-        let mut scratch = self.scratch.lock().expect("BulkMetering scratch lock");
-        assert!(
-            scratch.is_none(),
-            "BulkMetering::transform_module_info: a middleware instance serves exactly one module"
-        );
-
         let len = module_info.globals.push(GlobalType::new(Type::I32, Mutability::Var));
         module_info.global_initializers.push(GlobalInit::I32Const(0));
 
         let cost = module_info.globals.push(GlobalType::new(Type::I64, Mutability::Var));
         module_info.global_initializers.push(GlobalInit::I64Const(0));
 
-        *scratch = Some(ScratchGlobals {
-            len: len.as_u32(),
-            cost: cost.as_u32(),
-        });
+        self.scratch
+            .set(ScratchGlobals {
+                len: len.as_u32(),
+                cost: cost.as_u32(),
+            })
+            .expect("BulkMetering::transform_module_info: a middleware instance serves exactly one module");
 
         Ok(())
     }
