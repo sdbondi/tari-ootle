@@ -167,8 +167,8 @@ impl ConsensusConstants {
         // full validation-weight block projects to ~5.5s of execution on 2-core hardware — well
         // within the 10s block time. Rejects the ~31k-weight/500-command overload that broke things.
         max_block_validation_weight: 15_000,
-        // Admits the heaviest legitimate transaction — a 1.5 MiB template publish is ~524k weight
-        // (binary bytes / 3) — with ~2x headroom, while bounding any single transaction's
+        // Admits the heaviest legitimate transaction — a 1 MiB template publish is ~350k weight
+        // (binary bytes / 3) — with ~3x headroom, while bounding any single transaction's
         // size/execution cost at ingress. A mempool admission bound, not a consensus rule.
         max_transaction_weight: 1_000_000,
         max_transaction_size_bytes: MAX_TRANSACTION_SIZE_BYTES,
@@ -214,8 +214,8 @@ impl ConsensusConstants {
         // full validation-weight block projects to ~5.5s of execution on 2-core hardware — well
         // within the 10s block time. Rejects the ~31k-weight/500-command overload that broke things.
         max_block_validation_weight: 15_000,
-        // Admits the heaviest legitimate transaction — a 1.5 MiB template publish is ~524k weight
-        // (binary bytes / 3) — with ~2x headroom, while bounding any single transaction's
+        // Admits the heaviest legitimate transaction — a 1 MiB template publish is ~350k weight
+        // (binary bytes / 3) — with ~3x headroom, while bounding any single transaction's
         // size/execution cost at ingress. A mempool admission bound, not a consensus rule.
         max_transaction_weight: 1_000_000,
         max_transaction_size_bytes: MAX_TRANSACTION_SIZE_BYTES,
@@ -253,8 +253,8 @@ impl ConsensusConstants {
         // full validation-weight block projects to ~5.5s of execution on 2-core hardware — well
         // within the 10s block time. Rejects the ~31k-weight/500-command overload that broke things.
         max_block_validation_weight: 15_000,
-        // Admits the heaviest legitimate transaction — a 1.5 MiB template publish is ~524k weight
-        // (binary bytes / 3) — with ~2x headroom, while bounding any single transaction's
+        // Admits the heaviest legitimate transaction — a 1 MiB template publish is ~350k weight
+        // (binary bytes / 3) — with ~3x headroom, while bounding any single transaction's
         // size/execution cost at ingress. A mempool admission bound, not a consensus rule.
         max_transaction_weight: 1_000_000,
         max_transaction_size_bytes: MAX_TRANSACTION_SIZE_BYTES,
@@ -306,8 +306,8 @@ impl ConsensusConstants {
             // full validation-weight block projects to ~5.5s of execution on 2-core hardware — well
             // within the 10s block time. Rejects the ~31k-weight/500-command overload that broke things.
             max_block_validation_weight: 15_000,
-            // Admits the heaviest legitimate transaction — a 1.5 MiB template publish is ~524k weight
-            // (binary bytes / 3) — with ~2x headroom, while bounding any single transaction's
+            // Admits the heaviest legitimate transaction — a 1 MiB template publish is ~350k weight
+            // (binary bytes / 3) — with ~3x headroom, while bounding any single transaction's
             // size/execution cost at ingress. A mempool admission bound, not a consensus rule.
             max_transaction_weight: 1_000_000,
             max_transaction_size_bytes: MAX_TRANSACTION_SIZE_BYTES,

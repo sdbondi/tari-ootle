@@ -399,18 +399,20 @@ impl<D> TransactionBuilder<D> {
     pub fn merge(mut self, other: TransactionBuilder<D>) -> Self {
         let workspace_id_offset = self.workspace_ids.next_id();
         let other_next_workspace_id = other.workspace_ids.next_id();
-        let blob_id_offset: BlobIndex = self
-            .unsigned_transaction
-            .blobs()
-            .len()
-            .try_into()
-            .expect("self blob count exceeds BlobIndex range");
+        // A transaction may hold `BlobIndex::MAX + 1` blobs, so the count alone does not fit a
+        // `BlobIndex`; only an offset a blob is actually placed at has to.
+        let own_blob_count = self.unsigned_transaction.blobs().len();
         let other_blob_count = other.unsigned_transaction.blobs().len();
-        let combined = (blob_id_offset as usize) + other_blob_count;
+        let combined = own_blob_count + other_blob_count;
         assert!(
             combined <= BlobIndex::MAX as usize + 1,
             "merged blob count {combined} exceeds BlobIndex range",
         );
+        let blob_id_offset: BlobIndex = if other_blob_count == 0 {
+            0
+        } else {
+            own_blob_count.try_into().expect("checked above")
+        };
 
         let TransactionBuilder {
             unsigned_transaction: mut other_tx,
