@@ -239,6 +239,9 @@ impl TransactionBuilder<MainIntent> {
     /// every index its instructions carry is shifted past the blobs already present — the same
     /// treatment [`Self::merge`] gives a merged builder. Without it a fee instruction referencing a
     /// blob points at whatever sits at that index in the main list, or at nothing.
+    ///
+    /// Blob *names* are not carried over: they exist only to resolve `args![Blob(name)]` while
+    /// instructions are being added, and this runs as the builder is consumed.
     fn apply_fee_instructions(&mut self) {
         let mut fee_builder = self
             .fee_instruction_builder
@@ -267,14 +270,6 @@ impl TransactionBuilder<MainIntent> {
             self.unsigned_transaction
                 .add_blob(blob)
                 .expect("fee blob count exceeds BlobIndex range");
-        }
-
-        for (name, idx) in fee_builder.blob_ids.iter() {
-            assert!(
-                self.blob_ids.get(name).is_none(),
-                "blob name '{name}' collides with a fee instruction blob",
-            );
-            self.blob_ids.insert(name.clone(), idx + blob_id_offset);
         }
 
         for mut instruction in fee_builder.unsigned_transaction.into_instructions() {
