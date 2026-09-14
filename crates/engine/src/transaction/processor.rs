@@ -25,7 +25,7 @@ use std::{sync::Arc, time::Instant};
 use log::*;
 use ootle_network::Network;
 use tari_engine_types::{
-    commit_result::{ExecuteResult, FinalizeResult, RejectReason},
+    commit_result::{ExecuteResult, FinalizeResult},
     component::{Component, derive_component_address_from_public_key},
     entity_id_provider::EntityIdProvider,
     fees::ExhaustBurnRate,
@@ -200,54 +200,6 @@ where
                 })?;
 
         let instructions = executable.into_instructions();
-
-        // A fee intent may not publish. The compile a publish pays for costs two orders of magnitude
-        // more than the fee intent's compute credit, and `checkpoint_fee_intent` enforces payment
-        // only after the instruction has run. No way of sourcing a fee involves publishing.
-        if instructions
-            .fee
-            .iter()
-            .any(|instruction| matches!(instruction, Instruction::PublishTemplate { .. }))
-        {
-            return Ok(ExecuteResult {
-                finalize: FinalizeResult::new_rejected(
-                    id.as_hash(),
-                    RejectReason::ExecutionFailure(
-                        "Transaction publishes a template in its fee instructions".to_string(),
-                    ),
-                ),
-                execution_time: timer.elapsed(),
-                execute_epoch: execute_epoch.map(Into::into),
-                wasm_execution_points: 0,
-                native_execution_points: 0,
-            });
-        }
-
-        // A transaction may publish at most one template. Enforced here during execution — a consensus rule every
-        // validator applies deterministically — so it holds even for transactions that reach execution without
-        // passing the mempool ingress validator that mirrors it.
-        let publish_template_count = instructions
-            .fee
-            .iter()
-            .chain(&instructions.main)
-            .filter(|instruction| matches!(instruction, Instruction::PublishTemplate { .. }))
-            .count();
-        if publish_template_count > limits::MAX_PUBLISH_TEMPLATES_PER_TRANSACTION {
-            return Ok(ExecuteResult {
-                finalize: FinalizeResult::new_rejected(
-                    id.as_hash(),
-                    RejectReason::ExecutionFailure(format!(
-                        "Transaction contains {publish_template_count} publish-template instructions, but the maximum \
-                         allowed is {}",
-                        limits::MAX_PUBLISH_TEMPLATES_PER_TRANSACTION
-                    )),
-                ),
-                execution_time: timer.elapsed(),
-                execute_epoch: execute_epoch.map(Into::into),
-                wasm_execution_points: 0,
-                native_execution_points: 0,
-            });
-        }
 
         let blobs = std::rc::Rc::new(instructions.blobs);
 

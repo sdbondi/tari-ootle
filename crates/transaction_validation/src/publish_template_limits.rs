@@ -17,8 +17,10 @@ const LOG_TARGET: &str = "tari::ootle::mempool::validators::publish_template_lim
 /// on, and it is charged only once the fee intent has been paid for. Fee instructions exist to source the fee, and no
 /// way of sourcing a fee involves publishing a template.
 ///
-/// Each is a pure function of the transaction, so deciding them at ingress keeps a transaction that can never succeed
-/// from being gossiped, stored and executed. The engine remains the consensus authority; these only mirror it.
+/// Each is a pure function of the transaction, so all three are decided here rather than during execution. This
+/// validator backs both mempool ingress and block validation, so every validator applies the rules to every
+/// transaction before it can execute: a transaction breaking one is never gossiped or stored, and a block carrying
+/// one is rejected.
 #[derive(Debug, Clone, Default)]
 pub struct PublishTemplateLimitValidator;
 

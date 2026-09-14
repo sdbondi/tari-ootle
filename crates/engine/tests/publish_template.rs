@@ -100,32 +100,6 @@ fn publish_template_too_big_binary() {
     });
 }
 
-#[test]
-fn rejects_more_than_one_publish_template() {
-    let mut test = TemplateTest::new(CRATE_PATH, &[] as &[&str]);
-    let (account_address, owner_proof, account_key, _) = test.create_funded_account_with_keypair();
-
-    // The per-transaction publish-template cap is checked before any binary is validated, so these (invalid) binaries
-    // never reach WASM validation: the transaction is rejected for carrying too many PublishTemplate instructions.
-    let mut builder = Transaction::builder_localnet(Epoch(1)).pay_fee_from_component(account_address, 200_000u64);
-    for i in 0..=limits::MAX_PUBLISH_TEMPLATES_PER_TRANSACTION {
-        builder = builder.publish_template(vec![i as u8]);
-    }
-    let reason = test.execute_expect_failure(builder.build_and_seal(&account_key), vec![owner_proof]);
-
-    let RejectReason::ExecutionFailure(error) = reason else {
-        panic!("expected ExecutionFailure, got {reason:?}");
-    };
-    assert!(
-        error.contains("publish-template instructions") &&
-            error.contains(&format!(
-                "the maximum allowed is {}",
-                limits::MAX_PUBLISH_TEMPLATES_PER_TRANSACTION
-            )),
-        "unexpected reject reason: {error}"
-    );
-}
-
 fn generate_random_binary(size_in_bytes: usize) -> Vec<u8> {
     iter::repeat_with(random).take(size_in_bytes).collect()
 }
@@ -156,29 +130,6 @@ fn publish_template_without_a_template_def_section() {
     );
 
     assert_reject_reason(result, TEMPLATE_DEF_CUSTOM_SECTION);
-}
-
-/// The compile a publish pays for costs two orders of magnitude more than the compute credit a fee
-/// intent runs on, and the fee intent is only checked for payment once its instructions have run.
-/// Nothing legitimate sources a fee by publishing, so the shape is refused outright.
-#[test]
-fn publishing_a_template_in_the_fee_instructions_is_rejected() {
-    let mut test = TemplateTest::new(CRATE_PATH, &[] as &[&str]);
-    let (account_address, owner_proof, account_key, _) = test.create_funded_account_with_keypair();
-    let template = compile_template("tests/templates/hello_world", &[]).unwrap();
-
-    let reason = test.execute_expect_failure(
-        Transaction::builder_localnet(Epoch(1))
-            .with_fee_instructions_builder(|builder| {
-                builder
-                    .pay_fee_from_component(account_address, 200_000u64)
-                    .publish_template(template.into_code())
-            })
-            .build_and_seal(&account_key),
-        vec![owner_proof],
-    );
-
-    assert_reject_reason(reason, "publishes a template in its fee instructions");
 }
 
 /// A publish makes every validator Cranelift-compile the binary it carries, which is the most
