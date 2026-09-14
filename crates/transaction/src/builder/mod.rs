@@ -248,13 +248,21 @@ impl TransactionBuilder<MainIntent> {
             .inputs_mut()
             .extend(fee_builder.unsigned_transaction.inputs_mut().drain(..));
 
-        let blob_id_offset: BlobIndex = self
-            .unsigned_transaction
-            .blobs()
-            .len()
-            .try_into()
-            .expect("blob count exceeds BlobIndex range");
         let fee_blobs = std::mem::take(fee_builder.unsigned_transaction.blobs_mut());
+        // A transaction may hold `BlobIndex::MAX + 1` blobs, so the count alone does not fit a
+        // `BlobIndex`; only an offset a blob is actually placed at has to.
+        let blob_id_offset: BlobIndex = if fee_blobs.is_empty() {
+            0
+        } else {
+            let offset = self.unsigned_transaction.blobs().len();
+            assert!(
+                offset + fee_blobs.len() <= BlobIndex::MAX as usize + 1,
+                "fee and main instruction blobs come to {}, over the {} a transaction may carry",
+                offset + fee_blobs.len(),
+                BlobIndex::MAX as usize + 1,
+            );
+            offset.try_into().expect("checked above")
+        };
         for blob in fee_blobs {
             self.unsigned_transaction
                 .add_blob(blob)

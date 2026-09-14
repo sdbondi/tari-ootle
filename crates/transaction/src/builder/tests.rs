@@ -159,3 +159,19 @@ fn a_fee_instruction_blob_resolves_when_nothing_else_carries_one() {
         metadata_hash: None,
     });
 }
+
+/// A transaction may carry `BlobIndex::MAX + 1` blobs, so the count itself does not fit a
+/// `BlobIndex`. Building one with a full blob list must still work when the fee builder adds none.
+#[test]
+fn a_full_blob_list_builds_when_the_fee_builder_carries_none() {
+    let mut builder = Transaction::builder_localnet(Epoch(1));
+    for i in 0..=u8::MAX {
+        builder = builder.add_blob(format!("b{i}"), vec![i]);
+    }
+
+    let tx = builder
+        .with_fee_instructions_builder(|b| b.add_instruction(Instruction::DropAllProofsInWorkspace))
+        .build_unsigned();
+
+    assert_eq!(tx.blobs().len(), u8::MAX as usize + 1);
+}
