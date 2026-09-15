@@ -154,19 +154,23 @@ impl ConsensusConstants {
         missed_proposal_suspend_threshold: 5,
         missed_proposal_recovery_threshold: 5,
         // Calibrated against 2-core hardware (Esmeralda class), where ~500 LocalOnly stress
-        // transactions (~62 weight each, ~31k weight) executed in ~11.5s — i.e. ~2.7k weight/s.
-        // A 10000 budget (~160 of those commands) therefore projects to ~3.7s of propose-time
-        // execution, comfortably within the 10s block time and under the 5s execution circuit
-        // breaker, while heavier transactions naturally consume more of the budget. The breaker in
-        // on_propose is the backstop for outliers the static weight under-estimates. NOTE:
-        // propose-time execution is sequential, so more cores does not raise this proportionally —
-        // calibrate to single-core throughput.
-        max_block_weight: 10_000,
+        // transactions executed in ~11.5s. `INVOCATION_FLOOR` denominates the weight unit: every
+        // instruction that instantiates a template weighs at least the floor, which puts a plain
+        // transfer (three invocations, two inputs, one signer) at ~125 and the stress transaction
+        // at ~150, giving ~6.5k weight/s. A 24000 budget is ~160 of those commands and projects to
+        // ~3.7s of propose-time execution, comfortably within the 10s block time and under the 5s
+        // execution circuit breaker, while heavier transactions naturally consume more of the
+        // budget. The breaker in on_propose is the backstop for outliers the static weight
+        // under-estimates. `the_block_budget_admits_the_calibrated_command_count` pins the command
+        // count so a change to the floor cannot silently shrink the block. NOTE: propose-time
+        // execution is sequential, so more cores does not raise this proportionally — calibrate to
+        // single-core throughput.
+        max_block_weight: 24_000,
         max_commands_in_block: 1000,
         // 1.5x the proposal budget: honest blocks (<= max_block_weight) are never rejected, while a
         // full validation-weight block projects to ~5.5s of execution on 2-core hardware — well
-        // within the 10s block time. Rejects the ~31k-weight/500-command overload that broke things.
-        max_block_validation_weight: 15_000,
+        // within the 10s block time. Rejects the ~500-command overload that broke things.
+        max_block_validation_weight: 36_000,
         // Admits the heaviest legitimate transaction — a 1 MiB template publish is ~350k weight
         // (binary bytes / 3) — with ~3x headroom, while bounding any single transaction's
         // size/execution cost at ingress. A mempool admission bound, not a consensus rule.
@@ -201,19 +205,23 @@ impl ConsensusConstants {
         missed_proposal_suspend_threshold: 5,
         missed_proposal_recovery_threshold: 5,
         // Calibrated against 2-core hardware (Esmeralda class), where ~500 LocalOnly stress
-        // transactions (~62 weight each, ~31k weight) executed in ~11.5s — i.e. ~2.7k weight/s.
-        // A 10000 budget (~160 of those commands) therefore projects to ~3.7s of propose-time
-        // execution, comfortably within the 10s block time and under the 5s execution circuit
-        // breaker, while heavier transactions naturally consume more of the budget. The breaker in
-        // on_propose is the backstop for outliers the static weight under-estimates. NOTE:
-        // propose-time execution is sequential, so more cores does not raise this proportionally —
-        // calibrate to single-core throughput.
-        max_block_weight: 10_000,
+        // transactions executed in ~11.5s. `INVOCATION_FLOOR` denominates the weight unit: every
+        // instruction that instantiates a template weighs at least the floor, which puts a plain
+        // transfer (three invocations, two inputs, one signer) at ~125 and the stress transaction
+        // at ~150, giving ~6.5k weight/s. A 24000 budget is ~160 of those commands and projects to
+        // ~3.7s of propose-time execution, comfortably within the 10s block time and under the 5s
+        // execution circuit breaker, while heavier transactions naturally consume more of the
+        // budget. The breaker in on_propose is the backstop for outliers the static weight
+        // under-estimates. `the_block_budget_admits_the_calibrated_command_count` pins the command
+        // count so a change to the floor cannot silently shrink the block. NOTE: propose-time
+        // execution is sequential, so more cores does not raise this proportionally — calibrate to
+        // single-core throughput.
+        max_block_weight: 24_000,
         max_commands_in_block: 1000,
         // 1.5x the proposal budget: honest blocks (<= max_block_weight) are never rejected, while a
         // full validation-weight block projects to ~5.5s of execution on 2-core hardware — well
-        // within the 10s block time. Rejects the ~31k-weight/500-command overload that broke things.
-        max_block_validation_weight: 15_000,
+        // within the 10s block time. Rejects the ~500-command overload that broke things.
+        max_block_validation_weight: 36_000,
         // Admits the heaviest legitimate transaction — a 1 MiB template publish is ~350k weight
         // (binary bytes / 3) — with ~3x headroom, while bounding any single transaction's
         // size/execution cost at ingress. A mempool admission bound, not a consensus rule.
@@ -240,19 +248,23 @@ impl ConsensusConstants {
         missed_proposal_suspend_threshold: 5,
         missed_proposal_recovery_threshold: 5,
         // Calibrated against 2-core hardware (Esmeralda class), where ~500 LocalOnly stress
-        // transactions (~62 weight each, ~31k weight) executed in ~11.5s — i.e. ~2.7k weight/s.
-        // A 10000 budget (~160 of those commands) therefore projects to ~3.7s of propose-time
-        // execution, comfortably within the 10s block time and under the 5s execution circuit
-        // breaker, while heavier transactions naturally consume more of the budget. The breaker in
-        // on_propose is the backstop for outliers the static weight under-estimates. NOTE:
-        // propose-time execution is sequential, so more cores does not raise this proportionally —
-        // calibrate to single-core throughput.
-        max_block_weight: 10_000,
+        // transactions executed in ~11.5s. `INVOCATION_FLOOR` denominates the weight unit: every
+        // instruction that instantiates a template weighs at least the floor, which puts a plain
+        // transfer (three invocations, two inputs, one signer) at ~125 and the stress transaction
+        // at ~150, giving ~6.5k weight/s. A 24000 budget is ~160 of those commands and projects to
+        // ~3.7s of propose-time execution, comfortably within the 10s block time and under the 5s
+        // execution circuit breaker, while heavier transactions naturally consume more of the
+        // budget. The breaker in on_propose is the backstop for outliers the static weight
+        // under-estimates. `the_block_budget_admits_the_calibrated_command_count` pins the command
+        // count so a change to the floor cannot silently shrink the block. NOTE: propose-time
+        // execution is sequential, so more cores does not raise this proportionally — calibrate to
+        // single-core throughput.
+        max_block_weight: 24_000,
         max_commands_in_block: 1000,
         // 1.5x the proposal budget: honest blocks (<= max_block_weight) are never rejected, while a
         // full validation-weight block projects to ~5.5s of execution on 2-core hardware — well
-        // within the 10s block time. Rejects the ~31k-weight/500-command overload that broke things.
-        max_block_validation_weight: 15_000,
+        // within the 10s block time. Rejects the ~500-command overload that broke things.
+        max_block_validation_weight: 36_000,
         // Admits the heaviest legitimate transaction — a 1 MiB template publish is ~350k weight
         // (binary bytes / 3) — with ~3x headroom, while bounding any single transaction's
         // size/execution cost at ingress. A mempool admission bound, not a consensus rule.
@@ -293,19 +305,23 @@ impl ConsensusConstants {
             missed_proposal_suspend_threshold: 5,
             missed_proposal_recovery_threshold: 5,
             // Calibrated against 2-core hardware (Esmeralda class), where ~500 LocalOnly stress
-            // transactions (~62 weight each, ~31k weight) executed in ~11.5s — i.e. ~2.7k weight/s.
-            // A 10000 budget (~160 of those commands) therefore projects to ~3.7s of propose-time
-            // execution, comfortably within the 10s block time and under the 5s execution circuit
-            // breaker, while heavier transactions naturally consume more of the budget. The breaker in
-            // on_propose is the backstop for outliers the static weight under-estimates. NOTE:
-            // propose-time execution is sequential, so more cores does not raise this proportionally —
-            // calibrate to single-core throughput.
-            max_block_weight: 10_000,
+            // transactions executed in ~11.5s. `INVOCATION_FLOOR` denominates the weight unit: every
+            // instruction that instantiates a template weighs at least the floor, which puts a plain
+            // transfer (three invocations, two inputs, one signer) at ~125 and the stress transaction
+            // at ~150, giving ~6.5k weight/s. A 24000 budget is ~160 of those commands and projects to
+            // ~3.7s of propose-time execution, comfortably within the 10s block time and under the 5s
+            // execution circuit breaker, while heavier transactions naturally consume more of the
+            // budget. The breaker in on_propose is the backstop for outliers the static weight
+            // under-estimates. `the_block_budget_admits_the_calibrated_command_count` pins the command
+            // count so a change to the floor cannot silently shrink the block. NOTE: propose-time
+            // execution is sequential, so more cores does not raise this proportionally — calibrate to
+            // single-core throughput.
+            max_block_weight: 24_000,
             max_commands_in_block: 1000,
             // 1.5x the proposal budget: honest blocks (<= max_block_weight) are never rejected, while a
             // full validation-weight block projects to ~5.5s of execution on 2-core hardware — well
-            // within the 10s block time. Rejects the ~31k-weight/500-command overload that broke things.
-            max_block_validation_weight: 15_000,
+            // within the 10s block time. Rejects the ~500-command overload that broke things.
+            max_block_validation_weight: 36_000,
             // Admits the heaviest legitimate transaction — a 1 MiB template publish is ~350k weight
             // (binary bytes / 3) — with ~3x headroom, while bounding any single transaction's
             // size/execution cost at ingress. A mempool admission bound, not a consensus rule.
@@ -533,6 +549,46 @@ mod tests {
                 "{invocations} minimal invocations fit the {}-byte cap and weigh {weight}, within the {} weight cap",
                 constants.max_transaction_size_bytes,
                 constants.max_transaction_weight,
+            );
+        }
+    }
+
+    /// The block budget is denominated in weight units, and [`INVOCATION_FLOOR`] is what a weight
+    /// unit means for any transaction that calls a template. Raising the floor without raising the
+    /// budget shrinks the block silently: the same transactions weigh more, so fewer fit, with
+    /// nothing failing to say so. This pins the command count the budget was calibrated for.
+    #[test]
+    fn the_block_budget_admits_the_calibrated_command_count() {
+        /// Commands per block the propose budget is sized for, from the throughput measurement in
+        /// the comment on `max_block_weight`.
+        const CALIBRATED_COMMANDS_PER_BLOCK: u64 = 160;
+
+        // A plain transfer: `pay_fee`, `withdraw`, `put_last_instruction_output_on_workspace`,
+        // `deposit`. Three of the four invoke a template and so weigh the floor; the fourth weighs
+        // nothing. Two inputs and one signer carry the rest.
+        const INPUTS: u64 = 2;
+        const SIGNERS: u64 = 1;
+        const WEIGHT_PER_INPUT: u64 = 15;
+        const WEIGHT_PER_SIGNER: u64 = 5;
+        let transfer_weight = 3 * INVOCATION_FLOOR + INPUTS * WEIGHT_PER_INPUT + SIGNERS * WEIGHT_PER_SIGNER;
+
+        for constants in [
+            ConsensusConstants::mainnet(),
+            ConsensusConstants::devnet(7),
+            ConsensusConstants::esmeralda(),
+            ConsensusConstants::testnet(),
+        ] {
+            let commands = constants.max_block_weight / transfer_weight;
+            assert!(
+                commands >= CALIBRATED_COMMANDS_PER_BLOCK,
+                "a {}-weight block holds {commands} transfers of {transfer_weight} weight, under the \
+                 {CALIBRATED_COMMANDS_PER_BLOCK} it is calibrated for — raise max_block_weight with the floor",
+                constants.max_block_weight,
+            );
+            assert!(
+                constants.max_commands_in_block as u64 >= commands,
+                "max_commands_in_block ({}) cuts the weight budget short at {commands} transfers",
+                constants.max_commands_in_block,
             );
         }
     }
