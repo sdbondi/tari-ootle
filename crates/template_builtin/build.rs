@@ -41,6 +41,8 @@ fn main() -> anyhow::Result<()> {
         // we only want to rebuild if a template was added/modified
         println!("cargo:rerun-if-changed={}/src", template);
         println!("cargo:rerun-if-changed={}/Cargo.toml", template);
+        // Carries the linker's `--initial-memory`, so a change to it changes the binary.
+        println!("cargo:rerun-if-changed={}/.cargo/config.toml", template);
 
         let template_path = crate_path.join(template);
         if !template_path.exists() {
