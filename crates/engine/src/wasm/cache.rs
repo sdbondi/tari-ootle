@@ -271,9 +271,9 @@ impl WasmModuleCache {
         };
 
         let path = self.path_for(addr);
-        // Every call needs its own tempfile: two `store`s of one address can run concurrently,
-        // since the indexer opens the cache directory twice, once for the template manager and
-        // once for the dry-run provider.
+        // Every call needs its own tempfile: a cache directory is shared by concurrent threads and by
+        // whatever other processes point at it, so two `store`s of one address can run at once. The pid
+        // and counter make the name unique to this call.
         let tmp = self.dir.join(format!(
             "{}_{}.bin.tmp.{}.{}",
             addr,

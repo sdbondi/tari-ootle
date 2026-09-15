@@ -1,9 +1,7 @@
 //   Copyright 2025 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::{io, path::PathBuf};
-
-use tari_engine::wasm::DiskCachedWasmTemplateProvider;
+use tari_engine::wasm::{DiskCachedWasmTemplateProvider, WasmModuleCache};
 use tari_engine_types::{
     published_template::{PublishedTemplate, PublishedTemplateAddress},
     substate::{Substate, SubstateId},
@@ -26,19 +24,17 @@ use crate::substate_manager::{SubstateManager, SubstateManagerError};
 /// `TemplateManager` code can be retired independently.
 pub type DryRunTemplateProvider = MemoryCacheTemplateProvider<DiskCachedWasmTemplateProvider<NetworkTemplateProvider>>;
 
-/// Builds the shared dry-run template provider. `handle` must belong to the runtime that dry runs execute on;
-/// `wasm_cache_dir` is the on-disk compiled-module cache directory.
+/// Builds the shared dry-run template provider. `handle` must belong to the runtime that dry runs execute on.
+/// `wasm_cache` is the compiled-module cache instance shared with the
+/// [`crate::template_manager::TemplateManager`]; both work the same directory.
 pub fn build_dry_run_template_provider(
     handle: Handle,
     substate_manager: SubstateManager,
-    wasm_cache_dir: impl Into<PathBuf>,
-) -> io::Result<DryRunTemplateProvider> {
+    wasm_cache: WasmModuleCache,
+) -> DryRunTemplateProvider {
     let network = NetworkTemplateProvider::new(handle, substate_manager);
-    let disk_cached = DiskCachedWasmTemplateProvider::open(network, wasm_cache_dir)?;
-    Ok(MemoryCacheTemplateProvider::new(
-        disk_cached,
-        &TemplateConfig::default(),
-    ))
+    let disk_cached = DiskCachedWasmTemplateProvider::new(network, wasm_cache);
+    MemoryCacheTemplateProvider::new(disk_cached, &TemplateConfig::default())
 }
 
 /// Resolves a published template by fetching its substate from the network on demand.

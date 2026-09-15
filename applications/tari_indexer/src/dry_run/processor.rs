@@ -20,12 +20,12 @@
 //  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use log::info;
 use ootle_network::Network;
 use tari_consensus::consensus_constants::ConsensusConstants;
-use tari_engine::{fees::FeeTable, state_store::new_memory_store, traits::ClaimProofVerifier};
+use tari_engine::{fees::FeeTable, state_store::new_memory_store, traits::ClaimProofVerifier, wasm::WasmModuleCache};
 use tari_engine_types::{
     commit_result::ExecuteResult,
     substate::{Substate, SubstateId},
@@ -66,12 +66,12 @@ impl DryRunTransactionProcessor {
         fee_table: FeeTable,
         epoch_manager: EpochManagerHandle<PeerAddress>,
         substate_manager: SubstateManager,
-        wasm_cache_dir: PathBuf,
+        wasm_cache: WasmModuleCache,
         claim_burn_proof_verifier: impl ClaimProofVerifier + Send + Sync + 'static,
         consensus_constants: ConsensusConstants,
     ) -> Result<Self, std::io::Error> {
         let handle = Handle::try_current().map_err(std::io::Error::other)?;
-        let template_provider = build_dry_run_template_provider(handle, substate_manager.clone(), wasm_cache_dir)?;
+        let template_provider = build_dry_run_template_provider(handle, substate_manager.clone(), wasm_cache);
         Ok(Self {
             network,
             fee_table,

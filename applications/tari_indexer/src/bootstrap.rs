@@ -332,19 +332,20 @@ pub async fn spawn_services(
 
     // Template manager
     let wasm_cache_dir = config.to_data_dir().join("wasm_cache");
+    // One instance serves every consumer of the directory: the template manager and the dry-run provider.
+    let wasm_cache = WasmModuleCache::open(&wasm_cache_dir).map_err(|e| {
+        anyhow!(
+            "Failed to open WASM module cache at {}: {}",
+            wasm_cache_dir.display(),
+            e,
+        )
+    })?;
 
     let template_manager = task::spawn_blocking({
         let global_db = global_db.clone();
         let substate_manager = substate_manager.clone();
-        let wasm_cache_dir = wasm_cache_dir.clone();
+        let wasm_cache = wasm_cache.clone();
         move || {
-            let wasm_cache = WasmModuleCache::open(&wasm_cache_dir).map_err(|e| {
-                anyhow!(
-                    "Failed to open WASM module cache at {}: {}",
-                    wasm_cache_dir.display(),
-                    e,
-                )
-            })?;
             let manager = TemplateManager::initialize(global_db, substate_manager, wasm_cache)?;
             anyhow::Ok(manager)
         }
@@ -374,7 +375,7 @@ pub async fn spawn_services(
         fee_table.clone(),
         epoch_manager.clone(),
         dry_run_substate_manager,
-        wasm_cache_dir,
+        wasm_cache,
         // We do not verify the kernel merkle proof, since that requires syncing L1 headers
         // TODO: maybe at least validate the well-formedness of the proof
         KnowledgeProofVerifier::new(
