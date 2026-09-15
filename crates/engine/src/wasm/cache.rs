@@ -17,8 +17,8 @@
 //!
 //! Two surfaces are exposed:
 //!
-//! - [`WasmModuleCache`] — low-level helper for callers that don't sit in a `TemplateProvider` chain (e.g. the wallet
-//!   daemon's template monitor).
+//! - [`WasmModuleCache`] — low-level helper for callers that sit outside a `TemplateProvider` chain (e.g. the indexer's
+//!   `TemplateManager`).
 //! - [`DiskCachedWasmTemplateProvider`] — a `TemplateProvider` middleware that wraps a raw `PublishedTemplate` provider
 //!   and outputs `LoadedTemplate`, doing compile-or-deserialize behind the scenes.
 
@@ -122,6 +122,9 @@ pub struct WasmModuleCache {
 impl WasmModuleCache {
     /// Open or create a cache rooted at `dir`. Creates the directory tree
     /// if missing.
+    ///
+    /// A directory takes one instance per process, cloned to each of its consumers rather than opened again by
+    /// each, so that whatever the handle comes to track covers the whole directory.
     pub fn open(dir: impl Into<PathBuf>) -> io::Result<Self> {
         let dir = dir.into();
         fs::create_dir_all(&dir)?;
@@ -362,6 +365,8 @@ impl<TStore> DiskCachedWasmTemplateProvider<TStore> {
         Self { inner, cache }
     }
 
+    /// Opens a cache at `path` for this provider's exclusive use. A process whose cache directory has another
+    /// consumer opens it once with [`WasmModuleCache::open`] and passes a clone to [`Self::new`].
     pub fn open(inner: TStore, path: impl Into<PathBuf>) -> io::Result<Self> {
         let wasm_cache = WasmModuleCache::open(path)?;
         Ok(Self::new(inner, wasm_cache))

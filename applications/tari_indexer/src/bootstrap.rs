@@ -332,7 +332,7 @@ pub async fn spawn_services(
 
     // Template manager
     let wasm_cache_dir = config.to_data_dir().join("wasm_cache");
-    // One instance serves every consumer of the directory: the template manager and the dry-run provider.
+    // One instance serves every consumer of the directory, each holding a clone.
     let wasm_cache = WasmModuleCache::open(&wasm_cache_dir).map_err(|e| {
         anyhow!(
             "Failed to open WASM module cache at {}: {}",
