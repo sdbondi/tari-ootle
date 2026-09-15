@@ -46,11 +46,6 @@ const POINTS_PER_MEMORY_BYTE: i64 = 1;
 /// a vectorised block move. Priced at the per-byte rate times the widest element.
 const POINTS_PER_TABLE_ELEMENT: i64 = 16;
 
-/// Points charged per 64 KiB page added by `memory.grow`.
-///
-/// A grow allocates and zeroes the new pages, which is the same per-byte work as `memory.fill`.
-const POINTS_PER_MEMORY_PAGE: i64 = 65_536 * POINTS_PER_MEMORY_BYTE;
-
 /// Indexes of the two globals this middleware appends to every module.
 ///
 /// A middleware cannot add function locals — `locals_info` is read-only — so the operand a charge
@@ -170,11 +165,6 @@ pub fn charge_for(operator: &Operator) -> Option<Charge> {
         Operator::TableGrow { .. } => charge(
             POINTS_PER_TABLE_ELEMENT,
             Some(i32::try_from(limits::WASM_LIMITS.max_table_elements).unwrap_or(i32::MAX)),
-        ),
-        // `[delta]`: 64 KiB pages, bounded by what linear memory may hold.
-        Operator::MemoryGrow { .. } => charge(
-            POINTS_PER_MEMORY_PAGE,
-            Some(i32::try_from(limits::WASM_LIMITS.max_memory_pages).unwrap_or(i32::MAX)),
         ),
         _ => None,
     }

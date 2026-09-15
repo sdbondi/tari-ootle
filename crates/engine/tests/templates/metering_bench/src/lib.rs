@@ -109,8 +109,62 @@ mod metering_bench {
         pub fn bench_fnoop(rounds: u64) -> u64 {
             grind_f(rounds, |f| f)
         }
+
+        // Memory growth ----------------------------------------------------------------------
+        /// One `memory.grow` of a single page per round, with the new page never touched. Prices
+        /// the operator itself: the host-side mapping, with no page faults attributed to it.
+        pub fn bench_memory_grow(rounds: u64) -> u64 {
+            grow(rounds, 1, false)
+        }
+
+        /// Eight pages per `memory.grow` instead of one. If a page's cost is really the operator's
+        /// own host-side work, this costs the same per call as `bench_memory_grow` and an eighth as
+        /// much per page; if it is genuinely per page, the per-page figure is unchanged.
+        pub fn bench_memory_grow8(rounds: u64) -> u64 {
+            grow(rounds, 8, false)
+        }
+
+        /// As `bench_memory_grow`, but writes one byte into each new page. The difference between
+        /// the two is the first-touch fault cost, which is what a guest actually using the memory
+        /// pays — and which its own stores are metered for separately.
+        pub fn bench_memory_grow_touch(rounds: u64) -> u64 {
+            grow(rounds, 1, true)
+        }
     }
 }
+
+/// `rounds` grows of `pages` each, optionally touching the first byte of every new page. The
+/// returned accumulator folds in every grow's result so none of them is dead.
+fn grow(rounds: u64, pages: usize, touch: bool) -> u64 {
+    let mut acc: u64 = SEED;
+    let mut i: u64 = 0;
+    while i < rounds {
+        // SAFETY: growing linear memory is always sound; a refused grow returns usize::MAX and
+        // leaves memory untouched, which the write below is guarded against.
+        let before = core::arch::wasm32::memory_grow(0, pages);
+        if before == usize::MAX {
+            // The engine's page cap refused the grow. Keep folding so the loop is not elided.
+            acc = acc.rotate_left(1).wrapping_mul(MIX);
+        } else {
+            if touch {
+                let mut page = 0;
+                while page < pages {
+                    let addr = ((before + page) * PAGE_BYTES) as *mut u8;
+                    // SAFETY: `before` is the page index the new pages start at, so each of these
+                    // is the first byte of a page grow just made addressable.
+                    unsafe { addr.write_volatile(1) };
+                    page += 1;
+                }
+            }
+            acc = (acc ^ before as u64).rotate_left(1).wrapping_mul(MIX);
+        }
+        i = i.wrapping_add(1);
+    }
+    acc
+}
+
+/// WASM linear-memory page size.
+const PAGE_BYTES: usize = 64 * 1024;
 
 /// Integer dependent-chain grinder. `op(acc, d)` is the one measured op. `d` is taken from the low
 /// 16 bits (always populated, in 1..=0xFFFF) so division has a wide dividend / wide quotient and

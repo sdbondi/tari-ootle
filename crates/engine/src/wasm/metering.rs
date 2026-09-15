@@ -40,6 +40,24 @@ pub fn middleware(limit: u64) -> Metering<CostFunction> {
 /// accumulator, so the ~16 points they execute — three global stores, an extend, a multiply, a
 /// compare, a conditional block, a subtract, and for `grow` a clamp — have to be paid for here.
 /// Without it a module could run the sequence for free by repeating a zero-length copy.
+/// Cost of one `memory.grow`, whatever delta it asks for.
+///
+/// The work is host-side mapping done once per call, not per page: `crates/engine/examples/
+/// memory_page_cost.rs` measures 908 ns for a one-page grow and 116 ns/page when eight pages are
+/// taken in a single call — the same ~908 ns spread eight ways. So this is flat, and the pages a
+/// module declares as its initial memory are free for the same reason: they are one mapping,
+/// amortised.
+///
+/// 908 ns against a ~0.16 ns cheap op is ~5,500 points; set above that because the mapping path
+/// varies with the kernel and its speculation mitigations more than with the microarchitecture the
+/// rest of this table is calibrated against.
+///
+/// What this does *not* cover is the page fault a guest takes when it first touches a new page
+/// (~2,000 ns/page measured). A guest writing across a page pays that through its own metered
+/// stores; one writing a single byte per page does not. `WASM_LIMITS.max_memory_pages` bounds the
+/// whole exposure to ~64 us per instantiation, which is why it is left unpriced.
+const MEMORY_GROW_COST: u64 = 6_000;
+
 const BULK_OPERATOR_COST: u64 = 20;
 
 #[allow(clippy::too_many_lines)]
@@ -84,7 +102,7 @@ fn cost_function(op: &Operator) -> u64 {
         Operator::I64Store16 { .. } => 2,
         Operator::I64Store32 { .. } => 2,
         Operator::MemorySize { .. } => 1,
-        Operator::MemoryGrow { .. } => 4,
+        Operator::MemoryGrow { .. } => MEMORY_GROW_COST,
         Operator::I64Const { .. } => 0,
         Operator::F32Const { .. } => 1,
         Operator::F64Const { .. } => 1,
