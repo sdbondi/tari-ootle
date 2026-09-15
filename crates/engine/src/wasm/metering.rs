@@ -38,8 +38,10 @@ pub fn middleware(limit: u64) -> Metering<CostFunction> {
 /// the table below prices at 2 to 4 for these. The second is the charge sequence itself: those
 /// operators are emitted after this middleware has run, which is what keeps them out of the
 /// accumulator, so the ~16 points they execute — three global stores, an extend, a multiply, a
-/// compare, a conditional block, a subtract, and for `grow` a clamp — have to be paid for here.
+/// compare, a conditional block, a subtract, and for `table.grow` a clamp — have to be paid for here.
 /// Without it a module could run the sequence for free by repeating a zero-length copy.
+const BULK_OPERATOR_COST: u64 = 20;
+
 /// Cost of one `memory.grow`, whatever delta it asks for.
 ///
 /// The work is host-side mapping done once per call, not per page: `crates/engine/examples/
@@ -57,8 +59,6 @@ pub fn middleware(limit: u64) -> Metering<CostFunction> {
 /// stores; one writing a single byte per page does not. `WASM_LIMITS.max_memory_pages` bounds the
 /// whole exposure to ~64 us per instantiation, which is why it is left unpriced.
 const MEMORY_GROW_COST: u64 = 6_000;
-
-const BULK_OPERATOR_COST: u64 = 20;
 
 #[allow(clippy::too_many_lines)]
 fn cost_function(op: &Operator) -> u64 {

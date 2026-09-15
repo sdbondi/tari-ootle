@@ -30,7 +30,7 @@ fn fee_main() {
     let account = arg!["account"];
     // pay_fee locks a ceiling and refunds the unused remainder. Publishing costs roughly
     // binary_size µT (storage) + binary_size/3 µT (transaction weight); 1 tTARI covers the small
-    // max_compute binary with head-room. Raise it for larger templates (binary cap is 1.5 MiB).
+    // max_compute binary with head-room. Raise it for larger templates (binary cap is 1 MiB).
     account.pay_fee(1_000_000);
 }
 

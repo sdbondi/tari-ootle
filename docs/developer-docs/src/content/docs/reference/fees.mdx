@@ -133,23 +133,28 @@ These are checked at ingress or at the very start of execution, before a single 
 |---|---|---|
 | Transaction weight ceiling | mempool admission | `max_transaction_weight` (1,000,000) |
 | Transaction validity window | mempool + consensus | `max_epoch` at most `max_transaction_validity_epochs` (2160) ahead |
-| At most one template publish | execution | `MAX_PUBLISH_TEMPLATES_PER_TRANSACTION` = 1 |
+| At most one template publish | mempool + block validation | `MAX_PUBLISH_TEMPLATES_PER_TRANSACTION` = 1 |
+| No template publish in fee instructions | mempool + block validation | nothing sources a fee by publishing |
+| Template binary ceiling | mempool + block validation | `ENGINE_LIMITS.max_template_binary_size_bytes` (1 MiB) |
 | Fees are payable only in TARI | execution | any other resource is an `InvalidArgument` |
 
 The first charges land as soon as the runtime initialises, before any instruction runs:
 
 - **`Initial`** — a flat cost per transaction. Currently `0` on every shipped network.
 - **`TransactionWeight`** — the transaction's weight × `per_transaction_weight_cost`. Weight is a
-  static size/IO measure: instruction literals (bytes ÷ 3), blobs, 15 per input and 5 per signer. It
-  prices what the network must gossip, store and validate regardless of what execution does.
+  static size/IO measure: instruction literals (bytes ÷ 3), blobs, 15 per input and 5 per signer, and
+  a floor of `INVOCATION_FLOOR` (30) on any instruction that invokes a template — an argument-free
+  call weighs nothing by its arguments, but still instantiates the template. It prices what the
+  network must gossip, store and validate regardless of what execution does.
 
 ---
 
 ## Stage 1 — the fee intent
 
-The fee instructions exist to *source* a payment and hand it to the engine. Anything is allowed here:
-withdrawing from an account, claiming a Minotari burn, swapping through an AMM, revealing a stealth
-UTXO.
+The fee instructions exist to *source* a payment and hand it to the engine: withdrawing from an
+account, claiming a Minotari burn, swapping through an AMM, revealing a stealth UTXO. Publishing a
+template is the one thing refused here — the compile it pays for costs two orders of magnitude more
+than the credit below, and nothing sources a fee by publishing.
 
 **How a payment is made**
 
@@ -175,7 +180,9 @@ Rules and checks applied to a payment:
   retained in each validator's record of the execution rather than in consensus state, so its
   bytes are priced well below persisted ones.
 - `TemplateLoad` — `(bytes_loaded / 3000) × per_template_load_cost_unit`, charged **once per template
-  per transaction**; repeat calls into an already-loaded template are free.
+  per transaction**. Loading is what is deduplicated, not calling: every invocation instantiates the
+  template afresh and pays `instantiation_points` for it (see below), including nested cross-template
+  calls.
 - Metering points accumulate for WASM and native crypto, but are not priced until finalisation.
 
 **Compute on credit.** A transaction cannot pay before it has sourced its funds, so the fee intent
@@ -201,9 +208,9 @@ fee instruction and before the first main instruction, and it does four things i
 1. **Validate the intent is finalisable.** Dangling buckets or undropped proofs fail here, exactly as
    they would at the end of a transaction.
 2. **Price the fee intent's state** (`on_fee_checkpoint`). This is the state a failing transaction
-   falls back to committing, so it is priced *before* the main intent spends any compute: `Storage`,
-   `SubstateCreate` and `TemplatePublish` are computed over the substates the fee intent mutated,
-   plus the transaction receipt it would produce.
+   falls back to committing, so it is priced *before* the main intent spends any compute: `Storage`
+   and `SubstateCreate` are computed over the substates the fee intent mutated, plus the transaction
+   receipt it would produce. `TemplatePublish` cannot arise here, since a fee intent may not publish.
 3. **Test the payment.** The check is `payments ≥ total charges`. The exhaust burn is a share of
    what is paid rather than a charge, so it does not enter here. A shortfall rejects the transaction
    outright: nothing is written and no fee is taken.
@@ -352,6 +359,18 @@ finalised).
 | `TemplatePublish` | finalisation | 250,000 µT flat; first 96 KiB at the storage rate; 100 µT × units² per KiB beyond |
 | `WasmExecution` | finalisation | 1 µT per 1000 metering points |
 | `NativeExecution` | finalisation | 1 µT per 1000 point-equivalents |
+
+`NativeExecution` is where the two largest non-storage charges live, and neither is obvious from the
+rate alone:
+
+| Native work | Points | Roughly |
+|---|---|---|
+| Instantiating a template — **every** call, including nested cross-template ones | `100,000 + 5×data-segment byte + 700×data segment + 32×element entry + 16×table slot` | ~197 µT per call into the builtin account template, ~150 µT into the faucet |
+| Compiling a published binary, once at publish | `140,000,000 + 2,100 × binary bytes` | ~0.34 tTARI for a 96 KiB template, ~2.3 tTARI at the 1 MiB cap |
+
+The compile charge is what sets the binary cap: `MAX_NATIVE_POINTS_PER_TRANSACTION` has to hold it
+and still leave a transaction room to source its fee. A four-call transaction pays roughly 600–800 µT
+of instantiation before any template code runs, which is usually larger than its `WasmExecution`.
 
 A source that charges nothing is omitted from the breakdown entirely rather than recorded as a zero.
 The exhaust burn is not a source: it is settled over the total paid and recorded on the receipt's
