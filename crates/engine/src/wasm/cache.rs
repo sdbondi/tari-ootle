@@ -57,8 +57,10 @@ const LOG_TARGET: &str = "tari::engine::wasm::cache";
 ///   so a node serving a stale artifact meters against the old cap and diverges from one that compiled fresh.
 /// - The `wasmer` crate version (the serialized artifact format is internal to wasmer and not part of any stable wire
 ///   spec).
-/// - The layout of the file's own header (`HEADER_BYTES` and the fields it carries). A reader that disagrees with the
-///   writer about the header slices the artifact at the wrong offset and reads the fields from the wrong bytes.
+/// - The order or meaning of the header's fields at an unchanged `HEADER_BYTES`. A reader that agrees with the writer
+///   on the header's length but not on its field order recomputes a matching CRC over values it then reads from the
+///   wrong bytes. A change to the length needs no bump: the reader takes the CRC from the wrong offset and rejects the
+///   file.
 /// - How the header's values are derived — `validate_module_structure`'s segment tally. A cache hit serves these
 ///   verbatim rather than recomputing them, and `instantiation_points` prices a call off them, so a node reading a file
 ///   written under an older derivation charges a different fee for the same transaction than one that compiled fresh.
@@ -72,12 +74,27 @@ pub const ENGINE_FINGERPRINT: &str = "v5";
 /// followed by the four counts of [`ModuleShape`]. `wasmer::Module::serialize` preserves none of
 /// them, and all are needed after a cache hit — the first for accounting (e.g. moka weighing), the
 /// rest to price instantiation.
-const HEADER_BYTES: usize = 40;
+const HEADER_FIELD_COUNT: usize = 5;
+const HEADER_FIELD_BYTES: usize = HEADER_FIELD_COUNT * 8;
+
+/// The header fields plus a trailing 8-byte LE CRC32 that covers them.
+///
+/// The fields sit outside the wasmer artifact, so `deserialize_unchecked` has no view of damage
+/// confined to them, while the four shape counts price `instantiation_points` into a committed fee
+/// receipt. The CRC is the only check that reaches those bytes.
+///
+/// The CRC occupies a full 8 bytes so that the total stays a multiple of 8: the artifact starts at
+/// `HEADER_BYTES` into a page-aligned mmap, and `MetadataHeader::parse` rejects a start address
+/// that is not 8-byte aligned.
+const HEADER_BYTES: usize = HEADER_FIELD_BYTES + 8;
+
+const _: () = assert!(HEADER_BYTES.is_multiple_of(8), "the artifact must start 8-byte aligned");
 
 /// Low-level on-disk cache for compiled wasmer modules.
 ///
 /// Files live at `{dir}/{template_address}_{ENGINE_FINGERPRINT}.bin`.
-/// The body is `[u64 LE: code_size][u64 LE x4: ModuleShape] || wasmer::Module::serialize(...)`.
+/// The body is `[u64 LE: code_size][u64 LE x4: ModuleShape][u64 LE: CRC32 of the preceding 40 bytes]
+/// || wasmer::Module::serialize(...)`.
 ///
 /// Writes are atomic (tempfile + rename). Read failures (missing file,
 /// deserialize errors, format changes) are non-fatal: the corrupt file is
@@ -158,6 +175,25 @@ impl WasmModuleCache {
             return None;
         }
 
+        let stored_crc = u64::from_le_bytes(
+            mmap[HEADER_FIELD_BYTES..HEADER_BYTES]
+                .try_into()
+                .expect("8 bytes of a slice at least HEADER_BYTES long"),
+        );
+        let computed_crc = u64::from(crc32fast::hash(&mmap[..HEADER_FIELD_BYTES]));
+        if stored_crc != computed_crc {
+            warn!(
+                target: LOG_TARGET,
+                "Cache file {} has a corrupt header (CRC {:#010x}, expected {:#010x}); removing.",
+                path.display(),
+                stored_crc,
+                computed_crc,
+            );
+            drop(mmap);
+            let _ignore = fs::remove_file(&path);
+            return None;
+        }
+
         let mut field = [0u8; 8];
         let mut read_field = |i: usize| {
             field.copy_from_slice(&mmap[i * 8..(i + 1) * 8]);
@@ -224,17 +260,30 @@ impl WasmModuleCache {
             std::process::id(),
         ));
 
-        let mut bytes = Vec::with_capacity(HEADER_BYTES + serialized.len());
-        bytes.extend_from_slice(&(wasm.code_size() as u64).to_le_bytes());
         let shape = wasm.shape();
-        bytes.extend_from_slice(&shape.data_segment_bytes.to_le_bytes());
-        bytes.extend_from_slice(&shape.data_segment_count.to_le_bytes());
-        bytes.extend_from_slice(&shape.element_segment_entries.to_le_bytes());
-        bytes.extend_from_slice(&shape.declared_table_slots.to_le_bytes());
+        // The array's length is `HEADER_FIELD_COUNT`, so a field added here without widening the
+        // header is a compile error rather than a header the reader slices at the wrong offsets.
+        let fields: [u64; HEADER_FIELD_COUNT] = [
+            wasm.code_size() as u64,
+            shape.data_segment_bytes,
+            shape.data_segment_count,
+            shape.element_segment_entries,
+            shape.declared_table_slots,
+        ];
+        let mut header = [0u8; HEADER_BYTES];
+        for (slot, value) in header.chunks_exact_mut(8).zip(fields) {
+            slot.copy_from_slice(&value.to_le_bytes());
+        }
+        let crc = u64::from(crc32fast::hash(&header[..HEADER_FIELD_BYTES]));
+        header[HEADER_FIELD_BYTES..].copy_from_slice(&crc.to_le_bytes());
+
+        let mut bytes = Vec::with_capacity(HEADER_BYTES + serialized.len());
+        bytes.extend_from_slice(&header);
         bytes.extend_from_slice(&serialized);
 
-        if let Err(e) = fs::write(&tmp, &bytes) {
+        if let Err(e) = write_durable(&tmp, &bytes) {
             warn!(target: LOG_TARGET, "Failed to write cache tempfile {}: {}", tmp.display(), e);
+            let _ignore = fs::remove_file(&tmp);
             return;
         }
 
@@ -252,6 +301,20 @@ impl WasmModuleCache {
             "Cached compiled module for template {} -> {}", addr, path.display(),
         );
     }
+}
+
+/// Write `bytes` to `path`, flushed to the device before returning.
+///
+/// [`WasmModuleCache::store`] publishes a file by rename, which can expose contents still held in
+/// the page cache. A torn body reaches `deserialize_unchecked`, past the header CRC's coverage, so
+/// the contents are durable before the rename names them. Durability stops at the contents: a
+/// rename lost to a crash costs one recompile.
+fn write_durable(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+
+    let mut file = fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 /// `TemplateProvider` middleware that adds an on-disk compiled-module cache
@@ -472,6 +535,70 @@ mod tests {
 
         // And the freshly-cached file deserializes cleanly.
         assert!(cache.try_load(&addr).is_some());
+    }
+
+    #[test]
+    fn flipped_header_byte_falls_back_to_recompile() {
+        let dir = TempDir::new().unwrap();
+        let cache = WasmModuleCache::open(dir.path()).unwrap();
+        let (store, addr) = make_store();
+        let provider = DiskCachedWasmTemplateProvider::new(store, cache.clone());
+        provider.get_template(&addr).unwrap().expect("loaded");
+
+        // Damage a shape count, leaving the wasmer artifact itself intact.
+        let path = cache.path_for(&addr);
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[8] ^= 0x01;
+        fs::write(&path, &bytes).unwrap();
+
+        assert!(cache.try_load(&addr).is_none(), "a bad header CRC is a miss");
+        assert!(!path.exists(), "the file with the bad CRC should be removed");
+    }
+
+    #[test]
+    fn flipped_crc_byte_falls_back_to_recompile() {
+        let dir = TempDir::new().unwrap();
+        let cache = WasmModuleCache::open(dir.path()).unwrap();
+        let (store, addr) = make_store();
+        let provider = DiskCachedWasmTemplateProvider::new(store, cache.clone());
+        provider.get_template(&addr).unwrap().expect("loaded");
+
+        let path = cache.path_for(&addr);
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[HEADER_FIELD_BYTES] ^= 0x01;
+        fs::write(&path, &bytes).unwrap();
+
+        assert!(cache.try_load(&addr).is_none());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn truncated_header_treated_as_miss() {
+        let dir = TempDir::new().unwrap();
+        let cache = WasmModuleCache::open(dir.path()).unwrap();
+        let (_store, addr) = make_store();
+
+        let path = cache.path_for(&addr);
+        fs::write(&path, vec![0u8; HEADER_BYTES - 1]).unwrap();
+
+        assert!(cache.try_load(&addr).is_none());
+        assert!(!path.exists(), "a short file should be removed");
+    }
+
+    #[test]
+    fn stored_header_crc_covers_the_fields() {
+        let dir = TempDir::new().unwrap();
+        let cache = WasmModuleCache::open(dir.path()).unwrap();
+        let (store, addr) = make_store();
+        let provider = DiskCachedWasmTemplateProvider::new(store, cache.clone());
+        let loaded = provider.get_template(&addr).unwrap().expect("loaded");
+
+        let bytes = fs::read(cache.path_for(&addr)).unwrap();
+        let stored_crc = u64::from_le_bytes(bytes[HEADER_FIELD_BYTES..HEADER_BYTES].try_into().unwrap());
+        assert_eq!(stored_crc, u64::from(crc32fast::hash(&bytes[..HEADER_FIELD_BYTES])));
+
+        let reloaded = cache.try_load(&addr).expect("hit");
+        assert_eq!(reloaded.code_size(), loaded.code_size());
     }
 
     #[test]

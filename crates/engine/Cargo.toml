@@ -34,6 +34,7 @@ wasmer = { workspace = true, features = ["cranelift"] }
 tari-wasmer-middlewares = { workspace = true }
 bytes = { workspace = true, optional = true }
 memmap2 = { workspace = true, optional = true }
+crc32fast = { workspace = true, optional = true }
 
 [features]
 default = []
@@ -47,7 +48,7 @@ abi-metrics = ["tari_template_lib/metrics"]
 # filesystem I/O surface (memmap + bytes). Disable if embedding the engine in
 # an environment where a local data directory isn't available or isn't
 # desirable.
-wasm-cache = ["dep:bytes", "dep:memmap2"]
+wasm-cache = ["dep:bytes", "dep:memmap2", "dep:crc32fast"]
 
 [dev-dependencies]
 # Path-only (no version) to break the circular dev-dep: tari_template_test_tooling

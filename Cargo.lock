@@ -12003,6 +12003,7 @@ dependencies = [
  "ark-std",
  "blake2 0.10.6",
  "bytes",
+ "crc32fast",
  "criterion",
  "digest 0.10.7",
  "indexmap 2.14.2",
