@@ -3,8 +3,6 @@ name: Build docker image
 
 'on':
   push:
-    branches:
-      - development
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]*'
     paths-ignore:
@@ -20,9 +18,9 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Cancel superseded runs on PR/adhoc branches.
-  # Never cancel release tag builds or development branch builds.
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') && github.ref != 'refs/heads/development' }}
+  # Cancel superseded runs on adhoc branches (manual/scheduled builds).
+  # Never cancel release tag builds.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
 
 env:
   IMAGE_NAME: ootle

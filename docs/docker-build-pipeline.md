@@ -298,7 +298,6 @@ Located at `.github/workflows/build_dockers.yml`. ~80 lines total.
 
 ### Triggers
 
-- `push` to `development` branch
 - `push` of tags matching `v[0-9]+.[0-9]+.[0-9]*`
 - `workflow_dispatch` (manual)
 - `schedule`: nightly at 00:05 UTC, Sun-Fri
@@ -309,9 +308,8 @@ Driven by `docker/metadata-action`:
 
 | Source | Tag |
 |---|---|
-| Any push | `sha-<short>` |
-| Branch push | `<branch-name>` (e.g. `development`) |
-| PR | `pr-<number>` |
+| Any run | `sha-<short>` |
+| Manual/scheduled run on a branch | `<branch-name>` |
 | Tag `vX.Y.Z` | `vX.Y.Z`, `X.Y.Z`, `X.Y`, `latest` |
 | Schedule (nightly) | `nightly` |
 
@@ -330,12 +328,11 @@ secrets required. The repository must have:
 ```yaml
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v')
-                          && github.ref != 'refs/heads/development' }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
 ```
 
-Cancels superseded runs on PR branches and adhoc branches. Never cancels
-release tag builds or `development` branch builds.
+Cancels superseded runs on adhoc branches. Never cancels release tag
+builds.
 
 ## Local development
 
