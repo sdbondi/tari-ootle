@@ -134,7 +134,7 @@ message GetTransactionResultResponse {
   tari.ootle.consensus.Decision final_decision = 3;
   string abort_details = 4;
   int64 finalized_timestamp = 5;
-  uint64 execution_time_ms = 6;
+  uint64 execution_time_us = 6;
 }
 
 enum PayloadResultStatus {

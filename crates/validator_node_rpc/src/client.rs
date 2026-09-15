@@ -245,7 +245,7 @@ impl<TAddr: NodeAddressable + ToPeerId, TMsg: MessageSpec> ValidatorNodeRpcClien
                         ))
                     })?;
 
-                let execution_time = Duration::from_millis(response.execution_time_ms);
+                let execution_time = Duration::from_micros(response.execution_time_us);
                 let finalized_time = UtcDateTime::from_unix_timestamp(response.finalized_timestamp).map_err(|e| {
                     ValidatorNodeRpcClientError::InvalidResponse(anyhow!(
                         "Node returned an invalid finalized timestamp: {e}"

@@ -444,7 +444,7 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
             status: PayloadResultStatus::Finalized.into(),
 
             final_decision: Some(proto::consensus::Decision::from(execution.decision())),
-            execution_time_ms: u64::try_from(execution.execution_time().as_millis()).unwrap_or(u64::MAX),
+            execution_time_us: u64::try_from(execution.execution_time().as_micros()).unwrap_or(u64::MAX),
             finalized_timestamp: finalized_time
                 .map(|t| t.assume_utc().unix_timestamp())
                 .unwrap_or_default(),
