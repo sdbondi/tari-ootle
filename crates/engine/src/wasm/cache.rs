@@ -26,6 +26,7 @@ use std::{
     fs,
     io,
     path::{Path, PathBuf},
+    sync::atomic::{self, AtomicU64},
 };
 
 use log::*;
@@ -45,6 +46,8 @@ use crate::{
 
 const LOG_TARGET: &str = "tari::engine::wasm::cache";
 
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// Engine-config fingerprint embedded in cache filenames.
 ///
 /// Bump this string whenever any of the following change, otherwise nodes
@@ -59,8 +62,9 @@ const LOG_TARGET: &str = "tari::engine::wasm::cache";
 ///   spec).
 /// - The order or meaning of the header's fields at an unchanged `HEADER_BYTES`. A reader that agrees with the writer
 ///   on the header's length but not on its field order recomputes a matching CRC over values it then reads from the
-///   wrong bytes. A change to the length needs no bump: the reader takes the CRC from the wrong offset and rejects the
-///   file.
+///   wrong bytes. A change to the length needs no bump: it moves the artifact's start, so the body no longer begins
+///   with wasmer's magic and `deserialize_unchecked` rejects the file. A header that grows is caught one step earlier,
+///   at a CRC read from artifact bytes.
 /// - How the header's values are derived — `validate_module_structure`'s segment tally. A cache hit serves these
 ///   verbatim rather than recomputing them, and `instantiation_points` prices a call off them, so a node reading a file
 ///   written under an older derivation charges a different fee for the same transaction than one that compiled fresh.
@@ -83,12 +87,16 @@ const HEADER_FIELD_BYTES: usize = HEADER_FIELD_COUNT * 8;
 /// confined to them, while the four shape counts price `instantiation_points` into a committed fee
 /// receipt. The CRC is the only check that reaches those bytes.
 ///
-/// The CRC occupies a full 8 bytes so that the total stays a multiple of 8: the artifact starts at
-/// `HEADER_BYTES` into a page-aligned mmap, and `MetadataHeader::parse` rejects a start address
-/// that is not 8-byte aligned.
+/// The CRC occupies a full 8 bytes so that the total stays a multiple of 16. The artifact starts at
+/// `HEADER_BYTES` into a page-aligned mmap and its rkyv metadata a further 32 bytes in, where
+/// `rkyv::access_unchecked` reads an archived root that wasmer aligns to `MetadataHeader::ALIGN`
+/// (16); `MetadataHeader::parse` enforces the weaker 8-byte bound on the artifact itself.
 const HEADER_BYTES: usize = HEADER_FIELD_BYTES + 8;
 
-const _: () = assert!(HEADER_BYTES.is_multiple_of(8), "the artifact must start 8-byte aligned");
+const _: () = assert!(
+    HEADER_BYTES.is_multiple_of(16),
+    "the artifact's rkyv metadata must start 16-byte aligned",
+);
 
 /// Low-level on-disk cache for compiled wasmer modules.
 ///
@@ -253,16 +261,20 @@ impl WasmModuleCache {
         };
 
         let path = self.path_for(addr);
+        // Every call needs its own tempfile: two `store`s of one address can run concurrently,
+        // since the indexer opens the cache directory twice, once for the template manager and
+        // once for the dry-run provider.
         let tmp = self.dir.join(format!(
-            "{}_{}.bin.tmp.{}",
+            "{}_{}.bin.tmp.{}.{}",
             addr,
             ENGINE_FINGERPRINT,
             std::process::id(),
+            TMP_COUNTER.fetch_add(1, atomic::Ordering::Relaxed),
         ));
 
         let shape = wasm.shape();
-        // The array's length is `HEADER_FIELD_COUNT`, so a field added here without widening the
-        // header is a compile error rather than a header the reader slices at the wrong offsets.
+        // The array length ties the field list to `HEADER_FIELD_COUNT`: a field added here
+        // compiles only once the header widens to carry it.
         let fields: [u64; HEADER_FIELD_COUNT] = [
             wasm.code_size() as u64,
             shape.data_segment_bytes,
@@ -306,9 +318,9 @@ impl WasmModuleCache {
 /// Write `bytes` to `path`, flushed to the device before returning.
 ///
 /// [`WasmModuleCache::store`] publishes a file by rename, which can expose contents still held in
-/// the page cache. A torn body reaches `deserialize_unchecked`, past the header CRC's coverage, so
-/// the contents are durable before the rename names them. Durability stops at the contents: a
-/// rename lost to a crash costs one recompile.
+/// the page cache. The artifact body lies past the header CRC's coverage, so it must reach the
+/// device before the rename names it. Durability stops at the contents: a rename lost to a crash
+/// costs one recompile.
 fn write_durable(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;
 
