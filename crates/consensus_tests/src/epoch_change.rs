@@ -341,15 +341,11 @@ async fn epoch_change_deferred_eoe_resumes_without_scan_completion() {
 
     wait_for_validators_at_epoch(&mut test, &deferring_addr, Epoch(2), Duration::from_secs(45)).await;
 
+    // The deferring validator observed the boundary, so it ratifies and votes: the EOE commits on it too. Its
+    // commit lands independently of the other three, so it must be waited for rather than read once.
+    wait_for_committed_epoch_end(&mut test, &deferring_addr, Epoch(1), Duration::from_secs(30)).await;
+
     let deferring = test.get_validator(&deferring_addr);
-    let committed_eoe = deferring
-        .state_store
-        .with_read_tx(|tx| chain_has_committed_epoch_end(tx, Epoch(1)))
-        .unwrap();
-    assert!(
-        committed_eoe,
-        "the deferring validator must have committed the EOE: it observed the boundary, so it ratifies and votes"
-    );
     let leaf_at_2 = deferring
         .state_store
         .with_read_tx(|tx| LeafBlock::get(tx, Epoch(2)))
@@ -401,6 +397,25 @@ async fn wait_for_leaf_at_epoch(test: &mut Test, addr: &TestAddress, epoch: Epoc
         }
     }
     panic!("Timed out waiting for {addr} to open {epoch}");
+}
+
+/// Waits until `addr` has a committed `EndEpoch` block in `epoch`.
+async fn wait_for_committed_epoch_end(test: &mut Test, addr: &TestAddress, epoch: Epoch, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        // Drain block events so receiver buffers don't overflow.
+        let _unused = tokio::time::timeout(Duration::from_millis(100), test.on_block_committed()).await;
+
+        let committed = test
+            .get_validator(addr)
+            .state_store
+            .with_read_tx(|tx| chain_has_committed_epoch_end(tx, epoch))
+            .unwrap();
+        if committed {
+            return;
+        }
+    }
+    panic!("Timed out waiting for {addr} to commit the end of {epoch}");
 }
 
 /// Walks the chain from the leaf of `epoch` looking for a committed `EndEpoch` block.
