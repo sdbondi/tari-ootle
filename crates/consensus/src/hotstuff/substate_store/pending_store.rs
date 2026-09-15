@@ -143,16 +143,16 @@ impl<'a, TTx: StateStoreReadTransaction> PendingSubstateStore<'a, TTx> {
             SubstateChange::Up {
                 substate, id, shard, ..
             } => {
-                self.insert(SubstateChange::Down {
-                    id: VersionedSubstateId::new(id.clone(), substate.version()),
-                    shard,
-                });
                 let version = substate.version();
                 let next_version = version
                     .checked_add(1)
                     .ok_or_else(|| SubstateStoreError::InvariantError {
                         details: format!("Substate {id} version {version} cannot be incremented"),
                     })?;
+                self.insert(SubstateChange::Down {
+                    id: VersionedSubstateId::new(id.clone(), version),
+                    shard,
+                });
                 let mut substate_value = substate.into_substate_value();
                 debug!(
                     target: LOG_TARGET,
@@ -172,7 +172,13 @@ impl<'a, TTx: StateStoreReadTransaction> PendingSubstateStore<'a, TTx> {
             SubstateChange::Down { id, .. } => {
                 debug!(target: LOG_TARGET, "Re-creating DOWNed substate in place: {}", id);
                 let value = creator(Some(id.as_versioned_ref()))?;
-                let next_id = id.into_next_version();
+                let next_version = id
+                    .version()
+                    .checked_add(1)
+                    .ok_or_else(|| SubstateStoreError::InvariantError {
+                        details: format!("Substate {id} cannot be incremented"),
+                    })?;
+                let next_id = VersionedSubstateId::new(id.into_substate_id(), next_version);
                 let up = SubstateChange::Up {
                     shard: next_id.to_shard(self.num_preshards),
                     substate: Box::new(Substate::new(next_id.version(), value)),

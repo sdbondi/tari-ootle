@@ -710,7 +710,7 @@ impl TemplateTest {
 
     fn next_key_seed(&mut self) -> u8 {
         let seed = self.key_seed;
-        self.key_seed = self.key_seed.wrapping_add(1);
+        self.key_seed = seed.checked_add(1).expect("test key seeds exhausted");
         seed
     }
 

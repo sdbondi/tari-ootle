@@ -312,6 +312,27 @@ fn exponential_function_expansion_is_capped() {
 }
 
 #[test]
+fn exponential_expansion_of_empty_bodies_is_capped() {
+    let mut manifest = String::from("fn leaf() {}\n");
+    let mut prev = "leaf".to_string();
+    for i in 0..14 {
+        let name = format!("f{i}");
+        let calls = format!("{prev}(); ").repeat(8);
+        manifest.push_str(&format!("fn {name}() {{ {calls} }}\n"));
+        prev = name;
+    }
+    manifest.push_str(&format!("fn main() {{ {prev}(); }}\n"));
+
+    let err = parse_manifest(&manifest, HashMap::new(), Default::default(), Default::default())
+        .err()
+        .expect("Expected TooManyInstructions error, but got Ok");
+    assert!(
+        err.to_string().contains("expands to more than"),
+        "Expected TooManyInstructions error, got: {err}"
+    );
+}
+
+#[test]
 fn create_account_simple() {
     let manifest = r#"
         fn main() {

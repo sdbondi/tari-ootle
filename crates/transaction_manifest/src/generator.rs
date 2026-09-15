@@ -26,8 +26,8 @@ use crate::{
 };
 
 const MAX_CALL_DEPTH: usize = 16;
-/// Caps the instructions a manifest may expand to. Local functions may call each other, so the call depth alone
-/// bounds only nesting, not fan-out.
+/// Caps the intents a manifest may visit through local function calls. Local functions may call each other, so
+/// the call depth alone bounds only nesting, not fan-out.
 const MAX_GENERATED_INSTRUCTIONS: usize = 10_000;
 
 pub struct ManifestInstructionGenerator {
@@ -287,18 +287,15 @@ impl ManifestInstructionGenerator {
                 self.call_depth += 1;
                 let mut instructions = Vec::with_capacity(body.len());
                 for intent in body {
-                    // Nested calls account for their own leaf instructions, so only count the ones produced here.
-                    let is_call = matches!(intent, ManifestIntent::CallLocalFunction(_));
-                    let produced = self.translate_intent(intent)?;
-                    if !is_call {
-                        self.generated_instructions = self.generated_instructions.saturating_add(produced.len());
-                        if self.generated_instructions > MAX_GENERATED_INSTRUCTIONS {
-                            return Err(ManifestError::TooManyInstructions {
-                                max: MAX_GENERATED_INSTRUCTIONS,
-                            });
-                        }
+                    // Every visited intent is charged, whether or not it emits anything, so a call tree of empty
+                    // bodies cannot expand without bound.
+                    self.generated_instructions = self.generated_instructions.saturating_add(1);
+                    if self.generated_instructions > MAX_GENERATED_INSTRUCTIONS {
+                        return Err(ManifestError::TooManyInstructions {
+                            max: MAX_GENERATED_INSTRUCTIONS,
+                        });
                     }
-                    instructions.extend(produced);
+                    instructions.extend(self.translate_intent(intent)?);
                 }
                 self.call_depth -= 1;
                 Ok(instructions)

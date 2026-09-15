@@ -102,12 +102,9 @@ where TSpec: WalletSdkSpec
 
         match &input_selection {
             UtxoInputSelection::ConfidentialOnly => {
-                let (confidential_inputs, locked_amount) =
+                let (confidential_inputs, _) =
                     self.confidential_outputs_api
                         .lock_outputs_by_amount(lock_id, &src_vault.id, spend_amount)?;
-                if locked_amount < spend_amount {
-                    return Err(ConfidentialTransferApiError::InsufficientFunds);
-                }
                 let commitments = commitments_of(&confidential_inputs);
                 let confidential_inputs = self
                     .confidential_outputs_api

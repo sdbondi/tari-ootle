@@ -1675,7 +1675,7 @@ impl WalletStoreReader for ReadTransaction<'_> {
             query = query.filter(authored_templates::author_public_key.eq(author_public_key_str));
         }
         let templates = query
-            .limit(page_size as i64)
+            .limit(i64::try_from(page_size).unwrap_or(i64::MAX))
             .offset(i64::try_from(page.saturating_mul(page_size)).unwrap_or(i64::MAX))
             .select(AuthoredTemplate::as_select())
             .load::<AuthoredTemplate>(self.connection())

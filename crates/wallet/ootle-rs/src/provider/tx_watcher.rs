@@ -116,11 +116,18 @@ impl TransactionWatcher {
     async fn handle_request(&mut self, request: TxWatchRequest) {
         let _enter = self.span.enter();
         tracing::debug!("Received watch request for tx_id: {}", request.tx_id);
-        // A timeout too large to represent as an `Instant` is treated as never reaping.
-        let reap_at = Instant::now()
-            .checked_add(request.timeout)
-            .unwrap_or_else(|| Instant::now() + Duration::from_secs(u64::from(u32::MAX)));
-        self.reap_times.insert(reap_at, request.tx_id);
+        // A timeout too large to represent as an `Instant` never reaps.
+        match Instant::now().checked_add(request.timeout) {
+            Some(reap_at) => {
+                self.reap_times.insert(reap_at, request.tx_id);
+            },
+            None => {
+                tracing::warn!(
+                    "Watch request for tx_id {} has an unrepresentable timeout",
+                    request.tx_id
+                );
+            },
+        }
         self.pending_requests.insert(request.tx_id, request);
     }
 
