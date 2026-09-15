@@ -56,8 +56,14 @@ const BULK_OPERATOR_COST: u64 = 20;
 ///
 /// What this does *not* cover is the page fault a guest takes when it first touches a new page
 /// (~2,000 ns/page measured). A guest writing across a page pays that through its own metered
-/// stores; one writing a single byte per page does not. `WASM_LIMITS.max_memory_pages` bounds the
-/// whole exposure to ~64 us per instantiation, which is why it is left unpriced.
+/// stores; one writing a single byte per page does not, and a module may declare its whole page
+/// allowance as initial memory and never grow at all, so this constant is not what bounds the
+/// faults. What bounds them is the instantiation count:
+/// [`tari_engine_types::limits::PER_TEMPLATE_INSTANTIATION`] against
+/// [`tari_engine_types::limits::MAX_NATIVE_POINTS_PER_TRANSACTION`] admits ~24,000 calls, and a
+/// template declaring the full `WASM_LIMITS.max_memory_pages` and touching each page once costs
+/// ~64 us of kernel zero-fill per call on top of the ~15 us it is fitted for. That is the quantity
+/// to check when either constant moves.
 const MEMORY_GROW_COST: u64 = 6_000;
 
 #[allow(clippy::too_many_lines)]

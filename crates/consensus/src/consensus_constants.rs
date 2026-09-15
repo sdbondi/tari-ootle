@@ -388,7 +388,8 @@ mod tests {
         MAX_WASM_POINTS_PER_TRANSACTION,
         MIN_MAX_COMPUTE_TRANSACTIONS_PER_BLOCK,
     };
-    use tari_ootle_transaction::{INVOCATION_FLOOR, MIN_INVOCATION_ENCODED_BYTES, Transaction};
+    use tari_ootle_transaction::{INVOCATION_FLOOR, MIN_INVOCATION_ENCODED_BYTES, Transaction, args};
+    use tari_template_lib_types::{Amount, ComponentAddress, ObjectKey, constants::TARI_TOKEN};
 
     use super::*;
 
@@ -563,14 +564,18 @@ mod tests {
         /// the comment on `max_block_weight`.
         const CALIBRATED_COMMANDS_PER_BLOCK: u64 = 160;
 
-        // A plain transfer: `pay_fee`, `withdraw`, `put_last_instruction_output_on_workspace`,
-        // `deposit`. Three of the four invoke a template and so weigh the floor; the fourth weighs
-        // nothing. Two inputs and one signer carry the rest.
-        const INPUTS: u64 = 2;
-        const SIGNERS: u64 = 1;
-        const WEIGHT_PER_INPUT: u64 = 15;
-        const WEIGHT_PER_SIGNER: u64 = 5;
-        let transfer_weight = 3 * INVOCATION_FLOOR + INPUTS * WEIGHT_PER_INPUT + SIGNERS * WEIGHT_PER_SIGNER;
+        // A plain transfer, weighed by the same function consensus weighs a real one with, so every
+        // term is derived: the invocation floor, the per-literal divisor, and the per-input and
+        // per-signer factors alike.
+        let account = ComponentAddress::new(ObjectKey::default());
+        let transfer_weight = Transaction::builder_localnet(Epoch(1))
+            .pay_fee_from_component(account, Amount::new(2000))
+            .call_method(account, "withdraw", args![TARI_TOKEN, Amount::new(100)])
+            .put_last_instruction_output_on_workspace("bucket")
+            .call_method(account, "deposit", args![Amount::new(100)])
+            .build_and_seal(&PrivateKey::from(1u64))
+            .calculate_transaction_weight()
+            .as_u64();
 
         for constants in [
             ConsensusConstants::mainnet(),

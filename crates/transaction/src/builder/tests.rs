@@ -175,3 +175,38 @@ fn a_full_blob_list_builds_when_the_fee_builder_carries_none() {
 
     assert_eq!(tx.blobs().len(), u8::MAX as usize + 1);
 }
+
+/// Fee and main blobs share one `BlobIndex` range, so the sum is what a new blob has to fit. A
+/// caller filling both halves through the fallible API must be told which addition does not fit,
+/// whichever half it is on and whichever order the halves are built in — `finish` is infallible and
+/// has nowhere to report it.
+#[test]
+fn the_fallible_api_refuses_the_blob_that_does_not_fit() {
+    // Main filled first: the fee builder's addition is the one refused.
+    let mut builder = Transaction::builder_localnet(Epoch(1));
+    for i in 0..=u8::MAX {
+        builder = builder.add_blob(format!("b{i}"), vec![i]);
+    }
+    let mut refused_on_fee = false;
+    let builder = builder.with_fee_instructions_builder(|b| {
+        // `add_blob_checked` consumes the builder, so probe with a clone to keep it on refusal.
+        match b.clone().add_blob_checked("fee", vec![1]) {
+            Ok(b) => b,
+            Err(_) => {
+                refused_on_fee = true;
+                b
+            },
+        }
+    });
+    assert!(refused_on_fee, "a 257th blob on the fee builder must be refused");
+    assert_eq!(builder.build_unsigned().blobs().len(), u8::MAX as usize + 1);
+
+    // Fee builder filled first: the main builder's addition is the one refused.
+    let builder = Transaction::builder_localnet(Epoch(1)).with_fee_instructions_builder(|mut b| {
+        for i in 0..=u8::MAX {
+            b = b.add_blob(format!("f{i}"), vec![i]);
+        }
+        b
+    });
+    assert!(builder.add_blob_checked("main", vec![0]).is_err());
+}

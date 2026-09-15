@@ -50,7 +50,7 @@ use crate::{
     TransactionSignature,
     args,
     args::{InstructionArg, WorkspaceOffsetId},
-    blobs::BlobIndexOverflow,
+    blobs::{BlobIndexOverflow, Blobs},
     builder::{
         blob_ids::BlobIds,
         error::BuilderError,
@@ -74,6 +74,14 @@ pub struct TransactionBuilder<D = MainIntent> {
     workspace_ids: WorkspaceIds,
     blob_ids: BlobIds,
     fee_instruction_builder: Option<Box<TransactionBuilder<FeeIntent>>>,
+    /// Blob slots already spoken for by the other half of the transaction.
+    ///
+    /// Fee and main blobs end up in one list indexed by a single `BlobIndex`, so neither half's own
+    /// count is what a new blob has to fit — the sum is. A main builder reads its fee builder's
+    /// count directly; a fee builder is detached while it is being built, so it carries the main
+    /// count here instead. Without it a caller can fill both halves through `add_blob_checked`,
+    /// have every call return `Ok`, and only find out at `finish`.
+    reserved_blob_slots: usize,
     _discriminator: std::marker::PhantomData<D>,
     fill_inputs: bool,
 }
@@ -88,6 +96,7 @@ impl TransactionBuilder<MainIntent> {
             workspace_ids: WorkspaceIds::new(),
             blob_ids: BlobIds::new(),
             fee_instruction_builder: Some(Box::new(Self::new_fee_builder(network, max_epoch))),
+            reserved_blob_slots: 0,
             _discriminator: std::marker::PhantomData,
             fill_inputs: false,
         }
@@ -107,6 +116,7 @@ impl TransactionBuilder<MainIntent> {
                 unsigned_transaction.network(),
                 unsigned_transaction.max_epoch(),
             ))),
+            reserved_blob_slots: 0,
             unsigned_transaction,
             workspace_ids: WorkspaceIds::new(),
             blob_ids: BlobIds::new(),
@@ -121,6 +131,7 @@ impl TransactionBuilder<MainIntent> {
             workspace_ids: WorkspaceIds::new(),
             blob_ids: BlobIds::new(),
             fee_instruction_builder: None,
+            reserved_blob_slots: 0,
             _discriminator: std::marker::PhantomData,
             fill_inputs: false,
         }
@@ -153,8 +164,11 @@ impl TransactionBuilder<MainIntent> {
         mut self,
         f: F,
     ) -> Self {
-        let builder = f(*self.fee_instruction_builder.take().unwrap());
-        self.fee_instruction_builder = Some(Box::new(builder));
+        let mut fee_builder = *self.fee_instruction_builder.take().unwrap();
+        // The fee builder is detached for the duration of the closure, so hand it the main blob
+        // count to check its own additions against.
+        fee_builder.reserved_blob_slots = self.unsigned_transaction.blobs().len();
+        self.fee_instruction_builder = Some(Box::new(f(fee_builder)));
         self
     }
 
@@ -759,9 +773,21 @@ impl<D> TransactionBuilder<D> {
         name: N,
         bytes: B,
     ) -> Result<Self, BlobIndexOverflow> {
+        if self.blobs_spoken_for_elsewhere() + self.unsigned_transaction.blobs().len() >= Blobs::MAX_BLOBS {
+            return Err(BlobIndexOverflow { max: Blobs::MAX_BLOBS });
+        }
         let idx = self.unsigned_transaction.add_blob(bytes.into())?;
         self.blob_ids.insert(name.into(), idx);
         Ok(self)
+    }
+
+    /// Blobs the other half of the transaction already holds, which this half's additions share a
+    /// `BlobIndex` range with.
+    fn blobs_spoken_for_elsewhere(&self) -> usize {
+        self.reserved_blob_slots +
+            self.fee_instruction_builder
+                .as_ref()
+                .map_or(0, |fee| fee.unsigned_transaction.blobs().len())
     }
 
     /// Publish a WASM template by passing the binary directly. The binary is auto-registered
