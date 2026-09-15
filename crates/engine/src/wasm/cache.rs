@@ -81,27 +81,34 @@ pub const ENGINE_FINGERPRINT: &str = "v5";
 const HEADER_FIELD_COUNT: usize = 5;
 const HEADER_FIELD_BYTES: usize = HEADER_FIELD_COUNT * 8;
 
-/// The header fields plus a trailing 8-byte LE CRC32 that covers them.
+/// Zero padding between the fields and the CRC. This is the knob that satisfies the alignment
+/// assert below when the field count changes; the CRC stays a `u64`.
+const HEADER_PAD_BYTES: usize = 0;
+
+/// Offset of the 8-byte LE CRC32 that covers every header byte before it.
 ///
 /// The fields sit outside the wasmer artifact, so `deserialize_unchecked` has no view of damage
 /// confined to them, while the four shape counts price `instantiation_points` into a committed fee
 /// receipt. The CRC is the only check that reaches those bytes.
+const CRC_OFFSET: usize = HEADER_FIELD_BYTES + HEADER_PAD_BYTES;
+
+/// The header fields, the pad and the CRC.
 ///
-/// The CRC occupies a full 8 bytes so that the total stays a multiple of 16. The artifact starts at
-/// `HEADER_BYTES` into a page-aligned mmap and its rkyv metadata a further 32 bytes in, where
-/// `rkyv::access_unchecked` reads an archived root that wasmer aligns to `MetadataHeader::ALIGN`
-/// (16); `MetadataHeader::parse` enforces the weaker 8-byte bound on the artifact itself.
-const HEADER_BYTES: usize = HEADER_FIELD_BYTES + 8;
+/// The total is a multiple of 16: the artifact starts at `HEADER_BYTES` into a page-aligned mmap
+/// and its rkyv metadata a further 32 bytes in, where `rkyv::access_unchecked` reads an archived
+/// root that wasmer aligns to `MetadataHeader::ALIGN` (16); `MetadataHeader::parse` enforces the
+/// weaker 8-byte bound on the artifact itself.
+const HEADER_BYTES: usize = CRC_OFFSET + 8;
 
 const _: () = assert!(
     HEADER_BYTES.is_multiple_of(16),
-    "the artifact's rkyv metadata must start 16-byte aligned",
+    "the artifact's rkyv metadata must start 16-byte aligned: widen HEADER_PAD_BYTES",
 );
 
 /// Low-level on-disk cache for compiled wasmer modules.
 ///
 /// Files live at `{dir}/{template_address}_{ENGINE_FINGERPRINT}.bin`.
-/// The body is `[u64 LE: code_size][u64 LE x4: ModuleShape][u64 LE: CRC32 of the preceding 40 bytes]
+/// The body is `[u64 LE: code_size][u64 LE x4: ModuleShape][u64 LE: CRC32 of the preceding fields]
 /// || wasmer::Module::serialize(...)`.
 ///
 /// Writes are atomic (tempfile + rename). Read failures (missing file,
@@ -153,13 +160,11 @@ impl WasmModuleCache {
             },
         };
 
-        // SAFETY: see the docs on `Mmap::map`. We don't promise immutability
-        // of the underlying file — if another process truncates or rewrites
-        // it concurrently the mmap read could SIGBUS. The cache dir is owned
-        // by this process (single writer, atomic rename on update), so this
-        // is safe in the deployment model. The fingerprint-suffixed filename
-        // also means concurrent writers from a different engine config would
-        // target a different file.
+        // SAFETY: see the docs on `Mmap::map`. A mapping SIGBUSes if the file shrinks under it, so
+        // what keeps this sound is that `store` never writes through the published path: it fills a
+        // tempfile only that call can name and renames, pointing the directory entry at a new inode
+        // and leaving this mapping's inode whole. Writers under a different engine config target a
+        // different filename through the fingerprint suffix.
         let mmap = match unsafe { Mmap::map(&file) } {
             Ok(m) => m,
             Err(e) => {
@@ -167,6 +172,11 @@ impl WasmModuleCache {
                     target: LOG_TARGET,
                     "Failed to mmap cache file {}: {}", path.display(), e,
                 );
+                // An empty file cannot be mapped at all, so it never reaches the length check below.
+                // Other map failures are resource limits, under which the file may still be good.
+                if file.metadata().is_ok_and(|m| m.len() == 0) {
+                    let _ignore = fs::remove_file(&path);
+                }
                 return None;
             },
         };
@@ -184,11 +194,11 @@ impl WasmModuleCache {
         }
 
         let stored_crc = u64::from_le_bytes(
-            mmap[HEADER_FIELD_BYTES..HEADER_BYTES]
+            mmap[CRC_OFFSET..HEADER_BYTES]
                 .try_into()
-                .expect("8 bytes of a slice at least HEADER_BYTES long"),
+                .expect("HEADER_BYTES - CRC_OFFSET is 8"),
         );
-        let computed_crc = u64::from(crc32fast::hash(&mmap[..HEADER_FIELD_BYTES]));
+        let computed_crc = u64::from(crc32fast::hash(&mmap[..CRC_OFFSET]));
         if stored_crc != computed_crc {
             warn!(
                 target: LOG_TARGET,
@@ -273,8 +283,7 @@ impl WasmModuleCache {
         ));
 
         let shape = wasm.shape();
-        // The array length ties the field list to `HEADER_FIELD_COUNT`: a field added here
-        // compiles only once the header widens to carry it.
+        // `HEADER_FIELD_COUNT` fields, in the order `try_load` reads them.
         let fields: [u64; HEADER_FIELD_COUNT] = [
             wasm.code_size() as u64,
             shape.data_segment_bytes,
@@ -286,8 +295,8 @@ impl WasmModuleCache {
         for (slot, value) in header.chunks_exact_mut(8).zip(fields) {
             slot.copy_from_slice(&value.to_le_bytes());
         }
-        let crc = u64::from(crc32fast::hash(&header[..HEADER_FIELD_BYTES]));
-        header[HEADER_FIELD_BYTES..].copy_from_slice(&crc.to_le_bytes());
+        let crc = u64::from(crc32fast::hash(&header[..CRC_OFFSET]));
+        header[CRC_OFFSET..].copy_from_slice(&crc.to_le_bytes());
 
         let mut bytes = Vec::with_capacity(HEADER_BYTES + serialized.len());
         bytes.extend_from_slice(&header);
@@ -577,7 +586,7 @@ mod tests {
 
         let path = cache.path_for(&addr);
         let mut bytes = fs::read(&path).unwrap();
-        bytes[HEADER_FIELD_BYTES] ^= 0x01;
+        bytes[CRC_OFFSET] ^= 0x01;
         fs::write(&path, &bytes).unwrap();
 
         assert!(cache.try_load(&addr).is_none());
@@ -606,11 +615,17 @@ mod tests {
         let loaded = provider.get_template(&addr).unwrap().expect("loaded");
 
         let bytes = fs::read(cache.path_for(&addr)).unwrap();
-        let stored_crc = u64::from_le_bytes(bytes[HEADER_FIELD_BYTES..HEADER_BYTES].try_into().unwrap());
-        assert_eq!(stored_crc, u64::from(crc32fast::hash(&bytes[..HEADER_FIELD_BYTES])));
+        let stored_crc = u64::from_le_bytes(bytes[CRC_OFFSET..HEADER_BYTES].try_into().unwrap());
+        assert_eq!(stored_crc, u64::from(crc32fast::hash(&bytes[..CRC_OFFSET])));
 
         let reloaded = cache.try_load(&addr).expect("hit");
         assert_eq!(reloaded.code_size(), loaded.code_size());
+
+        // `instantiation_points` prices each shape count with its own constant, so a hit must serve
+        // them in the slots a fresh compile wrote them to.
+        let LoadedTemplate::Wasm(reloaded) = &reloaded;
+        let LoadedTemplate::Wasm(loaded) = &loaded;
+        assert_eq!(reloaded.shape(), loaded.shape());
     }
 
     #[test]
