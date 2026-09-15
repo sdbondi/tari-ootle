@@ -78,6 +78,10 @@ impl Epoch {
         Epoch(self.0.saturating_sub(other.into().0))
     }
 
+    pub fn saturating_add<T: Into<Epoch>>(&self, other: T) -> Epoch {
+        Epoch(self.0.saturating_add(other.into().0))
+    }
+
     pub fn checked_sub<T: Into<Self>>(&self, other: T) -> Option<Epoch> {
         let other = other.into();
         self.0.checked_sub(other.as_u64()).map(Epoch)

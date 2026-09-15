@@ -172,7 +172,9 @@ impl ApiKeySubcommand {
                 let expires_at = args
                     .expires_in
                     .map(|d| -> anyhow::Result<i64> {
-                        let when = SystemTime::now() + d;
+                        let when = SystemTime::now()
+                            .checked_add(d)
+                            .ok_or_else(|| anyhow::anyhow!("expires_in is too far in the future"))?;
                         let secs = when
                             .duration_since(UNIX_EPOCH)
                             .map_err(|e| anyhow::anyhow!("expires_in produced a pre-epoch timestamp: {e}"))?

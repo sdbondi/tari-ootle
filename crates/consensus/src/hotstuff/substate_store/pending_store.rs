@@ -148,7 +148,11 @@ impl<'a, TTx: StateStoreReadTransaction> PendingSubstateStore<'a, TTx> {
                     shard,
                 });
                 let version = substate.version();
-                let next_version = version + 1;
+                let next_version = version
+                    .checked_add(1)
+                    .ok_or_else(|| SubstateStoreError::InvariantError {
+                        details: format!("Substate {id} version {version} cannot be incremented"),
+                    })?;
                 let mut substate_value = substate.into_substate_value();
                 debug!(
                     target: LOG_TARGET,

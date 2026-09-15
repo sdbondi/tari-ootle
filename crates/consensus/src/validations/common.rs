@@ -174,7 +174,16 @@ pub(super) fn check_proposed_by_leader<TAddr: DerivableFromPublicKey, TLeaderStr
     local_committee: &Committee<TAddr>,
     block: &Block,
 ) -> Result<(), ProposalValidationError> {
-    let (addr, leader) = leader_strategy.get_leader(local_committee, block.height() - NodeHeight(1));
+    let parent_height =
+        block
+            .height()
+            .checked_sub(NodeHeight(1))
+            .ok_or_else(|| ProposalValidationError::InvalidBlockHeight {
+                block_id: *block.id(),
+                block_height: block.height(),
+                details: "Block height is zero".to_string(),
+            })?;
+    let (addr, leader) = leader_strategy.get_leader(local_committee, parent_height);
     if leader != block.proposed_by() {
         return Err(ProposalValidationError::NotLeader {
             proposed_by: block.proposed_by().to_string(),

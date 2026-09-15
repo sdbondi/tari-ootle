@@ -199,11 +199,15 @@ impl ShardGroup {
 
         let num_shards = num_shards.as_u32();
         let shard_size = (U256::MAX >> num_shards.trailing_zeros()) + U256::ONE;
-        let start = U256::from(self.start.as_u32() - 1) * shard_size;
-        let end = if self.end_inclusive.as_u32() == num_shards {
+        // Bounds outside `1..=num_shards` are clamped so an untrusted group cannot push the range past the
+        // address space; `checked_len` is the place to reject such a group outright.
+        let start_shard = self.start.as_u32().clamp(1, num_shards);
+        let end_shard = self.end_inclusive.as_u32().clamp(1, num_shards);
+        let start = U256::from(start_shard - 1) * shard_size;
+        let end = if end_shard == num_shards {
             SubstateAddress::max()
         } else {
-            SubstateAddress::from_u256_zero_version(U256::from(self.end_inclusive.as_u32()) * shard_size - U256::ONE)
+            SubstateAddress::from_u256_zero_version(U256::from(end_shard) * shard_size - U256::ONE)
         };
         SubstateAddress::from_u256_zero_version(start)..=end
     }

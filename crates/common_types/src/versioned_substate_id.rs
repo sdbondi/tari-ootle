@@ -360,11 +360,11 @@ impl VersionedSubstateId {
     }
 
     pub fn to_next_version(&self) -> Self {
-        Self::new(self.substate_id.clone(), self.version + 1)
+        Self::new(self.substate_id.clone(), self.version.saturating_add(1))
     }
 
     pub fn into_next_version(self) -> Self {
-        Self::new(self.substate_id, self.version + 1)
+        Self::new(self.substate_id, self.version.saturating_add(1))
     }
 
     pub fn as_versioned_ref(&self) -> VersionedSubstateIdRef<'_> {

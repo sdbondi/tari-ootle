@@ -279,6 +279,11 @@ impl BaseNodeClient for GrpcBaseNodeClient {
 
         let request = grpc::BlockHeight { block_height };
         let result = inner.get_constants(request).await?.into_inner();
+        if result.epoch_length == 0 {
+            return Err(BaseNodeClientError::InvalidPeerMessage(
+                "Base node returned a zero epoch_length in consensus constants".to_string(),
+            ));
+        }
 
         let consensus_constants = BaseLayerConsensusConstants {
             epoch_length: result.epoch_length,

@@ -848,7 +848,7 @@ impl<'de> MapAccess<'de> for Seq<'_, 'de> {
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Self::Error> {
         if let Some(n) = self.len {
             let x = seed.deserialize(&mut *self.deserializer)?;
-            self.len = Some(n - 1);
+            self.len = Some(n.saturating_sub(1));
             Ok(x)
         } else {
             seed.deserialize(&mut *self.deserializer)

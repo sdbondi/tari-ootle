@@ -82,12 +82,15 @@ impl Shard {
         }
 
         let num_shards = num_shards.as_u32();
-        let shard_index = U256::from(self.0 - 1);
+        // A shard beyond the preshard count has no range of its own; it is folded into the last shard so an
+        // untrusted value cannot push `start` past the address space.
+        let shard = self.0.min(num_shards);
+        let shard_index = U256::from(shard - 1);
         // `num_shards` is a power of two, so `shard_size = 2^(256 - log2(num_shards))`. We compute it as
         // `(U256::MAX >> log2(num_shards)) + 1` to sidestep the 2^256 overflow.
         let shard_size = (U256::MAX >> num_shards.trailing_zeros()) + U256::ONE;
         let start = shard_index * shard_size;
-        let end = if self.0 == num_shards {
+        let end = if shard == num_shards {
             SubstateAddress::max()
         } else {
             SubstateAddress::from_u256_zero_version(start + shard_size - U256::ONE)

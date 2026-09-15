@@ -177,7 +177,7 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
 
     fn next_request_id(&mut self) -> u32 {
         let req_id = self.current_request_id;
-        self.current_request_id += 1;
+        self.current_request_id = self.current_request_id.wrapping_add(1);
         req_id
     }
 

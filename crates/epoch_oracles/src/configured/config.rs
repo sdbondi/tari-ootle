@@ -100,7 +100,7 @@ pub struct ClaimKeyChange {
 impl Validator {
     /// The epoch at which this validator's initial registration becomes active.
     pub fn activation_epoch(&self) -> Epoch {
-        self.registration_epoch + Epoch(1)
+        self.registration_epoch.saturating_add(Epoch(1))
     }
 
     fn validate(&self) -> anyhow::Result<()> {

@@ -102,9 +102,12 @@ where TSpec: WalletSdkSpec
 
         match &input_selection {
             UtxoInputSelection::ConfidentialOnly => {
-                let (confidential_inputs, _) =
+                let (confidential_inputs, locked_amount) =
                     self.confidential_outputs_api
                         .lock_outputs_by_amount(lock_id, &src_vault.id, spend_amount)?;
+                if locked_amount < spend_amount {
+                    return Err(ConfidentialTransferApiError::InsufficientFunds);
+                }
                 let commitments = commitments_of(&confidential_inputs);
                 let confidential_inputs = self
                     .confidential_outputs_api
@@ -386,7 +389,10 @@ where TSpec: WalletSdkSpec
                 inputs_to_spend.revealed, params.amount
             )
         });
-        let change_confidential_amount = inputs_to_spend.total_confidential_amount() - remaining_left_to_pay;
+        let change_confidential_amount = inputs_to_spend
+            .total_confidential_amount()
+            .checked_sub(remaining_left_to_pay)
+            .ok_or(ConfidentialTransferApiError::InsufficientFunds)?;
 
         let maybe_change_statement = if change_confidential_amount.is_positive() {
             let statement = self.create_confidential_proof_statement(

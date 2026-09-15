@@ -275,6 +275,43 @@ fn recursive_function_exceeds_call_depth() {
 }
 
 #[test]
+fn exponential_function_expansion_is_capped() {
+    // Depth stays under the call-depth limit; the fan-out is what grows.
+    let mut manifest = String::from(
+        r#"
+        use template_c2b621869ec2929d3b9503ea41054f01b468ce99e50254b58e460f608ae377f7 as MyTemplate;
+
+        fn leaf() {
+            let comp = MyTemplate::new();
+        }
+    "#,
+    );
+    let mut prev = "leaf".to_string();
+    for i in 0..14 {
+        let name = format!("f{i}");
+        manifest.push_str(&format!(
+            "fn {name}() {{ {prev}(); {prev}(); {prev}(); {prev}(); }}
+"
+        ));
+        prev = name;
+    }
+    manifest.push_str(&format!(
+        "fn main() {{ {prev}(); }}
+"
+    ));
+
+    let result = parse_manifest(&manifest, HashMap::new(), Default::default(), Default::default());
+    let err = match result {
+        Ok(_) => panic!("Expected TooManyInstructions error, but got Ok"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("expands to more than"),
+        "Expected TooManyInstructions error, got: {err}"
+    );
+}
+
+#[test]
 fn create_account_simple() {
     let manifest = r#"
         fn main() {

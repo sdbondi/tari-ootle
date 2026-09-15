@@ -68,9 +68,9 @@ impl<TAddr: PartialEq> Committee<TAddr> {
     }
 
     pub fn total_power(&self) -> VotePower {
-        self.members
-            .iter()
-            .fold(VotePower::default(), |acc, member| acc + member.vote_power)
+        self.members.iter().fold(VotePower::default(), |acc, member| {
+            acc.saturating_add(member.vote_power)
+        })
     }
 
     pub fn max_node_failures(&self) -> usize {

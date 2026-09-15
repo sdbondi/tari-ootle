@@ -58,7 +58,7 @@ pub async fn list(
     let locked_block = locked_cf.get_by_default_key(OPERATION).optional()?;
 
     let page_size = req.limit.unwrap_or(1_000);
-    let skip = req.page.unwrap_or(0) * page_size;
+    let skip = req.page.unwrap_or(0).saturating_mul(page_size);
 
     let iter: Box<dyn Iterator<Item = Result<(_, _), RocksDbStorageError>>> =
         match parse_query(&req.query.unwrap_or_default())? {
@@ -66,7 +66,9 @@ pub async fn list(
                 let epoch = locked_block.as_ref().map(|b| b.epoch()).unwrap_or_else(Epoch::zero);
                 let range = match ordering {
                     Ordering::Ascending => (epoch, height)..(Epoch::max(), NodeHeight::max()),
-                    Ordering::Descending => (Epoch::zero(), NodeHeight::zero())..(epoch, height + NodeHeight(1)),
+                    Ordering::Descending => {
+                        (Epoch::zero(), NodeHeight::zero())..(epoch, height.saturating_add(NodeHeight(1)))
+                    },
                 };
                 Box::new(height_query_cf.query_range_key_iterator(ordering, range).map(|r| {
                     r.and_then(|(epoch, height, block_id)| {

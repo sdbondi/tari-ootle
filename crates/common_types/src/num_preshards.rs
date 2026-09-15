@@ -43,6 +43,8 @@ impl NumPreshards {
 
     pub fn all_shard_groups_iter(&self, num_committees: u32) -> impl Iterator<Item = ShardGroup> {
         let num_shards = self.as_u32();
+        // A committee must own at least one shard, so the committee count is clamped to the shard count.
+        let num_committees = num_committees.clamp(1, num_shards);
         let num_shards_per_committee = num_shards / num_committees;
         let mut remainder = num_shards % num_committees;
         let mut start = 0;
@@ -112,6 +114,15 @@ impl Display for InvalidNumPreshards {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn it_clamps_committees_to_the_shard_count() {
+        let groups: Vec<_> = NumPreshards::P4.all_shard_groups_iter(9).collect();
+        assert_eq!(groups.len(), 4);
+        assert!(groups.iter().all(|g| g.len() == 1));
+        let groups: Vec<_> = NumPreshards::P4.all_shard_groups_iter(0).collect();
+        assert_eq!(groups, vec![ShardGroup::new(1, 4)]);
+    }
 
     #[test]
     fn it_calculates_all_shard_groups() {

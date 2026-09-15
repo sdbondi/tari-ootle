@@ -299,7 +299,7 @@ where
     const OPERATION: &str = "rollback_delete_after_epoch";
 
     let mut stats = RollbackDeleteStats::default();
-    let start_epoch = target_epoch + Epoch(1);
+    let start_epoch = target_epoch.saturating_add(Epoch(1));
 
     // 1. Collect block_ids where epoch > target. We collect first so that per-block cascade helpers (which take `&mut
     //    self`) can run without holding an immutable CF-handle borrow over the iteration.

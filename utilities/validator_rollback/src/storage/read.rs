@@ -103,7 +103,7 @@ where
     let db = tx.db();
     let block_cf = db.cf(BlockCf)?;
     let block_query = db.cf(block::ByEpochQuery)?;
-    let start_epoch = target_epoch + Epoch(1);
+    let start_epoch = target_epoch.saturating_add(Epoch(1));
 
     let keys: Vec<(Epoch, NodeHeight, BlockId)> = block_query
         .query_range_key_iterator(Ordering::Ascending, start_epoch..Epoch::max())

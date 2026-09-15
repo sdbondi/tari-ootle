@@ -50,7 +50,7 @@ pub async fn list(
     };
 
     let page_size = req.limit.unwrap_or(1_000);
-    let skip = req.page.unwrap_or(0) * page_size;
+    let skip = req.page.unwrap_or(0).saturating_mul(page_size);
     for result in iter.skip(skip).take(page_size) {
         let ((tx_id, substate_addr), data) = result?;
         let encoded_key = cf.encode_key(&(tx_id, substate_addr));

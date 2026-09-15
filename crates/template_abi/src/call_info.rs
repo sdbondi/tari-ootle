@@ -110,11 +110,11 @@ impl<'a> PackedCallInfoReader<'a> {
     /// Panics if the argument length exceeds the data bounds (malformed data).
     pub fn next_arg(&mut self) -> Option<&'a [u8]> {
         // Read the length of the next argument
-        let len_slice = self.data.get(self.payload_offset..self.payload_offset + 4)?;
+        let start = self.payload_offset.checked_add(4)?;
+        let len_slice = self.data.get(self.payload_offset..start)?;
         let arg_len = decode_u32_le(len_slice) as usize;
-        let start = self.payload_offset + 4;
-        let end = start + arg_len;
-        self.payload_offset += 4 + arg_len;
+        let end = start.checked_add(arg_len)?;
+        self.payload_offset = end;
         Some(self.data.get(start..end).expect("ARGOVR"))
     }
 

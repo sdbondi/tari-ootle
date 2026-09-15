@@ -54,7 +54,7 @@ impl Display for LeaderFee {
 pub fn calculate_leader_fee(transaction_fee: u64, exhaust_burn: u64, num_involved_shards: NonZeroU64) -> LeaderFee {
     LeaderFee {
         fee: transaction_fee / num_involved_shards,
-        exhaust_burn: exhaust_burn + transaction_fee % num_involved_shards,
+        exhaust_burn: exhaust_burn.saturating_add(transaction_fee % num_involved_shards),
     }
 }
 

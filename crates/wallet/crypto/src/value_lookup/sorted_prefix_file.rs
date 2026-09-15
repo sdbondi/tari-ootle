@@ -115,7 +115,7 @@ impl SortedLookupHeader {
 
     /// Number of records (== number of values covered).
     pub fn count(&self) -> u64 {
-        self.max - self.min + 1
+        self.max.saturating_sub(self.min).saturating_add(1)
     }
 
     pub fn encode_into<W: Write>(&self, writer: &mut W) -> io::Result<()> {
@@ -207,7 +207,11 @@ impl SortedPrefixFileLookup {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "value_len must be in 1..=8"));
         }
 
-        let count = header.count();
+        let count = header
+            .max
+            .checked_sub(header.min)
+            .and_then(|span| span.checked_add(1))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Table value range overflow"))?;
         let expected_data = count
             .checked_mul(header.stride() as u64)
             .and_then(|d| d.checked_add(SortedLookupHeader::SIZE as u64))
@@ -271,7 +275,11 @@ impl SortedPrefixFileLookup {
         let start = self.record_start(i) + self.header.prefix_len as usize;
         let mut buf = [0u8; 8];
         buf[..value_len].copy_from_slice(&self.mmap[start..start + value_len]);
-        self.header.min + u64::from_le_bytes(buf)
+        // Offsets are relative to `min` and must stay within `..=max`; a corrupt record clamps rather than panics.
+        self.header
+            .min
+            .saturating_add(u64::from_le_bytes(buf))
+            .min(self.header.max)
     }
 
     /// Index of the first record whose prefix is `>= key` (binary search lower bound).
@@ -352,6 +360,18 @@ mod tests {
         let mut buf = Vec::new();
         write_sorted_lookup_in_memory(&mut buf, min, max, DEFAULT_PREFIX_LEN).unwrap();
         SortedPrefixFileLookup::from_buf(&buf).unwrap()
+    }
+
+    #[test]
+    fn it_rejects_a_full_range_header() {
+        let mut buf = Vec::new();
+        SortedLookupHeader::new(0, u64::MAX, DEFAULT_PREFIX_LEN, 8)
+            .encode_into(&mut buf)
+            .unwrap();
+        let Err(err) = SortedPrefixFileLookup::from_buf(&buf) else {
+            panic!("expected the full-range header to be rejected");
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

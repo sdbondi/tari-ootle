@@ -71,13 +71,15 @@ async fn stress_test(args: StressTestArgs) -> anyhow::Result<Option<StressTestRe
     );
     if args
         .num_transactions
-        .map(|n| n + args.skip_transactions.unwrap_or(0) > num_transactions)
+        .map(|n| n.saturating_add(args.skip_transactions.unwrap_or(0)) > num_transactions)
         .unwrap_or(false)
     {
         bail!(
             "The transaction file only contains {} transactions, but you requested {}",
             num_transactions,
-            args.num_transactions.unwrap_or(num_transactions) + args.skip_transactions.unwrap_or(0)
+            args.num_transactions
+                .unwrap_or(num_transactions)
+                .saturating_add(args.skip_transactions.unwrap_or(0))
         );
     }
     let num_transactions = cmp::min(num_transactions, args.num_transactions.unwrap_or(num_transactions));

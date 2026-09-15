@@ -660,7 +660,14 @@ where TConsensusSpec: ConsensusSpec
                                 return Ok(Some(NoVoteReason::LeaderFeeDisagreement));
                             }
 
-                            *total_leader_fee += calculated_leader_fee.fee();
+                            *total_leader_fee =
+                                total_leader_fee
+                                    .checked_add(calculated_leader_fee.fee())
+                                    .ok_or_else(|| {
+                                        HotStuffError::InvariantError(
+                                            "Leader fee overflow when summing for block".to_string(),
+                                        )
+                                    })?;
                             // A LocalOnly transaction's evidence must contain exactly the local shard group, so its
                             // portion of the exhaust burn is the entire burn.
                             if pool_tx.evidence().num_shard_groups() != 1 {
@@ -1388,7 +1395,9 @@ where TConsensusSpec: ConsensusSpec
             ))
         })?;
 
-        *total_leader_fee += leader_fee.fee();
+        *total_leader_fee = total_leader_fee
+            .checked_add(leader_fee.fee())
+            .ok_or_else(|| HotStuffError::InvariantError("Leader fee overflow when summing for block".to_string()))?;
         // Compute the portion from the local record's evidence: its key order is locally maintained (sorted), whereas
         // the atom's wire-decoded key order is not consensus-checked (evidence equality is order-independent).
         let Some(exhaust_burn_portion) = tx_rec

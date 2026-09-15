@@ -34,6 +34,10 @@ impl VotePower {
         self.0.checked_add(other.0).map(Self)
     }
 
+    pub fn saturating_add(self, other: Self) -> Self {
+        Self(self.0.saturating_add(other.0))
+    }
+
     pub fn checked_sub(self, other: Self) -> Option<Self> {
         self.0.checked_sub(other.0).map(Self)
     }

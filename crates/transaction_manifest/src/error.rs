@@ -54,4 +54,8 @@ pub enum ManifestError {
     BlobNotProvided { name: String },
     #[error("Manifest references more than {max} distinct blobs")]
     BlobIndexOverflow { max: usize },
+    #[error("Manifest allocates more than {max} workspace ids")]
+    WorkspaceIdOverflow { max: u16 },
+    #[error("Manifest expands to more than {max} instructions")]
+    TooManyInstructions { max: usize },
 }

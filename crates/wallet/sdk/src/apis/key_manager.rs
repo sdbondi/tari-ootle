@@ -291,7 +291,8 @@ impl<'a, TSpec: WalletSdkSpec> KeyManagerApi<'a, TSpec> {
         let next_index = tx
             .key_manager_get_last_index(branch.as_str())
             .optional()?
-            .map(|i| i + 1)
+            .map(|i| i.checked_add(1).ok_or(KeyManagerApiError::KeyIndexExhausted))
+            .transpose()?
             .unwrap_or(0);
         if matches!(branch, KeyBranch::Account) {
             // Ensure the view key branch is created if it doesn't exist
@@ -430,6 +431,8 @@ pub enum KeyManagerApiError {
     },
     #[error("Key {key_id} not found")]
     KeyNotFound { key_id: KeyId },
+    #[error("Key index exhausted for branch")]
+    KeyIndexExhausted,
     #[error("Password manager error: {0}")]
     PasswordManagerApiError(#[from] PasswordManagerApiError),
     #[error("Key manager is in read only mode")]

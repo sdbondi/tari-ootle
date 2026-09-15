@@ -62,7 +62,7 @@ where
                     };
 
                 let page_size = req.limit.unwrap_or(1_000);
-                let skip = req.page.unwrap_or(0) * page_size;
+                let skip = req.page.unwrap_or(0).saturating_mul(page_size);
 
                 let mut total_bytes = 0usize;
                 let mut largest_row_size = 0usize;

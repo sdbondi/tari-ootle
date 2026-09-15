@@ -559,7 +559,12 @@ impl WalletStoreReader for ReadTransaction<'_> {
                         item: "vault lock amount",
                         details: format!("Failed to parse vault lock amount '{}': {}", amount_str, e),
                     })?;
-                    Ok(acc + amount)
+                    acc.checked_add(amount)
+                        .ok_or_else(|| WalletStorageError::DecodingError {
+                            operation: OPERATION,
+                            item: "vault lock amount",
+                            details: "Vault lock amount sum overflowed".to_string(),
+                        })
                 })?;
 
         let component_addr =
@@ -624,7 +629,12 @@ impl WalletStoreReader for ReadTransaction<'_> {
                         item: "vault lock amount",
                         details: format!("Failed to parse vault lock amount '{}': {}", amount_str, e),
                     })?;
-                    Ok(acc + amount)
+                    acc.checked_add(amount)
+                        .ok_or_else(|| WalletStorageError::DecodingError {
+                            operation: OPERATION,
+                            item: "vault lock amount",
+                            details: "Vault lock amount sum overflowed".to_string(),
+                        })
                 })?;
 
         let vault = row
@@ -676,7 +686,14 @@ impl WalletStoreReader for ReadTransaction<'_> {
                 item: "vault lock amount",
                 details: format!("Failed to parse vault lock amount '{}': {}", amount_str, e),
             })?;
-            *locked_balance_map.entry(vault_id).or_default() += amount;
+            let locked: &mut Amount = locked_balance_map.entry(vault_id).or_default();
+            *locked = locked
+                .checked_add(amount)
+                .ok_or_else(|| WalletStorageError::DecodingError {
+                    operation: OPERATION,
+                    item: "vault lock amount",
+                    details: "Vault lock amount sum overflowed".to_string(),
+                })?;
         }
 
         let vaults = rows
@@ -1659,7 +1676,7 @@ impl WalletStoreReader for ReadTransaction<'_> {
         }
         let templates = query
             .limit(page_size as i64)
-            .offset((page * page_size) as i64)
+            .offset(i64::try_from(page.saturating_mul(page_size)).unwrap_or(i64::MAX))
             .select(AuthoredTemplate::as_select())
             .load::<AuthoredTemplate>(self.connection())
             .map_err(|e| WalletStorageError::general("authored_templates_fetch_by_key_index", e))?

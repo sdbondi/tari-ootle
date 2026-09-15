@@ -42,11 +42,11 @@ pub struct BaseLayerConsensusConstants {
 
 impl BaseLayerConsensusConstants {
     pub fn height_to_epoch(&self, height: u64) -> Epoch {
-        Epoch(height / self.epoch_length)
+        Epoch(height / self.epoch_length.max(1))
     }
 
     pub fn epoch_to_height(&self, epoch: Epoch) -> u64 {
-        epoch.0 * self.epoch_length
+        epoch.0.saturating_mul(self.epoch_length)
     }
 
     pub fn validator_node_registration_min_deposit_amount(&self) -> MicroMinotari {

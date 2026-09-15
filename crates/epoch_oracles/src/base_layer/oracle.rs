@@ -621,7 +621,7 @@ impl<TStore: EpochOracleStore + BaseLayerBlockHeaderStore, TClient: BaseNodeClie
                 last_validator_node_mr = Some(current_validator_node_mr);
             }
 
-            if header_height % constants.epoch_length() == 0 {
+            if header_height % constants.epoch_length().max(1) == 0 {
                 info!(
                     target: LOG_TARGET,
                     "🟩 New epoch block {} {} {}", current_epoch, header_height, header_hash

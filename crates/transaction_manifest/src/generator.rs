@@ -26,12 +26,16 @@ use crate::{
 };
 
 const MAX_CALL_DEPTH: usize = 16;
+/// Caps the instructions a manifest may expand to. Local functions may call each other, so the call depth alone
+/// bounds only nesting, not fan-out.
+const MAX_GENERATED_INSTRUCTIONS: usize = 10_000;
 
 pub struct ManifestInstructionGenerator {
     imported_templates: HashMap<Ident, TemplateAddress>,
     global_aliases: HashMap<String, ManifestValue>,
     globals: HashMap<String, ManifestValue>,
     current_workspace_id: WorkspaceId,
+    generated_instructions: usize,
     workspace_ids: HashMap<String, WorkspaceOffsetId>,
     templates: HashMap<String, TemplateAddress>,
     /// Caller-supplied blob payloads keyed by name. Used to resolve `blob!(name)` references.
@@ -58,6 +62,7 @@ impl ManifestInstructionGenerator {
             global_aliases: HashMap::new(),
             globals,
             current_workspace_id: WorkspaceId::default(),
+            generated_instructions: 0,
             workspace_ids: HashMap::new(),
             templates,
             blob_inputs,
@@ -130,7 +135,7 @@ impl ManifestInstructionGenerator {
                     args: self.process_args(arguments)?,
                 }];
                 if let Some(binding) = output_variable {
-                    let key = self.next_workspace_id_raw();
+                    let key = self.next_workspace_id_raw()?;
                     instructions.push(Instruction::PutLastInstructionOutputOnWorkspace { key });
                     self.register_output_binding(binding, key);
                 }
@@ -175,14 +180,14 @@ impl ManifestInstructionGenerator {
                     args: self.process_args(arguments)?,
                 }];
                 if let Some(binding) = output_variable {
-                    let key = self.next_workspace_id_raw();
+                    let key = self.next_workspace_id_raw()?;
                     instructions.push(Instruction::PutLastInstructionOutputOnWorkspace { key });
                     self.register_output_binding(binding, key);
                 }
                 Ok(instructions)
             },
             ManifestIntent::AllocateAddress(alloc) => {
-                let workspace_id = self.next_workspace_id(alloc.output_variable.to_string());
+                let workspace_id = self.next_workspace_id(alloc.output_variable.to_string())?;
                 Ok(vec![Instruction::AllocateAddress {
                     allocatable_type: alloc.allocatable_type,
                     workspace_id,
@@ -219,7 +224,7 @@ impl ManifestInstructionGenerator {
                     bucket_workspace_id,
                 }];
                 if let Some(var_name) = create_account.output_variable {
-                    let key = self.next_workspace_id(var_name.to_string());
+                    let key = self.next_workspace_id(var_name.to_string())?;
                     instructions.push(Instruction::PutLastInstructionOutputOnWorkspace { key });
                 }
                 Ok(instructions)
@@ -282,7 +287,18 @@ impl ManifestInstructionGenerator {
                 self.call_depth += 1;
                 let mut instructions = Vec::with_capacity(body.len());
                 for intent in body {
-                    instructions.extend(self.translate_intent(intent)?);
+                    // Nested calls account for their own leaf instructions, so only count the ones produced here.
+                    let is_call = matches!(intent, ManifestIntent::CallLocalFunction(_));
+                    let produced = self.translate_intent(intent)?;
+                    if !is_call {
+                        self.generated_instructions = self.generated_instructions.saturating_add(produced.len());
+                        if self.generated_instructions > MAX_GENERATED_INSTRUCTIONS {
+                            return Err(ManifestError::TooManyInstructions {
+                                max: MAX_GENERATED_INSTRUCTIONS,
+                            });
+                        }
+                    }
+                    instructions.extend(produced);
                 }
                 self.call_depth -= 1;
                 Ok(instructions)
@@ -290,16 +306,18 @@ impl ManifestInstructionGenerator {
         }
     }
 
-    fn next_workspace_id_raw(&mut self) -> WorkspaceId {
+    fn next_workspace_id_raw(&mut self) -> Result<WorkspaceId, ManifestError> {
         let id = self.current_workspace_id;
-        self.current_workspace_id += 1;
-        id
+        self.current_workspace_id = id
+            .checked_add(1)
+            .ok_or(ManifestError::WorkspaceIdOverflow { max: WorkspaceId::MAX })?;
+        Ok(id)
     }
 
-    fn next_workspace_id(&mut self, name: String) -> WorkspaceId {
-        let id = self.next_workspace_id_raw();
+    fn next_workspace_id(&mut self, name: String) -> Result<WorkspaceId, ManifestError> {
+        let id = self.next_workspace_id_raw()?;
         self.workspace_ids.insert(name, WorkspaceOffsetId::new(id));
-        id
+        Ok(id)
     }
 
     fn register_output_binding(&mut self, binding: OutputBinding, workspace_id: WorkspaceId) {
