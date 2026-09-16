@@ -28,6 +28,12 @@ pub mod virtual_substate;
 
 pub mod template;
 
+/// Reading a template's ABI straight out of its WASM, without a compiler. Optional because it is
+/// the one thing here that needs a WASM parser, and most consumers of this crate never read a
+/// template binary.
+#[cfg(feature = "extract-template-def")]
+pub mod static_template_def;
+
 pub mod entity_id_provider;
 mod epoch;
 pub mod id_provider;

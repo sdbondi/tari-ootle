@@ -4,6 +4,17 @@
 use indexmap::{IndexMap, map::Entry};
 use serde::{Deserialize, Serialize};
 
+mod fee_table;
+pub use fee_table::{FeeTable, WasmMeteringRate};
+
+/// Inline literal args carry their bytes directly in the instruction, so they are priced by size,
+/// consistent with blob/log byte costing. Applied once across an instruction's whole literal
+/// payload.
+///
+/// Public because the dry-run fee allowance is derived from it: the encoded width of the `max_fee`
+/// literal is the one term that can make a real run weigh more than the dry run that estimated it.
+pub const LITERAL_BYTE_DIVISOR: u64 = 3;
+
 /// The highest exhaust burn rate a network can be configured with, in basis points: the whole of
 /// what a transaction paid.
 ///
@@ -48,23 +59,17 @@ impl ExhaustBurnRate {
 /// the caller submitted — nothing narrows it — so either direction is reachable between a dry run
 /// and the submission built from it.
 ///
-/// The value is derived rather than chosen: `FeeTable::fee_estimate_allowance` computes it from
+/// The value is derived rather than chosen: [`FeeTable::fee_estimate_allowance`] computes it from
 /// `per_transaction_weight_cost`, `per_byte_storage_cost`, `storage_cost_divisor` and
-/// `LITERAL_BYTE_DIVISOR`, all of which live in crates downstream of this one.
-/// `fee_estimate_allowance_covers_every_shipped_network` asserts this value covers every shipped
-/// network.
+/// [`LITERAL_BYTE_DIVISOR`]. `fee_estimate_allowance_covers_every_shipped_network`, which sits with
+/// the shipped tables, asserts this value covers every one of them.
 pub const FEE_ESTIMATE_ALLOWANCE: u64 = 12;
 
 /// The rates a transaction's fee charges are computed from, as a fee estimator needs them.
 ///
-/// `FeeTable` is the authority on these rates, but it lives in `tari_engine` — which pulls in a
-/// WASM runtime — and cannot move here, because its `fee_estimate_allowance` reads
-/// `LITERAL_BYTE_DIVISOR` from `tari_ootle_transaction`, a crate downstream of this one. A wallet
-/// estimating a fee needs the rates without either dependency, so `FeeTable::to_rates` projects
-/// them onto this type and the estimator takes only this.
-///
-/// A plain record of rates: an estimator reads these directly, so every field it needs is visible
-/// where it is set.
+/// [`FeeTable`] is the authority on these rates and carries the terms only an executing engine
+/// charges. An estimator needs the rates alone, so [`FeeTable::to_rates`] projects them onto this
+/// type: a plain record where every field an estimate reads is visible where it is set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FeeRates {
     pub per_transaction_weight_cost: u64,

@@ -4616,6 +4616,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
  "foldhash 0.2.0",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -12062,9 +12064,11 @@ dependencies = [
  "tari_hashing",
  "tari_ootle_template_metadata",
  "tari_template_abi",
+ "tari_template_builtin",
  "tari_template_lib",
  "thiserror 2.0.18",
  "ts-rs",
+ "wasmparser 0.257.1",
 ]
 
 [[package]]
@@ -12853,7 +12857,6 @@ dependencies = [
  "tari_common_types",
  "tari_consensus",
  "tari_crypto",
- "tari_engine",
  "tari_engine_types",
  "tari_ootle_address",
  "tari_ootle_app_utilities",
@@ -15123,6 +15126,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d92fc335fb6d48f46bda1d8b26b69e28320c15ac3272208333833d6e217e2b4a"
 dependencies = [
  "bitflags 2.13.0",
+ "hashbrown 0.17.1",
+ "indexmap 2.14.2",
+ "semver",
+ "serde",
 ]
 
 [[package]]

@@ -34,8 +34,17 @@ sha2 = { workspace = true }
 ootle-network = { workspace = true }
 thiserror = { workspace = true }
 ts-rs = { workspace = true, optional = true }
+wasmparser = { workspace = true, optional = true }
 
 [features]
 default = []
+extract-template-def = ["dep:wasmparser"]
+
 ts = ["ts-rs", "tari_template_lib/ts", "tari_template_abi/ts"]
+
+[dev-dependencies]
+# Path-only (no version) to break the circular dev-dep: tari_template_builtin depends on
+# tari_engine_types, so a published version here would leave `cargo publish` unable to resolve
+# this manifest.
+tari_template_builtin = { path = "../template_builtin", features = ["templates", "state"] }
 

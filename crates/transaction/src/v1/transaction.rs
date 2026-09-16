@@ -6,6 +6,7 @@ use std::{collections::HashSet, fmt::Display, iter};
 use indexmap::IndexSet;
 use log::*;
 use tari_engine_types::{
+    fees::LITERAL_BYTE_DIVISOR,
     hashing::{EngineHashDomainLabel, hash_template_code, hasher32},
     indexed_value::IndexedValueError,
     published_template::PublishedTemplateAddress,
@@ -390,14 +391,6 @@ fn calc_stealth_statement_weight(statement: &StealthTransferStatement) -> u64 {
         statement.inputs_statement.inputs.len() as u64 * WEIGHT_PER_INPUT +
         witness_bytes / SPEND_WITNESS_BYTE_DIVISOR
 }
-
-/// Inline literal args carry their bytes directly in the instruction, so they are priced by size,
-/// consistent with blob/log byte costing. Applied once across an instruction's whole literal
-/// payload.
-///
-/// Public because the dry-run fee allowance is derived from it: the encoded width of the `max_fee`
-/// literal is the one term that can make a real run weigh more than the dry run that estimated it.
-pub const LITERAL_BYTE_DIVISOR: u64 = 3;
 
 /// Least weight a template invocation may carry, whatever its arguments come to.
 ///

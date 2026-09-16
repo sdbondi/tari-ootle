@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 use log::*;
-use tari_engine::wasm;
+use tari_engine_types::static_template_def;
 use tari_ootle_common_types::substate_type::SubstateType;
 use tari_ootle_wallet_sdk::{WalletSdk, WalletSdkSpec, models::WalletEvent};
 use tari_ootle_wallet_sdk_services::notify::Notify;
@@ -59,7 +59,7 @@ where TSpec: WalletSdkSpec
                 // compile path and statically extract the TemplateDef from the
                 // WASM binary instead.
                 match task::spawn_blocking(move || {
-                    wasm::extract_template_def(&template.binary).map(|def| (template, def))
+                    static_template_def::extract_template_def(&template.binary).map(|def| (template, def))
                 })
                 .await?
                 {

@@ -73,8 +73,7 @@
 //! is a share of what a transaction paid, split off at settlement between leaders and the burn, so it neither
 //! raises what a transaction is charged nor enters a fee estimate.
 
-use tari_engine::fees::FeeTable;
-use tari_engine_types::fees::FeeRates;
+use tari_engine_types::fees::{FeeRates, FeeTable};
 use tari_ootle_transaction::Network;
 
 /// Testnet fee table with low, development-friendly fees.

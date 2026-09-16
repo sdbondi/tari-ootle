@@ -94,7 +94,9 @@ resolver = "2"
 tari_ootle_walletd = { path = "applications/tari_walletd", default-features = false }
 tari_validator_node = { path = "applications/tari_validator_node", default-features = false }
 tari_indexer = { path = "applications/tari_indexer", default-features = false }
-tari_ootle_app_utilities = { path = "applications/tari_ootle_app_utilities" }
+# Default-off execution: a member that runs transactions asks for `features = ["execution"]`,
+# so the wallet daemon does not link the engine.
+tari_ootle_app_utilities = { path = "applications/tari_ootle_app_utilities", default-features = false }
 
 # core crates
 tari_consensus = { path = "crates/consensus" }
@@ -293,6 +295,9 @@ url = "2.4.1"
 # Capped to 7.4.x. The accepted-module set and memory tunables are consensus-critical and wasmer
 # reshapes both across minor releases, so a bump must be a deliberate, reviewed change.
 wasmer = "~7.4.0"
+# Must stay on the version wasmer re-exports, so a workspace that both parses and executes WASM
+# builds one copy of the parser.
+wasmparser = "0.257.1"
 # Fork of `wasmer-middlewares` that makes `Metering`'s injected global indexes public, which the
 # bulk-memory metering middleware needs to decrement the remaining-points global inline.
 tari-wasmer-middlewares = "~7.4.0"

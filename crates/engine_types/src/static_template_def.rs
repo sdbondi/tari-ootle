@@ -11,13 +11,13 @@
 //! can emit a custom section.
 //!
 //! Intended exclusively for callers that only need the type/function metadata
-//! (today: only the wallet daemon's template monitor) and want to avoid the
-//! cranelift compile cost. It does **not** validate the WASM module — anyone
-//! using a template for execution should go through
-//! `WasmModule::load_template_from_code`.
+//! (today: only the wallet daemon's template monitor) and want neither a
+//! compiler nor the cranelift compile cost. It does **not** validate the WASM
+//! module — anyone using a template for execution should go through
+//! `tari_engine::wasm::WasmModule::load_template_from_code`.
 
 use tari_template_abi::{TEMPLATE_DEF_CUSTOM_SECTION, TemplateDef, WASM_PTR_SIZE};
-use wasmer::wasmparser::{BinaryReaderError, Parser, Payload};
+use wasmparser::{BinaryReaderError, Parser, Payload};
 
 /// Statically extract the embedded `TemplateDef` from a template's WASM bytes.
 ///

@@ -1,8 +1,7 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use tari_engine_types::fees::FeeRates;
-use tari_ootle_transaction::LITERAL_BYTE_DIVISOR;
+use super::{FeeRates, LITERAL_BYTE_DIVISOR};
 
 /// The narrowest `max_fee` a run can meter at is `1`, which a dry run clamps to. `Amount` encodes as
 /// a native CBOR integer, so that is a single byte.
@@ -42,7 +41,7 @@ pub struct FeeTable {
     /// the byte cost of its contents.
     pub per_substate_create_cost: u64,
     /// Cost charged per `wasm_points_cost_divisor` Wasmer metering points consumed during template
-    /// execution. The opcode → point mapping lives in `wasm/metering.rs` (most ops cost 1 point;
+    /// execution. The opcode → point mapping lives in `tari_engine`'s `wasm/metering.rs` (most ops cost 1 point;
     /// calls 4; heavy ops up to 40). Set to 0 to disable WASM execution metering.
     pub per_wasm_point_cost: u64,
     /// Divisor applied to the raw per-byte storage cost (`per_byte_storage_cost × bytes /
@@ -120,10 +119,9 @@ impl FeeTable {
         weight_drift.saturating_add(storage_drift)
     }
 
-    /// The rates a fee estimator needs, projected onto a type it can see. `FeeRates` lives in
-    /// `tari_engine_types` because an estimator (a wallet, say) must price a transaction without
-    /// depending on the execution engine, and this table cannot move there — `fee_estimate_allowance`
-    /// reads `LITERAL_BYTE_DIVISOR` from a crate downstream of it.
+    /// The rates a fee estimator needs, projected onto [`FeeRates`]. An estimator — a wallet, say —
+    /// prices a transaction from those alone; the remaining entries here only mean something to an
+    /// engine that executes one.
     pub fn to_rates(&self) -> FeeRates {
         FeeRates {
             per_transaction_weight_cost: self.per_transaction_weight_cost(),
@@ -246,10 +244,9 @@ impl WasmMeteringRate {
 
 #[cfg(test)]
 mod tests {
-    use tari_engine_types::fees::FEE_ESTIMATE_ALLOWANCE;
     use tari_template_lib::types::Amount;
 
-    use super::*;
+    use super::{super::FEE_ESTIMATE_ALLOWANCE, *};
 
     /// The drift is computed from constant widths, so this holds the encoder to them.
     #[test]
