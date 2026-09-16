@@ -17,7 +17,8 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use ootle_byte_type::ToByteType;
+use curve25519_dalek::traits::IsIdentity;
+use ootle_byte_type::{ConvertFromByteType, FromByteType, ToByteType};
 use tari_crypto::{
     keys::{PublicKey, SecretKey},
     ristretto::{RistrettoPublicKey, RistrettoSchnorr, RistrettoSecretKey},
@@ -44,6 +45,24 @@ fn verify_individually(signatures: &[TransactionSignature], message: [u8; 64]) -
     signatures.iter().all(|sig| sig.verify_message(message))
 }
 
+/// Decoding alone: the two point decompressions every term needs before any equation can be
+/// evaluated, and the floor under both verification paths.
+///
+/// A signature reaches a node as bytes, so this cost is unavoidable and cannot be amortised across a
+/// batch — which is what separates the speed-up achievable here from one measured over keys and
+/// nonces that are already decompressed (as `tari_crypto`'s own batch benchmark is).
+fn decode_only(signatures: &[TransactionSignature]) -> usize {
+    signatures
+        .iter()
+        .map(|sig| {
+            let public_key: RistrettoPublicKey = sig.public_key().try_from_byte_type().unwrap();
+            let signature = RistrettoSchnorr::convert_from_byte_type(sig.signature()).unwrap();
+            usize::from(public_key.point().is_identity()) +
+                usize::from(signature.get_public_nonce().point().is_identity())
+        })
+        .sum()
+}
+
 /// A seal over `seal_message`, from a key of its own.
 fn seal(seal_message: &[u8; 64]) -> TransactionSealSignature {
     let mut rng = rand::rng();
@@ -62,6 +81,10 @@ fn bench(c: &mut Criterion) {
 
         g.bench_with_input(BenchmarkId::new("individual", n), &n, |b, _| {
             b.iter(|| assert!(black_box(verify_individually(black_box(&sigs), message))))
+        });
+
+        g.bench_with_input(BenchmarkId::new("decode", n), &n, |b, _| {
+            b.iter(|| black_box(decode_only(black_box(&sigs))))
         });
 
         g.bench_with_input(BenchmarkId::new("batch", n), &n, |b, _| {

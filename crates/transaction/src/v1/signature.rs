@@ -485,10 +485,17 @@ impl<'a> BatchTerm<'a> {
 /// n double-base multiplications: only the scalar arithmetic stays linear in n, while the point
 /// arithmetic is shared across the terms, so the cost per signature keeps falling as the set grows.
 /// Measured in `benches/signature_verification.rs` against the individual checks: 17.5µs per
-/// signature at sixteen and 15.6µs at a thousand, where they cost ~44µs each throughout. A lone
-/// signature only breaks even — runs put it between 1.03x and 1.25x — because with three group
-/// elements in the multiplication the variable-time cost depends on the particular scalars. Treat
-/// one as "does not lose" and two upwards as the win.
+/// signature at sixteen and 14.1µs at a thousand, where they cost ~42µs each throughout. A lone
+/// signature only breaks even (1.06x) because with three group elements in the multiplication the
+/// variable-time cost depends on the particular scalars; two upwards is the win.
+///
+/// Decoding is the floor under both paths and the reason the ratio tops out near 3x. A signature
+/// arrives as bytes, so every term costs two Ristretto decompressions — a flat 8.0µs per signature
+/// at every batch size, 57% of the batched cost at a thousand — which no equation can amortise.
+/// Net of it the arithmetic here matches `tari_crypto`'s own batch verifier over already-decoded
+/// points to within 5% (6.05µs against 5.75µs per signature), and that verifier's 5.8x is what this
+/// would reach if points arrived decompressed. Further headroom is therefore in decompressing once
+/// rather than in the equation.
 ///
 /// An empty batch verifies vacuously.
 ///
@@ -518,9 +525,9 @@ impl<'a> BatchTerm<'a> {
 /// The multiplication is variable-time. Every term is public — the keys, nonces and scalars travel
 /// on the wire, and the messages are digests of a transaction body that is gossiped in full — so it
 /// has no secret to leak, and the signed-digit recoding it allows is worth ~1.5x over the
-/// constant-time algorithm here: the same equation through `RistrettoPublicKey::batch_mul` measured
-/// 1.7x against the individual checks where this measures 2.5x. A batch over a *confidential*
-/// message would not be safe this way, since the timing would depend on `H(R, P, m)`.
+/// constant-time algorithm — the same equation through `RistrettoPublicKey::batch_mul` — which is
+/// where most of the gain comes from. A batch over a *confidential* message would not be safe this
+/// way, since the timing would depend on `H(R, P, m)`.
 fn verify_batch(terms: &[BatchTerm<'_>]) -> bool {
     let weights = batch_weights(terms);
 
