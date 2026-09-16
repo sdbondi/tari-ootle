@@ -8,6 +8,7 @@ use log::*;
 use tari_engine_types::{
     hashing::{EngineHashDomainLabel, hash_template_code, hasher32},
     indexed_value::IndexedValueError,
+    limits::STEALTH_LIMITS,
     published_template::PublishedTemplateAddress,
     substate::SubstateId,
 };
@@ -39,14 +40,31 @@ const LOG_TARGET: &str = "tari::ootle::transaction::transaction";
 
 /// Maximum number of authorization signatures a transaction may carry.
 ///
-/// Each signature costs one Ristretto Schnorr verification, performed by every node that receives
-/// the transaction, before any fee is charged. Transaction weight alone bounds this too loosely —
-/// at `SIGNER_FACTOR` weight per signer the per-transaction weight cap permits signature counts in
-/// the hundreds of thousands — so the count is capped directly. The ceiling is well above any
-/// multi-party authorization scheme, which names its signers explicitly; authorization by a large
-/// or open-ended group is expressed through a component's access rules, not through raw
-/// transaction signatures.
-pub const MAX_SIGNATURES_PER_TRANSACTION: usize = 16;
+/// The signatures are verified by every node that receives the transaction, before any fee is
+/// charged, so the count is capped directly: at `SIGNER_FACTOR` weight per signer the
+/// per-transaction weight cap alone would permit signature counts in the hundreds of thousands.
+///
+/// Set to the stealth input ceiling ([`STEALTH_LIMITS`]`.max_total_inputs_per_transaction`), because
+/// that is what needs the signatures. A key-path stealth spend proves ownership of each input with
+/// its own one-time key, whose badge must be in the transaction's authorization scope
+/// (`verify_input_authorizations`), so spending n stealth inputs takes n distinct signatures — all n
+/// as authorizations when the account key seals, or one of them promoted to the seal. A cap below
+/// the input ceiling would make *this* the binding limit on a multi-input spend or a coinjoin, which
+/// is not the limit anyone reasons about — so the two are one definition rather than two constants
+/// kept in step.
+///
+/// Whole-set batch verification is what makes a ceiling this high affordable: the cost per signature
+/// *falls* as a set grows (~15.6µs at the cap against ~46µs for a lone signature, measured in
+/// `tari_ootle_transaction`'s `signature_verification` bench), so a transaction at the cap costs
+/// ~16ms to verify, and the cheapest CPU an attacker can buy per gossiped byte is a transaction with
+/// *few* signatures rather than one at the cap.
+///
+/// What bounds the aggregate is weight, not this. A block's signature count is bounded by
+/// `max_block_validation_weight` at `SIGNER_FACTOR` each — a consensus rule, enforced on receive —
+/// and a single transaction's share of a block by `max_block_weight`. A spend at the cap declares an
+/// input per signature, so weight is what stops it monopolising a block:
+/// `the_block_budget_admits_a_transaction_at_the_signature_cap` is where that headroom is pinned.
+pub const MAX_SIGNATURES_PER_TRANSACTION: usize = STEALTH_LIMITS.max_total_inputs_per_transaction;
 
 static XTR_REQUIREMENT: SubstateRequirement = SubstateRequirement::new(SubstateId::Resource(TARI_TOKEN), None);
 

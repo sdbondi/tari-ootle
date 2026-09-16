@@ -10,9 +10,9 @@ const LOG_TARGET: &str = "tari::ootle::mempool::validators::signature_limits";
 
 /// Rejects transactions carrying more than [`MAX_SIGNATURES_PER_TRANSACTION`] authorization signatures.
 ///
-/// Every signature costs a Ristretto Schnorr verification on every node that receives the transaction, charged to
-/// nobody. This is a count-only check, so it must be ordered before [`crate::TransactionSignatureValidator`] to bound
-/// the verification work that validator performs.
+/// Verifying them is work every node that receives the transaction performs, charged to nobody: the set is checked as
+/// one batch, whose cost still grows with the count. This is a count-only check, so it must be ordered before
+/// [`crate::TransactionSignatureValidator`] to bound the verification work that validator performs.
 #[derive(Debug, Clone, Default)]
 pub struct SignatureLimitValidator;
 

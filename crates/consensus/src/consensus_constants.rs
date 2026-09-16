@@ -382,14 +382,32 @@ mod tests {
     const TRANSACTION_ENVELOPE_ALLOWANCE: usize = 256 * 1024;
 
     use tari_common_types::types::PrivateKey;
-    use tari_engine_types::limits::{
-        ENGINE_LIMITS,
-        MAX_NATIVE_POINTS_PER_TRANSACTION,
-        MAX_WASM_POINTS_PER_TRANSACTION,
-        MIN_MAX_COMPUTE_TRANSACTIONS_PER_BLOCK,
+    use tari_engine_types::{
+        limits::{
+            ENGINE_LIMITS,
+            MAX_NATIVE_POINTS_PER_TRANSACTION,
+            MAX_WASM_POINTS_PER_TRANSACTION,
+            MIN_MAX_COMPUTE_TRANSACTIONS_PER_BLOCK,
+        },
+        substate::SubstateId,
     };
-    use tari_ootle_transaction::{INVOCATION_FLOOR, MIN_INVOCATION_ENCODED_BYTES, Transaction, args};
-    use tari_template_lib_types::{Amount, ComponentAddress, ObjectKey, constants::TARI_TOKEN};
+    use tari_ootle_common_types::SubstateRequirement;
+    use tari_ootle_transaction::{
+        INVOCATION_FLOOR,
+        MAX_SIGNATURES_PER_TRANSACTION,
+        MIN_INVOCATION_ENCODED_BYTES,
+        Transaction,
+        TransactionSignature,
+        args,
+    };
+    use tari_template_lib_types::{
+        Amount,
+        ComponentAddress,
+        ObjectKey,
+        constants::TARI_TOKEN,
+        crypto::{PedersenCommitmentBytes, RistrettoPublicKeyBytes, SchnorrSignatureBytes},
+        stealth::{StealthInput, StealthInputsStatement, StealthOutputsStatement, StealthTransferStatement},
+    };
 
     use super::*;
 
@@ -449,6 +467,74 @@ mod tests {
                 "a block admits only {admitted} max-compute transactions, below the floor of \
                  {MIN_MAX_COMPUTE_TRANSACTIONS_PER_BLOCK}: either the per-transaction ceiling has outgrown the block \
                  budget, or the floor needs revisiting",
+            );
+        }
+    }
+
+    /// A transaction at [`MAX_SIGNATURES_PER_TRANSACTION`] must still fit the block a leader packs,
+    /// or the cap admits transactions nothing can ever sequence.
+    ///
+    /// The shape that reaches the cap is a key-path stealth spend, which pays weight three times per
+    /// stealth UTXO: once for the declared input, once for the signature authorizing it, and once
+    /// for the statement input. So weight, not the signature cap, is what bounds such a
+    /// transaction's share of a block — and the headroom between the two is a real quantity, built
+    /// and measured here rather than reasoned about, since every term comes from a factor that can
+    /// move independently.
+    #[test]
+    fn the_block_budget_admits_a_transaction_at_the_signature_cap() {
+        let count = MAX_SIGNATURES_PER_TRANSACTION;
+
+        // One stealth UTXO per signature: an input substate to lock, a statement input to aggregate,
+        // and the one-time key's authorization.
+        let inputs = (0..count).map(|i| {
+            let mut key = [0u8; 32];
+            key[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            SubstateRequirement::unversioned(SubstateId::Component(ComponentAddress::from_array(key)))
+        });
+        let statement = StealthTransferStatement {
+            inputs_statement: StealthInputsStatement::new(
+                (0..count)
+                    .map(|i| {
+                        let mut commitment = [0u8; 32];
+                        commitment[..8].copy_from_slice(&(i as u64).to_le_bytes());
+                        StealthInput::new(PedersenCommitmentBytes::from_bytes(&commitment).unwrap())
+                    })
+                    .collect(),
+                Amount::zero(),
+            ),
+            outputs_statement: StealthOutputsStatement::new_revealed_only(Amount::zero()),
+            balance_proof: None,
+            covenant_claims: vec![],
+        };
+
+        let weight = Transaction::builder_localnet(Epoch(1))
+            .with_inputs(inputs)
+            .stealth_transfer(TARI_TOKEN, statement)
+            .with_signatures(
+                (0..count)
+                    .map(|_| TransactionSignature::new(RistrettoPublicKeyBytes::zero(), SchnorrSignatureBytes::zero()))
+                    .collect(),
+            )
+            .seal(&PrivateKey::from(1u64))
+            .calculate_transaction_weight()
+            .as_u64();
+
+        for constants in [
+            ConsensusConstants::mainnet(),
+            ConsensusConstants::devnet(7),
+            ConsensusConstants::esmeralda(),
+            ConsensusConstants::testnet(),
+        ] {
+            assert!(
+                weight <= constants.max_block_weight,
+                "a spend at the {count}-signature cap weighs {weight}, above the {} a leader packs — it could never \
+                 be sequenced, so either the cap or the block budget has to move",
+                constants.max_block_weight,
+            );
+            assert!(
+                weight <= constants.max_transaction_weight,
+                "a spend at the {count}-signature cap weighs {weight}, above the {} ingress admits",
+                constants.max_transaction_weight,
             );
         }
     }
