@@ -23,10 +23,18 @@
 //!   and outputs `LoadedTemplate`, doing compile-or-deserialize behind the scenes.
 
 use std::{
+    collections::HashMap,
     fs,
     io,
     path::{Path, PathBuf},
-    sync::atomic::{self, AtomicU64},
+    sync::{
+        Arc,
+        Mutex,
+        MutexGuard,
+        PoisonError,
+        atomic::{self, AtomicU64},
+    },
+    time::{Duration, SystemTime},
 };
 
 use log::*;
@@ -105,6 +113,118 @@ const _: () = assert!(
     "the artifact's rkyv metadata must start 16-byte aligned: widen HEADER_PAD_BYTES",
 );
 
+/// Infix marking a `store` tempfile, which no reader ever names.
+const TMP_INFIX: &str = ".bin.tmp.";
+
+/// How long a tempfile must have gone untouched before [`WasmModuleCache::open`] treats it as the
+/// residue of a run that died between its write and its rename. A live `store` publishes in
+/// milliseconds, so the margin only has to clear a stalled flush.
+const STALE_TEMPFILE_AGE: Duration = Duration::from_secs(300);
+
+/// What the cache knows about one file it has seen.
+#[derive(Debug)]
+struct IndexEntry {
+    size_bytes: u64,
+    /// Tick of the entry's last hit or store. Only the ordering carries meaning.
+    last_used: u64,
+    /// Identity of the file this entry describes, on platforms that expose one. An unlink checks it
+    /// so that a file a concurrent `store` has since renamed into place is left alone.
+    identity: Option<u64>,
+}
+
+/// Bookkeeping over the cache directory: what is in it, how much it weighs, and in what order it
+/// was last wanted.
+///
+/// The directory remains the authority on contents. This is a running tally kept so that `store`
+/// can answer "am I over the cap, and what is coldest?" without a `readdir` and a `stat` per file
+/// on the execution path. A tally that drifts from the directory costs a recompile, never
+/// correctness: an entry the index has lost is simply an unaccounted file, and one it invents is
+/// dropped the next time its unlink finds nothing.
+#[derive(Debug)]
+struct CacheIndex {
+    entries: HashMap<TemplateAddress, IndexEntry>,
+    total_bytes: u64,
+    cap_bytes: u64,
+    clock: u64,
+}
+
+impl CacheIndex {
+    fn tick(&mut self) -> u64 {
+        self.clock += 1;
+        self.clock
+    }
+
+    fn record(&mut self, addr: TemplateAddress, size_bytes: u64, identity: Option<u64>) {
+        let last_used = self.tick();
+        if let Some(previous) = self.entries.insert(addr, IndexEntry {
+            size_bytes,
+            last_used,
+            identity,
+        }) {
+            self.total_bytes = self.total_bytes.saturating_sub(previous.size_bytes);
+        }
+        self.total_bytes = self.total_bytes.saturating_add(size_bytes);
+    }
+
+    fn forget(&mut self, addr: &TemplateAddress) {
+        if let Some(entry) = self.entries.remove(addr) {
+            self.total_bytes = self.total_bytes.saturating_sub(entry.size_bytes);
+        }
+    }
+
+    /// Removes and returns the least recently used entry.
+    ///
+    /// The last entry is never taken: a single artifact larger than the whole cap would otherwise be
+    /// evicted by the very `store` that wrote it, and every call would recompile it.
+    fn take_coldest(&mut self) -> Option<(TemplateAddress, IndexEntry)> {
+        if self.entries.len() <= 1 {
+            return None;
+        }
+        let addr = *self
+            .entries
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(addr, _)| addr)?;
+        let entry = self.entries.remove(&addr)?;
+        self.total_bytes = self.total_bytes.saturating_sub(entry.size_bytes);
+        Some((addr, entry))
+    }
+}
+
+/// The identity a later unlink compares against, where the platform has one.
+#[cfg(unix)]
+fn identity_of(meta: &fs::Metadata) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Some(meta.ino())
+}
+
+#[cfg(not(unix))]
+fn identity_of(_meta: &fs::Metadata) -> Option<u64> {
+    None
+}
+
+/// Unlink `path`, unless it now names a different file than `identity` describes.
+///
+/// Both eviction and the corrupt-file paths delete by path, while `store` publishes by renaming a
+/// new inode over that same path. Without the check, a delete decided against the file one call
+/// read can land on the file another call has just published.
+fn remove_tracked_file(path: &Path, identity: Option<u64>) {
+    if let Some(identity) = identity {
+        match fs::metadata(path) {
+            Ok(meta) if identity_of(&meta) != Some(identity) => {
+                debug!(
+                    target: LOG_TARGET,
+                    "Leaving {} alone: it was replaced since it was read", path.display(),
+                );
+                return;
+            },
+            Ok(_) => {},
+            Err(_) => return,
+        }
+    }
+    let _ignore = fs::remove_file(path);
+}
+
 /// Low-level on-disk cache for compiled wasmer modules.
 ///
 /// Files live at `{dir}/{template_address}_{ENGINE_FINGERPRINT}.bin`.
@@ -114,21 +234,134 @@ const _: () = assert!(
 /// Writes are atomic (tempfile + rename). Read failures (missing file,
 /// deserialize errors, format changes) are non-fatal: the corrupt file is
 /// removed and the caller is expected to recompile from source.
+///
+/// The cache is bounded by total bytes rather than by entry count: a compiled artifact runs about
+/// ten times the size of the WASM it came from, and the range across real templates is wide enough
+/// (hundreds of KiB to tens of MiB) that a count says little about disk. Over the cap, the least
+/// recently used artifacts are unlinked.
+///
+/// Eviction is node-local policy with no consensus reach, because an evicted artifact costs only a
+/// recompile of bytes that remain on-chain.
 #[derive(Debug, Clone)]
 pub struct WasmModuleCache {
     dir: PathBuf,
+    index: Arc<Mutex<CacheIndex>>,
 }
 
 impl WasmModuleCache {
-    /// Open or create a cache rooted at `dir`. Creates the directory tree
-    /// if missing.
+    /// Open or create a cache rooted at `dir`, holding at most `cap_bytes` of artifacts. Creates the
+    /// directory tree if missing.
     ///
     /// A directory takes one instance per process, cloned to each of its consumers rather than opened again by
-    /// each, so that whatever the handle comes to track covers the whole directory.
-    pub fn open(dir: impl Into<PathBuf>) -> io::Result<Self> {
+    /// each, so that what the handle tracks covers the whole directory.
+    ///
+    /// Opening walks the directory to tally what is already there, and takes the chance to clear
+    /// tempfiles no live `store` is writing to. Anything over the cap — a cache from a run
+    /// configured with a larger one — is evicted before the first lookup.
+    pub fn open(dir: impl Into<PathBuf>, cap_bytes: u64) -> io::Result<Self> {
         let dir = dir.into();
         fs::create_dir_all(&dir)?;
-        Ok(Self { dir })
+        let cache = Self {
+            index: Arc::new(Mutex::new(Self::build_index(&dir, cap_bytes)?)),
+            dir,
+        };
+        cache.evict_to_fit();
+        Ok(cache)
+    }
+
+    /// Tallies the cache directory and reaps abandoned tempfiles.
+    ///
+    /// Recency is seeded from modification time, the only ordering the filesystem retains across a
+    /// restart. Hits are not written back to it: a `utimes` per cache hit buys a better order after
+    /// the next restart at the cost of a write on every read, and a mis-ordered eviction costs one
+    /// recompile.
+    fn build_index(dir: &Path, cap_bytes: u64) -> io::Result<CacheIndex> {
+        let suffix = format!("_{ENGINE_FINGERPRINT}.bin");
+        let stale_before = SystemTime::now().checked_sub(STALE_TEMPFILE_AGE);
+        let mut found = Vec::new();
+
+        for entry in fs::read_dir(dir)? {
+            let Ok(entry) = entry else { continue };
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_file() {
+                continue;
+            }
+
+            if name.contains(TMP_INFIX) {
+                let is_abandoned =
+                    stale_before.is_some_and(|stale_before| meta.modified().is_ok_and(|m| m < stale_before));
+                if is_abandoned {
+                    debug!(target: LOG_TARGET, "Reaping abandoned cache tempfile {}", name);
+                    let _ignore = fs::remove_file(entry.path());
+                }
+                continue;
+            }
+
+            // Files under another fingerprint are another build's, and are left for its own cleanup.
+            let Some(stem) = name.strip_suffix(&suffix) else {
+                continue;
+            };
+            let Ok(addr) = TemplateAddress::from_hex(stem) else {
+                continue;
+            };
+            found.push((
+                addr,
+                meta.len(),
+                meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                identity_of(&meta),
+            ));
+        }
+
+        found.sort_by_key(|(_, _, modified, _)| *modified);
+
+        let mut index = CacheIndex {
+            entries: HashMap::with_capacity(found.len()),
+            total_bytes: 0,
+            cap_bytes,
+            clock: 0,
+        };
+        for (addr, size_bytes, _, identity) in found {
+            index.record(addr, size_bytes, identity);
+        }
+        debug!(
+            target: LOG_TARGET,
+            "Wasm cache at {} holds {} artifact(s), {} bytes of a {} byte cap",
+            dir.display(),
+            index.entries.len(),
+            index.total_bytes,
+            cap_bytes,
+        );
+        Ok(index)
+    }
+
+    /// A poisoned index is recovered rather than propagated: it is a tally over a directory that
+    /// remains the authority, so the worst a panic mid-update leaves behind is a wrong byte total.
+    fn index(&self) -> MutexGuard<'_, CacheIndex> {
+        self.index.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Unlinks least-recently-used artifacts until the cache is within its cap.
+    fn evict_to_fit(&self) {
+        let mut index = self.index();
+        while index.total_bytes > index.cap_bytes {
+            let Some((addr, entry)) = index.take_coldest() else {
+                break;
+            };
+            debug!(
+                target: LOG_TARGET,
+                "Evicting cached module for template {} ({} bytes)", addr, entry.size_bytes,
+            );
+            remove_tracked_file(&self.path_for(&addr), entry.identity);
+        }
+    }
+
+    /// Drops `addr` from the index and unlinks its file, if that file is still the one `identity`
+    /// describes.
+    fn discard(&self, addr: &TemplateAddress, path: &Path, identity: Option<u64>) {
+        self.index().forget(addr);
+        remove_tracked_file(path, identity);
     }
 
     pub fn dir(&self) -> &Path {
@@ -162,6 +395,7 @@ impl WasmModuleCache {
                 return None;
             },
         };
+        let identity = file.metadata().ok().as_ref().and_then(identity_of);
 
         // SAFETY: see the docs on `Mmap::map`. A mapping SIGBUSes if the file shrinks under it, so
         // what keeps this sound is that `store` never writes through the published path: it fills a
@@ -178,7 +412,7 @@ impl WasmModuleCache {
                 // An empty file cannot be mapped at all, so it never reaches the length check below.
                 // Other map failures are resource limits, under which the file may still be good.
                 if file.metadata().is_ok_and(|m| m.len() == 0) {
-                    let _ignore = fs::remove_file(&path);
+                    self.discard(addr, &path, identity);
                 }
                 return None;
             },
@@ -192,7 +426,7 @@ impl WasmModuleCache {
                 HEADER_BYTES,
             );
             drop(mmap);
-            let _ignore = fs::remove_file(&path);
+            self.discard(addr, &path, identity);
             return None;
         }
 
@@ -211,7 +445,7 @@ impl WasmModuleCache {
                 computed_crc,
             );
             drop(mmap);
-            let _ignore = fs::remove_file(&path);
+            self.discard(addr, &path, identity);
             return None;
         }
 
@@ -233,6 +467,7 @@ impl WasmModuleCache {
         // adjustment); the wrapped Mmap is dropped only when the resulting
         // Bytes (and any clones the deserializer may keep) goes out of
         // scope.
+        let size_bytes = mmap.len() as u64;
         let body = bytes::Bytes::from_owner(mmap).slice(HEADER_BYTES..);
 
         // SAFETY: bytes were written by [`Self::store`] in a previous run of
@@ -245,6 +480,9 @@ impl WasmModuleCache {
         match unsafe { WasmModule::load_template_from_serialized(body, code_size, shape) } {
             Ok(loaded) => {
                 debug!(target: LOG_TARGET, "Cache hit for template {}", addr);
+                // A hit also adopts a file this instance never wrote, so a cache inherited from an
+                // earlier run counts towards the cap from the first time it is wanted.
+                self.index().record(*addr, size_bytes, identity);
                 Some(loaded)
             },
             Err(err) => {
@@ -254,7 +492,7 @@ impl WasmModuleCache {
                     path.display(),
                     err,
                 );
-                let _ignore = fs::remove_file(&path);
+                self.discard(addr, &path, identity);
                 None
             },
         }
@@ -305,11 +543,14 @@ impl WasmModuleCache {
         bytes.extend_from_slice(&header);
         bytes.extend_from_slice(&serialized);
 
-        if let Err(e) = write_durable(&tmp, &bytes) {
-            warn!(target: LOG_TARGET, "Failed to write cache tempfile {}: {}", tmp.display(), e);
-            let _ignore = fs::remove_file(&tmp);
-            return;
-        }
+        let identity = match write_durable(&tmp, &bytes) {
+            Ok(identity) => identity,
+            Err(e) => {
+                warn!(target: LOG_TARGET, "Failed to write cache tempfile {}: {}", tmp.display(), e);
+                let _ignore = fs::remove_file(&tmp);
+                return;
+            },
+        };
 
         if let Err(e) = fs::rename(&tmp, &path) {
             warn!(
@@ -324,21 +565,33 @@ impl WasmModuleCache {
             target: LOG_TARGET,
             "Cached compiled module for template {} -> {}", addr, path.display(),
         );
+
+        self.index().record(*addr, bytes.len() as u64, identity);
+        self.evict_to_fit();
+    }
+
+    /// Bytes of artifact this cache is tracking.
+    pub fn total_bytes(&self) -> u64 {
+        self.index().total_bytes
     }
 }
 
-/// Write `bytes` to `path`, flushed to the device before returning.
+/// Write `bytes` to `path`, flushed to the device before returning, and report the identity of the
+/// file written.
 ///
 /// [`WasmModuleCache::store`] publishes a file by rename, which can expose contents still held in
 /// the page cache. The artifact body lies past the header CRC's coverage, so it must reach the
 /// device before the rename names it. Durability stops at the contents: a rename lost to a crash
 /// costs one recompile.
-fn write_durable(path: &Path, bytes: &[u8]) -> io::Result<()> {
+fn write_durable(path: &Path, bytes: &[u8]) -> io::Result<Option<u64>> {
     use std::io::Write;
 
     let mut file = fs::File::create(path)?;
     file.write_all(bytes)?;
-    file.sync_all()
+    file.sync_all()?;
+    // Taken before the rename: the identity travels with the inode, and reading it here cannot race
+    // another call publishing over the destination.
+    Ok(file.metadata().ok().as_ref().and_then(identity_of))
 }
 
 /// `TemplateProvider` middleware that adds an on-disk compiled-module cache
@@ -365,10 +618,11 @@ impl<TStore> DiskCachedWasmTemplateProvider<TStore> {
         Self { inner, cache }
     }
 
-    /// Opens a cache at `path` for this provider's exclusive use. A process whose cache directory has another
-    /// consumer opens it once with [`WasmModuleCache::open`] and passes a clone to [`Self::new`].
-    pub fn open(inner: TStore, path: impl Into<PathBuf>) -> io::Result<Self> {
-        let wasm_cache = WasmModuleCache::open(path)?;
+    /// Opens a cache at `path`, bounded to `cap_bytes`, for this provider's exclusive use. A process whose cache
+    /// directory has another consumer opens it once with [`WasmModuleCache::open`] and passes a clone to
+    /// [`Self::new`].
+    pub fn open(inner: TStore, path: impl Into<PathBuf>, cap_bytes: u64) -> io::Result<Self> {
+        let wasm_cache = WasmModuleCache::open(path, cap_bytes)?;
         Ok(Self::new(inner, wasm_cache))
     }
 }
@@ -484,6 +738,38 @@ mod tests {
         }
     }
 
+    /// Comfortably larger than the one artifact the shared fixtures compile, so that a test that is
+    /// not about eviction never trips it.
+    const TEST_CAP_BYTES: u64 = 64 * 1024 * 1024;
+
+    fn account_binary() -> &'static [u8] {
+        all_builtin_templates()
+            .iter()
+            .find(|t| t.name == "Account")
+            .expect("Account builtin")
+            .binary
+    }
+
+    fn addr_of_byte(b: u8) -> TemplateAddress {
+        let addr = TemplateAddress::from_array([b; 32]);
+        debug_assert!(
+            !is_builtin_template_address(&addr),
+            "test address must not collide with a builtin",
+        );
+        addr
+    }
+
+    /// One compiled artifact, and the byte count a `store` of it writes.
+    fn compiled_artifact() -> (LoadedTemplate, u64) {
+        let dir = TempDir::new().unwrap();
+        let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
+        let addr = addr_of_byte(0x01);
+        let loaded = WasmModule::load_template_from_code(account_binary()).unwrap();
+        cache.store(&addr, &loaded);
+        let size = fs::metadata(cache.path_for(&addr)).unwrap().len();
+        (loaded, size)
+    }
+
     fn make_store() -> (StaticStore, TemplateAddress) {
         // We re-use the Account builtin's *binary* (it's a real, valid WASM
         // template available in dev-deps) but file it under a synthetic
@@ -521,7 +807,7 @@ mod tests {
     #[test]
     fn round_trip_compile_then_deserialize() {
         let dir = TempDir::new().unwrap();
-        let cache = WasmModuleCache::open(dir.path()).unwrap();
+        let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
         let (store, addr) = make_store();
         let provider = DiskCachedWasmTemplateProvider::new(store.clone(), cache.clone());
 
@@ -542,7 +828,7 @@ mod tests {
     #[test]
     fn corrupt_cache_falls_back_to_recompile() {
         let dir = TempDir::new().unwrap();
-        let cache = WasmModuleCache::open(dir.path()).unwrap();
+        let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
         let (store, addr) = make_store();
 
         // Plant garbage at the expected filename.
@@ -566,7 +852,7 @@ mod tests {
     #[test]
     fn flipped_header_byte_falls_back_to_recompile() {
         let dir = TempDir::new().unwrap();
-        let cache = WasmModuleCache::open(dir.path()).unwrap();
+        let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
         let (store, addr) = make_store();
         let provider = DiskCachedWasmTemplateProvider::new(store, cache.clone());
         provider.get_template(&addr).unwrap().expect("loaded");
@@ -584,7 +870,7 @@ mod tests {
     #[test]
     fn flipped_crc_byte_falls_back_to_recompile() {
         let dir = TempDir::new().unwrap();
-        let cache = WasmModuleCache::open(dir.path()).unwrap();
+        let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
         let (store, addr) = make_store();
         let provider = DiskCachedWasmTemplateProvider::new(store, cache.clone());
         provider.get_template(&addr).unwrap().expect("loaded");
@@ -601,7 +887,7 @@ mod tests {
     #[test]
     fn truncated_header_treated_as_miss() {
         let dir = TempDir::new().unwrap();
-        let cache = WasmModuleCache::open(dir.path()).unwrap();
+        let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
         let (_store, addr) = make_store();
 
         let path = cache.path_for(&addr);
@@ -614,7 +900,7 @@ mod tests {
     #[test]
     fn stored_header_crc_covers_the_fields() {
         let dir = TempDir::new().unwrap();
-        let cache = WasmModuleCache::open(dir.path()).unwrap();
+        let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
         let (store, addr) = make_store();
         let provider = DiskCachedWasmTemplateProvider::new(store, cache.clone());
         let loaded = provider.get_template(&addr).unwrap().expect("loaded");
@@ -634,9 +920,145 @@ mod tests {
     }
 
     #[test]
+    fn evicts_the_least_recently_used_artifact_over_the_cap() {
+        let (loaded, size) = compiled_artifact();
+        let dir = TempDir::new().unwrap();
+        // Room for one artifact and change, so the second store must displace the first.
+        let cache = WasmModuleCache::open(dir.path(), size + size / 2).unwrap();
+
+        let first = addr_of_byte(0x11);
+        let second = addr_of_byte(0x22);
+        cache.store(&first, &loaded);
+        cache.store(&second, &loaded);
+
+        assert!(
+            !cache.path_for(&first).exists(),
+            "the colder artifact should be evicted"
+        );
+        assert!(
+            cache.path_for(&second).exists(),
+            "the artifact just stored should be kept"
+        );
+        assert_eq!(cache.total_bytes(), size);
+    }
+
+    #[test]
+    fn a_hit_spares_an_artifact_from_the_next_eviction() {
+        let (loaded, size) = compiled_artifact();
+        let dir = TempDir::new().unwrap();
+        // Room for two artifacts, so the third store evicts whichever went longest unwanted.
+        let cache = WasmModuleCache::open(dir.path(), 2 * size + size / 2).unwrap();
+
+        let first = addr_of_byte(0x11);
+        let second = addr_of_byte(0x22);
+        let third = addr_of_byte(0x33);
+        cache.store(&first, &loaded);
+        cache.store(&second, &loaded);
+        cache.try_load(&first).expect("hit");
+        cache.store(&third, &loaded);
+
+        assert!(cache.path_for(&first).exists(), "the artifact just read should be kept");
+        assert!(
+            !cache.path_for(&second).exists(),
+            "the artifact nobody wanted should go"
+        );
+        assert!(cache.path_for(&third).exists());
+    }
+
+    #[test]
+    fn an_artifact_larger_than_the_cap_is_kept() {
+        let (loaded, _) = compiled_artifact();
+        let dir = TempDir::new().unwrap();
+        let cache = WasmModuleCache::open(dir.path(), 1).unwrap();
+
+        let addr = addr_of_byte(0x11);
+        cache.store(&addr, &loaded);
+
+        assert!(
+            cache.path_for(&addr).exists(),
+            "evicting the only artifact would recompile it on every call",
+        );
+    }
+
+    #[test]
+    fn reopening_tallies_what_is_already_on_disk() {
+        let (loaded, size) = compiled_artifact();
+        let dir = TempDir::new().unwrap();
+        let first = addr_of_byte(0x11);
+        let second = addr_of_byte(0x22);
+        {
+            let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
+            cache.store(&first, &loaded);
+            cache.store(&second, &loaded);
+        }
+
+        let reopened = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
+        assert_eq!(reopened.total_bytes(), 2 * size);
+
+        // A cap below what the directory holds is applied before the first lookup.
+        let shrunk = WasmModuleCache::open(dir.path(), size + size / 2).unwrap();
+        assert_eq!(shrunk.total_bytes(), size);
+    }
+
+    #[test]
+    fn opening_reaps_abandoned_tempfiles_only() {
+        let dir = TempDir::new().unwrap();
+        let addr = addr_of_byte(0x11);
+        let abandoned = dir
+            .path()
+            .join(format!("{}_{}.bin.tmp.1234.0", addr, ENGINE_FINGERPRINT));
+        let in_flight = dir
+            .path()
+            .join(format!("{}_{}.bin.tmp.5678.0", addr, ENGINE_FINGERPRINT));
+        fs::write(&abandoned, b"partial").unwrap();
+        fs::write(&in_flight, b"partial").unwrap();
+
+        let aged = SystemTime::now() - (STALE_TEMPFILE_AGE * 2);
+        fs::File::options()
+            .write(true)
+            .open(&abandoned)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_accessed(aged).set_modified(aged))
+            .unwrap();
+
+        let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
+
+        assert!(!abandoned.exists(), "a tempfile no store is writing should be reaped");
+        assert!(
+            in_flight.exists(),
+            "a tempfile a store may still be writing should be left"
+        );
+        assert_eq!(cache.total_bytes(), 0, "tempfiles do not count towards the cap");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_republished_file_survives_a_stale_unlink() {
+        let (loaded, _) = compiled_artifact();
+        let dir = TempDir::new().unwrap();
+        let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
+        let addr = addr_of_byte(0x11);
+
+        cache.store(&addr, &loaded);
+        let path = cache.path_for(&addr);
+        let stale_identity = fs::metadata(&path).ok().as_ref().and_then(identity_of);
+
+        // A second store publishes a new inode over the same name.
+        cache.store(&addr, &loaded);
+
+        remove_tracked_file(&path, stale_identity);
+
+        assert!(
+            path.exists(),
+            "an unlink decided against the replaced file must not land"
+        );
+        assert!(cache.try_load(&addr).is_some());
+    }
+
+    #[test]
     fn fingerprint_mismatch_treated_as_miss() {
         let dir = TempDir::new().unwrap();
-        let cache = WasmModuleCache::open(dir.path()).unwrap();
+        let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
         let (_store, addr) = make_store();
 
         // Plant a file under a different fingerprint suffix.
