@@ -232,13 +232,15 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
             });
         }
 
-        if utxo_addresses.len() > MAX_INPUTS_PER_TRANSACTION {
+        // Named inputs are spent by one transfer statement, the same as selected ones, so they take the same budget:
+        // enough to keep that statement inside the per-statement cap and to leave the fee statement its reserve.
+        if utxo_addresses.len() > MAX_TRANSFER_INPUTS {
             return Err(StealthOutputsApiError::InvalidParameter {
                 param: "utxo_addresses",
                 reason: format!(
-                    "Requested {} inputs which exceeds the maximum of {} stealth inputs one transaction may spend",
+                    "Requested {} inputs which exceeds the maximum of {} a transfer statement may spend",
                     utxo_addresses.len(),
-                    MAX_INPUTS_PER_TRANSACTION
+                    MAX_TRANSFER_INPUTS
                 ),
             });
         }
@@ -388,10 +390,12 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
                 reason: "lock_outputs_internal: Amount cannot be negative".to_string(),
             });
         }
-        if max_inputs == 0 || max_inputs > MAX_INPUTS_PER_TRANSACTION {
+        // A selection's inputs are spent by one statement, so no selection may be given more than one statement can
+        // carry — the per-transaction total is the sum of the budgets, not a bound on any one of them.
+        if max_inputs == 0 || max_inputs > MAX_TRANSFER_INPUTS {
             return Err(StealthOutputsApiError::InvalidParameter {
                 param: "max_inputs",
-                reason: format!("Must be between 1 and {MAX_INPUTS_PER_TRANSACTION}, got {max_inputs}"),
+                reason: format!("Must be between 1 and {MAX_TRANSFER_INPUTS}, got {max_inputs}"),
             });
         }
 
