@@ -167,14 +167,13 @@ impl PrunedUnsealedTransactionV1 {
         // deriving it hashes the whole body.
         let message =
             TransactionSignature::create_message_v1_pruned(seal_signer, &self.transaction, self.blob_hashes());
-        self.signatures.iter().enumerate().all(|(i, sig)| {
-            if sig.verify_message(message) {
-                true
-            } else {
-                debug!(target: LOG_TARGET, "Failed to verify pruned signature at index {}", i);
+        match TransactionSignature::verify_all_against_message(&self.signatures, message) {
+            Ok(()) => true,
+            Err(index) => {
+                debug!(target: LOG_TARGET, "Failed to verify pruned signature at index {}", index);
                 false
-            }
-        })
+            },
+        }
     }
 }
 

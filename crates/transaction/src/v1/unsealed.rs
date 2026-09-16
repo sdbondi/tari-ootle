@@ -114,14 +114,13 @@ impl UnsealedTransactionV1 {
         // deriving it hashes the whole body including a commitment over every blob's bytes.
         let message =
             TransactionSignature::create_message_v1_with_blob_hashes(seal_signer, &self.transaction, blob_hashes);
-        self.signatures().iter().enumerate().all(|(i, sig)| {
-            if sig.verify_message(message) {
-                true
-            } else {
-                log::debug!(target: LOG_TARGET, "Failed to verify signature at index {}", i);
+        match TransactionSignature::verify_all_against_message(self.signatures(), message) {
+            Ok(()) => true,
+            Err(index) => {
+                log::debug!(target: LOG_TARGET, "Failed to verify signature at index {}", index);
                 false
-            }
-        })
+            },
+        }
     }
 
     pub fn inputs(&self) -> &IndexSet<SubstateRequirement> {

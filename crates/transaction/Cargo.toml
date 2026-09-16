@@ -20,7 +20,12 @@ ootle_serde = { workspace = true, features = ["std", "base64", "hex"], optional 
 ootle_byte_type = { workspace = true, features = ["crypto"] }
 ootle-network = { workspace = true }
 
+blake2 = { workspace = true }
 borsh = { workspace = true }
+# Batch signature verification multiplies decompressed points directly. Must stay on the major version
+# tari_crypto builds against, or `RistrettoPublicKey::point()` yields a point of a different `RistrettoPoint` type.
+curve25519-dalek = "5.0"
+digest = { workspace = true }
 log = { workspace = true }
 rand = { workspace = true }
 indexmap = { workspace = true }
@@ -30,7 +35,12 @@ hex = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+criterion = { version = "0.8.1", features = ["html_reports"] }
 serde_json = { workspace = true }
+
+[[bench]]
+name = "signature_verification"
+harness = false
 
 [features]
 serde = ["dep:serde", "dep:ootle_serde", "tari_bor/serde", "tari_template_lib_types/serde", "indexmap/serde"]
