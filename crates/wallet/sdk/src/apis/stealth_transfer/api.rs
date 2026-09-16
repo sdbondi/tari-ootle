@@ -44,7 +44,13 @@ use crate::{
         config::ConfigApi,
         key_manager::KeyManagerApi,
         locks::LocksApi,
-        stealth_outputs::{StealthOutputsApi, StealthOutputsApiError, TransferStatementParams},
+        stealth_outputs::{
+            FEE_INTENT_INPUT_RESERVE,
+            MAX_TRANSFER_INPUTS,
+            StealthOutputsApi,
+            StealthOutputsApiError,
+            TransferStatementParams,
+        },
         substate::{SubstatesApi, ValidatorScanResult},
         swap_pool,
     },
@@ -108,7 +114,12 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    /// Locks the inputs a transfer statement will spend, leaving [`FEE_INTENT_INPUT_RESERVE`] of the transaction's
+    /// input budget for a statement that sources the fee.
+    ///
+    /// The reserve is held back unconditionally, including on the merged-statement path that may not need a fee
+    /// statement at all: whether the merge fits the fee-intent credit is only known once the realised input count is,
+    /// which is after selection, and a selection that had already claimed the whole budget could not then fall back.
     pub fn lock_inputs_for_transfer(
         &self,
         lock_id: WalletLockId,
@@ -116,6 +127,26 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
         resource_address: ResourceAddress,
         spend_amount: Amount,
         input_selection: UtxoInputSelection,
+    ) -> Result<InputsToSpend, StealthTransferApiError> {
+        self.lock_inputs_within_budget(
+            lock_id,
+            owner_account_component_address,
+            resource_address,
+            spend_amount,
+            input_selection,
+            MAX_TRANSFER_INPUTS,
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn lock_inputs_within_budget(
+        &self,
+        lock_id: WalletLockId,
+        owner_account_component_address: &ComponentAddress,
+        resource_address: ResourceAddress,
+        spend_amount: Amount,
+        input_selection: UtxoInputSelection,
+        max_inputs: usize,
     ) -> Result<InputsToSpend, StealthTransferApiError> {
         if !spend_amount.is_positive() {
             return Err(StealthTransferApiError::InvalidParameter {
@@ -141,6 +172,7 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
                     &resource_address,
                     lock_id,
                     spend_amount,
+                    max_inputs,
                 )?;
 
                 info!(
@@ -228,6 +260,7 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
                     &resource_address,
                     lock_id,
                     utxo_amount_to_spend,
+                    max_inputs,
                 )?;
 
                 let total_confidential_spent = inputs.iter().map(|i| Amount::from(i.value)).sum::<Amount>();
@@ -259,6 +292,7 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
                     &resource_address,
                     spend_amount,
                     lock_id,
+                    max_inputs,
                 )?;
 
                 let revealed_to_spend = spend_amount.saturating_sub(blinded_amount_locked);
@@ -306,12 +340,13 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
             Some(swap) => (swap.input_resource, swap.input_amount),
             None => (TARI_TOKEN, max_fee.into()),
         };
-        self.lock_inputs_for_transfer(
+        self.lock_inputs_within_budget(
             lock_id,
             owner_account_address,
             resource,
             amount,
             fee_params.input_selection,
+            FEE_INTENT_INPUT_RESERVE,
         )
     }
 

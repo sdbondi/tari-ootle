@@ -70,6 +70,38 @@ use crate::{
     },
 };
 
+/// Stealth inputs one transaction may spend, across every statement it carries.
+///
+/// The engine's ceiling is per transaction rather than per statement — `max_total_inputs_per_transaction` against
+/// `max_inputs` — and a transfer that cannot source its fee from its own revealed remainder carries a second statement
+/// with inputs of its own. Selecting against the per-statement limit for each of them builds a transaction the engine
+/// refuses outright (`ExceedsStealthTransactionLimit { limit: "inputs" }`), and which ingress refuses before that, so
+/// the two selections share this budget instead.
+pub const MAX_INPUTS_PER_TRANSACTION: usize = limits::STEALTH_LIMITS.max_total_inputs_per_transaction;
+
+/// Inputs held back from a transfer's own selection for the statement that sources its fee.
+///
+/// The fee intent runs on `FREE_COMPUTE_GRACE_POINTS` of credit before anything is paid, and that credit is sized for
+/// a fee-sourcing transfer of up to 64 dust inputs. A wider fee statement traps out of gas whatever else the
+/// transaction does, so 64 is both what a transfer must leave behind and what the fee selection itself is capped at.
+pub const FEE_INTENT_INPUT_RESERVE: usize = 64;
+
+/// Inputs a transfer may select, leaving [`FEE_INTENT_INPUT_RESERVE`] for a fee statement.
+pub const MAX_TRANSFER_INPUTS: usize = MAX_INPUTS_PER_TRANSACTION - FEE_INTENT_INPUT_RESERVE;
+
+// A statement has a width limit of its own, below the per-transaction total these budgets are carved from, so a
+// reserve much smaller than this one would leave a transfer free to select more inputs than any single statement may
+// spend — and the statement it built would be refused while the transaction stayed inside its total.
+const _: () = assert!(MAX_TRANSFER_INPUTS <= limits::STEALTH_LIMITS.max_inputs);
+const _: () = assert!(FEE_INTENT_INPUT_RESERVE <= limits::STEALTH_LIMITS.max_inputs);
+
+/// What a selection locked, and whether the input budget rather than the balance is what stopped it.
+struct Selection {
+    outputs: Vec<InputSpendData>,
+    total: Amount,
+    reached_input_limit: bool,
+}
+
 const LOG_TARGET: &str = "tari::ootle::wallet::apis::stealth_outputs";
 
 pub struct StealthOutputsApi<'a, TSpec: WalletSdkSpec> {
@@ -94,14 +126,17 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
         }
     }
 
-    /// Locks as many outputs required to reach at least the specified amount. If there are insufficient funds, an
-    /// `InsufficientFunds` error is returned and no outputs are locked.
+    /// Locks as many outputs required to reach at least the specified amount, selecting at most `max_inputs` of them
+    /// (see [`MAX_TRANSFER_INPUTS`]). If there are insufficient funds, an `InsufficientFunds` error is returned and no
+    /// outputs are locked; if the funds are there but no `max_inputs` of them reach the amount, the error says so
+    /// rather than reporting the balance as insufficient.
     pub fn lock_outputs_for_at_least_amount<A: Into<Amount>>(
         &self,
         account_address: &ComponentAddress,
         resource_address: &ResourceAddress,
         lock_id: WalletLockId,
         amount: A,
+        max_inputs: usize,
     ) -> Result<(Vec<InputSpendData>, Amount), StealthOutputsApiError> {
         let amount = amount
             .into()
@@ -115,40 +150,52 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
         }
 
         self.store.with_write_tx(|tx| {
-            let (outputs, total_output_amount) = self.lock_outputs_internal(
+            let selection = self.lock_outputs_internal(
                 tx,
                 account_address,
                 resource_address,
                 amount,
                 lock_id,
                 InputSelectionAlgorithm::BranchAndBound,
+                max_inputs,
             )?;
 
-            if total_output_amount < amount {
+            if selection.total < amount {
+                if selection.reached_input_limit {
+                    return Err(StealthOutputsApiError::InputLimitReached {
+                        max: max_inputs,
+                        locked: selection.total,
+                        required: amount,
+                    });
+                }
                 return Err(StealthOutputsApiError::InsufficientFunds);
             }
-            Ok((outputs, total_output_amount))
+            Ok((selection.outputs, selection.total))
         })
     }
 
-    /// Locks as many outputs required to reach at least the specified amount. If there are insufficient funds, all
-    /// available outputs will be locked and returned along with the total amount locked.
+    /// Locks as many outputs required to reach at least the specified amount, selecting at most `max_inputs` of them
+    /// (see [`MAX_TRANSFER_INPUTS`]). If the available outputs or `max_inputs` fall short, all that could be locked is
+    /// returned along with the total amount locked, for the caller to top up from revealed funds.
     pub fn lock_outputs_until_partial_amount(
         &self,
         account_address: &ComponentAddress,
         resource_address: &ResourceAddress,
         amount: Amount,
         locked_by_id: WalletLockId,
+        max_inputs: usize,
     ) -> Result<(Vec<InputSpendData>, Amount), StealthOutputsApiError> {
         self.store.with_write_tx(|tx| {
-            self.lock_outputs_internal(
+            let selection = self.lock_outputs_internal(
                 tx,
                 account_address,
                 resource_address,
                 amount,
                 locked_by_id,
                 InputSelectionAlgorithm::SmallestFirst,
-            )
+                max_inputs,
+            )?;
+            Ok((selection.outputs, selection.total))
         })
     }
 
@@ -185,14 +232,13 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
             });
         }
 
-        const INPUT_LIMIT: usize = limits::STEALTH_LIMITS.max_inputs;
-        if utxo_addresses.len() > INPUT_LIMIT {
+        if utxo_addresses.len() > MAX_INPUTS_PER_TRANSACTION {
             return Err(StealthOutputsApiError::InvalidParameter {
                 param: "utxo_addresses",
                 reason: format!(
-                    "Requested {} inputs which exceeds the maximum of {} stealth inputs",
+                    "Requested {} inputs which exceeds the maximum of {} stealth inputs one transaction may spend",
                     utxo_addresses.len(),
-                    INPUT_LIMIT
+                    MAX_INPUTS_PER_TRANSACTION
                 ),
             });
         }
@@ -334,27 +380,36 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
         amount: Amount,
         locked_by_id: WalletLockId,
         selection_algo: InputSelectionAlgorithm,
-    ) -> Result<(Vec<InputSpendData>, Amount), StealthOutputsApiError> {
+        max_inputs: usize,
+    ) -> Result<Selection, StealthOutputsApiError> {
         if amount.is_negative() {
             return Err(StealthOutputsApiError::InvalidParameter {
                 param: "amount",
                 reason: "lock_outputs_internal: Amount cannot be negative".to_string(),
             });
         }
-
-        const INPUT_LIMIT: usize = limits::STEALTH_LIMITS.max_inputs;
+        if max_inputs == 0 || max_inputs > MAX_INPUTS_PER_TRANSACTION {
+            return Err(StealthOutputsApiError::InvalidParameter {
+                param: "max_inputs",
+                reason: format!("Must be between 1 and {MAX_INPUTS_PER_TRANSACTION}, got {max_inputs}"),
+            });
+        }
 
         match selection_algo {
             InputSelectionAlgorithm::SmallestFirst => {
                 let mut total_output_amount = Amount::zero();
                 let mut outputs = Vec::new();
+                let mut reached_input_limit = false;
                 while total_output_amount < amount {
-                    if outputs.len() >= INPUT_LIMIT {
+                    if outputs.len() >= max_inputs {
                         warn!(
                             target: LOG_TARGET,
-                            "Reached maximum input limit of {} when locking outputs.",
-                            INPUT_LIMIT
+                            "Reached the {} input limit for one transaction with {} of {} locked.",
+                            max_inputs,
+                            total_output_amount,
+                            amount
                         );
+                        reached_input_limit = true;
                         break;
                     }
                     let output = tx
@@ -377,8 +432,11 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
                     }
                 }
 
-                let outputs = outputs.into_iter().map(|i| i.into_spend_data()).collect();
-                Ok((outputs, total_output_amount))
+                Ok(Selection {
+                    outputs: outputs.into_iter().map(|i| i.into_spend_data()).collect(),
+                    total: total_output_amount,
+                    reached_input_limit,
+                })
             },
             InputSelectionAlgorithm::BranchAndBound => {
                 let unspent =
@@ -397,16 +455,21 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
                 // TODO: note that the behaviour of this implementation does not allow for partial selection, needed by
                 // UtxoInputSelection::PreferConfidential. For now, we prevent running into this by only
                 // using SmallestFirst.
-                let result = input_selection::branch_and_bound::select(&inputs, amount, INPUT_LIMIT).ok_or(
-                    StealthOutputsApiError::InputSelectionFailed {
-                        details: "Failed to select inputs (branch and bound algorithm)".to_string(),
-                    },
-                )?;
+                let Some(result) = input_selection::branch_and_bound::select(&inputs, amount, max_inputs) else {
+                    // The search fails both when the outputs cannot reach the amount and when no `max_inputs` of them
+                    // can, which are different answers for the caller: one is a balance, the other is fragmentation
+                    // that consolidating would fix. The available total tells them apart.
+                    let available = inputs.iter().map(|i| Amount::from(i.value())).sum::<Amount>();
+                    return Ok(Selection {
+                        outputs: Vec::new(),
+                        total: Amount::zero(),
+                        reached_input_limit: available >= amount,
+                    });
+                };
 
                 let outputs = result
                     .selected_keys()
                     .iter()
-                    .take(INPUT_LIMIT)
                     .map(|selected| {
                         unspent
                             .remove(*selected)
@@ -417,7 +480,11 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
                 // Lock the selected outputs
                 tx.stealth_outputs_lock_many(resource_address, result.selected_keys(), locked_by_id)?;
 
-                Ok((outputs, result.total_value()))
+                Ok(Selection {
+                    outputs,
+                    total: result.total_value(),
+                    reached_input_limit: false,
+                })
             },
         }
     }
@@ -1003,6 +1070,15 @@ pub enum StealthOutputsApiError {
     Crypto(#[from] StealthCryptoApiError),
     #[error("Wallet crypto error: {0}")]
     WalletCrypto(#[from] tari_ootle_wallet_crypto::WalletCryptoError),
+    #[error(
+        "Reached the limit of {max} inputs for one transaction with {locked} of {required} covered: the balance is \
+         spread across more stealth outputs than one transaction can spend, and has to be consolidated first"
+    )]
+    InputLimitReached {
+        max: usize,
+        locked: Amount,
+        required: Amount,
+    },
     #[error("Insufficient funds")]
     InsufficientFunds,
     #[error("Input selection error: {details}")]
