@@ -23,7 +23,7 @@ use tari_crypto::{
     keys::{PublicKey, SecretKey},
     ristretto::{RistrettoPublicKey, RistrettoSchnorr, RistrettoSecretKey},
 };
-use tari_ootle_transaction::TransactionSignature;
+use tari_ootle_transaction::{TransactionSealSignature, TransactionSignature, verify_sealed_batch};
 
 /// `n` valid signatures over `message`, each from a distinct key — the shape a multi-input stealth
 /// spend or a coinjoin produces, where every input contributes its own one-time key.
@@ -45,6 +45,15 @@ fn verify_individually(signatures: &[TransactionSignature], message: [u8; 64]) -
     signatures.iter().all(|sig| sig.verify_message(message))
 }
 
+/// A seal over `seal_message`, from a key of its own.
+fn seal(seal_message: &[u8; 64]) -> TransactionSealSignature {
+    let mut rng = rand::rng();
+    let secret = RistrettoSecretKey::random(&mut rng);
+    let public_key = RistrettoPublicKey::from_secret_key(&secret);
+    let signature = RistrettoSchnorr::sign(&secret, seal_message, &mut rng).expect("sign is infallible");
+    TransactionSealSignature::new(public_key.to_byte_type(), signature.to_byte_type())
+}
+
 fn bench(c: &mut Criterion) {
     let message = [7u8; 64];
     let mut g = c.benchmark_group("transaction_signature_verification");
@@ -58,13 +67,65 @@ fn bench(c: &mut Criterion) {
 
         g.bench_with_input(BenchmarkId::new("batch", n), &n, |b, _| {
             b.iter(|| {
-                assert!(
-                    black_box(TransactionSignature::verify_all_against_message(
-                        black_box(&sigs),
-                        message
-                    ))
-                    .is_ok()
-                )
+                assert!(black_box(TransactionSignature::verify_all_against_message(
+                    black_box(&sigs),
+                    message
+                )))
+            })
+        });
+    }
+
+    // The worst case for a node that will reject the set: the batch does not hold, so every term is
+    // walked afterwards. The invalid signature goes last, which is the costliest position and so the
+    // one an attacker would choose. Rejected transactions pay no fee, so this is the figure the
+    // signature cap has to tolerate.
+    for n in [1usize, 16, 256] {
+        let mut sigs = signatures(n, &message);
+        // Last is the costliest position for the pre-batch path, and so the one an attacker picks.
+        let last = sigs.len() - 1;
+        sigs[last] = signatures(1, &[8u8; 64]).remove(0);
+
+        g.bench_with_input(BenchmarkId::new("rejected_individual", n), &n, |b, _| {
+            b.iter(|| assert!(!black_box(verify_individually(black_box(&sigs), message))))
+        });
+
+        g.bench_with_input(BenchmarkId::new("rejected_batch", n), &n, |b, _| {
+            b.iter(|| {
+                assert!(!black_box(TransactionSignature::verify_all_against_message(
+                    black_box(&sigs),
+                    message
+                )))
+            })
+        });
+    }
+
+    // The whole signature set of a sealed transaction. The seal signs a different message from the
+    // authorizations, so this measures what folding it into the same multiplication is worth over
+    // verifying it on its own and batching the rest.
+    for n in [1usize, 4, 16] {
+        let authorization_message = [7u8; 64];
+        let seal_message = [9u8; 64];
+        let sigs = signatures(n, &authorization_message);
+        let seal = seal(&seal_message);
+
+        g.bench_with_input(BenchmarkId::new("sealed_seal_apart", n), &n, |b, _| {
+            b.iter(|| {
+                assert!(black_box(seal.verify_message(seal_message)));
+                assert!(black_box(TransactionSignature::verify_all_against_message(
+                    black_box(&sigs),
+                    authorization_message
+                )))
+            })
+        });
+
+        g.bench_with_input(BenchmarkId::new("sealed_one_batch", n), &n, |b, _| {
+            b.iter(|| {
+                assert!(black_box(verify_sealed_batch(
+                    black_box(&seal),
+                    seal_message,
+                    black_box(&sigs),
+                    authorization_message,
+                )))
             })
         });
     }

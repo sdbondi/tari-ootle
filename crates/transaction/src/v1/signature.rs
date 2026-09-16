@@ -1,6 +1,8 @@
 //    Copyright 2024 The Tari Project
 //    SPDX-License-Identifier: BSD-3-Clause
 
+use std::borrow::Borrow;
+
 use blake2::Blake2b;
 use curve25519_dalek::{
     RistrettoPoint,
@@ -12,7 +14,7 @@ use digest::consts::U64;
 use indexmap::IndexSet;
 use ootle_byte_type::{ConvertFromByteType, FromByteType, ToByteType};
 use tari_crypto::{
-    keys::{PublicKey as PublicKeyT, SecretKey},
+    keys::PublicKey as PublicKeyT,
     ristretto::{RistrettoPublicKey, RistrettoSchnorr, RistrettoSecretKey},
     tari_utilities,
     tari_utilities::ByteArray,
@@ -398,120 +400,192 @@ impl TransactionSignature {
         self.verify_message(Self::create_message_v1_pruned(seal_signer, transaction, blob_hashes))
     }
 
-    /// Verifies every signature in `signatures` against `message`, returning `Err(index)` for the
-    /// first signature that does not verify.
-    ///
-    /// Equivalent to calling [`Self::verify_message`] on each in turn, but folds the checks into a
-    /// single multiscalar multiplication (see [`Self::verify_batch`]). The individual checks still
-    /// run when the batch rejects the set, since they are what identifies the signature at fault.
-    pub fn verify_all_against_message(signatures: &[Self], message: [u8; 64]) -> Result<(), usize> {
-        if !signatures.is_empty() && Self::verify_batch(signatures, &message) {
-            return Ok(());
-        }
-        signatures
-            .iter()
-            .position(|sig| !sig.verify_message(message))
-            .map_or(Ok(()), Err)
-    }
-
     /// True when every signature in `signatures` verifies against `message`.
     ///
-    /// Each signature `(Pᵢ, Rᵢ, sᵢ)` is valid exactly when `sᵢ·G - Rᵢ - eᵢ·Pᵢ` is the identity, for
-    /// `eᵢ = H(Rᵢ ‖ Pᵢ ‖ message)`. Weighting those n equations by scalars `zᵢ` and summing them
-    /// gives one equation over the whole set:
+    /// Accepts exactly the sets [`Self::verify_message`] accepts one by one, but folds the checks
+    /// into a single multiscalar multiplication (see [`verify_batch`]). A rejection is a verdict on
+    /// the set and does not say which signature is at fault; that costs a pass of its own, and
+    /// nothing downstream of a rejected transaction needs it.
     ///
-    /// ```text
-    /// Σ zᵢ·Rᵢ + Σ (zᵢ·eᵢ)·Pᵢ - (Σ zᵢ·sᵢ)·G == 0
-    /// ```
-    ///
-    /// which holds whenever every signature is valid, and otherwise only for a `zᵢ` vector that
-    /// makes the individual errors cancel. So one multiscalar multiplication over `2n + 1` terms
-    /// stands in for n double-base multiplications: only the scalar arithmetic stays linear in n,
-    /// while the point arithmetic is shared across the terms, so the cost per signature keeps
-    /// falling as the set grows. Measured in `benches/signature_verification.rs` at 18µs per
-    /// signature at sixteen and 14µs at a thousand, against ~44µs for the individual checks.
-    ///
-    /// The weights are derived from the signature set and the message rather than sampled, so every
-    /// node reaches the same verdict on the same bytes — a validity predicate a committee votes on
-    /// must not depend on local randomness. Soundness then rests on the same Fiat-Shamir argument as
-    /// the challenge scalars themselves: the weights are fixed by a hash of everything they weigh,
-    /// so a set whose errors cancel under its own weights takes a search over 2^127 candidates to
-    /// find.
-    ///
-    /// The multiplication is variable-time. Every term is public — keys, nonces, signature scalars,
-    /// the message, and weights derived from all of them — so it has no secret to leak, and the
-    /// signed-digit recoding it allows is worth ~1.5x over the constant-time algorithm here: the
-    /// same equation through `RistrettoPublicKey::batch_mul` measured 1.7x against the individual
-    /// checks where this measures 2.5x.
-    fn verify_batch(signatures: &[Self], message: &[u8; 64]) -> bool {
-        let weights = Self::batch_weights(signatures, message);
-        let n = signatures.len();
-
-        let mut nonces = Vec::with_capacity(n);
-        let mut public_keys = Vec::with_capacity(n);
-        let mut challenge_terms = Vec::with_capacity(n);
-        let mut signature_sum = Scalar::ZERO;
-
-        for (sig, z) in signatures.iter().zip(&weights) {
-            let Ok(public_key) = sig.public_key.try_from_byte_type() else {
-                return false;
-            };
-            let Ok(signature) = RistrettoSchnorr::convert_from_byte_type(&sig.signature) else {
-                return false;
-            };
-            let e = challenge_scalar(signature.get_public_nonce(), &public_key, message);
-
-            signature_sum += z * Scalar::from(signature.get_signature().clone());
-            challenge_terms.push(z * e);
-            nonces.push(signature.get_public_nonce().point());
-            public_keys.push(public_key.point());
+    /// A caller verifying a sealed transaction should use [`verify_sealed_batch`] instead, which
+    /// folds the seal into the same multiplication.
+    pub fn verify_all_against_message(signatures: &[Self], message: [u8; 64]) -> bool {
+        if signatures.is_empty() {
+            return true;
         }
-
-        // Terms `[z₀..zₙ₋₁, z₀e₀..zₙ₋₁eₙ₋₁, -Σ zᵢsᵢ]` against `[R₀..Rₙ₋₁, P₀..Pₙ₋₁, G]`, which the
-        // multiplication takes as one flat pair of slices.
-        let mut points = Vec::with_capacity(2 * n + 1);
-        points.extend(nonces);
-        points.extend(public_keys);
-        points.push(RISTRETTO_BASEPOINT_POINT);
-
-        let mut scalars = Vec::with_capacity(2 * n + 1);
-        scalars.extend(weights);
-        scalars.extend(challenge_terms);
-        scalars.push(-signature_sum);
-
-        RistrettoPoint::vartime_multiscalar_mul(&scalars, &points) == RistrettoPoint::identity()
+        let terms: Vec<_> = signatures
+            .iter()
+            .map(|sig| BatchTerm::new(&sig.public_key, &sig.signature, &message))
+            .collect();
+        verify_batch(&terms)
     }
+}
 
-    /// The batch weight for each signature: `2¹²⁷ ≤ zᵢ < 2¹²⁸`, derived from a commitment to the
-    /// whole set and the message it signs.
-    ///
-    /// Binding every weight to every signature is what stops a set from being assembled against
-    /// weights already known: changing any signature redraws all of them. The weights are
-    /// deliberately short — the 2^127 search they impose is the security margin, and a full-width
-    /// scalar would cost more to multiply for no gain.
-    fn batch_weights(signatures: &[Self], message: &[u8; 64]) -> Vec<Scalar> {
-        let commitment = transaction_hasher_v1("BatchVerify")
-            .chain(message)
-            .chain(signatures)
+/// True when a sealed transaction's whole signature set — its seal and every authorization —
+/// verifies, checked in one batch.
+///
+/// The two kinds sign different messages, which the batch equation is indifferent to: each term
+/// derives its own challenge from its own message, so a shared message saves deriving the digest
+/// more than once but is not what makes the fold sound. Folding the seal in replaces a standalone
+/// constant-time verification with three more terms in a multiplication that was happening anyway.
+///
+/// The messages are not circular, though the two commitments cross: the seal message commits to the
+/// authorization signatures, and the authorization message commits to the seal signer's public key.
+/// Authorizations sign over the seal *key* and the seal signs over the finished *signatures*, so
+/// both digests are derivable before anything is verified, which is all the batch needs.
+pub fn verify_sealed_batch(
+    seal: &TransactionSealSignature,
+    seal_message: [u8; 64],
+    signatures: &[TransactionSignature],
+    authorization_message: [u8; 64],
+) -> bool {
+    let mut terms = Vec::with_capacity(signatures.len() + 1);
+    terms.push(BatchTerm::new(seal.public_key(), seal.signature(), &seal_message));
+    terms.extend(
+        signatures
+            .iter()
+            .map(|sig| BatchTerm::new(sig.public_key(), sig.signature(), &authorization_message)),
+    );
+    verify_batch(&terms)
+}
+
+/// One signature in a batch, paired with the message it signs.
+struct BatchTerm<'a> {
+    public_key: &'a RistrettoPublicKeyBytes,
+    signature: &'a SchnorrSignatureBytes,
+    message: &'a [u8; 64],
+}
+
+impl<'a> BatchTerm<'a> {
+    fn new(
+        public_key: &'a RistrettoPublicKeyBytes,
+        signature: &'a SchnorrSignatureBytes,
+        message: &'a [u8; 64],
+    ) -> Self {
+        Self {
+            public_key,
+            signature,
+            message,
+        }
+    }
+}
+
+/// True when every term in `terms` verifies against the message it carries.
+///
+/// A signature `(Pᵢ, Rᵢ, sᵢ)` over message `mᵢ` is valid exactly when `sᵢ·G - Rᵢ - eᵢ·Pᵢ` is the
+/// identity, for `eᵢ = H(Rᵢ ‖ Pᵢ ‖ mᵢ)`. Weighting those n equations by scalars `zᵢ` and summing
+/// them gives one equation over the whole set:
+///
+/// ```text
+/// Σ zᵢ·Rᵢ + Σ (zᵢ·eᵢ)·Pᵢ - (Σ zᵢ·sᵢ)·G == 0
+/// ```
+///
+/// which holds whenever every signature is valid, and otherwise only for a `zᵢ` vector that makes
+/// the individual errors cancel. So one multiscalar multiplication over `2n + 1` terms stands in for
+/// n double-base multiplications: only the scalar arithmetic stays linear in n, while the point
+/// arithmetic is shared across the terms, so the cost per signature keeps falling as the set grows.
+/// Measured in `benches/signature_verification.rs` against the individual checks: 37µs for a lone
+/// signature where they cost 46µs, 17.5µs each at sixteen, and 15.6µs each at a thousand.
+///
+/// A rejection costs what an acceptance costs, since the equation is one test over the whole set —
+/// so an invalid set is *cheaper* to refuse than it was to refuse one signature at a time (2.6x at
+/// 256 signatures), and a transaction nobody pays for cannot be made expensive by where its bad
+/// signature sits. The verdict is all the set gets: which signature is at fault would take a pass of
+/// its own, and nothing downstream of a rejected transaction needs it.
+///
+/// The messages are per term. Nothing in the fold requires them to agree — each challenge is
+/// derived from its own — so a transaction's seal batches together with the authorizations that
+/// sign a different digest.
+///
+/// The weights are derived from the terms rather than sampled, so every node reaches the same
+/// verdict on the same bytes — a validity predicate a committee votes on must not depend on local
+/// randomness. Soundness then rests on the same Fiat-Shamir argument as the challenge scalars
+/// themselves: the weights are fixed by a hash of everything they weigh, so a set whose errors
+/// cancel under its own weights takes a search over 2^127 candidates to find.
+///
+/// The multiplication is variable-time. Every term is public — keys, nonces, signature scalars,
+/// messages, and weights derived from all of them — so it has no secret to leak, and the
+/// signed-digit recoding it allows is worth ~1.5x over the constant-time algorithm here: the same
+/// equation through `RistrettoPublicKey::batch_mul` measured 1.7x against the individual checks
+/// where this measures 2.5x.
+fn verify_batch(terms: &[BatchTerm<'_>]) -> bool {
+    let weights = batch_weights(terms);
+
+    // Terms `(zᵢ, Rᵢ)` and `(zᵢeᵢ, Pᵢ)` plus `(-Σ zᵢsᵢ, G)`. Pairing is positional, so the halves
+    // can be interleaved — the multiplication is indifferent to the order of its terms.
+    let mut points = Vec::with_capacity(2 * terms.len() + 1);
+    let mut scalars = Vec::with_capacity(2 * terms.len() + 1);
+    let mut signature_sum = Scalar::ZERO;
+
+    for (term, z) in terms.iter().zip(&weights) {
+        // The stock verifier refuses the identity key outright (`verify_challenge_scalar`), and in
+        // Ristretto its only encoding is 32 zero bytes. It must be refused here too: under `P = 0`
+        // the equation reduces to `s·G == R`, which anyone satisfies by choosing `s` and setting
+        // `R = s·G`.
+        if term.public_key.is_zero() {
+            return false;
+        }
+        let Ok(public_key) = term.public_key.try_from_byte_type() else {
+            return false;
+        };
+        let Ok(signature) = RistrettoSchnorr::convert_from_byte_type(term.signature) else {
+            return false;
+        };
+        let e = challenge_scalar(signature.get_public_nonce(), &public_key, term.message);
+
+        signature_sum += z * public_scalar(signature.get_signature());
+        points.push(signature.get_public_nonce().point());
+        scalars.push(*z);
+        points.push(public_key.point());
+        scalars.push(z * e);
+    }
+    points.push(RISTRETTO_BASEPOINT_POINT);
+    scalars.push(-signature_sum);
+
+    RistrettoPoint::vartime_multiscalar_mul(&scalars, &points) == RistrettoPoint::identity()
+}
+
+/// Borrows a secret-key-typed scalar that is in fact public as a plain scalar, rather than cloning
+/// it: `RistrettoSecretKey` zeroizes on drop, which a signature scalar has no need of.
+fn public_scalar(scalar: &RistrettoSecretKey) -> Scalar {
+    *Borrow::<Scalar>::borrow(&scalar)
+}
+
+/// The batch weight for each term: `2¹²⁷ ≤ zᵢ < 2¹²⁸`, derived from a commitment to every term in
+/// the batch.
+///
+/// Binding every weight to every term is what stops a set from being assembled against weights
+/// already known: changing any signature, key or message redraws all of them. The weights are
+/// deliberately short — the 2^127 search they impose is the security margin, and a full-width scalar
+/// would cost more to multiply for no gain. Being short also means one 64-byte digest supplies four
+/// of them, so the derivation costs a hash per four terms rather than one per term.
+fn batch_weights(terms: &[BatchTerm<'_>]) -> Vec<Scalar> {
+    let mut hasher = transaction_hasher_v1("BatchVerify").chain(&(terms.len() as u64));
+    for term in terms {
+        hasher.update(term.message);
+        hasher.update(term.public_key);
+        hasher.update(term.signature);
+    }
+    let commitment = hasher.result();
+
+    const WEIGHT_BYTES: usize = 16;
+    let mut weights = Vec::with_capacity(terms.len());
+    let mut digest_index = 0u64;
+    while weights.len() < terms.len() {
+        let digest = transaction_hasher_v1("BatchVerifyWeight")
+            .chain(&commitment)
+            .chain(&digest_index)
             .result();
-
-        (0..signatures.len())
-            .map(|i| {
-                let digest = transaction_hasher_v1("BatchVerifyWeight")
-                    .chain(&commitment)
-                    .chain(&(i as u64))
-                    .result();
-                let mut bytes = [0u8; 32];
-                // Scalars are little-endian, so the low 16 bytes hold the weight. The top bit of the
-                // last of them is set so the weight can never be zero, which would drop its
-                // signature from the equation entirely.
-                bytes[..16].copy_from_slice(&digest[..16]);
-                bytes[15] |= 0x80;
-                Option::<Scalar>::from(Scalar::from_canonical_bytes(bytes))
-                    .expect("a 128-bit value is a canonical scalar")
-            })
-            .collect()
+        let wanted = terms.len() - weights.len();
+        weights.extend(digest.chunks_exact(WEIGHT_BYTES).take(wanted).map(|lane| {
+            let lane = <[u8; WEIGHT_BYTES]>::try_from(lane).expect("chunks_exact yields the chunk size");
+            // The top bit is set so a weight can never be zero, which would drop its term from the
+            // equation entirely.
+            Scalar::from(u128::from_le_bytes(lane) | (1 << 127))
+        }));
+        digest_index += 1;
     }
+    weights
 }
 
 /// The challenge scalar the stock verifier derives internally: the domain-separated `Blake2b<U64>`
@@ -524,8 +598,10 @@ impl TransactionSignature {
 fn challenge_scalar(public_nonce: &RistrettoPublicKey, public_key: &RistrettoPublicKey, message: &[u8; 64]) -> Scalar {
     let hash =
         RistrettoSchnorr::construct_domain_separated_challenge::<_, Blake2b<U64>>(public_nonce, public_key, message);
-    let scalar = RistrettoSecretKey::from_uniform_bytes(hash.as_ref()).expect("Blake2b<U64> yields 64 uniform bytes");
-    Scalar::from(scalar)
+    let hash = <[u8; 64]>::try_from(hash.as_ref()).expect("Blake2b<U64> yields 64 bytes");
+    // The wide reduction `RistrettoSecretKey::from_uniform_bytes` performs, without its copy into a
+    // zeroizing buffer: a challenge is public.
+    Scalar::from_bytes_mod_order_wide(&hash)
 }
 
 impl From<SignatureOutput> for TransactionSignature {
@@ -1026,9 +1102,8 @@ mod tests {
 
         for n in [1usize, 2, 3, 4, 8, 33] {
             let sigs: Vec<_> = (0..n).map(|_| random_signature(&unsigned, &seal_signer)).collect();
-            assert_eq!(
+            assert!(
                 TransactionSignature::verify_all_against_message(&sigs, message),
-                Ok(()),
                 "{n} valid signatures must verify",
             );
 
@@ -1042,10 +1117,13 @@ mod tests {
             for i in planting_positions {
                 let mut planted = sigs.clone();
                 planted[i] = foreign.clone();
-                assert_eq!(
-                    TransactionSignature::verify_all_against_message(&planted, message),
-                    Err(i),
-                    "a foreign signature at index {i} of {n} must be rejected and named",
+                assert!(
+                    !planted[i].verify_message(message),
+                    "the planted signature at index {i} must not verify on its own",
+                );
+                assert!(
+                    !TransactionSignature::verify_all_against_message(&planted, message),
+                    "a foreign signature at index {i} of {n} must be rejected",
                 );
             }
         }
@@ -1083,14 +1161,13 @@ mod tests {
             rhs += inner.get_public_nonce().point() + public_key.point() * e;
         }
         assert_eq!(
-            RISTRETTO_BASEPOINT_POINT * lhs,
+            RistrettoPoint::mul_base(&lhs),
             rhs,
             "the pair must balance unweighted, or it does not test the weights",
         );
 
-        assert_eq!(
-            TransactionSignature::verify_all_against_message(&pair, message),
-            Err(0),
+        assert!(
+            !TransactionSignature::verify_all_against_message(&pair, message),
             "a pair whose errors cancel unweighted must still be rejected",
         );
     }
@@ -1110,9 +1187,8 @@ mod tests {
             TransactionSignature::new(*first.public_key(), *second.signature()),
         ];
 
-        assert_eq!(
-            TransactionSignature::verify_all_against_message(&swapped, message),
-            Err(0),
+        assert!(
+            !TransactionSignature::verify_all_against_message(&swapped, message),
             "signatures verified under each other's keys must be rejected",
         );
     }
@@ -1140,7 +1216,7 @@ mod tests {
             ("signature", vec![valid.clone(), bad_signature]),
         ] {
             assert!(
-                TransactionSignature::verify_all_against_message(&planted, message).is_err(),
+                !TransactionSignature::verify_all_against_message(&planted, message),
                 "an undecodable {label} must be rejected",
             );
         }
@@ -1149,6 +1225,118 @@ mod tests {
     /// Weights must be a function of the whole set, so that no signature can be chosen against a
     /// weight already known, and identical across nodes, so that a committee cannot split on a
     /// verdict.
+    /// The identity public key must be rejected, as the stock verifier rejects it
+    /// (`verify_challenge_scalar` refuses `public_key == P::default()`).
+    ///
+    /// Its encoding is 32 zero bytes, which decompresses perfectly well, and with `P = 0` the
+    /// verification equation degenerates to `s·G == R` — satisfied by anyone who picks `s` and sets
+    /// `R = s·G`. So the batch must not accept a term the individual check would refuse: the batch
+    /// short-circuits on success, and an accepted set never reaches the individual checks at all.
+    #[test]
+    fn batch_verification_rejects_the_identity_public_key() {
+        let seal_signer = sample_seal_signer();
+        let unsigned = sample_unsigned();
+        let message = sig_msg(&seal_signer, &unsigned);
+
+        // A signature that satisfies `s·G == R` under the identity key: sign anything with a key of
+        // our choosing and keep the `(R, s)` pair, whose relation holds for whatever key we name.
+        let nonce = RistrettoSecretKey::random(&mut rand::rng());
+        let forged = TransactionSignature::new(
+            RistrettoPublicKeyBytes::zero(),
+            RistrettoSchnorr::new(RistrettoPublicKey::from_secret_key(&nonce), nonce.clone()).to_byte_type(),
+        );
+
+        assert!(
+            !forged.verify_message(message),
+            "the stock verifier must refuse the identity key, or this test proves nothing",
+        );
+        assert!(
+            !TransactionSignature::verify_all_against_message(std::slice::from_ref(&forged), message),
+            "the batch must refuse what the individual check refuses",
+        );
+
+        let valid = random_signature(&unsigned, &seal_signer);
+        assert!(
+            !TransactionSignature::verify_all_against_message(&[valid, forged], message),
+            "an identity key alongside a valid signature must still be refused",
+        );
+    }
+
+    /// The seal verifies in the same batch as the authorizations despite signing a different
+    /// message, and an invalid signature of either kind is refused.
+    #[test]
+    fn sealed_batch_verifies_both_kinds() {
+        let sealer = RistrettoSecretKey::random(&mut rand::rng());
+        let seal_signer: RistrettoPublicKeyBytes = RistrettoPublicKey::from_secret_key(&sealer).to_byte_type();
+        let unsigned = sample_unsigned();
+
+        for n in [0usize, 1, 4] {
+            let sigs: Vec<_> = (0..n).map(|_| random_signature(&unsigned, &seal_signer)).collect();
+            let unsealed = unsealed_with(unsigned.clone(), sigs.clone());
+            let seal = TransactionSealSignature::sign_v1(&sealer, &unsealed);
+            let seal_message = seal_msg(&unsealed);
+            let authorization_message = sig_msg(&seal_signer, &unsigned);
+
+            assert!(
+                verify_sealed_batch(&seal, seal_message, &sigs, authorization_message),
+                "a seal over {n} authorizations must verify in one batch",
+            );
+
+            // A seal by the same key over a different body. Sealing with another key instead would
+            // not be a forgery — the seal carries its own public key, so it would simply be a
+            // transaction sealed by someone else.
+            let mut other_body = unsigned.clone();
+            other_body.dry_run = !other_body.dry_run;
+            let stale_seal =
+                TransactionSealSignature::sign_v1(&sealer, &unsealed_with(other_body.clone(), sigs.clone()));
+            assert!(
+                !verify_sealed_batch(&stale_seal, seal_message, &sigs, authorization_message),
+                "a seal over a different body must be refused, with {n} authorizations present",
+            );
+
+            let foreign = random_signature(&other_body, &seal_signer);
+            for i in 0..n {
+                let mut planted = sigs.clone();
+                planted[i] = foreign.clone();
+                assert!(
+                    !verify_sealed_batch(&seal, seal_message, &planted, authorization_message),
+                    "a foreign authorization at index {i} of {n} must be refused",
+                );
+            }
+        }
+    }
+
+    /// The seal and an authorization must not be able to cover for each other: a cancelling pair
+    /// straddling the two kinds is rejected exactly as one within the authorizations is.
+    #[test]
+    fn sealed_batch_rejects_errors_cancelling_across_the_seal() {
+        let sealer = RistrettoSecretKey::random(&mut rand::rng());
+        let seal_signer: RistrettoPublicKeyBytes = RistrettoPublicKey::from_secret_key(&sealer).to_byte_type();
+        let unsigned = sample_unsigned();
+
+        let authorization = random_signature(&unsigned, &seal_signer);
+        let unsealed = unsealed_with(unsigned.clone(), vec![authorization.clone()]);
+        let seal = TransactionSealSignature::sign_v1(&sealer, &unsealed);
+
+        // Exchange the scalars of the seal and the authorization, leaving each key and nonce in
+        // place: equal and opposite error terms, one on each side of the seal boundary.
+        let swapped = swap_scalars(
+            &TransactionSignature::new(*seal.public_key(), *seal.signature()),
+            &authorization,
+        );
+        let crossed_seal = TransactionSealSignature::new(*swapped[0].public_key(), *swapped[0].signature());
+
+        assert!(
+            !verify_sealed_batch(
+                &crossed_seal,
+                seal_msg(&unsealed),
+                &swapped[1..],
+                sig_msg(&seal_signer, &unsigned),
+            ),
+            "errors that cancel across the seal must still be rejected",
+        );
+    }
+
     #[test]
     fn batch_weights_are_deterministic_and_bound_to_the_whole_set() {
         let seal_signer = sample_seal_signer();
@@ -1156,12 +1344,16 @@ mod tests {
         let message = sig_msg(&seal_signer, &unsigned);
 
         let sigs: Vec<_> = (0..4).map(|_| random_signature(&unsigned, &seal_signer)).collect();
-        let weights = TransactionSignature::batch_weights(&sigs, &message);
-        assert_eq!(
-            weights,
-            TransactionSignature::batch_weights(&sigs, &message),
-            "weights must be reproducible",
-        );
+        let terms = |sigs: &'_ [TransactionSignature], message: &'_ [u8; 64]| -> Vec<Scalar> {
+            let terms: Vec<_> = sigs
+                .iter()
+                .map(|sig| BatchTerm::new(sig.public_key(), sig.signature(), message))
+                .collect();
+            batch_weights(&terms)
+        };
+
+        let weights = terms(&sigs, &message);
+        assert_eq!(weights, terms(&sigs, &message), "weights must be reproducible");
         assert!(
             weights.iter().all(|z| z != &Scalar::ZERO),
             "a zero weight would drop its signature from the equation",
@@ -1169,9 +1361,11 @@ mod tests {
 
         let mut replaced = sigs.clone();
         replaced[3] = random_signature(&unsigned, &seal_signer);
-        let redrawn = TransactionSignature::batch_weights(&replaced, &message);
         assert!(
-            weights.iter().zip(&redrawn).all(|(before, after)| before != after),
+            weights
+                .iter()
+                .zip(&terms(&replaced, &message))
+                .all(|(before, after)| before != after),
             "replacing one signature must redraw every weight",
         );
 
@@ -1179,9 +1373,27 @@ mod tests {
         assert!(
             weights
                 .iter()
-                .zip(&TransactionSignature::batch_weights(&sigs, &other_message))
+                .zip(&terms(&sigs, &other_message))
                 .all(|(before, after)| before != after),
             "the weights must be bound to the message the set signs",
+        );
+
+        // A batch whose terms carry different messages — a seal alongside its authorizations — must
+        // bind each term to its own, so moving one term's message redraws every weight.
+        let mixed: Vec<_> = sigs
+            .iter()
+            .enumerate()
+            .map(|(i, sig)| {
+                let message = if i == 0 { &other_message } else { &message };
+                BatchTerm::new(sig.public_key(), sig.signature(), message)
+            })
+            .collect();
+        assert!(
+            batch_weights(&mixed)
+                .iter()
+                .zip(&weights)
+                .all(|(mixed, uniform)| mixed != uniform),
+            "a term's own message must reach every weight in the batch",
         );
     }
 

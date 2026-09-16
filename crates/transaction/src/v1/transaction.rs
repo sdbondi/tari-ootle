@@ -30,7 +30,7 @@ use crate::{
     args::InstructionArg,
     v1::{
         intent::calculate_intent_commitment_v1,
-        signature::{TransactionSignature, TransactionSignatureFields},
+        signature::{TransactionSignature, TransactionSignatureFields, verify_sealed_batch},
     },
     weight::TransactionWeight,
 };
@@ -108,13 +108,27 @@ impl TransactionV1 {
         // Derived once and shared between the seal and the authorization messages: deriving blob
         // commitments hashes every blob payload.
         let blob_hashes = self.body.unsigned_transaction().blobs.hashes();
-        if !self.seal_signature.verify_v1_with_blob_hashes(&self.body, &blob_hashes) {
-            debug!(target: LOG_TARGET, "Transaction seal signature is invalid");
-            return false;
-        }
+        let seal_message = TransactionSealSignature::create_message_v1_with_blob_hashes(&self.body, &blob_hashes);
+        let authorization_message = TransactionSignature::create_message_v1_with_blob_hashes(
+            self.seal_signature.public_key(),
+            self.body.unsigned_transaction(),
+            &blob_hashes,
+        );
 
-        self.body
-            .verify_all_signatures_with_blob_hashes(self.seal_signature.public_key(), &blob_hashes)
+        if verify_sealed_batch(
+            &self.seal_signature,
+            seal_message,
+            self.body.signatures(),
+            authorization_message,
+        ) {
+            return true;
+        }
+        debug!(
+            target: LOG_TARGET,
+            "Transaction signatures are invalid: the seal or at least one of its {} authorizations does not verify",
+            self.body.signatures().len(),
+        );
+        false
     }
 
     pub(crate) fn inputs(&self) -> &IndexSet<SubstateRequirement> {

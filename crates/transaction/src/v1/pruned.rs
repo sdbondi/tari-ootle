@@ -27,7 +27,10 @@ use crate::{
     TransactionV1,
     UnsealedTransactionV1,
     UnsignedTransactionV1,
-    v1::{intent::calculate_intent_commitment_v1, signature::TransactionSignatureFields},
+    v1::{
+        intent::calculate_intent_commitment_v1,
+        signature::{TransactionSignatureFields, verify_sealed_batch},
+    },
 };
 
 const LOG_TARGET: &str = "tari::ootle::transaction::pruned";
@@ -167,13 +170,7 @@ impl PrunedUnsealedTransactionV1 {
         // deriving it hashes the whole body.
         let message =
             TransactionSignature::create_message_v1_pruned(seal_signer, &self.transaction, self.blob_hashes());
-        match TransactionSignature::verify_all_against_message(&self.signatures, message) {
-            Ok(()) => true,
-            Err(index) => {
-                debug!(target: LOG_TARGET, "Failed to verify pruned signature at index {}", index);
-                false
-            },
-        }
+        TransactionSignature::verify_all_against_message(&self.signatures, message)
     }
 }
 
@@ -288,11 +285,28 @@ impl PrunedTransactionV1 {
 
     /// Verify the seal and all extra signatures.
     pub fn verify_all_signatures(&self) -> bool {
-        if !self.seal_signature.verify_v1_pruned(&self.body) {
-            debug!(target: LOG_TARGET, "Pruned transaction seal signature is invalid");
-            return false;
+        let seal_message = TransactionSealSignature::create_message_v1_pruned(&self.body);
+        let authorization_message = TransactionSignature::create_message_v1_pruned(
+            self.seal_signature.public_key(),
+            &self.body.transaction,
+            self.body.blob_hashes(),
+        );
+
+        if verify_sealed_batch(
+            &self.seal_signature,
+            seal_message,
+            self.body.signatures(),
+            authorization_message,
+        ) {
+            return true;
         }
-        self.body.verify_all_signatures(self.seal_signature.public_key())
+        debug!(
+            target: LOG_TARGET,
+            "Pruned transaction signatures are invalid: the seal or at least one of its {} authorizations does not \
+             verify",
+            self.body.signatures().len(),
+        );
+        false
     }
 
     /// Rehydrate the pruned form back into a full `TransactionV1` by supplying the original
