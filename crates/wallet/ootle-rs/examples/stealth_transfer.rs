@@ -1,7 +1,7 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::num::NonZeroU64;
+use std::{env, num::NonZeroU64};
 
 use ootle_rs::{
     ToAccountAddress,
@@ -24,6 +24,8 @@ use ootle_rs::{
 use tari_ootle_common_types::engine_types::transaction_receipt::TransactionReceipt;
 use tari_ootle_transaction::{Epoch, Transaction};
 
+const FALLBACK_ADDRESS: &str = "otl_loc_162dtv4375eg54pn2g7c3tgu7j89e96hes5hvrxac4qxex6g4v3q7fsantdmgrs7mlg3hc9v4kdaktkp5l8t495fmkdvgpyz4whe6qvckjl8v6";
+
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() {
@@ -31,8 +33,13 @@ async fn main() {
     //     .filter_level(tracing::log::LevelFilter::Debug)
     //     .init();
 
-    // This is the address that we will transfer to (Feel free to change this another address!)
-    let recipient = address!( "otl_loc_162dtv4375eg54pn2g7c3tgu7j89e96hes5hvrxac4qxex6g4v3q7fsantdmgrs7mlg3hc9v4kdaktkp5l8t495fmkdvgpyz4whe6qvckjl8v6" );
+    // Arg 1 is the address that we will transfer to (fallback to some test address that will work for sending)
+    let address = env::args()
+        .nth(1)
+        .map(|s| s.as_str().to_string())
+        .unwrap_or_else(|| FALLBACK_ADDRESS.to_string());
+
+    let recipient = address![&address];
 
     let indexer_api_url = default_indexer_url(recipient.network());
 
@@ -45,6 +52,7 @@ async fn main() {
         sender_secret.credentials().account_secret().reveal(),
         sender_secret.credentials().view_only_secret().reveal()
     );
+
     let account_component_addr = sender_address.to_account_address();
     println!("Sender account address: {account_component_addr}");
 
