@@ -484,8 +484,13 @@ impl<'a> BatchTerm<'a> {
 /// the individual errors cancel. So one multiscalar multiplication over `2n + 1` terms stands in for
 /// n double-base multiplications: only the scalar arithmetic stays linear in n, while the point
 /// arithmetic is shared across the terms, so the cost per signature keeps falling as the set grows.
-/// Measured in `benches/signature_verification.rs` against the individual checks: 37µs for a lone
-/// signature where they cost 46µs, 17.5µs each at sixteen, and 15.6µs each at a thousand.
+/// Measured in `benches/signature_verification.rs` against the individual checks: 17.5µs per
+/// signature at sixteen and 15.6µs at a thousand, where they cost ~44µs each throughout. A lone
+/// signature only breaks even — runs put it between 1.03x and 1.25x — because with three group
+/// elements in the multiplication the variable-time cost depends on the particular scalars. Treat
+/// one as "does not lose" and two upwards as the win.
+///
+/// An empty batch verifies vacuously.
 ///
 /// A rejection costs what an acceptance costs, since the equation is one test over the whole set —
 /// so an invalid set is *cheaper* to refuse than it was to refuse one signature at a time (2.6x at
@@ -503,11 +508,19 @@ impl<'a> BatchTerm<'a> {
 /// themselves: the weights are fixed by a hash of everything they weigh, so a set whose errors
 /// cancel under its own weights takes a search over 2^127 candidates to find.
 ///
-/// The multiplication is variable-time. Every term is public — keys, nonces, signature scalars,
-/// messages, and weights derived from all of them — so it has no secret to leak, and the
-/// signed-digit recoding it allows is worth ~1.5x over the constant-time algorithm here: the same
-/// equation through `RistrettoPublicKey::batch_mul` measured 1.7x against the individual checks
-/// where this measures 2.5x.
+/// The generator is folded in as a term rather than multiplied separately through dalek's
+/// precomputed basepoint table. The table makes `k·G` fast in isolation but it is still a whole
+/// extra scalar multiplication, worth a flat ~13µs, so folding wins while that constant is large
+/// relative to the multiplication it joins — measured upstream at 16% better for one signature,
+/// ~7% for two to four, a wash from sixteen to 256, and 8% worse at a thousand. A transaction
+/// carries one seal and usually one authorization, so the small end is the case to optimise.
+///
+/// The multiplication is variable-time. Every term is public — the keys, nonces and scalars travel
+/// on the wire, and the messages are digests of a transaction body that is gossiped in full — so it
+/// has no secret to leak, and the signed-digit recoding it allows is worth ~1.5x over the
+/// constant-time algorithm here: the same equation through `RistrettoPublicKey::batch_mul` measured
+/// 1.7x against the individual checks where this measures 2.5x. A batch over a *confidential*
+/// message would not be safe this way, since the timing would depend on `H(R, P, m)`.
 fn verify_batch(terms: &[BatchTerm<'_>]) -> bool {
     let weights = batch_weights(terms);
 
