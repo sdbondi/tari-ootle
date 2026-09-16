@@ -8,8 +8,7 @@
 //! `TransactionSignature::verify_all_against_message` folds the set into a single multiscalar
 //! multiplication. This is what sizes `MAX_SIGNATURES_PER_TRANSACTION`: the cap exists because every
 //! node verifies these before any fee is charged, so the cost per signature is what a ceiling has to
-//! be set against. It also fixes `MIN_BATCH_SIZE`, the count below which the batch's fixed cost is
-//! not yet repaid.
+//! be set against.
 //!
 //! Signatures are made over a synthetic message rather than a built transaction: deriving the
 //! message hashes the whole body and is shared by both paths, so including it would measure the same
@@ -75,13 +74,11 @@ fn bench(c: &mut Criterion) {
         });
     }
 
-    // The worst case for a node that will reject the set: the batch does not hold, so every term is
-    // walked afterwards. The invalid signature goes last, which is the costliest position and so the
-    // one an attacker would choose. Rejected transactions pay no fee, so this is the figure the
-    // signature cap has to tolerate.
+    // What a node pays to refuse a set, which a rejected transaction's sender does not cover. The
+    // invalid signature goes last, the costliest position for the per-signature path this replaces
+    // and so the one an attacker would have chosen against it.
     for n in [1usize, 16, 256] {
         let mut sigs = signatures(n, &message);
-        // Last is the costliest position for the pre-batch path, and so the one an attacker picks.
         let last = sigs.len() - 1;
         sigs[last] = signatures(1, &[8u8; 64]).remove(0);
 
