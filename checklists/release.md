@@ -61,7 +61,7 @@ Shared reference — what a tag sets off, the command index, recovery: [README.m
       It renders the draft's assets against the build matrices, the tag's workflow runs, npm,
       crates.io and every downstream SDK, and refuses to say "safe to publish" while a required
       artifact is missing.
-- [ ] Every **required** binary platform present. A `best_effort` leg (riscv64, windows-arm64) may
+- [ ] Every **required** binary platform present. A `best_effort` leg (windows-arm64) may
       be missing — decide whether you care. **(human)**
 - [ ] All six **FFI platforms** present. ootle-go cannot ship a gap.
 - [ ] **Re-run a failed leg** rather than publishing without it:

@@ -228,12 +228,27 @@ jobs:
         run: |
           brew install libtool
 
+      # vcpkg builds OpenSSL from source, which is the single most expensive step on a Windows
+      # runner. vcpkg's own ABI hashing decides whether a cached archive still applies, so a stale
+      # restore costs a rebuild rather than a wrong binary. Tag runs read the cache the scheduled
+      # runs on the default branch populate.
+      - name: Cache vcpkg binaries - Windows
+        if: startsWith(runner.os,'Windows')
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}\vcpkg-cache
+          key: vcpkg-${{ matrix.builds.name }}-${{ hashFiles('.github/workflows/build_binaries.yml') }}
+          restore-keys: |
+            vcpkg-${{ matrix.builds.name }}-
+
       - name: Install Windows dependencies
         if: startsWith(runner.os,'Windows')
+        env:
+          VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}\vcpkg-cache,readwrite'
         run: |
           vcpkg.exe install sqlite3:x64-windows zlib:x64-windows
-          # Needed for hickory openssl dependency
-          vcpkg install openssl:x64-windows-static
+          # webauthn-rs pulls in openssl through webauthn-attestation-ca
+          vcpkg install openssl:${{ matrix.builds.vcpkg_openssl_triplet }}
           # Bug in choco - need to install each package individually
           choco upgrade llvm -y
           # psutils is out of date
@@ -249,6 +264,21 @@ jobs:
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: amd64_arm64
+
+      # rustc has no linker discovery for aarch64-pc-windows-msvc and spawns a bare `link.exe`,
+      # which under Git bash resolves to Git for Windows' coreutils `link` before the MSVC one.
+      # Resolving it in pwsh, where only the cross environment's entries are on PATH, gives cargo
+      # the absolute path to the ARM64-targeting linker.
+      - name: Pin the MSVC linker - Windows ARM64
+        if: ${{ matrix.builds.target == 'aarch64-pc-windows-msvc' }}
+        shell: pwsh
+        run: |
+          $link = Get-Command link.exe -All |
+            Where-Object { $_.Source -like '*\VC\Tools\MSVC\*' } |
+            Select-Object -First 1
+          if (-not $link) { throw "No MSVC link.exe on PATH" }
+          Write-Output "Using linker: $($link.Source)"
+          "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$($link.Source)" >> $env:GITHUB_ENV
 
       - name: Install Dependencies - Node
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -306,7 +336,8 @@ jobs:
           echo "TS_DIST=\dist" >> $GITHUB_ENV
           echo "PLATFORM_SPECIFIC_DIR=windows" >> $GITHUB_ENV
           echo "SQLITE3_LIB_DIR=C:\vcpkg\installed\x64-windows\lib" >> $GITHUB_ENV
-          echo "X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR=C:\vcpkg\packages\openssl_x64-windows-static" >> $GITHUB_ENV
+          OPENSSL_VAR="$(echo "${{ matrix.builds.target }}" | tr 'a-z-' 'A-Z_')_OPENSSL_DIR"
+          echo "${OPENSSL_VAR}=C:\vcpkg\packages\openssl_${{ matrix.builds.vcpkg_openssl_triplet }}" >> $GITHUB_ENV
           echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $GITHUB_ENV
 
       - name: Cache cargo files and outputs
