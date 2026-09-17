@@ -46,6 +46,7 @@ use tari_consensus_types::{
     ProposalVote,
     ShardGroupAccumulatedData,
     SignedTimeout,
+    TcId,
     TimeoutCertificate,
     TimeoutVote,
 };
@@ -488,6 +489,7 @@ impl From<&consensus_models::BlockHeader> for proto::consensus::BlockHeader {
 fn try_convert_proto_block_header(
     value: proto::consensus::BlockHeader,
     justify_id: PcId,
+    timeout_certificate_id: Option<TcId>,
     commands: &BTreeSet<Command>,
 ) -> Result<consensus_models::BlockHeader, anyhow::Error> {
     let network = u8::try_from(value.network)
@@ -537,6 +539,7 @@ fn try_convert_proto_block_header(
             protocol_version,
             value.parent_id.try_into()?,
             justify_id,
+            timeout_certificate_id,
             NodeHeight(value.height),
             Epoch(value.epoch),
             shard_group,
@@ -590,10 +593,15 @@ impl TryFrom<proto::consensus::Block> for consensus_models::Block {
             .ok_or_else(|| anyhow!("Block conversion: QC not provided"))?;
         let justify = ProposalCertificate::try_from(justify)?;
 
-        let high_tc = value.timeout_certificate.map(TryInto::try_into).transpose()?;
+        let high_tc: Option<TimeoutCertificate> = value.timeout_certificate.map(TryInto::try_into).transpose()?;
 
         let header = value.header.ok_or_else(|| anyhow!("BlockHeader not provided"))?;
-        let header = try_convert_proto_block_header(header, justify.calculate_id(), &commands)?;
+        let header = try_convert_proto_block_header(
+            header,
+            justify.calculate_id(),
+            high_tc.as_ref().map(|tc| tc.calculate_id()),
+            &commands,
+        )?;
 
         Ok(Self::new(header, justify, commands, high_tc))
     }

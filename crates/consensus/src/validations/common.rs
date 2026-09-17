@@ -251,6 +251,7 @@ pub(super) fn check_timeout_certificate<TConsensusSpec: ConsensusSpec>(
     committee: &Committee<TConsensusSpec::Addr>,
     signing_service: &TConsensusSpec::SignerService,
 ) -> Result<(), ProposalValidationError> {
+    check_block_commits_to_timeout_certificate(candidate_block)?;
     let Some(tc) = candidate_block.timeout_certificate() else {
         return Ok(());
     };
@@ -265,6 +266,25 @@ pub(super) fn check_timeout_certificate<TConsensusSpec: ConsensusSpec>(
 
     check_justify_reaches_timeout_certificate(candidate_block)?;
 
+    Ok(())
+}
+
+/// Checks that the header's timeout certificate id names the certificate the block carries (or that both are
+/// absent).
+///
+/// The header, and through it the block id and the proposer's signature, is what a replica verifies; the
+/// certificate travels beside it. Any rule that reads the certificate is only reading signed data if the two
+/// agree, so this runs before the certificate's own checks.
+pub fn check_block_commits_to_timeout_certificate(block: &Block) -> Result<(), ProposalValidationError> {
+    let header_tc_id = block.header().timeout_certificate_id().copied();
+    let tc_id = block.timeout_certificate().map(|tc| tc.calculate_id());
+    if header_tc_id != tc_id {
+        return Err(ProposalValidationError::TimeoutCertificateIdMismatch {
+            block_id: *block.id(),
+            header_tc_id,
+            tc_id,
+        });
+    }
     Ok(())
 }
 
