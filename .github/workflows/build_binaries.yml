@@ -141,9 +141,13 @@ jobs:
           else
             ARRAY_BINS=( $(echo "${{ matrix.builds.target_bins }}" | tr ', ' '\n') )
           fi
+          # `--package` must accompany `--bin`: without it cargo selects every workspace member and
+          # resolves their dependencies too, so a target that only builds the wallet daemon still
+          # pulls in crates it cannot compile (the engine's cranelift backend has no Windows
+          # support). Each binary here is named after the package that owns it.
           for BIN_FILE in "${ARRAY_BINS[@]}"; do
             echo "Adding ${BIN_FILE} to Builds"
-            TARGET_BINS+="--bin ${BIN_FILE} "
+            TARGET_BINS+="--package ${BIN_FILE} --bin ${BIN_FILE} "
           done
           echo "TARGET_BINS=${TARGET_BINS}" >> $GITHUB_ENV
           TARGET_LIBS=""
