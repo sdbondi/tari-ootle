@@ -2,6 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 export * from "./types/AbortReason";
+export * from "./types/ExecutionFailureCode";
 export * from "./types/AbridgedTransactionKernel";
 export * from "./types/AccessRule";
 export * from "./types/Account";
