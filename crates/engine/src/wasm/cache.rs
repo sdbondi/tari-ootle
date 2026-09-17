@@ -191,6 +191,25 @@ impl CacheIndex {
     }
 }
 
+/// The template an artifact filename names, if it is this build's.
+fn parse_artifact_name(name: &str, suffix: &str) -> Option<TemplateAddress> {
+    TemplateAddress::from_hex(name.strip_suffix(suffix)?).ok()
+}
+
+/// The template an artifact filename names, if it belongs to a build with a different
+/// [`ENGINE_FINGERPRINT`].
+///
+/// The shape is `{template address}_{fingerprint}.bin`. A name this does not parse belongs to
+/// something other than this cache and is left where it is.
+fn parse_orphan_name(name: &str) -> Option<TemplateAddress> {
+    let stem = name.strip_suffix(".bin")?;
+    let (addr, fingerprint) = stem.rsplit_once('_')?;
+    if fingerprint == ENGINE_FINGERPRINT {
+        return None;
+    }
+    TemplateAddress::from_hex(addr).ok()
+}
+
 /// The identity a later unlink compares against, where the platform has one.
 #[cfg(unix)]
 fn identity_of(meta: &fs::Metadata) -> Option<u64> {
@@ -206,8 +225,10 @@ fn identity_of(_meta: &fs::Metadata) -> Option<u64> {
 /// Unlink `path`, unless it now names a different file than `identity` describes.
 ///
 /// Both eviction and the corrupt-file paths delete by path, while `store` publishes by renaming a
-/// new inode over that same path. Without the check, a delete decided against the file one call
-/// read can land on the file another call has just published.
+/// new inode over that same path, so a delete decided against the file one call read can land on the
+/// file another call has just published. The check narrows that window to the gap between the stat
+/// and the unlink, on platforms that expose an identity; elsewhere the unlink is unconditional. What
+/// is left costs a recompile.
 fn remove_tracked_file(path: &Path, identity: Option<u64>) {
     if let Some(identity) = identity {
         match fs::metadata(path) {
@@ -266,10 +287,28 @@ impl WasmModuleCache {
             dir,
         };
         cache.evict_to_fit();
+        // A default that decides how much disk this node uses and what it deletes is logged
+        // unconditionally: an operator who upgraded without touching their config should be able to
+        // see what changed underneath them in their own logs.
+        info!(
+            target: LOG_TARGET,
+            "⚙️ Wasm module cache at {} holds {} artifact(s), {} bytes of a {} byte cap",
+            cache.dir.display(),
+            cache.len(),
+            cache.total_bytes(),
+            cap_bytes,
+        );
         Ok(cache)
     }
 
-    /// Tallies the cache directory and reaps abandoned tempfiles.
+    /// Tallies the cache directory, and clears what no build can use: tempfiles no live `store` is
+    /// writing, and artifacts under a fingerprint other than this build's.
+    ///
+    /// Reaping other fingerprints is what makes the cap a bound on the directory rather than on one
+    /// generation of it. A fingerprint bump follows any wasmer upgrade or metering change, and the
+    /// build that wrote the previous generation is the one being replaced, so nothing else will ever
+    /// collect those files. The cost of getting it wrong — a directory shared with an older binary,
+    /// which then finds its artifacts gone — is a recompile per template on that binary's next run.
     ///
     /// Recency is seeded from modification time, the only ordering the filesystem retains across a
     /// restart. Hits are not written back to it: a `utimes` per cache hit buys a better order after
@@ -289,6 +328,8 @@ impl WasmModuleCache {
                 continue;
             }
 
+            // A tempfile is a partial write, valid for no build, so the age gate is the only
+            // question: a live `store` may still be writing it.
             if name.contains(TMP_INFIX) {
                 let is_abandoned =
                     stale_before.is_some_and(|stale_before| meta.modified().is_ok_and(|m| m < stale_before));
@@ -299,11 +340,14 @@ impl WasmModuleCache {
                 continue;
             }
 
-            // Files under another fingerprint are another build's, and are left for its own cleanup.
-            let Some(stem) = name.strip_suffix(&suffix) else {
-                continue;
-            };
-            let Ok(addr) = TemplateAddress::from_hex(stem) else {
+            let Some(addr) = parse_artifact_name(name, &suffix) else {
+                if let Some(addr) = parse_orphan_name(name) {
+                    debug!(
+                        target: LOG_TARGET,
+                        "Reaping cached module for template {} under a superseded fingerprint", addr,
+                    );
+                    let _ignore = fs::remove_file(entry.path());
+                }
                 continue;
             };
             found.push((
@@ -325,14 +369,6 @@ impl WasmModuleCache {
         for (addr, size_bytes, _, identity) in found {
             index.record(addr, size_bytes, identity);
         }
-        debug!(
-            target: LOG_TARGET,
-            "Wasm cache at {} holds {} artifact(s), {} bytes of a {} byte cap",
-            dir.display(),
-            index.entries.len(),
-            index.total_bytes,
-            cap_bytes,
-        );
         Ok(index)
     }
 
@@ -344,11 +380,19 @@ impl WasmModuleCache {
 
     /// Unlinks least-recently-used artifacts until the cache is within its cap.
     fn evict_to_fit(&self) {
-        let mut index = self.index();
-        while index.total_bytes > index.cap_bytes {
-            let Some((addr, entry)) = index.take_coldest() else {
-                break;
-            };
+        // The unlinks run outside the lock: only the tally has to be consistent, and a victim is
+        // already out of it by the time its file goes.
+        let mut victims = Vec::new();
+        {
+            let mut index = self.index();
+            while index.total_bytes > index.cap_bytes {
+                let Some(victim) = index.take_coldest() else {
+                    break;
+                };
+                victims.push(victim);
+            }
+        }
+        for (addr, entry) in victims {
             debug!(
                 target: LOG_TARGET,
                 "Evicting cached module for template {} ({} bytes)", addr, entry.size_bytes,
@@ -573,6 +617,15 @@ impl WasmModuleCache {
     /// Bytes of artifact this cache is tracking.
     pub fn total_bytes(&self) -> u64 {
         self.index().total_bytes
+    }
+
+    /// Artifacts this cache is tracking.
+    pub fn len(&self) -> usize {
+        self.index().entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -1001,6 +1054,34 @@ mod tests {
     }
 
     #[test]
+    fn opening_reaps_artifacts_under_a_superseded_fingerprint() {
+        let (loaded, size) = compiled_artifact();
+        let dir = TempDir::new().unwrap();
+        let addr = addr_of_byte(0x11);
+        {
+            let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
+            cache.store(&addr, &loaded);
+        }
+
+        // An artifact this build cannot read, left by a run under an older engine config, and a file
+        // that is not this cache's at all.
+        let superseded = dir.path().join(format!("{}_v0.bin", addr_of_byte(0x22)));
+        let unrelated = dir.path().join("notes.txt");
+        fs::write(&superseded, b"an older generation").unwrap();
+        fs::write(&unrelated, b"not ours").unwrap();
+
+        let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
+
+        assert!(
+            !superseded.exists(),
+            "nothing else will ever collect a superseded generation",
+        );
+        assert!(unrelated.exists(), "a file this cache did not write is left alone");
+        assert!(cache.path_for(&addr).exists());
+        assert_eq!(cache.total_bytes(), size);
+    }
+
+    #[test]
     fn opening_reaps_abandoned_tempfiles_only() {
         let dir = TempDir::new().unwrap();
         let addr = addr_of_byte(0x11);
@@ -1061,12 +1142,12 @@ mod tests {
         let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
         let (_store, addr) = make_store();
 
-        // Plant a file under a different fingerprint suffix.
+        // Plant a file under a different fingerprint suffix, after the open that would have reaped it.
         let alt = dir.path().join(format!("{}_v0.bin", addr));
         fs::write(&alt, b"some bytes").unwrap();
 
-        // Real path doesn't exist; try_load returns None and doesn't touch alt.
+        // A lookup names this build's file, which does not exist, and never reads the other.
         assert!(cache.try_load(&addr).is_none());
-        assert!(alt.exists(), "files for other fingerprints are left alone");
+        assert!(alt.exists());
     }
 }

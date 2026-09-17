@@ -29,11 +29,27 @@ const CONCURRENT_ACCESS_LIMIT: isize = 100;
 /// budget. Cheaper than serializing each module on insert and infallible.
 const CODE_SIZE_TO_RESIDENT_BYTES_FACTOR: usize = 4;
 
+/// Resident cost of the builtin templates, which are held for the life of a
+/// [`MemoryCacheTemplateProvider`] rather than cached under [`TemplateConfig::max_cache_size_bytes`].
+///
+/// Weighed like a cache entry so the two are directly comparable.
+pub fn builtin_resident_bytes() -> u64 {
+    all_builtin_templates()
+        .iter()
+        .map(|t| (t.binary.len() * CODE_SIZE_TO_RESIDENT_BYTES_FACTOR) as u64)
+        .sum()
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TemplateConfig {
+    #[serde(default = "default_max_cache_size_bytes")]
     max_cache_size_bytes: u64,
     #[serde(default = "default_max_disk_cache_size_bytes")]
     max_disk_cache_size_bytes: u64,
+}
+
+fn default_max_cache_size_bytes() -> u64 {
+    200 * 1024 * 1024
 }
 
 /// A compiled artifact runs about ten times the size of its WASM source, so a node that has served
@@ -46,14 +62,15 @@ fn default_max_disk_cache_size_bytes() -> u64 {
 impl Default for TemplateConfig {
     fn default() -> Self {
         Self {
-            max_cache_size_bytes: 200 * 1024 * 1024,
+            max_cache_size_bytes: default_max_cache_size_bytes(),
             max_disk_cache_size_bytes: default_max_disk_cache_size_bytes(),
         }
     }
 }
 
 impl TemplateConfig {
-    /// Bound on the in-memory cache of compiled modules.
+    /// Bound on the in-memory cache of compiled modules. Builtins are held outside it, and cost a
+    /// further [`builtin_resident_bytes`].
     pub fn max_cache_size_bytes(&self) -> u64 {
         self.max_cache_size_bytes
     }
