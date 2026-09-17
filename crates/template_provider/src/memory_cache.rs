@@ -48,13 +48,21 @@ pub struct TemplateConfig {
     max_disk_cache_size_bytes: u64,
 }
 
+/// Weighed at [`CODE_SIZE_TO_RESIDENT_BYTES_FACTOR`] times each template's source, 1 GiB holds
+/// roughly 870 templates of the 300 KiB average the disk cap is sized against — more than a busy
+/// shard group's working set, so the process rarely reaches the disk tier at all.
 fn default_max_cache_size_bytes() -> u64 {
     1024 * 1024 * 1024
 }
 
 /// A compiled artifact runs about ten times the size of its WASM source, so a node that has served
-/// a few thousand templates would otherwise hold tens of GiB of them. The default is sized to keep
-/// the working set of an active network resident while bounding the directory.
+/// a few thousand templates would otherwise hold tens of GiB of them.
+///
+/// At that expansion and a 300 KiB average source, 10 GiB holds roughly 3,500 artifacts. That is
+/// sized to outlast the templates a node actually calls rather than every template it has ever
+/// seen: past the cap the coldest artifacts are deleted and recompiled if they are wanted again, so
+/// the cost of the bound being too low is CPU, and the cost of it being too high is disk an
+/// operator may want elsewhere.
 fn default_max_disk_cache_size_bytes() -> u64 {
     10 * 1024 * 1024 * 1024
 }
