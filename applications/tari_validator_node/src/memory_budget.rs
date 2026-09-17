@@ -242,6 +242,7 @@ mod tests {
 
         for (name, bytes) in [
             ("template module cache", templates.max_cache_size_bytes()),
+            ("resident builtin templates", builtin_resident_bytes()),
             (
                 "mempool dedup cache",
                 MEM_MAX_TRANSACTIONS_DEDUP as u64 * DEDUP_BYTES_PER_TRANSACTION,
