@@ -161,12 +161,6 @@ pub enum ProposalValidationError {
     ProposingGenesisBlock { proposed_by: String, block_id: BlockId },
     #[error("Block {block} proposed by {proposed_by} is a dummy block. These are immediately rejected.")]
     ProposingDummyBlock { proposed_by: String, block: LeafBlock },
-    #[error("Parent {parent_id} not found in block {block_id} proposed by {proposed_by}")]
-    ParentNotFound {
-        proposed_by: String,
-        parent_id: BlockId,
-        block_id: BlockId,
-    },
     #[error("Justified block {justify_block} for proposed block {block_description} by {proposed_by} not found")]
     JustifyBlockNotFound {
         proposed_by: String,

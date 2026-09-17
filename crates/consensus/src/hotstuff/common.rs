@@ -183,6 +183,7 @@ pub fn check_extends_justify<TAddr: NodeAddressable, TLeaderStrategy: LeaderStra
         details,
     };
 
+    // The pair is checked here on its own, without relying on the stateless certificate checks having run first.
     if candidate_block.height() <= justify_block.height() {
         return Err(ProposalValidationError::CandidateBlockNotHigherThanJustify {
             justify_block_height: justify_block.height(),
