@@ -79,85 +79,54 @@ pub fn generate_block_commit_proof<TTx: StateStoreReadTransaction>(
         )));
     }
 
+    // The verifier needs certificates only for the 3-chain that commits `b`: `QC(b'')`, `QC(b')`, `QC(b)`, each
+    // justifying the next one's parent. Every block below `b` is committed by being its ancestor, so the descent
+    // from `b` to the committed block is proven by hash links alone. The one exception is a committed block that is
+    // the direct parent of `b`: a link chain names only the blocks strictly between its certificate and the header,
+    // so that case is proven with `b`'s own justify.
+    const NUM_CHAIN_QCS: usize = 3;
+
     let mut block = Block::get(tx, &commit_qc.calculate_block_id())?;
     debug!(target: LOG_TARGET, "⚙️ START: generate commit proof {} {} -> {} {}", block.height(), block.id(), committed_block.height(), committed_block.id());
     debug!(target: LOG_TARGET, "⚙️ Adding the commit_qc to the proof: {commit_qc}");
     proof_elements.push(convert_qc_to_proof_element(&block, commit_qc)?);
+    let mut num_qcs = 1usize;
     while block.id() != committed_block.id() {
-        // Prevent possibility of endless loop if the IDs never match - which should be impossible.
-        if block.height() < committed_block.height() {
-            error!(
-                target: LOG_TARGET,
-                "⚠️ Invariant error: Block height {} is less than the commit block height {} in generate_block_commit_proof ({}, commit_block={})",
-                block.height(),
-                committed_block.height(),
-                block.as_leaf(),
-                committed_block.as_leaf()
-            );
-            return Err(HotStuffError::InvariantError(format!(
-                "Block height {} is less than the commit block height {} in generate_block_commit_proof ({}, \
-                 commit_block={})",
-                block.height(),
-                committed_block.height(),
-                block.as_leaf(),
-                committed_block.as_leaf(),
-            )));
-        }
+        check_not_below_committed(&block, committed_block)?;
 
-        if block.justifies_parent() {
-            // This block justifies the parent, so we add it to the proof
+        if num_qcs < NUM_CHAIN_QCS || block.parent() == committed_block.id() {
+            if !block.justifies_parent() {
+                return Err(HotStuffError::InvariantError(format!(
+                    "Block {} does not justify its parent {} in generate_block_commit_proof (commit_qc={}, \
+                     commit_block={})",
+                    block.as_leaf(),
+                    block.parent(),
+                    commit_qc.calculate_id(),
+                    committed_block.as_leaf(),
+                )));
+            }
             debug!(target: LOG_TARGET, "⚙️ Add justify: {}", block.justify());
             let parent = block.get_parent(tx)?;
             proof_elements.push(convert_qc_to_proof_element(&parent, block.justify())?);
+            num_qcs += 1;
             block = parent;
-        } else {
-            // This block does not justify the parent. We'll add link(s) back until we find the block that is justified
-            // by the PC. NOTE: That these blocks are not necessarily dummy blocks, they simply do not propose a new
-            // proposal certificate and so are included in the proof as "chain links".
-            // Start from the parent, because the QC that justifies this block was added in the justify_parent() == true
-            // above.
-            let parent_id = *block.parent();
-            let qc = block.into_justify();
-            block = Block::get(tx, &parent_id)?;
-            let qc_block_id = qc.calculate_block_id();
-            let qc_id = qc.calculate_id();
-            let qc_height = qc.height();
-
-            // let qc_block_id = block.justify().calculate_block_id();
-            // let qc_id = block.justify().calculate_id();
-            // let qc_height = block.justify().height();
-
-            debug!(target: LOG_TARGET, "⚙️ Start chain links");
-
-            let mut chain_links = vec![];
-            // Continue going back in the chain until we find a block that is justified by the QC
-            while *block.parent() != qc_block_id && block.id() != committed_block.id() {
-                debug!(target: LOG_TARGET, "⚙️ Add chain link: {block} QC: {qc_height} {qc_block_id} {qc_id}");
-                chain_links.push(ChainLink {
-                    header_hash: block.header().calculate_hash(),
-                    parent_id: *block.parent().hash(),
-                });
-
-                block = block.get_parent(tx)?;
-                if block.height() < qc_height {
-                    return Err(HotStuffError::InvariantError(format!(
-                        "Block height is less than the height of the QC in generate_block_commit_proof \
-                         (block={block}, qc={qc_height} {qc_block_id} {qc_id})",
-                    )));
-                }
-            }
-
-            if block.id() != committed_block.id() {
-                debug!(target: LOG_TARGET, "⚙️ Add final chain link: {block} QC: {qc_height} {qc_block_id} {qc_id}");
-                chain_links.push(ChainLink {
-                    header_hash: block.header().calculate_hash(),
-                    parent_id: *block.parent().hash(),
-                });
-            }
-
-            debug!(target: LOG_TARGET, "⚙️ End of chain links ({} chain link(s))", chain_links.len());
-            proof_elements.push(CommitProofElement::ChainLinks(chain_links));
+            continue;
         }
+
+        debug!(target: LOG_TARGET, "⚙️ Start chain links");
+        let mut chain_links = vec![];
+        block = block.get_parent(tx)?;
+        while block.id() != committed_block.id() {
+            check_not_below_committed(&block, committed_block)?;
+            debug!(target: LOG_TARGET, "⚙️ Add chain link: {block}");
+            chain_links.push(ChainLink {
+                header_hash: block.header().calculate_hash(),
+                parent_id: *block.parent().hash(),
+            });
+            block = block.get_parent(tx)?;
+        }
+        debug!(target: LOG_TARGET, "⚙️ End of chain links ({} chain link(s))", chain_links.len());
+        proof_elements.push(CommitProofElement::ChainLinks(chain_links));
     }
 
     debug!(target: LOG_TARGET, "⚙️ END of commit proof generation");
@@ -167,6 +136,29 @@ pub fn generate_block_commit_proof<TTx: StateStoreReadTransaction>(
     };
 
     Ok(command_commit_proof)
+}
+
+/// Guards the walk from the commit certificate down to the committed block against a chain that never reaches it.
+fn check_not_below_committed(block: &Block, committed_block: &Block) -> Result<(), HotStuffError> {
+    if block.height() < committed_block.height() {
+        error!(
+            target: LOG_TARGET,
+            "⚠️ Invariant error: Block height {} is less than the commit block height {} in generate_block_commit_proof ({}, commit_block={})",
+            block.height(),
+            committed_block.height(),
+            block.as_leaf(),
+            committed_block.as_leaf()
+        );
+        return Err(HotStuffError::InvariantError(format!(
+            "Block height {} is less than the commit block height {} in generate_block_commit_proof ({}, \
+             commit_block={})",
+            block.height(),
+            committed_block.height(),
+            block.as_leaf(),
+            committed_block.as_leaf(),
+        )));
+    }
+    Ok(())
 }
 
 pub fn convert_block_to_sidechain_block_header(header: &BlockHeader) -> Result<SidechainBlockHeader, HotStuffError> {
