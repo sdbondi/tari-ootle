@@ -32,9 +32,9 @@ use tari_common::{
     configuration::bootstrap::{ApplicationType, grpc_default_port},
     exit_codes::{ExitCode, ExitError},
 };
-use tari_consensus::consensus_constants::ConsensusConstants;
 #[cfg(not(feature = "metrics"))]
 use tari_consensus::traits::hooks::NoopHooks;
+use tari_consensus::{consensus_constants::ConsensusConstants, traits::hooks::CompositeHook};
 use tari_crypto::tari_utilities::ByteArray;
 use tari_engine_types::Epoch;
 use tari_epoch_manager::{
@@ -72,7 +72,7 @@ use tari_ootle_app_utilities::{
     seed_peer::SeedPeer,
     transaction_executor::TariTransactionProcessor,
 };
-use tari_ootle_common_types::services::template_provider::TemplateProvider;
+use tari_ootle_common_types::{diag_event, services::template_provider::TemplateProvider};
 use tari_ootle_p2p::{PeerAddress, TRANSACTION_TOPIC, TariMessagingSpec, max_gossip_message_size};
 use tari_ootle_storage::{StateStore, global::GlobalDb};
 use tari_ootle_storage_sqlite::global::SqliteGlobalDbAdapter;
@@ -125,6 +125,7 @@ use crate::{
         TariBlockTransactionValidator,
         spec::ValidatorTemplateProvider,
     },
+    diagnostics::{self, DiagnosticHooks, DiagnosticsHandle},
     file_l1_submitter::FileLayerOneSubmitter,
     memory_budget,
     migrations,
@@ -272,6 +273,19 @@ pub async fn spawn_services(
 
     state_store.with_write_tx(|tx| migrations::migrate(tx, config.network, &consensus_constants))?;
 
+    diagnostics::install_panic_recorder(state_store.clone());
+    let (diagnostics, diagnostics_join_handle) = diagnostics::spawn(
+        state_store.clone(),
+        &config.validator_node.diagnostics,
+        shutdown.clone(),
+    );
+    handles.extend(diagnostics_join_handle);
+    diagnostics.emit(diag_event!(info, "node.started", "Validator node starting",
+        version => env!("CARGO_PKG_VERSION"),
+        network => config.network,
+        public_key => keypair.public_key()
+    ));
+
     info!(target: LOG_TARGET, "Epoch manager initializing");
     let epoch_manager_config = EpochManagerConfig {
         base_layer_confirmations: consensus_constants.base_layer_confirmations,
@@ -307,6 +321,7 @@ pub async fn spawn_services(
             global_db.clone(),
             keypair.public_key().to_byte_type(),
             epoch_event_oracle,
+            Arc::new(diagnostics.clone()),
             shutdown.clone(),
         );
 
@@ -388,6 +403,7 @@ pub async fn spawn_services(
     let metrics = PrometheusConsensusMetrics::register(tari_metrics_registry);
     #[cfg(not(feature = "metrics"))]
     let metrics = NoopHooks;
+    let hooks = CompositeHook::new(metrics, DiagnosticHooks::new(diagnostics.clone()));
 
     let sidechain_id = config.validator_node.sidechain_id.as_ref().map(|pk| pk.to_byte_type());
 
@@ -404,7 +420,7 @@ pub async fn spawn_services(
         inbound_messaging,
         outbound_messaging.clone(),
         validator_node_client_factory.clone(),
-        metrics,
+        hooks,
         shutdown.clone(),
         transaction_executor,
         transaction_validator,
@@ -453,6 +469,7 @@ pub async fn spawn_services(
         state_store,
         handles,
         layer_one_transaction_submitter,
+        diagnostics,
     })
 }
 
@@ -479,6 +496,7 @@ pub struct Services<TStore> {
     pub state_store: TStore,
     pub global_db: GlobalDb<SqliteGlobalDbAdapter<PeerAddress>>,
     pub layer_one_transaction_submitter: FileLayerOneSubmitter,
+    pub diagnostics: DiagnosticsHandle,
 
     pub handles: Vec<JoinHandle<Result<(), anyhow::Error>>>,
 }

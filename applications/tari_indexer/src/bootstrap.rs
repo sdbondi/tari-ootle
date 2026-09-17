@@ -73,7 +73,7 @@ use tari_ootle_app_utilities::{
     seed_peer::SeedPeer,
     shared_consts::TXTR_FAUCET_INITIAL_SUPPLY,
 };
-use tari_ootle_common_types::optional::Optional;
+use tari_ootle_common_types::{diagnostics::NoopSink, optional::Optional};
 use tari_ootle_p2p::{PeerAddress, TRANSACTION_TOPIC, TariMessagingSpec, max_gossip_message_size};
 use tari_ootle_storage::global::GlobalDb;
 use tari_ootle_storage_sqlite::global::SqliteGlobalDbAdapter;
@@ -253,6 +253,7 @@ pub async fn spawn_services(
         global_db.clone(),
         keypair.public_key().to_byte_type(),
         epoch_event_oracle,
+        Arc::new(NoopSink),
         shutdown.clone(),
     );
 

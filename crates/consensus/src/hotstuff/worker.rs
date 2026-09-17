@@ -272,6 +272,10 @@ impl<TConsensusSpec: ConsensusSpec> HotstuffWorker<TConsensusSpec> {
         &self.pacemaker
     }
 
+    pub fn hooks_mut(&mut self) -> &mut TConsensusSpec::Hooks {
+        &mut self.hooks
+    }
+
     async fn get_starting_epoch(&self) -> Result<(Epoch, FixedHash), HotStuffError> {
         // NOTE: we assume the latest checkpoint has been synced already
         let checkpoint = self
