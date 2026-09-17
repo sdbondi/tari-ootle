@@ -371,14 +371,17 @@ where TConsensusSpec: ConsensusSpec
         let justify_block = Block::get_justified_block(tx, &high_qc_certificate, epoch)?;
         let parent_block = dummy_block.unwrap_or_else(|| justify_block.as_leaf());
         let highest_seen_block = Block::get(tx, highest_seen_block.block_id())?;
-        let is_end_of_epoch_in_chain = highest_seen_block.is_epoch_end_proposed_in_chain(tx)?;
+        // The epoch end is read on the chain the candidate extends, which is the justify block's. A block that
+        // this node has seen but the high certificate does not reach is on a branch the candidate abandons, and an
+        // EndEpoch there binds nothing.
+        let is_end_of_epoch_in_chain = justify_block.is_epoch_end_proposed_in_chain(tx)?;
 
         let should_not_propose_commands = is_end_of_epoch_in_chain || end_epoch_hash.is_some() || {
             // TODO: prevent proposers from proposing transactions after an epoch end command is in the justified
             // pending chain, regardless of whether we see the end of epoch or not (race condition).
             // If the last justified/parent block is an epoch end block, we dont propose commands since the block will
             // be rejected
-            highest_seen_block.is_epoch_end()
+            justify_block.is_epoch_end()
         };
 
         let mut total_leader_fee = 0u64;
@@ -391,9 +394,8 @@ where TConsensusSpec: ConsensusSpec
         // leader-fee burn surface as an exhaust-burn or state Merkle-root mismatch, and pool records read there
         // carry stages and decisions from blocks the candidate abandons.
         //
-        // The epoch-boundary checks above and the locked epoch below are read at `highest_seen_block` instead. They
-        // gate whether commands are proposed at all, so reading them a block early only ever suppresses commands,
-        // and the candidate's own header takes its epoch hash from the same block.
+        // The locked epoch below and the candidate's own epoch hash are read at `highest_seen_block`. Both are
+        // constant across an epoch, and the candidate is in the same epoch as every block this node has seen.
         let state_anchor = &justify_block;
         let state_anchor_leaf = state_anchor.as_leaf();
         let mut accumulated_data = *state_anchor.header().accumulated_data();
