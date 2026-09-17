@@ -172,9 +172,6 @@ pub(super) struct WorkingState<TStore> {
     /// the validator pays the cold compile/deserialise cost at most once per template per process,
     /// so charging it on every entry over-bills the user.
     loaded_template_charges: HashSet<TemplateAddress>,
-    /// Inputs the transaction declared as reads. Foreign shard groups take read locks on these
-    /// without executing, so a write to one must abort.
-    read_declared_inputs: HashSet<SubstateId>,
     /// Running tally of stealth-transfer work across this transaction, bounding the aggregate native verification cost
     /// any one transaction can incur (see `limits::STEALTH_LIMITS`).
     stealth_totals: StealthTransactionTotals,
@@ -208,7 +205,7 @@ impl<TStore: StateReader> WorkingState<TStore> {
             address_allocations: IndexMap::new(),
             used_address_allocations: IndexMap::new(),
 
-            store: WorkingStateStore::new(state_store),
+            store: WorkingStateStore::new(state_store, read_declared_inputs),
 
             last_instruction_output: None,
 
@@ -217,7 +214,6 @@ impl<TStore: StateReader> WorkingState<TStore> {
             validator_fee_withdrawals: Vec::new(),
             call_frames: Vec::new(),
             initial_call_scope,
-            read_declared_inputs,
             fee_state,
             loaded_template_charges: HashSet::new(),
             object_ids: ObjectIds::new(limits::ENGINE_LIMITS.max_substate_outputs),
@@ -285,20 +281,9 @@ impl<TStore: StateReader> WorkingState<TStore> {
     /// mode permitting it. Callers that need the raw [`LockId`] use this directly rather than the store.
     fn try_lock(&mut self, addr: SubstateId, lock_flag: LockFlag) -> Result<LockId, RuntimeError> {
         if lock_flag.is_write() {
-            self.check_write_declared(&addr)?;
             self.check_write_allowed(&addr)?;
         }
         self.store.try_lock(addr, lock_flag)
-    }
-
-    /// A shard group that does not hold an input locks it from the declaration alone, so a read
-    /// declaration is a promise the rest of the network has already acted on by the time execution
-    /// reaches here. Breaking it must abort rather than write under a read lock.
-    fn check_write_declared(&self, addr: &SubstateId) -> Result<(), RuntimeError> {
-        if self.read_declared_inputs.contains(addr) {
-            return Err(RuntimeError::WriteToReadDeclaredInput { id: addr.clone() });
-        }
-        Ok(())
     }
 
     pub fn read_lock_substate(&mut self, addr: SubstateId) -> Result<LockedSubstate, RuntimeError> {
