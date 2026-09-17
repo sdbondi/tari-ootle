@@ -86,17 +86,19 @@ where TConsensusSpec: ConsensusSpec
             return Ok(());
         }
 
-        // `Some` carries our own high certificate height when the NEWVIEW is worth acting on.
-        let local_high_pc_height = self.store.with_read_tx(|tx| {
-            let local_high_qc = HighPc::get(tx, epoch_state.epoch())?;
-            // Only accept a higher QC than the local one
-            if local_high_qc.block_height > high_pc.height() {
-                return Ok(None);
-            }
+        if let Err(err) = self.validate_qc(&high_pc, epoch_state, self.proposal_vote_collector.signing_service()) {
+            warn!(target: LOG_TARGET, "❌ NEWVIEW: Invalid QC: {}", err);
+            return Ok(());
+        }
 
-            if let Err(err) = self.validate_qc(&high_pc, epoch_state, self.proposal_vote_collector.signing_service()) {
-                warn!(target: LOG_TARGET, "❌ NEWVIEW: Invalid QC: {}", err);
-                return Ok(None);
+        // A NEWVIEW reports the certificate its sender holds. One ahead of ours has to become ours before we
+        // propose, because a replica locked above our justify block rejects the proposal. One level with or behind
+        // ours is worth no write - every sender of a view reports the same certificate in the common case - but its
+        // timeout vote still counts towards the quorum that ends the view, so the message carries on either way.
+        let is_ahead_of_ours = self.store.with_read_tx(|tx| {
+            let local_high_pc = HighPc::get(tx, epoch_state.epoch())?;
+            if local_high_pc.block_height >= high_pc.height() {
+                return Ok(false);
             }
 
             if !Block::record_exists(tx, &high_pc.calculate_block_id())? {
@@ -113,17 +115,10 @@ where TConsensusSpec: ConsensusSpec
                 });
             }
 
-            Ok(Some(local_high_qc.block_height))
+            Ok(true)
         })?;
 
-        let Some(local_high_pc_height) = local_high_pc_height else {
-            return Ok(());
-        };
-
-        // A NEWVIEW reports the certificate its sender holds. Proposing from behind the committee wastes the
-        // view: a replica locked above our justify block rejects the proposal. Every sender of a view reports the
-        // same certificate in the common case, so only a higher one is worth a write.
-        if high_pc.height() > local_high_pc_height {
+        if is_ahead_of_ours {
             self.store.with_write_tx(|tx| high_pc.update_highest(tx))?;
         }
 
