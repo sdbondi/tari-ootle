@@ -324,7 +324,11 @@ pub async fn spawn_services(
     // Template manager
     let wasm_cache_dir = config.validator_node.data_dir.join("wasm_cache");
     let template_provider = MemoryCacheTemplateProvider::new(
-        tari_engine::wasm::DiskCachedWasmTemplateProvider::open(state_store.clone(), wasm_cache_dir)?,
+        tari_engine::wasm::DiskCachedWasmTemplateProvider::open(
+            state_store.clone(),
+            wasm_cache_dir,
+            config.validator_node.templates.max_disk_cache_size_bytes(),
+        )?,
         &config.validator_node.templates,
     );
 

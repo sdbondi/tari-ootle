@@ -13,4 +13,9 @@
 mod cmap_semaphore;
 
 mod memory_cache;
-pub use memory_cache::{MemoryCacheTemplateProvider, MemoryCacheTemplateProviderError, TemplateConfig};
+pub use memory_cache::{
+    MemoryCacheTemplateProvider,
+    MemoryCacheTemplateProviderError,
+    TemplateConfig,
+    builtin_resident_bytes,
+};
