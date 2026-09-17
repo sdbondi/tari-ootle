@@ -196,10 +196,11 @@ pub enum ProposalValidationError {
         block_height: NodeHeight,
         details: String,
     },
-    #[error("Candidate block {candidate_block_height} does not extend justify block {justify_block_height}")]
+    #[error("Candidate block {candidate_block_height} does not extend justify block {justify_block_height}: {details}")]
     CandidateBlockDoesNotExtendJustify {
         justify_block_height: NodeHeight,
         candidate_block_height: NodeHeight,
+        details: String,
     },
     #[error(
         "Block {block} proposed by {proposed_by} is not the leader for {max_certificate_height}. Expect \
