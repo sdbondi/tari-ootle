@@ -63,6 +63,9 @@ Shared reference — what a tag sets off, the command index, recovery: [README.m
       artifact is missing.
 - [ ] Every **required** binary platform present. A `best_effort` leg (windows-arm64) may
       be missing — decide whether you care. **(human)**
+- [ ] A red "Build Matrix of Binaries" run means a required leg failed. The draft is still
+      assembled from the legs that succeeded, so read the matrix rather than the run's colour
+      alone. **(human)**
 - [ ] All six **FFI platforms** present. ootle-go cannot ship a gap.
 - [ ] **Re-run a failed leg** rather than publishing without it:
       - binaries: re-run the failed job from the Actions UI, or push a `build-bins-*` / `build-all-*`
