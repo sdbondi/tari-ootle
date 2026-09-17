@@ -1,6 +1,11 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
+use std::{
+    sync::{Mutex, MutexGuard, TryLockError},
+    time::{Duration, Instant},
+};
+
 use rocksdb::TransactionDB;
 use serde::{Serialize, de::DeserializeOwned};
 use tari_ootle_common_types::{
@@ -19,6 +24,32 @@ use tari_ootle_storage::{
 
 use crate::{column_families::diagnostic_event::DiagnosticEventCf, store::RocksDbStateStore};
 
+static APPEND_LOCK: Mutex<()> = Mutex::new(());
+
+/// How long [`acquire_append_lock`] waits before appending unserialised.
+const APPEND_LOCK_TIMEOUT: Duration = Duration::from_millis(250);
+const APPEND_LOCK_POLL: Duration = Duration::from_millis(5);
+
+/// Serialises the read-then-write that assigns event ids, giving up after
+/// [`APPEND_LOCK_TIMEOUT`].
+///
+/// The wait is bounded rather than indefinite because the panic hook appends from the panicking
+/// thread: were that the thread holding the lock, blocking on it would hang the hook. Appending
+/// without the lock risks losing one racing event, which is the better of the two outcomes.
+fn acquire_append_lock() -> Option<MutexGuard<'static, ()>> {
+    let deadline = Instant::now() + APPEND_LOCK_TIMEOUT;
+    loop {
+        match APPEND_LOCK.try_lock() {
+            Ok(guard) => return Some(guard),
+            Err(TryLockError::Poisoned(err)) => return Some(err.into_inner()),
+            Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                std::thread::sleep(APPEND_LOCK_POLL);
+            },
+            Err(TryLockError::WouldBlock) => return None,
+        }
+    }
+}
+
 impl<TAddr> DiagnosticEventStore for RocksDbStateStore<TAddr, TransactionDB>
 where TAddr: NodeAddressable + Serialize + DeserializeOwned + 'static
 {
@@ -27,6 +58,13 @@ where TAddr: NodeAddressable + Serialize + DeserializeOwned + 'static
         if events.is_empty() {
             return Ok(None);
         }
+
+        // The next id is derived from the highest key, and that read is not conflict-tracked, so two
+        // appends racing would both pick the same id and one would overwrite the other. Appends come
+        // from the writer task and from the panic hook, which can run on any thread at any moment,
+        // so they are serialised here. Contention is effectively nil: both are rare, and the lock is
+        // held only for the write transaction.
+        let _guard = acquire_append_lock();
 
         self.with_write_tx(|tx| {
             let cf = tx.db().cf(DiagnosticEventCf)?;
@@ -54,12 +92,20 @@ where TAddr: NodeAddressable + Serialize + DeserializeOwned + 'static
         let tx = self.create_read_tx()?;
         let cf = tx.db().cf(DiagnosticEventCf)?;
 
+        // Bounding the range on the cursor rather than skipping past it means a deep page seeks
+        // straight to its first row instead of decoding every newer event on the way.
+        let iter: Box<dyn Iterator<Item = _>> = match page.before_id {
+            Some(before) => {
+                let start = cf.encode_key(&0).to_vec();
+                let end = cf.encode_key(&before).to_vec();
+                Box::new(cf.range_iterator(Ordering::Descending, start..end))
+            },
+            None => Box::new(cf.iterator(Ordering::Descending, OPERATION)),
+        };
+
         let mut records = Vec::new();
-        for result in cf.iterator(Ordering::Descending, OPERATION) {
+        for result in iter {
             let (id, event) = result?;
-            if page.before_id.is_some_and(|before| id >= before) {
-                continue;
-            }
             if !page.filter.matches(&event) {
                 continue;
             }

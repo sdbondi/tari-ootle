@@ -207,6 +207,22 @@ fn clear_with_an_empty_filter_deletes_everything() {
 }
 
 #[test]
+fn emptying_the_log_restarts_the_id_sequence() {
+    let (db, _tmp) = create_rocksdb();
+    db.diagnostic_events_append(&[
+        event_at(DiagnosticLevel::Info, "a", 1_000),
+        event_at(DiagnosticLevel::Info, "b", 2_000),
+    ])
+    .unwrap();
+    db.diagnostic_events_clear(&DiagnosticEventFilter::default()).unwrap();
+
+    let last = db
+        .diagnostic_events_append(&[event_at(DiagnosticLevel::Info, "c", 3_000)])
+        .unwrap();
+    assert_eq!(last, Some(0));
+}
+
+#[test]
 fn prune_enforces_the_count_bound() {
     let (db, _tmp) = create_rocksdb();
     let now = unix_millis_now();

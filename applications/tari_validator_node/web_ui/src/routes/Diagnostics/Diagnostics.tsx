@@ -233,13 +233,17 @@ export default function Diagnostics() {
     load();
   }, [load]);
 
+  // Refreshing re-fetches the first page, which would throw away everything "Load more" fetched, so
+  // it pauses once the reader has paged back through history.
+  const isPaged = events.length > PAGE_SIZE;
+
   useEffect(() => {
-    if (!autoRefresh) {
+    if (!autoRefresh || isPaged) {
       return;
     }
     const id = window.setInterval(() => load(), AUTO_REFRESH_MS);
     return () => window.clearInterval(id);
-  }, [autoRefresh, load]);
+  }, [autoRefresh, isPaged, load]);
 
   const loadMore = () => {
     if (cursor === null) {
@@ -346,10 +350,17 @@ export default function Diagnostics() {
 
               <Box sx={{ flexGrow: 1 }} />
 
-              <FormControlLabel
-                control={<Switch checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />}
-                label={<Typography variant="body2">Auto-refresh</Typography>}
-              />
+              <Tooltip title={isPaged ? "Paused while older pages are loaded" : ""}>
+                <FormControlLabel
+                  control={<Switch checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />}
+                  label={
+                    <Typography variant="body2" sx={{ opacity: autoRefresh && isPaged ? 0.5 : 1 }}>
+                      Auto-refresh
+                      {autoRefresh && isPaged ? " (paused)" : ""}
+                    </Typography>
+                  }
+                />
+              </Tooltip>
               <Tooltip title="Refresh now">
                 <IconButton onClick={() => load()} aria-label="Refresh">
                   <IoRefresh size={20} />

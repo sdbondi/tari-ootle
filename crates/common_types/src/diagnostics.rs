@@ -120,8 +120,11 @@ impl DiagnosticEvent {
     }
 }
 
-/// A [`DiagnosticEvent`] as stored, carrying the sequence number assigned on insert. `id` is
-/// monotonically increasing, so it doubles as the pagination cursor.
+/// A [`DiagnosticEvent`] as stored, carrying the sequence number assigned on insert.
+///
+/// `id` increases with insertion order, which is what makes it usable as a pagination cursor. It is
+/// derived from the highest id held, so emptying the log restarts the sequence at zero; ids identify
+/// an event within the log's current contents, not for all time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DiagnosticEventRecord {

@@ -273,12 +273,14 @@ pub async fn spawn_services(
 
     state_store.with_write_tx(|tx| migrations::migrate(tx, config.network, &consensus_constants))?;
 
-    diagnostics::install_panic_recorder(state_store.clone());
     let (diagnostics, diagnostics_join_handle) = diagnostics::spawn(
         state_store.clone(),
         &config.validator_node.diagnostics,
         shutdown.clone(),
     );
+    if config.validator_node.diagnostics.enabled {
+        diagnostics::install_panic_recorder(state_store.clone());
+    }
     handles.extend(diagnostics_join_handle);
     diagnostics.emit(diag_event!(info, "node.started", "Validator node starting",
         version => env!("CARGO_PKG_VERSION"),

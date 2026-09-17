@@ -44,6 +44,20 @@ impl ConsensusHooks for DiagnosticHooks {
     fn on_message_received(&mut self, _message: &HotstuffMessage) {}
 
     fn on_error(&mut self, err: &HotStuffError) {
+        // Falling behind the committee is a routine condition that state sync resolves on its own,
+        // and it recurs once per proposal for as long as the node is behind. Recording it at `error`
+        // would bury the failures an operator filters for under a condition that is already being
+        // handled.
+        if err.is_sync_required() {
+            self.diagnostics.emit(diag_event!(
+                warn,
+                "consensus.needs_sync",
+                "Behind the committee: {err}",
+                error => err
+            ));
+            return;
+        }
+
         self.diagnostics.emit(diag_event!(
             error,
             "consensus.error",
@@ -118,8 +132,10 @@ fn classify(
         // `Sleeping` is only ever entered from a failure, and is where an operator looks first when
         // a node has gone quiet.
         (_, ConsensusCurrentState::Sleeping, _) => ("consensus.crashed", Error),
-        (_, _, ConsensusStateEvent::Failure { .. }) => ("consensus.crashed", Error),
         (_, ConsensusCurrentState::Syncing, _) => ("sync.started", Info),
+        // Leaving `Syncing` for anything but a shutdown means sync finished; the transition table
+        // only leaves it via `SyncComplete`.
+        (ConsensusCurrentState::Syncing, ConsensusCurrentState::Shutdown, _) => ("consensus.state_transition", Info),
         (ConsensusCurrentState::Syncing, _, _) => ("sync.completed", Info),
         _ => ("consensus.state_transition", Info),
     }
