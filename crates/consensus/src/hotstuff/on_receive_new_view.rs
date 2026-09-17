@@ -20,7 +20,7 @@ use crate::{
     },
     messages::NewViewMessage,
     tracing::TraceTimer,
-    traits::{ConsensusSpec, LeaderStrategy},
+    traits::{CertificateStore, ConsensusSpec, LeaderStrategy},
     validations::check_quorum_certificate_signatures,
 };
 
@@ -86,16 +86,17 @@ where TConsensusSpec: ConsensusSpec
             return Ok(());
         }
 
-        let is_qc_valid = self.store.with_read_tx(|tx| {
+        // `Some` carries our own high certificate height when the NEWVIEW is worth acting on.
+        let local_high_pc_height = self.store.with_read_tx(|tx| {
             let local_high_qc = HighPc::get(tx, epoch_state.epoch())?;
             // Only accept a higher QC than the local one
             if local_high_qc.block_height > high_pc.height() {
-                return Ok(false);
+                return Ok(None);
             }
 
             if let Err(err) = self.validate_qc(&high_pc, epoch_state, self.proposal_vote_collector.signing_service()) {
                 warn!(target: LOG_TARGET, "❌ NEWVIEW: Invalid QC: {}", err);
-                return Ok(false);
+                return Ok(None);
             }
 
             if !Block::record_exists(tx, &high_pc.calculate_block_id())? {
@@ -112,11 +113,18 @@ where TConsensusSpec: ConsensusSpec
                 });
             }
 
-            Ok(true)
+            Ok(Some(local_high_qc.block_height))
         })?;
 
-        if !is_qc_valid {
+        let Some(local_high_pc_height) = local_high_pc_height else {
             return Ok(());
+        };
+
+        // A NEWVIEW reports the certificate its sender holds. Proposing from behind the committee wastes the
+        // view: a replica locked above our justify block rejects the proposal. Every sender of a view reports the
+        // same certificate in the common case, so only a higher one is worth a write.
+        if high_pc.height() > local_high_pc_height {
+            self.store.with_write_tx(|tx| high_pc.update_highest(tx))?;
         }
 
         // Check if we are the leader for the view after new_height. We'll set our local view height to the new_height
