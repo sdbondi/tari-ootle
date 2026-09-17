@@ -272,9 +272,11 @@ pub(super) fn check_timeout_certificate<TConsensusSpec: ConsensusSpec>(
 /// Checks that the header's timeout certificate id names the certificate the block carries (or that both are
 /// absent).
 ///
-/// The header, and through it the block id and the proposer's signature, is what a replica verifies; the
-/// certificate travels beside it. Any rule that reads the certificate is only reading signed data if the two
-/// agree, so this runs before the certificate's own checks.
+/// What makes a rule that reads the certificate read signed data is the block signature: on decode the header's
+/// id is derived from the certificate the block carries (`try_convert_proto_block_header`, as for `justify_id`),
+/// so a certificate swapped in flight moves the block id out from under the proposer's signature. A block that
+/// arrived over the wire therefore cannot fail here; this guards a locally built block, and it holds the
+/// derivation in place should the id ever be sent on the wire instead.
 pub fn check_block_commits_to_timeout_certificate(block: &Block) -> Result<(), ProposalValidationError> {
     let header_tc_id = block.header().timeout_certificate_id().copied();
     let tc_id = block.timeout_certificate().map(|tc| tc.calculate_id());
