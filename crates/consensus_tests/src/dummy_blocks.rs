@@ -292,6 +292,7 @@ fn proposer_accumulated_data_must_come_from_justify_on_timeout_recovery() {
         )
         .justify()
         .calculate_id(),
+        None,
         justify_height,
         Epoch(7991),
         shard_group,
@@ -421,6 +422,7 @@ fn proposer_must_anchor_recovery_on_justify_not_uncertified_leaf() {
             ProtocolVersion::V0,
             parent,
             genesis.justify().calculate_id(),
+            None,
             height,
             epoch,
             shard_group,

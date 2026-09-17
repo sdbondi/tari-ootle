@@ -482,6 +482,7 @@ mod tests {
             protocol_version,
             parent_id,
             qc1_id,
+            None,
             NodeHeight(2),
             Epoch(1),
             shard_group,

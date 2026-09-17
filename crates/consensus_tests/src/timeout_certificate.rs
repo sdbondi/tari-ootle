@@ -12,7 +12,12 @@
 use std::collections::BTreeSet;
 
 use tari_common_types::types::FixedHash;
-use tari_consensus::{check_justify_reaches_timeout_certificate, messages::NewViewMessage};
+use tari_consensus::{
+    check_block_commits_to_timeout_certificate,
+    check_justify_reaches_timeout_certificate,
+    hotstuff::ProposalValidationError,
+    messages::NewViewMessage,
+};
 use tari_consensus_types::{
     BlockId,
     ProposalCertificate,
@@ -75,11 +80,13 @@ fn timeout_vote(height: NodeHeight, high_pc_height: NodeHeight) -> TimeoutVote {
 fn block_justifying(justify_height: NodeHeight, timeout_certificate: TimeoutCertificate) -> Block {
     let justify = proposal_certificate(justify_height);
     let height = timeout_certificate.height() + NodeHeight(1);
+    // V1 is the first version whose block id commits to the timeout certificate.
     let header = BlockHeader::create_unsigned(
         NETWORK,
-        ProtocolVersion::at(NETWORK, TEST_EPOCH),
+        ProtocolVersion::V1,
         BlockId::zero(),
         justify.calculate_id(),
+        Some(timeout_certificate.calculate_id()),
         height,
         TEST_EPOCH,
         ShardGroup::all_shards(NUM_PRESHARDS),
@@ -113,10 +120,7 @@ fn justify_below_the_attested_height_is_rejected() {
 
     let err = check_justify_reaches_timeout_certificate(&block).unwrap_err();
     assert!(
-        matches!(
-            err,
-            tari_consensus::hotstuff::ProposalValidationError::JustifyBelowTimeoutCertificate { .. }
-        ),
+        matches!(err, ProposalValidationError::JustifyBelowTimeoutCertificate { .. }),
         "unexpected error: {err}"
     );
 }
@@ -129,6 +133,57 @@ fn a_block_without_a_timeout_certificate_is_accepted() {
     block = Block::new(block.header().clone(), block.justify().clone(), BTreeSet::new(), None);
 
     check_justify_reaches_timeout_certificate(&block).unwrap();
+}
+
+/// A committee member can self-sign a `SignedTimeout` for any height and add it to a certificate it observes;
+/// the certificate still verifies, since each signature is checked against its own message. What stops the
+/// splice is the header: it commits to the certificate's id, so the spliced certificate belongs to a different
+/// block id than the one the proposer signed.
+#[test]
+fn a_timeout_certificate_spliced_after_signing_no_longer_matches_the_header() {
+    let tc = timeout_certificate(NodeHeight(9), &[3, 5, 4]);
+    let block = block_justifying(NodeHeight(5), tc.clone());
+    check_block_commits_to_timeout_certificate(&block).unwrap();
+    check_justify_reaches_timeout_certificate(&block).unwrap();
+
+    let spliced = timeout_certificate(NodeHeight(9), &[3, 5, 4, 7]);
+    assert_ne!(spliced.calculate_id(), tc.calculate_id());
+    let spliced_block = Block::new(
+        block.header().clone(),
+        block.justify().clone(),
+        BTreeSet::new(),
+        Some(spliced),
+    );
+    assert_eq!(
+        spliced_block.id(),
+        block.id(),
+        "the header, and so the block id, is unchanged by the splice"
+    );
+    let err = check_block_commits_to_timeout_certificate(&spliced_block).unwrap_err();
+    assert!(
+        matches!(err, ProposalValidationError::TimeoutCertificateIdMismatch { .. }),
+        "unexpected error: {err}"
+    );
+
+    let rebuilt = block_justifying(NodeHeight(5), timeout_certificate(NodeHeight(9), &[3, 5, 4, 7]));
+    assert_ne!(
+        rebuilt.id(),
+        block.id(),
+        "carrying the spliced certificate honestly changes the block id"
+    );
+}
+
+/// A header that commits to a certificate the block does not carry, or carries one it does not commit to, is
+/// rejected the same way.
+#[test]
+fn a_header_and_block_must_agree_on_whether_there_is_a_timeout_certificate() {
+    let tc = timeout_certificate(NodeHeight(9), &[3]);
+    let block = block_justifying(NodeHeight(3), tc);
+    let dropped = Block::new(block.header().clone(), block.justify().clone(), BTreeSet::new(), None);
+    assert!(matches!(
+        check_block_commits_to_timeout_certificate(&dropped).unwrap_err(),
+        ProposalValidationError::TimeoutCertificateIdMismatch { .. }
+    ));
 }
 
 /// The claim a timeout vote signs is only worth the certificate carried beside it: every replica other than the
