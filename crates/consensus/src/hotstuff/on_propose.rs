@@ -369,7 +369,7 @@ where TConsensusSpec: ConsensusSpec
     ) -> Result<NextBlock, HotStuffError> {
         let high_qc_id = high_qc_certificate.calculate_id();
         let justify_block = Block::get_justified_block(tx, &high_qc_certificate, epoch)?;
-        let parent_block = dummy_block.unwrap_or_else(|| highest_seen_block.as_leaf());
+        let parent_block = dummy_block.unwrap_or_else(|| justify_block.as_leaf());
         let highest_seen_block = Block::get(tx, highest_seen_block.block_id())?;
         let is_end_of_epoch_in_chain = highest_seen_block.is_epoch_end_proposed_in_chain(tx)?;
 
@@ -382,23 +382,19 @@ where TConsensusSpec: ConsensusSpec
         };
 
         let mut total_leader_fee = 0u64;
-        // The block the candidate extends from, and the point at which every speculative state and pool read
-        // for this proposal is taken. When filling a timeout gap with a dummy chain that is justify_block:
-        // the dummies are empty blocks carrying justify_block's accumulated_data and state forward (see
-        // `calculate_last_dummy_block`), so the candidate's parent chain runs back through them to
-        // justify_block and never through a locally-stored fork above the high QC. A validator recomputes
-        // that same chain, so anything read at a fork block is state it does not have: speculative substate
-        // changes and leader-fee burn surface as an exhaust-burn or state Merkle-root mismatch, and pool
-        // records read there carry stages and decisions from blocks the candidate abandons.
+        // The block the candidate extends from, and the point at which every speculative state and pool read for
+        // this proposal is taken. The candidate's parent is the justify block itself, or the last of the dummy
+        // blocks that fill a timeout gap - empty blocks carrying justify_block's accumulated_data and state forward
+        // (see `calculate_last_dummy_block`). Either way the parent chain runs back to justify_block and never
+        // through a locally-accepted block that the high QC does not certify. A validator recomputes that same
+        // chain, so anything read at a block off it is state it does not have: speculative substate changes and
+        // leader-fee burn surface as an exhaust-burn or state Merkle-root mismatch, and pool records read there
+        // carry stages and decisions from blocks the candidate abandons.
         //
-        // The epoch-boundary checks above and the locked epoch below are read at `highest_seen_block`
-        // instead. They gate whether commands are proposed at all, so reading them a block early only ever
-        // suppresses commands, and the candidate's own header takes its epoch hash from the same block.
-        let state_anchor = if dummy_block.is_some() {
-            &justify_block
-        } else {
-            &highest_seen_block
-        };
+        // The epoch-boundary checks above and the locked epoch below are read at `highest_seen_block` instead. They
+        // gate whether commands are proposed at all, so reading them a block early only ever suppresses commands,
+        // and the candidate's own header takes its epoch hash from the same block.
+        let state_anchor = &justify_block;
         let state_anchor_leaf = state_anchor.as_leaf();
         let mut accumulated_data = *state_anchor.header().accumulated_data();
 
