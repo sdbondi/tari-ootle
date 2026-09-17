@@ -229,6 +229,8 @@ pub enum RuntimeError {
     ForbiddenInReadOnlyContext { operation: &'static str },
     #[error("Write to {id} attempted in a resource auth hook, which may only modify its own component state")]
     WriteOutsideOwnComponent { id: SubstateId },
+    #[error("Write to {id} attempted, but the transaction declared it as a read-only input")]
+    WriteToReadDeclaredInput { id: SubstateId },
     #[error("Host operation '{operation}' is forbidden inside a resource auth hook")]
     ForbiddenInAuthHookContext { operation: &'static str },
     #[error("Freeze on resource {resource_address} targeted vault {vault_id}, which holds resource {vault_resource}")]
@@ -506,6 +508,7 @@ impl RuntimeError {
             Self::AddressAllocationTypeMismatch { .. } |
             Self::AddressAllocationNoTemplate |
             Self::NumericConversionError { .. } |
+            Self::WriteToReadDeclaredInput { .. } |
             Self::NotSupported { .. } => C::InvalidArgument,
 
             Self::SubstateNotFound { .. } |

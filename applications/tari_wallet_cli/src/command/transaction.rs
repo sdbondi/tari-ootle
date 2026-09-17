@@ -40,7 +40,7 @@ use tari_engine_types::{
     substate::{SubstateDiff, SubstateId, SubstateValue},
 };
 use tari_ootle_address::OotleAddress;
-use tari_ootle_common_types::{Epoch, SubstateAddress, SubstateRequirement};
+use tari_ootle_common_types::{Epoch, InputDeclaration, SubstateAddress};
 use tari_ootle_transaction::{
     Instruction,
     Transaction,
@@ -110,7 +110,7 @@ pub struct CommonSubmitArgs {
     #[clap(long, short = 't', alias = "wait-timeout")]
     pub wait_for_result_timeout_secs: Option<u64>,
     #[clap(long, short = 'i')]
-    pub inputs: Vec<SubstateRequirement>,
+    pub inputs: Vec<InputDeclaration>,
     #[clap(long, alias = "autofill")]
     pub detect_inputs: Option<bool>,
     #[clap(long, short = 'v')]
