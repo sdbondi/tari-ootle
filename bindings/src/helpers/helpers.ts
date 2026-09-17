@@ -109,9 +109,6 @@ export function rejectReasonToString(reason: RejectReason | null): string {
   if ("InvalidTransaction" in reason) {
     return `InvalidTransaction: ${reason.InvalidTransaction}`;
   }
-  if ("ExecutionFailure" in reason) {
-    return `ExecutionFailure (${reason.ExecutionFailure.code}): ${reason.ExecutionFailure.message}`;
-  }
   if ("OneOrMoreInputsNotFound" in reason) {
     return `OneOrMoreInputsNotFound: ${reason.OneOrMoreInputsNotFound}`;
   }
