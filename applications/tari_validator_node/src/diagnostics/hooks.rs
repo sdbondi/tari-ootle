@@ -25,32 +25,42 @@ use crate::diagnostics::handle::DiagnosticsHandle;
 #[derive(Debug, Clone)]
 pub struct DiagnosticHooks {
     diagnostics: DiagnosticsHandle,
-    /// The last stall alarm recorded, shared by every clone of these hooks. See
+    /// The last alarm seen of each kind, shared by every clone of these hooks. Each kind gets its
+    /// own slot so that a node diverging both ways records both. See
     /// [`DiagnosticHooks::is_new_stall_alarm`].
-    last_stall_alarm: Arc<Mutex<Option<String>>>,
+    last_stall_alarms: Arc<Mutex<LastStallAlarms>>,
+}
+
+#[derive(Debug, Default)]
+struct LastStallAlarms {
+    epoch_hash: Option<String>,
+    protocol_version: Option<String>,
 }
 
 impl DiagnosticHooks {
     pub fn new(diagnostics: DiagnosticsHandle) -> Self {
         Self {
             diagnostics,
-            last_stall_alarm: Arc::new(Mutex::new(None)),
+            last_stall_alarms: Arc::new(Mutex::new(LastStallAlarms::default())),
         }
     }
 
-    /// Whether this stall alarm differs from the one before it.
+    /// Whether this stall alarm describes a different divergence from the one before it.
     ///
-    /// A stalled node rejects every proposal the committee makes, so the same alarm arrives once per
-    /// proposal for as long as the stall lasts. `handle_hotstuff_error` already logs one alarm per
-    /// distinct divergence for this reason, but it reports the error to the hooks before reaching
-    /// that guard, so the same distinction is drawn again here.
-    fn is_new_stall_alarm(&self, err: &HotStuffError) -> bool {
-        let alarm = err.to_string();
-        let mut last = self.last_stall_alarm.lock().unwrap_or_else(PoisonError::into_inner);
-        if last.as_deref() == Some(alarm.as_str()) {
+    /// A stalled node rejects every proposal the committee makes, so the same divergence arrives
+    /// once per proposal — on a different block each time — for as long as the stall lasts.
+    /// `handle_hotstuff_error` keeps one alarm per divergence for this reason, but it reports the
+    /// error to the hooks before reaching that guard, so the same distinction is drawn again here.
+    fn is_new_stall_alarm(&self, alarm: &StallAlarm) -> bool {
+        let mut last = self.last_stall_alarms.lock().unwrap_or_else(PoisonError::into_inner);
+        let slot = match alarm.kind {
+            StallAlarmKind::EpochHash => &mut last.epoch_hash,
+            StallAlarmKind::ProtocolVersion => &mut last.protocol_version,
+        };
+        if slot.as_deref() == Some(alarm.divergence.as_str()) {
             return false;
         }
-        *last = Some(alarm);
+        *slot = Some(alarm.divergence.clone());
         true
     }
 }
@@ -68,7 +78,9 @@ impl ConsensusHooks for DiagnosticHooks {
     fn on_message_received(&mut self, _message: &HotstuffMessage) {}
 
     fn on_error(&mut self, err: &HotStuffError) {
-        if is_stall_alarm(err) && !self.is_new_stall_alarm(err) {
+        if let Some(alarm) = stall_alarm(err) &&
+            !self.is_new_stall_alarm(&alarm)
+        {
             return;
         }
 
@@ -128,15 +140,49 @@ impl ConsensusHooks for DiagnosticHooks {
     fn on_transaction_batch_finalized(&mut self, _num_committed: usize, _num_aborted: usize) {}
 }
 
-/// Whether the error means consensus is stalled on this node until someone intervenes. Consensus
-/// raises its own alarm for each of these.
-fn is_stall_alarm(err: &HotStuffError) -> bool {
-    matches!(
-        err,
-        HotStuffError::ProposalValidationError(
-            ProposalValidationError::InvalidEpochHash { .. } | ProposalValidationError::InvalidProtocolVersion { .. }
-        )
-    )
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StallAlarmKind {
+    EpochHash,
+    ProtocolVersion,
+}
+
+/// An error meaning consensus is stalled on this node until someone intervenes, reduced to what
+/// distinguishes one stall from another.
+///
+/// `divergence` deliberately omits the block the error was raised on: a stalled node rejects a
+/// different block every round while the divergence itself does not change, which is why the
+/// worker's own guards key on `(epoch, local_epoch_hash, invalid_epoch_hash)` and
+/// `(epoch, expected_version, block_version)` rather than on the error.
+struct StallAlarm {
+    kind: StallAlarmKind,
+    divergence: String,
+}
+
+fn stall_alarm(err: &HotStuffError) -> Option<StallAlarm> {
+    let HotStuffError::ProposalValidationError(err) = err else {
+        return None;
+    };
+    match err {
+        ProposalValidationError::InvalidEpochHash {
+            epoch,
+            local_epoch_hash,
+            invalid_epoch_hash,
+            ..
+        } => Some(StallAlarm {
+            kind: StallAlarmKind::EpochHash,
+            divergence: format!("{epoch}:{local_epoch_hash}:{invalid_epoch_hash}"),
+        }),
+        ProposalValidationError::InvalidProtocolVersion {
+            epoch,
+            expected_version,
+            block_version,
+            ..
+        } => Some(StallAlarm {
+            kind: StallAlarmKind::ProtocolVersion,
+            divergence: format!("{epoch}:{expected_version}:{block_version}"),
+        }),
+        _ => None,
+    }
 }
 
 /// Mirrors how consensus itself treats each error, so that `level = error` means something an
@@ -145,7 +191,7 @@ fn is_stall_alarm(err: &HotStuffError) -> bool {
 /// `handle_hotstuff_error` reports every error it sees, including the ones it goes on to resolve by
 /// catching up, and it resolves those once per proposal for as long as the node is behind.
 fn classify_error(err: &HotStuffError) -> (&'static str, DiagnosticLevel) {
-    if is_stall_alarm(err) {
+    if stall_alarm(err).is_some() {
         return ("consensus.error", DiagnosticLevel::Error);
     }
 
@@ -184,5 +230,106 @@ fn classify(
         (ConsensusCurrentState::Syncing, ConsensusCurrentState::Shutdown, _) => ("consensus.state_transition", Info),
         (ConsensusCurrentState::Syncing, _, _) => ("sync.completed", Info),
         _ => ("consensus.state_transition", Info),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tari_common_types::types::FixedHash;
+    use tari_consensus_types::LeafBlock;
+    use tari_engine_types::ProtocolVersion;
+    use tari_ootle_common_types::{Epoch, NumPreshards, ShardGroup};
+    use tokio::sync::mpsc;
+
+    use super::*;
+
+    fn hooks() -> (DiagnosticHooks, mpsc::Receiver<DiagnosticEvent>) {
+        let (tx, rx) = mpsc::channel(16);
+        (
+            DiagnosticHooks::new(DiagnosticsHandle::new(tx, DiagnosticLevel::Info)),
+            rx,
+        )
+    }
+
+    fn drain(rx: &mut mpsc::Receiver<DiagnosticEvent>) -> Vec<DiagnosticEvent> {
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        events
+    }
+
+    fn invalid_epoch_hash(block: u8, invalid_hash: u8) -> HotStuffError {
+        HotStuffError::ProposalValidationError(ProposalValidationError::InvalidEpochHash {
+            block_id: BlockId::new(FixedHash::from([block; 32])),
+            epoch: Epoch(7),
+            local_epoch_hash: FixedHash::from([1u8; 32]),
+            invalid_epoch_hash: FixedHash::from([invalid_hash; 32]),
+        })
+    }
+
+    fn invalid_protocol_version(block: u8) -> HotStuffError {
+        HotStuffError::ProposalValidationError(ProposalValidationError::InvalidProtocolVersion {
+            expected_version: ProtocolVersion::V0,
+            block_version: ProtocolVersion::V1,
+            epoch: Epoch(7),
+            block_id: BlockId::new(FixedHash::from([block; 32])),
+        })
+    }
+
+    #[test]
+    fn one_divergence_records_once_however_many_blocks_it_rejects() {
+        let (mut hooks, mut rx) = hooks();
+        hooks.on_error(&invalid_epoch_hash(1, 9));
+        hooks.on_error(&invalid_epoch_hash(2, 9));
+        hooks.on_error(&invalid_epoch_hash(3, 9));
+
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].topic, "consensus.error");
+        assert_eq!(events[0].level, DiagnosticLevel::Error);
+    }
+
+    #[test]
+    fn a_different_divergence_records_again() {
+        let (mut hooks, mut rx) = hooks();
+        hooks.on_error(&invalid_epoch_hash(1, 9));
+        hooks.on_error(&invalid_epoch_hash(2, 10));
+
+        assert_eq!(drain(&mut rx).len(), 2);
+    }
+
+    #[test]
+    fn the_two_alarm_kinds_do_not_evict_each_other() {
+        let (mut hooks, mut rx) = hooks();
+        hooks.on_error(&invalid_epoch_hash(1, 9));
+        hooks.on_error(&invalid_protocol_version(2));
+        hooks.on_error(&invalid_epoch_hash(3, 9));
+        hooks.on_error(&invalid_protocol_version(4));
+
+        // Each kind keeps its own slot, so the interleaving records one row per divergence, not four.
+        assert_eq!(drain(&mut rx).len(), 2);
+    }
+
+    #[test]
+    fn errors_sync_resolves_are_not_recorded_as_errors() {
+        let (mut hooks, mut rx) = hooks();
+        hooks.on_error(&HotStuffError::ProposalValidationError(
+            ProposalValidationError::JustifyBlockNotFound {
+                proposed_by: "peer".to_string(),
+                block_description: "block".to_string(),
+                justify_block: LeafBlock {
+                    block_id: BlockId::zero(),
+                    height: NodeHeight(1),
+                    epoch: Epoch(7),
+                    shard_group: ShardGroup::all_shards(NumPreshards::P1),
+                },
+            },
+        ));
+
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].topic, "consensus.needs_sync");
+        assert_eq!(events[0].level, DiagnosticLevel::Warn);
     }
 }
