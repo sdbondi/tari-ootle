@@ -1,6 +1,8 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
+use std::sync::{Arc, Mutex, PoisonError};
+
 use tari_consensus::{
     hotstuff::{ConsensusCurrentState, ConsensusStateEvent, HotStuffError, ProposalValidationError},
     messages::HotstuffMessage,
@@ -23,11 +25,33 @@ use crate::diagnostics::handle::DiagnosticsHandle;
 #[derive(Debug, Clone)]
 pub struct DiagnosticHooks {
     diagnostics: DiagnosticsHandle,
+    /// The last stall alarm recorded, shared by every clone of these hooks. See
+    /// [`DiagnosticHooks::is_new_stall_alarm`].
+    last_stall_alarm: Arc<Mutex<Option<String>>>,
 }
 
 impl DiagnosticHooks {
     pub fn new(diagnostics: DiagnosticsHandle) -> Self {
-        Self { diagnostics }
+        Self {
+            diagnostics,
+            last_stall_alarm: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Whether this stall alarm differs from the one before it.
+    ///
+    /// A stalled node rejects every proposal the committee makes, so the same alarm arrives once per
+    /// proposal for as long as the stall lasts. `handle_hotstuff_error` already logs one alarm per
+    /// distinct divergence for this reason, but it reports the error to the hooks before reaching
+    /// that guard, so the same distinction is drawn again here.
+    fn is_new_stall_alarm(&self, err: &HotStuffError) -> bool {
+        let alarm = err.to_string();
+        let mut last = self.last_stall_alarm.lock().unwrap_or_else(PoisonError::into_inner);
+        if last.as_deref() == Some(alarm.as_str()) {
+            return false;
+        }
+        *last = Some(alarm);
+        true
     }
 }
 
@@ -36,18 +60,18 @@ impl ConsensusHooks for DiagnosticHooks {
 
     fn on_blocks_committed(&mut self, _committed_blocks: &[Block]) {}
 
-    fn on_block_validation_failed<E: ToString>(&mut self, err: &E) {
-        self.diagnostics.emit(diag_event!(
-            warn,
-            "consensus.block_validation_failed",
-            "A proposal failed validation",
-            error => err.to_string()
-        ));
-    }
+    /// Every error this fires for goes on to reach [`Self::on_error`], which records it with the
+    /// full error text, so recording it here as well would write the same row twice. `on_error` also
+    /// sees the validation failures that reach consensus by other paths.
+    fn on_block_validation_failed<E: ToString>(&mut self, _err: &E) {}
 
     fn on_message_received(&mut self, _message: &HotstuffMessage) {}
 
     fn on_error(&mut self, err: &HotStuffError) {
+        if is_stall_alarm(err) && !self.is_new_stall_alarm(err) {
+            return;
+        }
+
         let (topic, level) = classify_error(err);
         self.diagnostics
             .emit(DiagnosticEvent::new(level, topic, err.to_string()).with_field("error", err));
@@ -104,20 +128,24 @@ impl ConsensusHooks for DiagnosticHooks {
     fn on_transaction_batch_finalized(&mut self, _num_committed: usize, _num_aborted: usize) {}
 }
 
+/// Whether the error means consensus is stalled on this node until someone intervenes. Consensus
+/// raises its own alarm for each of these.
+fn is_stall_alarm(err: &HotStuffError) -> bool {
+    matches!(
+        err,
+        HotStuffError::ProposalValidationError(
+            ProposalValidationError::InvalidEpochHash { .. } | ProposalValidationError::InvalidProtocolVersion { .. }
+        )
+    )
+}
+
 /// Mirrors how consensus itself treats each error, so that `level = error` means something an
 /// operator should look at rather than a condition consensus already handles.
 ///
 /// `handle_hotstuff_error` reports every error it sees, including the ones it goes on to resolve by
 /// catching up, and it resolves those once per proposal for as long as the node is behind.
 fn classify_error(err: &HotStuffError) -> (&'static str, DiagnosticLevel) {
-    // These two stall consensus on this node until an operator intervenes, and consensus raises its
-    // own alarm for each.
-    if matches!(
-        err,
-        HotStuffError::ProposalValidationError(
-            ProposalValidationError::InvalidEpochHash { .. } | ProposalValidationError::InvalidProtocolVersion { .. }
-        )
-    ) {
+    if is_stall_alarm(err) {
         return ("consensus.error", DiagnosticLevel::Error);
     }
 
