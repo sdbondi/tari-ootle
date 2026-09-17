@@ -9,7 +9,7 @@ use futures::{future, future::Either};
 use indexmap::IndexSet;
 use log::*;
 use ootle_byte_type::ToByteType;
-use tari_ootle_common_types::{Epoch, optional::Optional, response_status::ResponseErrorStatus};
+use tari_ootle_common_types::{Epoch, InputDeclaration, optional::Optional, response_status::ResponseErrorStatus};
 use tari_ootle_transaction::args;
 use tari_ootle_wallet_sdk::{
     apis::transaction::TransactionApiError,
@@ -166,9 +166,9 @@ async fn submit_inner(
             .into_iter()
             .map(|input| {
                 if req.detect_inputs_use_unversioned {
-                    input.into_unversioned()
+                    InputDeclaration::write(input.into_substate_id())
                 } else {
-                    input
+                    InputDeclaration::from(input)
                 }
             })
             .collect()
@@ -374,9 +374,9 @@ pub async fn handle_detect_inputs(
         .into_iter()
         .map(|input| {
             if req.use_unversioned {
-                input.into_unversioned()
+                InputDeclaration::write(input.into_substate_id())
             } else {
-                input
+                InputDeclaration::from(input)
             }
         })
         .collect::<Vec<_>>();
@@ -422,9 +422,9 @@ async fn submit_dry_run_inner(
             .into_iter()
             .map(|input| {
                 if req.detect_inputs_use_unversioned {
-                    input.into_unversioned()
+                    InputDeclaration::write(input.into_substate_id())
                 } else {
-                    input
+                    InputDeclaration::from(input)
                 }
             })
             .collect()
@@ -543,7 +543,9 @@ pub async fn handle_submit_manifest(
         .locate_dependent_substates(&substates, true)
         .await
         .or_jrpc_not_found()?;
-    let inputs = dependencies.into_iter().map(|input| input.into_unversioned());
+    let inputs = dependencies
+        .into_iter()
+        .map(|input| InputDeclaration::write(input.into_substate_id()));
 
     let transaction = transaction.with_inputs(inputs);
 
