@@ -2,6 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use std::{
+    cell::Cell,
     sync::{Mutex, MutexGuard, TryLockError},
     time::{Duration, Instant},
 };
@@ -26,28 +27,55 @@ use crate::{column_families::diagnostic_event::DiagnosticEventCf, store::RocksDb
 
 static APPEND_LOCK: Mutex<()> = Mutex::new(());
 
-/// How long [`acquire_append_lock`] waits before appending unserialised.
+thread_local! {
+    /// Whether this thread is between taking [`APPEND_LOCK`] and releasing it.
+    static IS_APPENDING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// How long [`acquire_append_lock`] waits for another thread before appending unserialised.
 const APPEND_LOCK_TIMEOUT: Duration = Duration::from_millis(250);
 const APPEND_LOCK_POLL: Duration = Duration::from_millis(5);
 
-/// Serialises the read-then-write that assigns event ids, giving up after
-/// [`APPEND_LOCK_TIMEOUT`].
+struct AppendGuard {
+    _lock: Option<MutexGuard<'static, ()>>,
+}
+
+impl Drop for AppendGuard {
+    fn drop(&mut self) {
+        IS_APPENDING.with(|flag| flag.set(false));
+    }
+}
+
+/// Serialises the read-then-write that assigns event ids.
 ///
-/// The wait is bounded rather than indefinite because the panic hook appends from the panicking
-/// thread: were that the thread holding the lock, blocking on it would hang the hook. Appending
-/// without the lock risks losing one racing event, which is the better of the two outcomes.
-fn acquire_append_lock() -> Option<MutexGuard<'static, ()>> {
+/// Returns `None` when this thread already holds the lock. That happens when a thread panics inside
+/// an append: the panic hook runs on the panicking thread before unwinding releases anything, so the
+/// hook re-enters here while the outer write transaction is still open and holding rocksdb's own
+/// locks on the keys it has written. Waiting cannot help — the holder is this thread — and the write
+/// would only contend with that stalled transaction, so the caller skips the append instead.
+///
+/// Waiting on *another* thread is bounded so that a holder wedged mid-transaction cannot hang the
+/// panic hook indefinitely; appending unserialised risks losing one racing event, which is the
+/// better of the two outcomes.
+fn acquire_append_lock() -> Option<AppendGuard> {
+    if IS_APPENDING.with(Cell::get) {
+        return None;
+    }
+
     let deadline = Instant::now() + APPEND_LOCK_TIMEOUT;
-    loop {
+    let lock = loop {
         match APPEND_LOCK.try_lock() {
-            Ok(guard) => return Some(guard),
-            Err(TryLockError::Poisoned(err)) => return Some(err.into_inner()),
+            Ok(guard) => break Some(guard),
+            Err(TryLockError::Poisoned(err)) => break Some(err.into_inner()),
             Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
                 std::thread::sleep(APPEND_LOCK_POLL);
             },
-            Err(TryLockError::WouldBlock) => return None,
+            Err(TryLockError::WouldBlock) => break None,
         }
-    }
+    };
+
+    IS_APPENDING.with(|flag| flag.set(true));
+    Some(AppendGuard { _lock: lock })
 }
 
 impl<TAddr> DiagnosticEventStore for RocksDbStateStore<TAddr, TransactionDB>
@@ -64,7 +92,11 @@ where TAddr: NodeAddressable + Serialize + DeserializeOwned + 'static
         // from the writer task and from the panic hook, which can run on any thread at any moment,
         // so they are serialised here. Contention is effectively nil: both are rare, and the lock is
         // held only for the write transaction.
-        let _guard = acquire_append_lock();
+        let Some(_guard) = acquire_append_lock() else {
+            return Err(StorageError::QueryError {
+                reason: "diagnostic_events_append re-entered on a thread that is already appending".to_string(),
+            });
+        };
 
         self.with_write_tx(|tx| {
             let cf = tx.db().cf(DiagnosticEventCf)?;

@@ -154,6 +154,24 @@ fn query_pages_with_the_cursor() {
 }
 
 #[test]
+fn query_before_the_first_id_returns_nothing() {
+    // The cursor bounds the iterator range, so a cursor at the very start is an empty range rather
+    // than a scan that finds nothing.
+    let (db, _tmp) = create_rocksdb();
+    db.diagnostic_events_append(&[event_at(DiagnosticLevel::Info, "node.started", 1_000)])
+        .unwrap();
+
+    let events = db
+        .diagnostic_events_query(&DiagnosticEventPage {
+            before_id: Some(0),
+            limit: 10,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(events.is_empty());
+}
+
+#[test]
 fn query_with_a_zero_limit_returns_nothing() {
     let (db, _tmp) = create_rocksdb();
     db.diagnostic_events_append(&[event_at(DiagnosticLevel::Info, "node.started", 1_000)])

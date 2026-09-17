@@ -2,12 +2,16 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use tari_consensus::{
-    hotstuff::{ConsensusCurrentState, ConsensusStateEvent, HotStuffError},
+    hotstuff::{ConsensusCurrentState, ConsensusStateEvent, HotStuffError, ProposalValidationError},
     messages::HotstuffMessage,
     traits::hooks::ConsensusHooks,
 };
 use tari_consensus_types::BlockId;
-use tari_ootle_common_types::{NodeHeight, diag_event};
+use tari_ootle_common_types::{
+    NodeHeight,
+    diag_event,
+    diagnostics::{DiagnosticEvent, DiagnosticLevel},
+};
 use tari_ootle_storage::consensus_models::{Block, NoVoteReason, ValidBlock};
 use tari_ootle_transaction::TransactionId;
 
@@ -44,26 +48,9 @@ impl ConsensusHooks for DiagnosticHooks {
     fn on_message_received(&mut self, _message: &HotstuffMessage) {}
 
     fn on_error(&mut self, err: &HotStuffError) {
-        // Falling behind the committee is a routine condition that state sync resolves on its own,
-        // and it recurs once per proposal for as long as the node is behind. Recording it at `error`
-        // would bury the failures an operator filters for under a condition that is already being
-        // handled.
-        if err.is_sync_required() {
-            self.diagnostics.emit(diag_event!(
-                warn,
-                "consensus.needs_sync",
-                "Behind the committee: {err}",
-                error => err
-            ));
-            return;
-        }
-
-        self.diagnostics.emit(diag_event!(
-            error,
-            "consensus.error",
-            "{err}",
-            error => err
-        ));
+        let (topic, level) = classify_error(err);
+        self.diagnostics
+            .emit(DiagnosticEvent::new(level, topic, err.to_string()).with_field("error", err));
     }
 
     fn on_pacemaker_height_changed(&mut self, _height: NodeHeight) {}
@@ -95,14 +82,10 @@ impl ConsensusHooks for DiagnosticHooks {
     ) {
         let (topic, level) = classify(from, to, event);
         self.diagnostics.emit(
-            tari_ootle_common_types::diagnostics::DiagnosticEvent::new(
-                level,
-                topic,
-                format!("Consensus moved from {from} to {to} ({event})"),
-            )
-            .with_field("from", from)
-            .with_field("to", to)
-            .with_field("event", event),
+            DiagnosticEvent::new(level, topic, format!("Consensus moved from {from} to {to} ({event})"))
+                .with_field("from", from)
+                .with_field("to", to)
+                .with_field("event", event),
         );
     }
 
@@ -121,11 +104,46 @@ impl ConsensusHooks for DiagnosticHooks {
     fn on_transaction_batch_finalized(&mut self, _num_committed: usize, _num_aborted: usize) {}
 }
 
+/// Mirrors how consensus itself treats each error, so that `level = error` means something an
+/// operator should look at rather than a condition consensus already handles.
+///
+/// `handle_hotstuff_error` reports every error it sees, including the ones it goes on to resolve by
+/// catching up, and it resolves those once per proposal for as long as the node is behind.
+fn classify_error(err: &HotStuffError) -> (&'static str, DiagnosticLevel) {
+    // These two stall consensus on this node until an operator intervenes, and consensus raises its
+    // own alarm for each.
+    if matches!(
+        err,
+        HotStuffError::ProposalValidationError(
+            ProposalValidationError::InvalidEpochHash { .. } | ProposalValidationError::InvalidProtocolVersion { .. }
+        )
+    ) {
+        return ("consensus.error", DiagnosticLevel::Error);
+    }
+
+    // A missing justify block puts the node on the same catch-up path as an explicit
+    // `FallenBehind`, even though it is not part of `is_sync_required`.
+    if err.is_sync_required() ||
+        matches!(
+            err,
+            HotStuffError::ProposalValidationError(ProposalValidationError::JustifyBlockNotFound { .. })
+        )
+    {
+        return ("consensus.needs_sync", DiagnosticLevel::Warn);
+    }
+
+    if matches!(err, HotStuffError::ProposalValidationError(_)) {
+        return ("consensus.block_validation_failed", DiagnosticLevel::Warn);
+    }
+
+    ("consensus.error", DiagnosticLevel::Error)
+}
+
 fn classify(
     from: ConsensusCurrentState,
     to: ConsensusCurrentState,
     event: &ConsensusStateEvent,
-) -> (&'static str, tari_ootle_common_types::diagnostics::DiagnosticLevel) {
+) -> (&'static str, DiagnosticLevel) {
     use tari_ootle_common_types::diagnostics::DiagnosticLevel::{Error, Info};
 
     match (from, to, event) {
@@ -133,8 +151,8 @@ fn classify(
         // a node has gone quiet.
         (_, ConsensusCurrentState::Sleeping, _) => ("consensus.crashed", Error),
         (_, ConsensusCurrentState::Syncing, _) => ("sync.started", Info),
-        // Leaving `Syncing` for anything but a shutdown means sync finished; the transition table
-        // only leaves it via `SyncComplete`.
+        // The arms above have already taken the failure path out of `Syncing`, so a shutdown is the
+        // only remaining way to leave it other than by finishing.
         (ConsensusCurrentState::Syncing, ConsensusCurrentState::Shutdown, _) => ("consensus.state_transition", Info),
         (ConsensusCurrentState::Syncing, _, _) => ("sync.completed", Info),
         _ => ("consensus.state_transition", Info),
