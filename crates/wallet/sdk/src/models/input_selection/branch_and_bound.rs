@@ -108,6 +108,13 @@ fn select_bounded<A: Into<Amount>, K: Clone>(
         return None;
     }
 
+    // `remaining_sums[i]` totals `items[i..]`, so that a state's upper bound costs one lookup and the search's cost
+    // stays proportional to the number of states it explores.
+    let mut remaining_sums = vec![Amount::zero(); items.len() + 1];
+    for (i, item) in items.iter().enumerate().rev() {
+        remaining_sums[i] = remaining_sums[i + 1] + Amount::from(item.value);
+    }
+
     // stack of states to explore
     let mut stack = vec![State {
         index: 0,
@@ -124,11 +131,6 @@ fn select_bounded<A: Into<Amount>, K: Clone>(
         }
 
         // --- Pruning conditions ---
-        // Prune if we've exceeded the maximum number of inputs
-        if state.selected.len() > max_inputs {
-            continue;
-        }
-
         if let Some(best) = best_sum {
             // already have a better or equal solution
             if best <= state.total {
@@ -162,11 +164,7 @@ fn select_bounded<A: Into<Amount>, K: Clone>(
         }
 
         // upper bound: even if we add everything left, can we reach target?
-        let remaining_sum = items[state.index..]
-            .iter()
-            .map(|i| Amount::from(i.value))
-            .sum::<Amount>();
-        if target > state.total + remaining_sum {
+        if target > state.total + remaining_sums[state.index] {
             continue; // impossible to reach target → prune
         }
 
@@ -481,8 +479,10 @@ mod tests {
         let result = select(&inputs, 40_500u64, 1000).unwrap();
 
         assert!(start.elapsed().as_secs() < 5);
-        assert!(result.total_value >= 40_500);
-        assert!(result.selected_keys.len() <= 80);
+        // 41 x 1000 is the smallest total over the target, so a cut-short search that still returns it is one that
+        // settles for the largest-first descent rather than for whatever it happened to hold at the cap.
+        assert_eq!(result.total_value, 41_000);
+        assert_eq!(result.selected_keys.len(), 41);
     }
 
     #[test]
@@ -508,10 +508,10 @@ mod tests {
             KeyedInput { key: "D", value: 200 },
         ];
 
-        assert!(select_bounded(&inputs, 800u64, 2, 0).is_none());
-
-        let result = select_bounded(&inputs, 700u64, 2, 0).unwrap();
+        // Reachable within the limit, so the search runs and is cut short
+        let result = select_bounded(&inputs, 650u64, 2, 0).unwrap();
         assert_eq!(result.selected_keys.len(), 2);
+        assert_eq!(result.total_value, 700);
     }
 
     #[test]
@@ -522,6 +522,7 @@ mod tests {
         assert!(select(&inputs, 80_001u64, 1000).is_none());
         // Within the balance, but not within `max_inputs` of the inputs
         assert!(select(&inputs, 40_500u64, 40).is_none());
+        assert!(select_bounded(&inputs, 40_500u64, 40, 0).is_none());
         // ...and exactly `max_inputs` of them do reach it
         assert!(select(&inputs, 40_000u64, 40).is_some());
     }
