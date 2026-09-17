@@ -97,6 +97,10 @@ where TConsensusSpec: ConsensusSpec
         // timeout vote still counts towards the quorum that ends the view, so the message carries on either way.
         let is_ahead_of_ours = self.store.with_read_tx(|tx| {
             let local_high_pc = HighPc::get(tx, epoch_state.epoch())?;
+            // A report level with ours leaves nothing to catch up to: `update_highest` sets the leaf block, which
+            // fails when the block is missing, so the certificate we hold at that height always has its block. A
+            // different certificate at the same height is equivocation, and the branch it names is one the lock
+            // rule keeps from committing rather than one to sync onto.
             if local_high_pc.block_height >= high_pc.height() {
                 return Ok(false);
             }
