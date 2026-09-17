@@ -49,14 +49,14 @@ pub struct TemplateConfig {
 }
 
 fn default_max_cache_size_bytes() -> u64 {
-    200 * 1024 * 1024
+    1024 * 1024 * 1024
 }
 
 /// A compiled artifact runs about ten times the size of its WASM source, so a node that has served
 /// a few thousand templates would otherwise hold tens of GiB of them. The default is sized to keep
 /// the working set of an active network resident while bounding the directory.
 fn default_max_disk_cache_size_bytes() -> u64 {
-    4 * 1024 * 1024 * 1024
+    10 * 1024 * 1024 * 1024
 }
 
 impl Default for TemplateConfig {

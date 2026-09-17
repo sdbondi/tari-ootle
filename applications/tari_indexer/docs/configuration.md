@@ -105,8 +105,8 @@ Main indexer application settings.
 # deleted and recompiled on demand. Both are node-local caches — deleting either costs CPU, never
 # data.
 #[indexer.templates]
-#max_cache_size_bytes = 209715200
-#max_disk_cache_size_bytes = 4294967296
+#max_cache_size_bytes = 1073741824
+#max_disk_cache_size_bytes = 10737418240
 
 # Sidechain ID to listen on (optional, hex string)
 #sidechain_id = "a1b2c3d4e5f6..."
