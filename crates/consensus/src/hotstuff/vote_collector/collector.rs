@@ -17,6 +17,18 @@ use tokio::sync::RwLock;
 
 const LOG_TARGET: &str = "tari::ootle::consensus::hotstuff::vote_collector";
 
+/// How many views ahead of our own a vote may be and still be kept.
+///
+/// Votes are held until their view is reached and the view a vote names is chosen by its sender, so this
+/// window is what bounds the store. A node lagging the committee by more than this window must sync: it
+/// reaches those views by importing the blocks, not by certifying them from buffered votes.
+const MAX_VOTE_VIEW_LOOKAHEAD: NodeHeight = NodeHeight(20);
+
+/// Whether a vote at `vote_height` is too far ahead of `current_height` to be worth keeping.
+pub fn exceeds_vote_lookahead(current_height: NodeHeight, vote_height: NodeHeight) -> bool {
+    vote_height > current_height.saturating_add(MAX_VOTE_VIEW_LOOKAHEAD)
+}
+
 #[derive(Clone)]
 pub struct VoteCollector<V: Vote> {
     store: Arc<RwLock<VoteStoreInner<V>>>,
@@ -39,6 +51,20 @@ impl<V: Vote + Display> VoteCollector<V> {
     ) -> Result<Option<(Vec<V>, QuorumDecision)>, VoteEquivocationDetected<V>> {
         let mut access_mut = self.store.write().await;
         access_mut.clear_votes_before(current_epoch, current_height);
+
+        if exceeds_vote_lookahead(current_height, vote.height()) {
+            warn!(
+                target: LOG_TARGET,
+                "🗑️ Discarding {} from {}: it is more than {} views ahead of our current view {}/{}",
+                vote,
+                sender_vn.address,
+                MAX_VOTE_VIEW_LOOKAHEAD,
+                current_epoch,
+                current_height
+            );
+            return Ok(None);
+        }
+
         let epoch = vote.epoch();
         let height = vote.height();
         let agg_key = vote.aggregation_key();
@@ -267,7 +293,7 @@ pub struct VoteEquivocationDetected<V: Vote> {
 mod tests {
     use tari_common_types::types::FixedHash;
     use tari_consensus_types::{SignedMessage, ToSignatureMessage};
-    use tari_ootle_common_types::committee::CommitteeMember;
+    use tari_ootle_common_types::{SubstateAddress, committee::CommitteeMember};
     use tari_template_lib_types::crypto::{RistrettoPublicKeyBytes, Scalar32Bytes, SchnorrSignatureBytes};
 
     use super::*;
@@ -329,6 +355,18 @@ mod tests {
 
     fn pubkey(byte: u8) -> RistrettoPublicKeyBytes {
         RistrettoPublicKeyBytes::from_bytes(&[byte; 32]).unwrap()
+    }
+
+    fn validator(public_key: RistrettoPublicKeyBytes) -> ValidatorNode<RistrettoPublicKeyBytes> {
+        ValidatorNode {
+            address: public_key,
+            public_key,
+            shard_key: SubstateAddress::zero(),
+            start_epoch: Epoch(0),
+            end_epoch: None,
+            fee_claim_public_key: public_key,
+            vote_power: VotePower::of(1),
+        }
     }
 
     fn committee(public_keys: &[RistrettoPublicKeyBytes]) -> Committee<RistrettoPublicKeyBytes> {
@@ -435,5 +473,42 @@ mod tests {
             .unwrap();
         assert_eq!(votes_a.len(), 2);
         assert!(votes_a.iter().all(|v| v.block_id == block_a));
+    }
+
+    #[tokio::test]
+    async fn it_discards_votes_too_far_ahead_of_the_current_view() {
+        let collector = VoteCollector::<TestVote>::new();
+        let epoch = Epoch(1);
+        let current_height = NodeHeight(10);
+        let voter = pubkey(1);
+        let committee = committee(&[voter, pubkey(2), pubkey(3), pubkey(4)]);
+
+        let mk = |height| TestVote {
+            epoch,
+            height,
+            block_id: FixedHash::zero(),
+            decision: QuorumDecision::Accept,
+            sig: ZERO_SIG,
+            public_key: voter,
+        };
+
+        let at_limit = current_height + MAX_VOTE_VIEW_LOOKAHEAD;
+        collector
+            .collect_vote(&validator(voter), epoch, current_height, mk(at_limit), &committee)
+            .await
+            .unwrap();
+        assert_eq!(collector.store.read().await.store.len(), 1);
+
+        collector
+            .collect_vote(
+                &validator(voter),
+                epoch,
+                current_height,
+                mk(at_limit + NodeHeight(1)),
+                &committee,
+            )
+            .await
+            .unwrap();
+        assert_eq!(collector.store.read().await.store.len(), 1);
     }
 }

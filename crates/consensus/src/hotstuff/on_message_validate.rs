@@ -31,7 +31,13 @@ use crate::{
         error::HotStuffError,
         on_receive_new_transaction::OnReceiveNewTransaction,
     },
-    messages::{ForeignProposalMessage, HotstuffMessage, MissingTransactionsRequest, ProposalMessage},
+    messages::{
+        ForeignProposalMessage,
+        HotstuffMessage,
+        MAX_REQUESTED_TRANSACTIONS,
+        MissingTransactionsRequest,
+        ProposalMessage,
+    },
     tracing::TraceTimer,
     traits::{ConsensusSpec, OutboundMessaging},
     validations,
@@ -148,7 +154,7 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
                 })
             },
             HotstuffMessage::MissingTransactionsRequest(msg) => {
-                if msg.transactions.len() > 1000 {
+                if msg.transactions.len() > MAX_REQUESTED_TRANSACTIONS {
                     warn!(target: LOG_TARGET, "⚠️Peer requested more than the maximum amount of transactions. Discarding message");
                     return Ok(MessageValidationResult::Discard);
                 }
