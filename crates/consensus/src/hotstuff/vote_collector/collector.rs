@@ -24,6 +24,11 @@ const LOG_TARGET: &str = "tari::ootle::consensus::hotstuff::vote_collector";
 /// reaches those views by importing the blocks, not by certifying them from buffered votes.
 const MAX_VOTE_VIEW_LOOKAHEAD: NodeHeight = NodeHeight(20);
 
+/// Whether a vote at `vote_height` is too far ahead of `current_height` to be worth keeping.
+pub fn exceeds_vote_lookahead(current_height: NodeHeight, vote_height: NodeHeight) -> bool {
+    vote_height > current_height.saturating_add(MAX_VOTE_VIEW_LOOKAHEAD)
+}
+
 #[derive(Clone)]
 pub struct VoteCollector<V: Vote> {
     store: Arc<RwLock<VoteStoreInner<V>>>,
@@ -47,7 +52,7 @@ impl<V: Vote + Display> VoteCollector<V> {
         let mut access_mut = self.store.write().await;
         access_mut.clear_votes_before(current_epoch, current_height);
 
-        if vote.height() > current_height.saturating_add(MAX_VOTE_VIEW_LOOKAHEAD) {
+        if exceeds_vote_lookahead(current_height, vote.height()) {
             warn!(
                 target: LOG_TARGET,
                 "🗑️ Discarding {} from {}: it is more than {} views ahead of our current view {}/{}",

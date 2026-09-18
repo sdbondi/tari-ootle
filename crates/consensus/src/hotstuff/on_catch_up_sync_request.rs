@@ -53,7 +53,6 @@ impl<TConsensusSpec: ConsensusSpec> OnSyncRequest<TConsensusSpec> {
         let outbound_messaging = self.outbound_messaging.clone();
         let store = self.store.clone();
 
-        // Spawn: Dont block consensus when serving requests.
         if self
             .bounded_spawner
             .try_spawn({

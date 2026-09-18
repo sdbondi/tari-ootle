@@ -76,9 +76,30 @@ impl<TConsensusSpec: ConsensusSpec> OnInboundMessage<TConsensusSpec> {
     }
 }
 
-/// Total number of messages held for views we have not reached yet. Sized for a committee voting several
-/// views ahead of a lagging local view; anything beyond that is a peer sending us views we will never run.
+/// Size budget for messages held for views we have not reached yet. Half the default byte budget of the
+/// inbound queue these messages arrive on (`max_consensus_messaging_queue_bytes`), whose reservation is
+/// released once a message is handed to consensus.
+const MAX_BUFFERED_BYTES: usize = 64 * 1024 * 1024;
+
+/// Count budget for the same buffer, guarding the per-message overhead that the size budget misses. A
+/// committee proposing a few views ahead of a lagging local view needs a handful of entries; this is generous
+/// against that and still small against the size budget.
 const MAX_BUFFERED_MESSAGES: usize = 2_000;
+
+/// What a message with an unbounded payload — commands, transactions, pledges — is charged against the size
+/// budget. The decoded size is not measurable here, so every such message is charged the largest it could have
+/// arrived as: the direct messaging protocol accepts at most 4 MiB on the wire.
+const UNBOUNDED_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+
+/// What a message whose payload is a fixed set of fields is charged. Certificates carry a signature per
+/// committee member, which is the only part that grows.
+const FIXED_MESSAGE_SIZE: usize = 64 * 1024;
+
+/// How many views ahead of our own, within our epoch, a message may name and still be buffered. Heights are
+/// not comparable across epochs, so a message for the next epoch is always admitted; within our epoch a sender
+/// picks the height, and a node lagging the committee by more than this window reaches those views by
+/// importing blocks, not from a buffer.
+const MAX_VIEW_LOOKAHEAD: NodeHeight = NodeHeight(20);
 
 pub struct MessageBuffer<TConsensusSpec: ConsensusSpec> {
     network: Network,
@@ -97,7 +118,7 @@ impl<TConsensusSpec: ConsensusSpec> MessageBuffer<TConsensusSpec> {
     ) -> Self {
         Self {
             network,
-            buffer: ViewBuffer::new(MAX_BUFFERED_MESSAGES),
+            buffer: ViewBuffer::new(MAX_BUFFERED_MESSAGES, MAX_BUFFERED_BYTES),
             inbound_messaging,
             epoch_manager,
             signer_service,
@@ -171,7 +192,7 @@ impl<TConsensusSpec: ConsensusSpec> MessageBuffer<TConsensusSpec> {
                     } else {
                         info!(target: LOG_TARGET, "🔮 Message {msg} is for future view {height} (Current view: {current_epoch}, {current_height})");
                     }
-                    self.push_to_buffer(epoch, height, from, msg);
+                    self.push_to_buffer(View::new(current_epoch, current_height), epoch, height, from, msg);
                 },
                 MessageRelativeView::Discard => {
                     warn!(target: LOG_TARGET, "🗑️ Discard non-applicable message {}. Current view {}/{}", msg, current_epoch, current_height);
@@ -279,17 +300,78 @@ impl<TConsensusSpec: ConsensusSpec> MessageBuffer<TConsensusSpec> {
         }
     }
 
-    fn push_to_buffer(&mut self, epoch: Epoch, height: NodeHeight, from: TConsensusSpec::Addr, msg: HotstuffMessage) {
+    fn push_to_buffer(
+        &mut self,
+        current_view: View,
+        epoch: Epoch,
+        height: NodeHeight,
+        from: TConsensusSpec::Addr,
+        msg: HotstuffMessage,
+    ) {
         let view = View::new(epoch, height);
-        if let Err((_, msg)) = self.buffer.insert(view, (from, msg)) {
-            warn!(
+        if exceeds_view_lookahead(current_view, view) {
+            debug!(
                 target: LOG_TARGET,
-                "🗑️ Discarding message {} for view {} as the buffer holds its limit of {} messages for nearer views",
+                "🗑️ Discarding message {} for view {} as it is more than {} views ahead of our current view {}",
                 msg,
                 view,
-                self.buffer.capacity()
+                MAX_VIEW_LOOKAHEAD,
+                current_view
             );
+            return;
         }
+
+        let size = buffered_message_size(&msg);
+        match self.buffer.insert(view, (from, msg), size) {
+            Ok(inserted) if inserted.num_evicted > 0 => {
+                debug!(
+                    target: LOG_TARGET,
+                    "🗑️ Buffered a message for view {}, evicting {} message(s) for further views ({} of {} bytes, {} of {} messages held)",
+                    view,
+                    inserted.num_evicted,
+                    self.buffer.size(),
+                    self.buffer.max_size(),
+                    self.buffer.len(),
+                    self.buffer.max_items()
+                );
+            },
+            Ok(_) => {},
+            Err((_, msg)) => {
+                debug!(
+                    target: LOG_TARGET,
+                    "🗑️ Discarding message {} for view {}: the buffer is full of messages for views at or nearer than it ({} of {} bytes, {} of {} messages)",
+                    msg,
+                    view,
+                    self.buffer.size(),
+                    self.buffer.max_size(),
+                    self.buffer.len(),
+                    self.buffer.max_items()
+                );
+            },
+        }
+    }
+}
+
+/// Whether `view` is too far ahead of `current_view` to be worth holding. Views in a later epoch are always
+/// worth holding: heights restart relative to that epoch's own progress, so the lookahead window says nothing
+/// about them.
+fn exceeds_view_lookahead(current_view: View, view: View) -> bool {
+    view.epoch == current_view.epoch && view.height > current_view.height.saturating_add(MAX_VIEW_LOOKAHEAD)
+}
+
+/// What `msg` is charged against the buffer's size budget.
+fn buffered_message_size(msg: &HotstuffMessage) -> usize {
+    match msg {
+        HotstuffMessage::Proposal(_) |
+        HotstuffMessage::CatchUpSyncResponse(_) |
+        HotstuffMessage::ForeignProposal(_) |
+        HotstuffMessage::MissingTransactionsResponse(_) => UNBOUNDED_MESSAGE_SIZE,
+        HotstuffMessage::NewView(_) |
+        HotstuffMessage::Vote(_) |
+        HotstuffMessage::ForeignProposalNotification(_) |
+        HotstuffMessage::ForeignProposalRequest(_) |
+        HotstuffMessage::MissingTransactionsRequest(_) |
+        HotstuffMessage::CatchUpSyncRequest(_) => FIXED_MESSAGE_SIZE,
     }
 }
 
@@ -489,5 +571,45 @@ fn msg_relative_view(
         // sender (FIFO, height order) and the request/response loop, and each imported block advances
         // the view monotonically, so they are never buffered or dropped here.
         HotstuffMessage::CatchUpSyncResponse(_) => MessageRelativeView::Current,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod exceeds_view_lookahead {
+        use super::*;
+
+        fn view(epoch: u64, height: u64) -> View {
+            View::new(Epoch(epoch), NodeHeight(height))
+        }
+
+        #[test]
+        fn a_view_within_the_window_is_buffered() {
+            let current = view(1, 10);
+            assert!(!exceeds_view_lookahead(current, view(1, 11)));
+            assert!(!exceeds_view_lookahead(
+                current,
+                View::new(Epoch(1), NodeHeight(10) + MAX_VIEW_LOOKAHEAD)
+            ));
+        }
+
+        #[test]
+        fn a_view_beyond_the_window_is_not_buffered() {
+            let current = view(1, 10);
+            assert!(exceeds_view_lookahead(
+                current,
+                View::new(Epoch(1), NodeHeight(11) + MAX_VIEW_LOOKAHEAD)
+            ));
+            assert!(exceeds_view_lookahead(current, view(1, u64::MAX)));
+        }
+
+        #[test]
+        fn a_view_in_a_later_epoch_is_always_buffered() {
+            let current = view(1, 10);
+            assert!(!exceeds_view_lookahead(current, view(2, 1)));
+            assert!(!exceeds_view_lookahead(current, view(2, u64::MAX)));
+        }
     }
 }

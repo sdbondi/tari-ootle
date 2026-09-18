@@ -10,7 +10,11 @@ use tari_sidechain::{ProposalVoteMessage, QuorumDecision};
 
 use super::collector::VoteCollector;
 use crate::{
-    hotstuff::{epoch_state::EpochState, error::HotStuffError, vote_collector::helpers::check_eligibility},
+    hotstuff::{
+        epoch_state::EpochState,
+        error::HotStuffError,
+        vote_collector::{collector::exceeds_vote_lookahead, helpers::check_eligibility},
+    },
     tracing::TraceTimer,
     traits::{CertificateStore, ConsensusSpec, ValidatorSignatureVerifierService},
     validations::signed_vote::SignedProposalVote,
@@ -69,6 +73,20 @@ where TConsensusSpec: ConsensusSpec
 
         let local_committee_info = epoch_state.local_committee_info();
         let current_epoch = epoch_state.epoch();
+
+        // Before any signature verification: a vote this far ahead is dropped by the collector, so the
+        // verification would be work done for nothing.
+        if exceeds_vote_lookahead(current_height, vote.block_height) {
+            warn!(
+                target: LOG_TARGET,
+                "🗑️ Discarding {} from {}: it is too far ahead of our current view {}/{}",
+                vote,
+                from,
+                current_epoch,
+                current_height
+            );
+            return Ok(None);
+        }
 
         let block_id = vote.block_id;
         let sender_vn =
