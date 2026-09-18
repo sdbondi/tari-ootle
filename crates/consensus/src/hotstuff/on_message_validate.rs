@@ -92,7 +92,7 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
                 if !epoch_state.local_committee().contains(&from) {
                     warn!(
                         target: LOG_TARGET,
-                        "❌ Received message from non-committee member {}. Discarding message.",
+                        "❌ Received Proposal from non-committee member {}. Discarding message.",
                         from
                     );
                     return Ok(MessageValidationResult::Discard);
@@ -103,7 +103,7 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
                 if !epoch_state.local_committee().contains(&from) {
                     warn!(
                         target: LOG_TARGET,
-                        "❌ Received catch-up response from non-committee member {}. Discarding message.",
+                        "❌ Received CatchUpSyncResponse from non-committee member {}. Discarding message.",
                         from
                     );
                     return Ok(MessageValidationResult::Discard);
@@ -124,13 +124,21 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
                     return Ok(MessageValidationResult::Discard);
                 }
 
-                if let Some(unrequested) = msg
+                let returned_ids = msg
                     .transactions
                     .iter()
                     .map(|transaction| transaction.calculate_id())
-                    .find(|id| !request.transactions.contains(id))
-                {
+                    .collect::<HashSet<_>>();
+
+                if let Some(unrequested) = returned_ids.difference(&request.transactions).next() {
                     warn!(target: LOG_TARGET, "⚠️Peer {from} sent transaction {unrequested} for req_id = {} that we did not request. Discarding message", msg.request_id);
+                    return Ok(MessageValidationResult::Discard);
+                }
+
+                // Each requested transaction is returned at most once, so that the count check above bounds
+                // the work one response can ask for.
+                if returned_ids.len() != msg.transactions.len() {
+                    warn!(target: LOG_TARGET, "⚠️Peer {from} sent duplicate transactions for req_id = {}. Discarding message", msg.request_id);
                     return Ok(MessageValidationResult::Discard);
                 }
 
@@ -175,19 +183,20 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
         missing_txs: HashSet<TransactionId>,
     ) -> Result<(), HotStuffError> {
         let request_id = self.next_request_id();
-        self.active_missing_transaction_requests
-            .insert(request_id, to.clone(), missing_txs.clone());
         self.outbound_messaging
             .send(
-                to,
+                to.clone(),
                 HotstuffMessage::MissingTransactionsRequest(MissingTransactionsRequest {
                     request_id,
                     block_id,
                     epoch,
-                    transactions: missing_txs,
+                    transactions: missing_txs.clone(),
                 }),
             )
             .await?;
+        // Only a request that went out holds one of the few slots a response can be matched against.
+        self.active_missing_transaction_requests
+            .insert(request_id, to, missing_txs);
         Ok(())
     }
 
