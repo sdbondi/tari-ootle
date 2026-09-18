@@ -3,6 +3,7 @@
 
 use indexmap::{IndexMap, IndexSet};
 use ootle_byte_type::FromByteType;
+use tari_crypto::ristretto::RistrettoPublicKey;
 use tari_ootle_common_types::engine_types::{stealth::validate_transfer, substate::SubstateId};
 use tari_template_lib_types::{
     Amount,
@@ -18,6 +19,7 @@ use crate::{
     stealth::{
         ResolvedStealthInput,
         ResolvedStealthTransferSpec,
+        SealSource,
         SignatureRequirements,
         StealthSignerRequirement,
         error::{InvalidStealthInputError, StealthProviderError},
@@ -58,13 +60,19 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
         let total_output_amount = self.spec.total_output_amount();
         let total_revealed_input = self.spec.revealed_input_amount;
 
-        let (resolved_inputs, signatures) = self.resolve_inputs().await?;
+        let (resolved_inputs, signatures, seal_public_key) = self.resolve_inputs().await?;
+
+        let revealed_output = self.spec.revealed_output(
+            self.provider.default_signer_address(),
+            signatures.seal(),
+            seal_public_key.as_ref(),
+        )?;
 
         let spec = ResolvedStealthTransferSpec {
             inputs: resolved_inputs,
             revealed_input_amount: total_revealed_input,
             outputs: self.spec.outputs,
-            revealed_output: self.spec.revealed_output,
+            revealed_output,
         };
 
         let transfer = self.provider.wallet().create_transfer_statement(spec).await?;
@@ -87,7 +95,13 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
     /// This is the network-dependent, key-independent half of [`prepare`](Self::prepare): everything
     /// here is public material, so it stays on this side of the
     /// [`StealthStatementProvider`](crate::stealth::StealthStatementProvider) boundary.
-    async fn resolve_inputs(&mut self) -> WalletResult<(Vec<ResolvedStealthInput>, SignatureRequirements)> {
+    async fn resolve_inputs(
+        &mut self,
+    ) -> WalletResult<(
+        Vec<ResolvedStealthInput>,
+        SignatureRequirements,
+        Option<RistrettoPublicKeyBytes>,
+    )> {
         // Keyed by the UTXO each input spends, so several inputs owned by one address stay distinct, and iterated in
         // the order the caller added them. A commitment may appear only once: the same UTXO cannot be spent twice, and
         // two entries naming it would otherwise silently collapse into one.
@@ -112,6 +126,11 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
             })?;
 
         let mut required_signers = IndexSet::with_capacity(inputs_by_utxo.len());
+        // A stealth-sealed transfer seals with the promoted input's one-time key, whose *public* half is that UTXO's
+        // committed spend key. Recording it against the input's nonce keeps the seal key derivable here, on the
+        // key-independent side of the provider boundary, where deriving `c+k` from the account secret is not.
+        let mut spend_keys_by_nonce: Vec<(RistrettoPublicKey, Option<RistrettoPublicKeyBytes>)> =
+            Vec::with_capacity(inputs_by_utxo.len());
         // Accessing the account component to take the revealed input bucket requires the account key's badge, so it
         // must seal; otherwise the inputs' own one-time keys are all the transaction needs.
         let must_sign_with_account_key = self.spec.revealed_input_amount.is_positive();
@@ -153,7 +172,7 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
                 })
             })?;
 
-            let Ok(public_nonce) = input.output.public_nonce.try_from_byte_type() else {
+            let Ok(public_nonce): Result<RistrettoPublicKey, _> = input.output.public_nonce.try_from_byte_type() else {
                 return Err(StealthProviderError::UnexpectedError {
                     details: format!(
                         "Failed to convert public nonce to RistrettoPublicKey for stealth input at address {}",
@@ -162,6 +181,7 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
                 }
                 .into());
             };
+            spend_keys_by_nonce.push((public_nonce.clone(), input.auth.spend_key().copied()));
             required_signers.insert(StealthSignerRequirement::new(spender_addr, public_nonce));
 
             resolved_inputs.push(ResolvedStealthInput::new(to_spend, input.output().clone()));
@@ -173,7 +193,16 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
             SignatureRequirements::stealth_seal(required_signers)
         };
 
-        Ok((resolved_inputs, signatures))
+        // The seal signer is settled above, so its public key is too: pair it back to the UTXO it spends.
+        let seal_public_key = match signatures.seal() {
+            SealSource::StealthInput(seal_signer) => spend_keys_by_nonce
+                .iter()
+                .find(|(nonce, _)| nonce == seal_signer.public_nonce())
+                .and_then(|(_, spend_key)| *spend_key),
+            SealSource::AccountKey | SealSource::Ephemeral => None,
+        };
+
+        Ok((resolved_inputs, signatures, seal_public_key))
     }
 
     /// When the stealth transfer is executed, it will expect some revealed amount as input from a bucket.
@@ -205,25 +234,37 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
         self
     }
 
-    /// Adds `amount` to the revealed output taken by `receiver`, whose badge must be in the auth scope of the
-    /// transaction that carries this transfer.
+    /// Adds `amount` to the revealed output.
+    ///
+    /// The key authorised to take it is the one that seals this transfer — the account key when the transfer draws on
+    /// the account, otherwise the sealing input's one-time key — resolved at [`prepare`](Self::prepare) time, once the
+    /// inputs say which that is. Use [`to_revealed_output_for`](Self::to_revealed_output_for) to name a different key.
     ///
     /// # Panics
     ///
-    /// Panics if `amount` is not positive, or if a revealed output is already set for a different receiver — one
-    /// transfer reveals to one key.
-    pub fn to_revealed_output<A: Into<Amount>>(mut self, amount: A, receiver: RistrettoPublicKeyBytes) -> Self {
-        let amount = amount.into();
-        if !amount.is_positive() {
-            panic!("Transfer amount must be positive");
-        }
-        self.spec.revealed_output = Some(match self.spec.revealed_output {
-            Some(existing) if existing.receiver != receiver => {
+    /// Panics if `amount` is not positive.
+    pub fn to_revealed_output<A: Into<Amount>>(mut self, amount: A) -> Self {
+        self.spec.revealed_output_amount += positive_amount(amount);
+        self
+    }
+
+    /// [`to_revealed_output`](Self::to_revealed_output) naming `receiver` explicitly instead of the sealing key.
+    ///
+    /// `receiver`'s badge must be in the auth scope of the transaction that carries this transfer, so it has to be a
+    /// key that signs it — otherwise the engine refuses to create the revealed bucket.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `amount` is not positive, or if a different receiver was already named — one transfer reveals to one
+    /// key.
+    pub fn to_revealed_output_for<A: Into<Amount>>(mut self, amount: A, receiver: RistrettoPublicKeyBytes) -> Self {
+        self.spec.revealed_output_amount += positive_amount(amount);
+        match self.spec.revealed_receiver {
+            Some(existing) if existing != receiver => {
                 panic!("Revealed output is already assigned to a different receiver");
             },
-            Some(existing) => RevealedOutput::new(existing.amount + amount, receiver),
-            None => RevealedOutput::new(amount, receiver),
-        });
+            _ => self.spec.revealed_receiver = Some(receiver),
+        }
         self
     }
 }
@@ -234,7 +275,9 @@ pub struct StealthTransferSpec {
     pub revealed_input_amount: Amount,
     pub inputs_to_spend: Vec<(Address, StealthInput)>,
     pub outputs: Vec<Output>,
-    pub revealed_output: Option<RevealedOutput>,
+    pub revealed_output_amount: Amount,
+    /// Set only when the caller named a receiver; otherwise the sealing key takes the revealed output.
+    pub revealed_receiver: Option<RistrettoPublicKeyBytes>,
 }
 
 impl StealthTransferSpec {
@@ -244,14 +287,70 @@ impl StealthTransferSpec {
             revealed_input_amount: Amount::zero(),
             inputs_to_spend: Default::default(),
             outputs: Default::default(),
-            revealed_output: None,
+            revealed_output_amount: Amount::zero(),
+            revealed_receiver: None,
         }
     }
 
     pub fn total_output_amount(&self) -> Amount {
         let stealth_output_total: Amount = self.outputs.iter().map(|o| Amount::from(o.amount.get())).sum();
-        stealth_output_total + self.revealed_output.map_or(Amount::ZERO, |r| r.amount)
+        stealth_output_total + self.revealed_output_amount
     }
+
+    /// The revealed output this transfer carries, with its receiver resolved.
+    ///
+    /// An unnamed receiver defaults to the key that seals - the account key, or the sealing input's committed spend
+    /// key - because those are the keys the transaction carries a signature for, so the badge the engine looks for is
+    /// present by construction. A seal whose key is not knowable from public material is an error rather than a
+    /// guess: naming the wrong key produces a transaction the engine rejects at execution.
+    pub fn revealed_output(
+        &self,
+        default_signer: &Address,
+        seal: &SealSource,
+        seal_public_key: Option<&RistrettoPublicKeyBytes>,
+    ) -> WalletResult<Option<RevealedOutput>> {
+        if self.revealed_output_amount.is_zero() {
+            return Ok(None);
+        }
+        let receiver = match (self.revealed_receiver, seal) {
+            (Some(named), _) => named,
+            (None, SealSource::AccountKey) => *default_signer.account_public_key(),
+            (None, SealSource::StealthInput(_)) => match seal_public_key {
+                Some(seal_key) => *seal_key,
+                // A script-path UTXO commits a condition root and no spend key, so the key that satisfies the
+                // revealed leaf is known to the caller, not to this builder.
+                None => {
+                    return Err(StealthProviderError::UnexpectedError {
+                        details: "This transfer seals with a script-path input, which commits no spend key, so the \
+                                  revealed output's receiver cannot be inferred - name it with \
+                                  `to_revealed_output_for`"
+                            .to_string(),
+                    }
+                    .into());
+                },
+            },
+            (None, SealSource::Ephemeral) => {
+                return Err(StealthProviderError::UnexpectedError {
+                    details: "This transfer seals with a discarded ephemeral key, which authorises nothing, so a \
+                              revealed output needs a receiver named with `to_revealed_output_for`"
+                        .to_string(),
+                }
+                .into());
+            },
+        };
+        Ok(Some(RevealedOutput::new(self.revealed_output_amount, receiver)))
+    }
+}
+
+/// `amount` as an [`Amount`], rejecting a non-positive one.
+///
+/// # Panics
+///
+/// Panics if `amount` is not positive.
+fn positive_amount<A: Into<Amount>>(amount: A) -> Amount {
+    let amount = amount.into();
+    assert!(amount.is_positive(), "Transfer amount must be positive");
+    amount
 }
 
 #[cfg(test)]
@@ -394,7 +493,8 @@ mod tests {
                 transfer = transfer.spend_stealth_input(address.clone(), *commitment);
             }
 
-            let (resolved, requirements) = transfer.resolve_inputs().await.expect("inputs are owned and unspent");
+            let (resolved, requirements, _seal_key) =
+                transfer.resolve_inputs().await.expect("inputs are owned and unspent");
 
             let order: Vec<_> = resolved.iter().map(|i| *i.commitment()).collect();
             assert_eq!(order, commitments, "inputs must resolve in the order they were added");
