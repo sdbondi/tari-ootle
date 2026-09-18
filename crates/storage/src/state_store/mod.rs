@@ -412,6 +412,17 @@ pub trait StateStoreReadTransaction: Sized {
         height: NodeHeight,
         public_key: &RistrettoPublicKeyBytes,
     ) -> Result<bool, StorageError>;
+
+    /// Whether this node holds evidence that `public_key` equivocated at any view of `epoch`.
+    ///
+    /// Evidence is what this node saw: only the leader of a view receives votes for it, and nothing
+    /// shares what it found. Two nodes can therefore disagree on this, so it may only drive
+    /// decisions that are this node's alone to make.
+    fn vote_equivocation_exists_for_validator(
+        &self,
+        epoch: Epoch,
+        public_key: &RistrettoPublicKeyBytes,
+    ) -> Result<bool, StorageError>;
 }
 
 pub trait StateStoreWriteTransaction {

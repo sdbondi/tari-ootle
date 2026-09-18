@@ -2074,6 +2074,27 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
             .exists(&(epoch, height, *public_key), OPERATION)?;
         Ok(exists)
     }
+
+    fn vote_equivocation_exists_for_validator(
+        &self,
+        epoch: Epoch,
+        public_key: &RistrettoPublicKeyBytes,
+    ) -> Result<bool, StorageError> {
+        // The evidence is keyed by view before signer, so this scans the epoch. Only one record per
+        // view and signer is kept and equivocation is rare, so there is normally nothing to scan.
+        for key in self
+            .db()
+            .cf(vote_equivocation::ByEpochQuery)?
+            .query_prefix_range_key_iterator(Ordering::Ascending, &epoch)
+        {
+            let (_, _, signer) = key?;
+            if signer == *public_key {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
 }
 
 /// Orders two changes for the same substate within a branch. A substate version is only ever DOWNed after it is UPed,

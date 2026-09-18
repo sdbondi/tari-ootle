@@ -436,9 +436,22 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
             let (next_leader, _) =
                 skip_set.effective_leader(&self.leader_strategy, local_committee, valid_block.height());
 
-            // And vote to move onto the next view
-            self.send_vote_to_leader(next_leader, valid_block.block(), decision)
-                .await?;
+            // And vote to move onto the next view, unless this node has caught the proposer
+            // equivocating. Withholding the signature is all it does: the block is processed, locked
+            // and committed as usual, and leader selection is untouched. Evidence is what this node
+            // happened to see - only the leader of a view receives the votes for it, and nothing
+            // shares what it found - so it may not decide anything the committee has to agree on.
+            if self.holds_equivocation_evidence_against(valid_block.block())? {
+                warn!(
+                    target: LOG_TARGET,
+                    "🚨 Withholding our vote on {}: its proposer {} equivocated in this epoch",
+                    valid_block.block(),
+                    valid_block.block().proposed_by(),
+                );
+            } else {
+                self.send_vote_to_leader(next_leader, valid_block.block(), decision)
+                    .await?;
+            }
         }
 
         if let Some(ref reason) = block_decision.no_vote_reason {
@@ -795,6 +808,13 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
         }
 
         Ok(())
+    }
+
+    fn holds_equivocation_evidence_against(&self, block: &Block) -> Result<bool, HotStuffError> {
+        let holds = self
+            .store
+            .with_read_tx(|tx| tx.vote_equivocation_exists_for_validator(block.epoch(), block.proposed_by()))?;
+        Ok(holds)
     }
 
     fn validate_block(
