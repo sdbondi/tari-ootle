@@ -28,3 +28,5 @@ mod state_tree;
 mod substate_store;
 #[cfg(test)]
 mod support;
+#[cfg(test)]
+mod vote_equivocation_withholding;
