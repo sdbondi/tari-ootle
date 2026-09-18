@@ -34,7 +34,7 @@ pub struct VoteCollector<V: Vote> {
     store: Arc<RwLock<VoteStoreInner<V>>>,
 }
 
-impl<V: Vote + Display> VoteCollector<V> {
+impl<V: Vote + Display + Clone> VoteCollector<V> {
     pub fn new() -> Self {
         Self {
             store: Arc::new(RwLock::new(VoteStoreInner::new())),
@@ -138,7 +138,7 @@ struct VoteStoreInner<V: Vote> {
     store: BTreeMap<(Epoch, NodeHeight), SenderVotesCollection<V>>,
 }
 
-impl<V: Vote + Display> VoteStoreInner<V> {
+impl<V: Vote + Display + Clone> VoteStoreInner<V> {
     const VOTE_BYTE_SIZE: usize = size_of::<V>() + size_of::<RistrettoPublicKeyBytes>();
 
     pub fn new() -> Self {
@@ -152,6 +152,10 @@ impl<V: Vote + Display> VoteStoreInner<V> {
 
     /// Save a vote to the store. Returns VoteEquivocationDetected if a previous vote for the block by the sender was
     /// already present.
+    ///
+    /// The vote already held is kept and the conflicting one discarded. The first vote may be the honest
+    /// one — this node cannot tell which is — and it may already be counted towards a quorum an honest
+    /// committee is forming, so dropping it would let the equivocator erase a real vote.
     pub fn save_vote(&mut self, vote: V) -> Result<(), VoteEquivocationDetected<V>> {
         let epoch_height = (vote.epoch(), vote.height());
         let view_votes_mut = self.store.entry(epoch_height).or_default();
@@ -171,13 +175,11 @@ impl<V: Vote + Display> VoteStoreInner<V> {
                 "❓️ Received duplicate vote for {}. This could be malicious because a validator should only vote once for the same block.",
                 vote,
             );
-            let prev_vote = view_votes_mut.remove(vote.public_key()).expect("Vote is present");
-            // We already have a vote for this block from this sender
             return Err(VoteEquivocationDetected {
                 epoch: vote.epoch(),
                 height: vote.height(),
                 public_key: *vote.public_key(),
-                previous_vote: prev_vote,
+                previous_vote: prev_vote.clone(),
                 new_vote: vote,
             });
         }
@@ -473,6 +475,64 @@ mod tests {
             .unwrap();
         assert_eq!(votes_a.len(), 2);
         assert!(votes_a.iter().all(|v| v.block_id == block_a));
+    }
+
+    /// An equivocator must not be able to cancel a vote it has already cast. `save_vote` holds one vote
+    /// per (view, signer), so if the conflicting vote evicted the stored one, a Byzantine member could
+    /// take its own power back out of a quorum an honest committee was about to reach.
+    #[test]
+    fn an_equivocating_vote_does_not_erase_the_vote_already_held() {
+        let mut store = VoteStoreInner::<TestVote>::new();
+        let epoch = Epoch(1);
+        let height = NodeHeight(1);
+
+        let block_a = FixedHash::new([0xAu8; 32]);
+        let block_b = FixedHash::new([0xBu8; 32]);
+
+        let honest1 = pubkey(1);
+        let honest2 = pubkey(2);
+        let byzantine = pubkey(3);
+        let absent = pubkey(4);
+
+        // n = 4, quorum_threshold = 3: the two honest votes alone are one short.
+        let committee = committee(&[honest1, honest2, byzantine, absent]);
+        assert_eq!(committee.quorum_threshold(), VotePower::of(3));
+
+        let mk = |pk, block_id, sig| TestVote {
+            epoch,
+            height,
+            block_id,
+            decision: QuorumDecision::Accept,
+            sig,
+            public_key: pk,
+        };
+
+        let first = mk(byzantine, block_a, ZERO_SIG);
+        store.save_vote(first.clone()).unwrap();
+        store.save_vote(mk(honest1, block_a, ZERO_SIG)).unwrap();
+
+        // The same signer now votes for a different block at the same view.
+        let second = mk(
+            byzantine,
+            block_b,
+            SchnorrSignatureBytes::new([1u8; 32].into(), Scalar32Bytes::zero()),
+        );
+        let equivocation = store.save_vote(second.clone()).unwrap_err();
+        assert_eq!(equivocation.public_key, byzantine);
+        assert_eq!(equivocation.previous_vote, first);
+        assert_eq!(equivocation.new_vote, second);
+
+        store.save_vote(mk(honest2, block_a, ZERO_SIG)).unwrap();
+
+        let decision = store.calculate_threshold_decision(epoch, height, &block_a, &committee);
+        assert_eq!(decision.total_power, VotePower::of(3));
+        assert_eq!(decision.decision, Some(QuorumDecision::Accept));
+
+        let votes = store
+            .take_votes_with_decision(epoch, height, &block_a, QuorumDecision::Accept)
+            .unwrap();
+        assert_eq!(votes.len(), 3);
+        assert!(votes.iter().any(|v| v.public_key == byzantine && v.block_id == block_a));
     }
 
     #[tokio::test]

@@ -4,14 +4,20 @@
 use log::*;
 use tari_consensus_types::{HighTc, SignedMessage, TimeoutCertificate, TimeoutVote, Vote};
 use tari_ootle_common_types::{Epoch, NodeHeight};
-use tari_ootle_storage::StateStore;
+use tari_ootle_storage::{
+    StateStore,
+    consensus_models::{EquivocatingVotes, VoteEquivocation},
+};
 
 use super::collector::VoteCollector;
 use crate::{
     hotstuff::{
         epoch_state::EpochState,
         error::HotStuffError,
-        vote_collector::{collector::exceeds_vote_lookahead, helpers::check_eligibility},
+        vote_collector::{
+            collector::exceeds_vote_lookahead,
+            helpers::{check_eligibility, record_equivocation},
+        },
     },
     tracing::TraceTimer,
     traits::{CertificateStore, ConsensusSpec, ValidatorSignatureVerifierService},
@@ -25,6 +31,7 @@ pub struct TimeoutVoteCollector<TConsensusSpec: ConsensusSpec> {
     store: TConsensusSpec::StateStore,
     epoch_manager: TConsensusSpec::EpochManager,
     vote_signer_service: TConsensusSpec::SignerService,
+    hooks: TConsensusSpec::Hooks,
 }
 
 impl<TConsensusSpec> TimeoutVoteCollector<TConsensusSpec>
@@ -34,18 +41,20 @@ where TConsensusSpec: ConsensusSpec
         store: TConsensusSpec::StateStore,
         epoch_manager: TConsensusSpec::EpochManager,
         vote_signer_service: TConsensusSpec::SignerService,
+        hooks: TConsensusSpec::Hooks,
     ) -> Self {
         Self {
             store,
             vote_collector: VoteCollector::new(),
             epoch_manager,
             vote_signer_service,
+            hooks,
         }
     }
 
     /// Returns Some if quorum is reached
     pub async fn check_and_collect_vote(
-        &self,
+        &mut self,
         from: TConsensusSpec::Addr,
         current_height: NodeHeight,
         epoch_state: &EpochState<TConsensusSpec::Addr>,
@@ -107,9 +116,18 @@ where TConsensusSpec: ConsensusSpec
                 debug!(target: LOG_TARGET, "🟡 No quorum reached yet for TimeoutVote at height {}", height);
                 Ok(None)
             },
-            Err(err) => {
-                warn!(target: LOG_TARGET, "❌ {}", err);
-                // TODO: track equivocation and penalize nodes
+            Err(equivocation) => {
+                warn!(target: LOG_TARGET, "❌ {}", equivocation);
+                let evidence = VoteEquivocation::new(
+                    equivocation.epoch,
+                    equivocation.height,
+                    equivocation.public_key,
+                    EquivocatingVotes::Timeout {
+                        first: equivocation.previous_vote,
+                        second: equivocation.new_vote,
+                    },
+                );
+                record_equivocation::<TConsensusSpec>(&self.store, &mut self.hooks, evidence)?;
                 Ok(None)
             },
         }

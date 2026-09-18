@@ -88,6 +88,8 @@ use tari_ootle_storage::{
         TransactionPoolStage,
         TransactionRecord,
         ValidatorConsensusStats,
+        VoteEquivocation,
+        VoteEquivocationKind,
     },
     time::PrimitiveDateTime,
 };
@@ -146,6 +148,7 @@ use crate::{
         transaction_pool::TransactionPoolCf,
         transaction_pool_state_update,
         validator_node_epoch_stats::ValidatorNodeEpochStatsCf,
+        vote_equivocation,
     },
     error::RocksDbStorageError,
     read_only::ReadOnly,
@@ -2010,6 +2013,42 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         let cf = self.db().cf(ValidatorNodeEpochStatsCf)?;
         let stats = cf.get(&(epoch, *public_key), OPERATION)?;
         Ok(stats)
+    }
+
+    fn vote_equivocation_exists(
+        &self,
+        kind: VoteEquivocationKind,
+        epoch: Epoch,
+        height: NodeHeight,
+        public_key: &RistrettoPublicKeyBytes,
+    ) -> Result<bool, StorageError> {
+        const OPERATION: &str = "vote_equivocation_exists";
+        let key = (epoch, height, *public_key);
+        let exists = match kind {
+            VoteEquivocationKind::Proposal => self
+                .db()
+                .cf(vote_equivocation::proposal::ProposalVoteEquivocationCf)?
+                .exists(&key, OPERATION)?,
+            VoteEquivocationKind::Timeout => self
+                .db()
+                .cf(vote_equivocation::timeout::TimeoutVoteEquivocationCf)?
+                .exists(&key, OPERATION)?,
+        };
+        Ok(exists)
+    }
+
+    fn vote_equivocations_get_all_for_epoch(&self, epoch: Epoch) -> Result<Vec<VoteEquivocation>, StorageError> {
+        let db = self.db();
+        let proposals = db
+            .cf(vote_equivocation::proposal::ByEpochQuery)?
+            .query_prefix_range_value_iterator(Ordering::Ascending, &epoch);
+        let timeouts = db
+            .cf(vote_equivocation::timeout::ByEpochQuery)?
+            .query_prefix_range_value_iterator(Ordering::Ascending, &epoch);
+
+        let mut evidence = proposals.chain(timeouts).collect::<Result<Vec<_>, _>>()?;
+        evidence.sort_by_key(|e| (e.height, e.public_key));
+        Ok(evidence)
     }
 }
 
