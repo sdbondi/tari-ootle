@@ -86,6 +86,18 @@ where TConsensusSpec: ConsensusSpec
             return Ok(());
         }
 
+        // A NEWVIEW is addressed to the leader of the view it names. Anyone else is not going to act on it, so
+        // establish that before verifying the certificate's 2f+1 signatures, which is the expensive part of
+        // handling this message.
+        let (leader, _) = self
+            .leader_strategy
+            .get_leader(epoch_state.local_committee(), timeout_height);
+
+        if *leader != self.local_validator_addr {
+            warn!(target: LOG_TARGET, "❌ NEWVIEW failed, leader is {} at {}. Our address is {}", leader, timeout_height, self.local_validator_addr);
+            return Ok(());
+        }
+
         if let Err(err) = self.validate_qc(&high_pc, epoch_state, self.proposal_vote_collector.signing_service()) {
             warn!(target: LOG_TARGET, "❌ NEWVIEW: Invalid QC: {}", err);
             return Ok(());
@@ -124,17 +136,6 @@ where TConsensusSpec: ConsensusSpec
 
         if is_ahead_of_ours {
             self.store.with_write_tx(|tx| high_pc.update_highest(tx))?;
-        }
-
-        // Check if we are the leader for the view after new_height. We'll set our local view height to the new_height
-        // if quorum is reached and propose a block at new_height.
-        let (leader, _) = self
-            .leader_strategy
-            .get_leader(epoch_state.local_committee(), timeout_height);
-
-        if *leader != self.local_validator_addr {
-            warn!(target: LOG_TARGET, "❌ NEWVIEW failed, leader is {} at {}. Our address is {}", leader, timeout_height, self.local_validator_addr);
-            return Ok(());
         }
 
         if let Some(vote) = last_vote {
