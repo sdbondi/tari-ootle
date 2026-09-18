@@ -436,6 +436,10 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
                 .with_write_tx(|tx| valid_block.block().as_last_voted().set(tx))?;
         }
 
+        if let Some(ref reason) = block_decision.no_vote_reason {
+            self.hooks.on_no_vote(valid_block.id(), reason);
+        }
+
         self.hooks.on_local_block_committed(&valid_block);
         self.hooks.on_blocks_committed(&block_decision.commit_blocks);
         let (num_committed, num_aborted) =

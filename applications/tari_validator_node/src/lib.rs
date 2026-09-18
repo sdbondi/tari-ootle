@@ -24,6 +24,7 @@ mod base_layer;
 mod bootstrap;
 mod config;
 pub mod consensus;
+pub mod diagnostics;
 #[cfg(feature = "metrics")]
 mod epoch_metrics;
 mod event_subscription;
