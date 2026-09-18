@@ -1,8 +1,6 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::collections::{BTreeMap, VecDeque};
-
 use log::*;
 use tari_consensus_types::{ProposalCertificate, Vote};
 use tari_epoch_manager::EpochManagerReader;
@@ -10,7 +8,10 @@ use tari_ootle_common_types::{Epoch, NodeHeight, optional::Optional};
 use tari_ootle_transaction::Network;
 
 use crate::{
-    hotstuff::error::HotStuffError,
+    hotstuff::{
+        error::HotStuffError,
+        view_buffer::{View, ViewBuffer},
+    },
     messages::HotstuffMessage,
     traits::{ConsensusSpec, InboundMessaging, hooks::ConsensusHooks},
     validations::check_quorum_certificate_signatures,
@@ -75,10 +76,13 @@ impl<TConsensusSpec: ConsensusSpec> OnInboundMessage<TConsensusSpec> {
     }
 }
 
-type EpochAndHeight = (Epoch, NodeHeight);
+/// Total number of messages held for views we have not reached yet. Sized for a committee voting several
+/// views ahead of a lagging local view; anything beyond that is a peer sending us views we will never run.
+const MAX_BUFFERED_MESSAGES: usize = 2_000;
+
 pub struct MessageBuffer<TConsensusSpec: ConsensusSpec> {
     network: Network,
-    buffer: BTreeMap<EpochAndHeight, VecDeque<(TConsensusSpec::Addr, HotstuffMessage)>>,
+    buffer: ViewBuffer<(TConsensusSpec::Addr, HotstuffMessage)>,
     inbound_messaging: TConsensusSpec::InboundMessaging,
     epoch_manager: TConsensusSpec::EpochManager,
     signer_service: TConsensusSpec::SignerService,
@@ -93,7 +97,7 @@ impl<TConsensusSpec: ConsensusSpec> MessageBuffer<TConsensusSpec> {
     ) -> Self {
         Self {
             network,
-            buffer: BTreeMap::new(),
+            buffer: ViewBuffer::new(MAX_BUFFERED_MESSAGES),
             inbound_messaging,
             epoch_manager,
             signer_service,
@@ -106,25 +110,22 @@ impl<TConsensusSpec: ConsensusSpec> MessageBuffer<TConsensusSpec> {
         current_height: NodeHeight,
         has_processed_first_block: bool,
     ) -> IncomingMessageResult<TConsensusSpec::Addr> {
-        let next_height = current_height + NodeHeight(1);
+        let next_view = View::new(current_epoch, current_height + NodeHeight(1));
         // Clear buffer with lower (epoch, heights)
-        let before_len = self.buffer.len();
-        self.buffer = self.buffer.split_off(&(current_epoch, next_height));
-        let after_len = self.buffer.len();
+        let num_discarded = self.buffer.discard_before(next_view);
 
         debug!(
             target: LOG_TARGET,
-            "Next message for current view {}/{} (has_processed_first_block={}, discard={})",
+            "Next message for current view {}/{} (has_processed_first_block={}, discard={}, buffered={})",
             current_epoch,
             current_height,
             has_processed_first_block,
-            before_len - after_len
+            num_discarded,
+            self.buffer.len()
         );
         if has_processed_first_block {
             // Drain all buffered messages for the current view
-            if let Some(buffer) = self.buffer.get_mut(&(current_epoch, next_height)) &&
-                let Some(msg_tuple) = buffer.pop_front()
-            {
+            if let Some(msg_tuple) = self.buffer.pop_front(&next_view) {
                 return Ok(Some(msg_tuple));
             }
         }
@@ -279,33 +280,16 @@ impl<TConsensusSpec: ConsensusSpec> MessageBuffer<TConsensusSpec> {
     }
 
     fn push_to_buffer(&mut self, epoch: Epoch, height: NodeHeight, from: TConsensusSpec::Addr, msg: HotstuffMessage) {
-        const MAX_BUFFERED_MESSAGES_PER_VIEW: usize = 1000;
-        const MAX_BUFFERED_VIEWS: usize = 100_000;
-        if self.buffer.len() >= MAX_BUFFERED_VIEWS {
+        let view = View::new(epoch, height);
+        if let Err((_, msg)) = self.buffer.insert(view, (from, msg)) {
             warn!(
                 target: LOG_TARGET,
-                "🗑️ Discarding message {} for view {}/{} as buffer view limit of {} reached",
+                "🗑️ Discarding message {} for view {} as the buffer holds its limit of {} messages for nearer views",
                 msg,
-                epoch,
-                height,
-                MAX_BUFFERED_VIEWS
+                view,
+                self.buffer.capacity()
             );
-            return;
         }
-
-        let messages_mut = self.buffer.entry((epoch, height)).or_default();
-        if messages_mut.len() > MAX_BUFFERED_MESSAGES_PER_VIEW {
-            warn!(
-                target: LOG_TARGET,
-                "🗑️ Discarding message {} for view {}/{} as buffer limit of {} reached",
-                msg,
-                epoch,
-                height,
-                MAX_BUFFERED_MESSAGES_PER_VIEW
-            );
-            return;
-        }
-        messages_mut.push_back((from, msg));
     }
 }
 
