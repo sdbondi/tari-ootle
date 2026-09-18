@@ -91,8 +91,9 @@ const MAX_BUFFERED_MESSAGES: usize = 2_000;
 /// arrived as: the direct messaging protocol accepts at most 4 MiB on the wire.
 const UNBOUNDED_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
-/// What a message whose payload is a fixed set of fields is charged. Certificates carry a signature per
-/// committee member, which is the only part that grows.
+/// What a message whose decoded payload is a fixed set of fields is charged, whatever the wire carried. Of
+/// these, only `Vote` — one vote and one signature — is ever buffered, so the allowance is a wide over-charge
+/// in the safe direction.
 const FIXED_MESSAGE_SIZE: usize = 64 * 1024;
 
 /// How many views ahead of our own, within our epoch, a message may name and still be buffered. Heights are

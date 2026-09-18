@@ -97,7 +97,7 @@ impl<T> ViewBuffer<T> {
         }
 
         let mut num_evicted = 0;
-        while self.len >= self.max_items || self.size + size > self.max_size {
+        while self.len >= self.max_items || self.size.saturating_add(size) > self.max_size {
             let Some(mut furthest) = self.buffer.last_entry() else {
                 break;
             };
