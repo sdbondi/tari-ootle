@@ -122,7 +122,7 @@ async fn main() {
     // -------------------------------------------------------------------------------------------------
     let (lock_transfer, lock_signers) = StealthTransfer::new(tari_token, &provider)
         .spend_revealed_input(LOCKED_AMOUNT + FEE)
-        .to_revealed_output(FEE)
+        .to_revealed_output(FEE, *my_address.account_public_key())
         .to_stealth_output(
             Output::new(my_address.clone(), tari_token, const_nonzero_u64!(LOCKED_AMOUNT))
                 .with_spend_conditions(conditions.clone())
@@ -162,7 +162,7 @@ async fn main() {
 
     let (claim_transfer, _) = StealthTransfer::new(tari_token, &provider)
         .spend_stealth_input(my_address.clone(), swap_input)
-        .to_revealed_output(FEE)
+        .to_revealed_output(FEE, *my_address.account_public_key())
         .to_stealth_output(Output::new(
             my_address.clone(),
             tari_token,

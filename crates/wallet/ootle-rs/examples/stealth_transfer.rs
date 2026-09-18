@@ -101,7 +101,7 @@ async fn main() {
         // Tell the transfer to expect 10 TARI (plus a fee budget for this transaction and the transfer below) as revealed funds from a bucket (the faucet looks at this value and automatically provides the bucket).
         .spend_revealed_input(10 * TARI + 2 * FEE_BUDGET)
         // The transfer will output the fee budget as revealed funds to pay for the fee.
-        .to_revealed_output(FEE_BUDGET)
+        .to_revealed_output(FEE_BUDGET, *sender_address.account_public_key())
         // Spend the remaining value (10 TARI - fee) into outputs for the sender address. NOTE: the sender address is not actually included in the output (privacy!),
         // but a supporting wallet that holds the secret key would be able to spend the output.
         // You can specify any address here and split up into many outputs as needed, as long as ∑inputs == ∑outputs.
@@ -151,7 +151,7 @@ async fn main() {
     // statement balances. Two outputs verify well inside the pre-payment credit.
     let (fee_transfer, fee_signers) = StealthTransfer::new(tari_token, &provider)
         .spend_stealth_input(sender_address.clone(), inputs_to_spend[0].commitment())
-        .to_revealed_output(FEE_BUDGET)
+        .to_revealed_output(FEE_BUDGET, *sender_address.account_public_key())
         .to_stealth_output(Output::new(
             sender_address.clone(),
             tari_token,
