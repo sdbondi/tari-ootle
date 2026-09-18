@@ -57,6 +57,7 @@ use crate::{
         ForeignProposal,
         ForeignProposalRecord,
         ForeignProposalStatus,
+        LivenessCounters,
         LockConflict,
         LockedSubstateValue,
         NoVoteReason,
@@ -393,6 +394,18 @@ pub trait StateStoreReadTransaction: Sized {
         public_key: &RistrettoPublicKeyBytes,
     ) -> Result<ValidatorConsensusStats, StorageError>;
 
+    /// The liveness counters of `public_key` after the block at the highest committed height at or
+    /// below `as_of` committed. `None` when no counter of theirs had moved by that height.
+    ///
+    /// Leader selection reads the state at a height that every node acting on a view has committed,
+    /// so this must answer for a past height and not only for the latest one.
+    fn validator_liveness_counters_as_of(
+        &self,
+        epoch: Epoch,
+        public_key: &RistrettoPublicKeyBytes,
+        as_of: NodeHeight,
+    ) -> Result<Option<LivenessCounters>, StorageError>;
+
     fn vote_equivocation_exists(
         &self,
         epoch: Epoch,
@@ -616,9 +629,12 @@ pub trait StateStoreWriteTransaction {
     fn lock_conflicts_remove_by_block_id(&mut self, block_id: &BlockId) -> Result<(), StorageError>;
 
     // -------------------------------- ParticipationShares -------------------------------- //
+    /// Applies stats updates caused by the commit of the block at `committed_height`, and records a
+    /// liveness log entry at that height for each validator whose liveness counters moved.
     fn validator_epoch_stats_updates<'a, I: IntoIterator<Item = ValidatorStatsUpdate<'a>>>(
         &mut self,
         epoch: Epoch,
+        committed_height: NodeHeight,
         updates: I,
     ) -> Result<(), StorageError>;
 
