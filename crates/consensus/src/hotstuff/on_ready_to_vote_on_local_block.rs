@@ -654,12 +654,12 @@ where TConsensusSpec: ConsensusSpec
                                 let lock_err = err.ok_lock_failed()?;
                                 warn!(
                                     target: LOG_TARGET,
-                                    "❌ LocalOnly transaction {} in block {} fails to apply its diff with a lock failure that an honest proposer defers: {}. Not voting on block.",
+                                    "❌ LocalOnly transaction {} in block {} has a state diff that does not apply, which an honest proposer skips: {}. Not voting on block.",
                                     pool_tx.id(),
                                     block,
                                     lock_err,
                                 );
-                                return Ok(Some(NoVoteReason::DeferrableLockConflict {
+                                return Ok(Some(NoVoteReason::DiffNotApplicable {
                                     transaction_id: *pool_tx.id(),
                                 }));
                             }
@@ -1466,12 +1466,12 @@ where TConsensusSpec: ConsensusSpec
             let lock_err = err.ok_lock_failed()?;
             warn!(
                 target: LOG_TARGET,
-                "❌ AllAccept transaction {} in block {} fails to apply its diff with a lock failure that an honest proposer defers: {}. Not voting on block.",
+                "❌ AllAccept transaction {} in block {} has a state diff that does not apply, which an honest proposer skips: {}. Not voting on block.",
                 tx_rec.id(),
                 block,
                 lock_err,
             );
-            return Ok(Some(NoVoteReason::DeferrableLockConflict {
+            return Ok(Some(NoVoteReason::DiffNotApplicable {
                 transaction_id: *tx_rec.id(),
             }));
         }
