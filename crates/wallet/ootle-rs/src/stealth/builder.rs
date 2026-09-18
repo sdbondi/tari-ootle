@@ -8,7 +8,8 @@ use tari_template_lib_types::{
     Amount,
     ResourceAddress,
     UtxoAddress,
-    stealth::{StealthInput, StealthTransferStatement},
+    crypto::RistrettoPublicKeyBytes,
+    stealth::{RevealedOutput, StealthInput, StealthTransferStatement},
 };
 
 use crate::{
@@ -63,7 +64,7 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
             inputs: resolved_inputs,
             revealed_input_amount: total_revealed_input,
             outputs: self.spec.outputs,
-            revealed_output_amount: self.spec.revealed_output_amount,
+            revealed_output: self.spec.revealed_output,
         };
 
         let transfer = self.provider.wallet().create_transfer_statement(spec).await?;
@@ -204,12 +205,25 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
         self
     }
 
-    pub fn to_revealed_output<A: Into<Amount>>(mut self, amount: A) -> Self {
+    /// Adds `amount` to the revealed output taken by `receiver`, whose badge must be in the auth scope of the
+    /// transaction that carries this transfer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `amount` is not positive, or if a revealed output is already set for a different receiver — one
+    /// transfer reveals to one key.
+    pub fn to_revealed_output<A: Into<Amount>>(mut self, amount: A, receiver: RistrettoPublicKeyBytes) -> Self {
         let amount = amount.into();
         if !amount.is_positive() {
             panic!("Transfer amount must be positive");
         }
-        self.spec.revealed_output_amount += amount;
+        self.spec.revealed_output = Some(match self.spec.revealed_output {
+            Some(existing) if existing.receiver != receiver => {
+                panic!("Revealed output is already assigned to a different receiver");
+            },
+            Some(existing) => RevealedOutput::new(existing.amount + amount, receiver),
+            None => RevealedOutput::new(amount, receiver),
+        });
         self
     }
 }
@@ -220,7 +234,7 @@ pub struct StealthTransferSpec {
     pub revealed_input_amount: Amount,
     pub inputs_to_spend: Vec<(Address, StealthInput)>,
     pub outputs: Vec<Output>,
-    pub revealed_output_amount: Amount,
+    pub revealed_output: Option<RevealedOutput>,
 }
 
 impl StealthTransferSpec {
@@ -230,13 +244,13 @@ impl StealthTransferSpec {
             revealed_input_amount: Amount::zero(),
             inputs_to_spend: Default::default(),
             outputs: Default::default(),
-            revealed_output_amount: Amount::zero(),
+            revealed_output: None,
         }
     }
 
     pub fn total_output_amount(&self) -> Amount {
         let stealth_output_total: Amount = self.outputs.iter().map(|o| Amount::from(o.amount.get())).sum();
-        stealth_output_total + self.revealed_output_amount
+        stealth_output_total + self.revealed_output.map_or(Amount::ZERO, |r| r.amount)
     }
 }
 
@@ -334,7 +348,7 @@ mod tests {
             })
             .collect();
         let (statement, _mask) = key_provider
-            .generate_outputs_statement(specs, Amount::zero())
+            .generate_outputs_statement(specs, None)
             .await
             .expect("minting stealth outputs must succeed");
 
