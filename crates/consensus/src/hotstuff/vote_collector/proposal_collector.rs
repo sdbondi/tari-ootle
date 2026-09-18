@@ -6,7 +6,7 @@ use tari_consensus_types::{HighPc, ProposalCertificate, ProposalVote, ValidatorS
 use tari_ootle_common_types::{Epoch, NodeHeight, ProtocolVersion, optional::Optional};
 use tari_ootle_storage::{
     StateStore,
-    consensus_models::{Block, EquivocatingVotes, VoteEquivocation},
+    consensus_models::{Block, VoteEquivocation},
 };
 use tari_ootle_transaction::Network;
 use tari_sidechain::{ProposalVoteMessage, QuorumDecision};
@@ -150,17 +150,19 @@ where TConsensusSpec: ConsensusSpec
                 );
                 Ok(None)
             },
-            Err(equivocation) => {
-                warn!(target: LOG_TARGET, "❌ {}", equivocation);
-                let evidence = VoteEquivocation::new(
-                    equivocation.epoch,
-                    equivocation.height,
-                    equivocation.public_key,
-                    EquivocatingVotes::Proposal {
-                        first: equivocation.previous_vote,
-                        second: equivocation.new_vote,
-                    },
-                );
+            Err(duplicate) => {
+                warn!(target: LOG_TARGET, "❌ {}", duplicate);
+                // A pair that attests to the same block and decision is one vote signed twice, which
+                // any signer can do at will and which proves nothing about them.
+                let Some(evidence) = VoteEquivocation::from_conflicting_votes(
+                    duplicate.epoch,
+                    duplicate.height,
+                    duplicate.public_key,
+                    duplicate.previous_vote,
+                    duplicate.new_vote,
+                ) else {
+                    return Ok(None);
+                };
                 record_equivocation::<TConsensusSpec>(&self.store, &mut self.hooks, evidence)?;
                 Ok(None)
             },

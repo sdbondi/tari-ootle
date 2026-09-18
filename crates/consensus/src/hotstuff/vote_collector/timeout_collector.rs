@@ -4,20 +4,14 @@
 use log::*;
 use tari_consensus_types::{HighTc, SignedMessage, TimeoutCertificate, TimeoutVote, Vote};
 use tari_ootle_common_types::{Epoch, NodeHeight};
-use tari_ootle_storage::{
-    StateStore,
-    consensus_models::{EquivocatingVotes, VoteEquivocation},
-};
+use tari_ootle_storage::StateStore;
 
 use super::collector::VoteCollector;
 use crate::{
     hotstuff::{
         epoch_state::EpochState,
         error::HotStuffError,
-        vote_collector::{
-            collector::exceeds_vote_lookahead,
-            helpers::{check_eligibility, record_equivocation},
-        },
+        vote_collector::{collector::exceeds_vote_lookahead, helpers::check_eligibility},
     },
     tracing::TraceTimer,
     traits::{CertificateStore, ConsensusSpec, ValidatorSignatureVerifierService},
@@ -31,7 +25,6 @@ pub struct TimeoutVoteCollector<TConsensusSpec: ConsensusSpec> {
     store: TConsensusSpec::StateStore,
     epoch_manager: TConsensusSpec::EpochManager,
     vote_signer_service: TConsensusSpec::SignerService,
-    hooks: TConsensusSpec::Hooks,
 }
 
 impl<TConsensusSpec> TimeoutVoteCollector<TConsensusSpec>
@@ -41,20 +34,18 @@ where TConsensusSpec: ConsensusSpec
         store: TConsensusSpec::StateStore,
         epoch_manager: TConsensusSpec::EpochManager,
         vote_signer_service: TConsensusSpec::SignerService,
-        hooks: TConsensusSpec::Hooks,
     ) -> Self {
         Self {
             store,
             vote_collector: VoteCollector::new(),
             epoch_manager,
             vote_signer_service,
-            hooks,
         }
     }
 
     /// Returns Some if quorum is reached
     pub async fn check_and_collect_vote(
-        &mut self,
+        &self,
         from: TConsensusSpec::Addr,
         current_height: NodeHeight,
         epoch_state: &EpochState<TConsensusSpec::Addr>,
@@ -116,18 +107,13 @@ where TConsensusSpec: ConsensusSpec
                 debug!(target: LOG_TARGET, "🟡 No quorum reached yet for TimeoutVote at height {}", height);
                 Ok(None)
             },
-            Err(equivocation) => {
-                warn!(target: LOG_TARGET, "❌ {}", equivocation);
-                let evidence = VoteEquivocation::new(
-                    equivocation.epoch,
-                    equivocation.height,
-                    equivocation.public_key,
-                    EquivocatingVotes::Timeout {
-                        first: equivocation.previous_vote,
-                        second: equivocation.new_vote,
-                    },
-                );
-                record_equivocation::<TConsensusSpec>(&self.store, &mut self.hooks, evidence)?;
+            Err(duplicate) => {
+                // Not equivocation, and no evidence can be built from it: a timeout vote signs
+                // (epoch, height) and nothing else, which is the view it is bucketed under, so the
+                // two votes necessarily attest to the same thing and differ only in the signature's
+                // nonce. Re-signing one view is something an honest node does, for instance after a
+                // restart loses the in-memory record of the NEWVIEW it last sent.
+                warn!(target: LOG_TARGET, "❌ {}", duplicate);
                 Ok(None)
             },
         }

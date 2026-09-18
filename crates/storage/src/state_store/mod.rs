@@ -76,7 +76,6 @@ use crate::{
         ValidatorConsensusStats,
         ValidatorStatsUpdate,
         VoteEquivocation,
-        VoteEquivocationKind,
     },
 };
 
@@ -387,13 +386,12 @@ pub trait StateStoreReadTransaction: Sized {
 
     fn vote_equivocation_exists(
         &self,
-        kind: VoteEquivocationKind,
         epoch: Epoch,
         height: NodeHeight,
         public_key: &RistrettoPublicKeyBytes,
     ) -> Result<bool, StorageError>;
 
-    /// All equivocation evidence recorded for `epoch`, both kinds, ordered by height then signer.
+    /// All equivocation evidence recorded for `epoch`, ordered by height then signer.
     fn vote_equivocations_get_all_for_epoch(&self, epoch: Epoch) -> Result<Vec<VoteEquivocation>, StorageError>;
 }
 
@@ -623,7 +621,7 @@ pub trait StateStoreWriteTransaction {
 
     // -------------------------------- Vote equivocation -------------------------------- //
     /// Records evidence that a validator signed two conflicting votes for one view. Returns whether
-    /// this was the first evidence for that (kind, epoch, height, signer): later pairs from the same
+    /// this was the first evidence for that (epoch, height, signer): later pairs from the same
     /// equivocator at the same view prove nothing the first does not, and keeping the first bounds
     /// what an equivocator can make this node write.
     fn vote_equivocation_record(&mut self, evidence: &VoteEquivocation) -> Result<bool, StorageError>;

@@ -12,52 +12,28 @@ use crate::{
     traits::{Cf, QueryCf},
 };
 
-/// Key = `(epoch, height, signer)`, each component big-endian encoded, so that an epoch is a
-/// prefix range and entries within it read in view order.
-///
-/// Proposal and timeout equivocations are separate column families because one validator can
-/// equivocate on both at a single view; sharing a key would silently drop the second proof.
-macro_rules! vote_equivocation_cf {
-    ($module:ident, $cf:ident, $prefix_name:ident, $prefix:expr) => {
-        pub mod $module {
-            use super::*;
+prefixed!(VoteEquivocationPrefix, KeyPrefix::VoteEquivocations);
 
-            prefixed!($prefix_name, $prefix);
+/// Key = `(epoch, height, signer)`, each component big-endian encoded, so that an epoch is a prefix
+/// range and entries within it read in view order.
+pub struct VoteEquivocationCf;
 
-            pub struct $cf;
+impl Cf for VoteEquivocationCf {
+    type Key = (Epoch, NodeHeight, RistrettoPublicKeyBytes);
+    type KeyCodec = (EpochCodec, NodeHeightCodec, PublicKeyCodec);
+    type Prefix = VoteEquivocationPrefix;
+    type Value = VoteEquivocation;
+    type ValueCodec = DefaultCodec<Self::Value>;
 
-            impl Cf for $cf {
-                type Key = (Epoch, NodeHeight, RistrettoPublicKeyBytes);
-                type KeyCodec = (EpochCodec, NodeHeightCodec, PublicKeyCodec);
-                type Prefix = $prefix_name;
-                type Value = VoteEquivocation;
-                type ValueCodec = DefaultCodec<Self::Value>;
-
-                fn name() -> &'static str {
-                    cf_names::CHAIN_METADATA
-                }
-            }
-
-            pub struct ByEpochQuery;
-
-            impl QueryCf for ByEpochQuery {
-                type Cf = $cf;
-                type Key = Epoch;
-                type KeyCodec = EpochCodec;
-            }
-        }
-    };
+    fn name() -> &'static str {
+        cf_names::CHAIN_METADATA
+    }
 }
 
-vote_equivocation_cf!(
-    proposal,
-    ProposalVoteEquivocationCf,
-    ProposalVoteEquivocationPrefix,
-    KeyPrefix::ProposalVoteEquivocations
-);
-vote_equivocation_cf!(
-    timeout,
-    TimeoutVoteEquivocationCf,
-    TimeoutVoteEquivocationPrefix,
-    KeyPrefix::TimeoutVoteEquivocations
-);
+pub struct ByEpochQuery;
+
+impl QueryCf for ByEpochQuery {
+    type Cf = VoteEquivocationCf;
+    type Key = Epoch;
+    type KeyCodec = EpochCodec;
+}

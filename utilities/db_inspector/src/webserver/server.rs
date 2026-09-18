@@ -115,8 +115,7 @@ pub async fn run(context: HandlerContext) -> anyhow::Result<()> {
         column_families::validator_node_epoch_stats::ValidatorNodeEpochStatsCf,
         column_families::diagnostic_no_vote::DiagnosticsNoVoteCf,
         column_families::diagnostic_event::DiagnosticEventCf,
-        column_families::vote_equivocation::proposal::ProposalVoteEquivocationCf,
-        column_families::vote_equivocation::timeout::TimeoutVoteEquivocationCf
+        column_families::vote_equivocation::VoteEquivocationCf
     );
 
     let api = api.fallback(handlers::not_found);
@@ -217,6 +216,5 @@ pub fn register_all_cfs(context: &mut HandlerContext) -> &mut HandlerContext {
         .register_cf(column_families::transaction_pool_state_update::TransactionPoolStateUpdateCf)
         .register_cf(column_families::transaction_pool_state_update::TransactionPoolStateUpdateDebugHistoryCf)
         .register_cf(column_families::validator_node_epoch_stats::ValidatorNodeEpochStatsCf)
-        .register_cf(column_families::vote_equivocation::proposal::ProposalVoteEquivocationCf)
-        .register_cf(column_families::vote_equivocation::timeout::TimeoutVoteEquivocationCf)
+        .register_cf(column_families::vote_equivocation::VoteEquivocationCf)
 }

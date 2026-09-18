@@ -85,7 +85,6 @@ use tari_ootle_storage::{
         ValidatorConsensusStats,
         ValidatorStatsUpdate,
         VoteEquivocation,
-        VoteEquivocationKind,
     },
     time,
 };
@@ -1753,23 +1752,11 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
     fn vote_equivocation_record(&mut self, evidence: &VoteEquivocation) -> Result<bool, StorageError> {
         const OPERATION: &str = "vote_equivocation_record";
         let key = (evidence.epoch, evidence.height, evidence.public_key);
-        let db = self.db();
-        match evidence.kind() {
-            VoteEquivocationKind::Proposal => {
-                let cf = db.cf(vote_equivocation::proposal::ProposalVoteEquivocationCf)?;
-                if cf.exists(&key, OPERATION)? {
-                    return Ok(false);
-                }
-                cf.insert(&key, evidence, OPERATION)?;
-            },
-            VoteEquivocationKind::Timeout => {
-                let cf = db.cf(vote_equivocation::timeout::TimeoutVoteEquivocationCf)?;
-                if cf.exists(&key, OPERATION)? {
-                    return Ok(false);
-                }
-                cf.insert(&key, evidence, OPERATION)?;
-            },
+        let cf = self.db().cf(vote_equivocation::VoteEquivocationCf)?;
+        if cf.exists(&key, OPERATION)? {
+            return Ok(false);
         }
+        cf.insert(&key, evidence, OPERATION)?;
         Ok(true)
     }
 
@@ -1987,21 +1974,13 @@ mod cleanup {
         const OPERATION: &str = "cleanup::vote_equivocations_for_epoch";
         let up_to_epoch = up_to_epoch + Epoch(1); // Make it inclusive
 
-        let proposal_cf = db.cf(vote_equivocation::proposal::ProposalVoteEquivocationCf)?;
-        let timeout_cf = db.cf(vote_equivocation::timeout::TimeoutVoteEquivocationCf)?;
+        let cf = db.cf(vote_equivocation::VoteEquivocationCf)?;
         let mut count = 0usize;
         for key in db
-            .cf(vote_equivocation::proposal::ByEpochQuery)?
+            .cf(vote_equivocation::ByEpochQuery)?
             .query_range_key_iterator(Ordering::Ascending, Epoch::zero()..up_to_epoch)
         {
-            proposal_cf.delete(&key?, OPERATION)?;
-            count += 1;
-        }
-        for key in db
-            .cf(vote_equivocation::timeout::ByEpochQuery)?
-            .query_range_key_iterator(Ordering::Ascending, Epoch::zero()..up_to_epoch)
-        {
-            timeout_cf.delete(&key?, OPERATION)?;
+            cf.delete(&key?, OPERATION)?;
             count += 1;
         }
 

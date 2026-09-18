@@ -141,10 +141,11 @@ impl ConsensusHooks for DiagnosticHooks {
             error,
             "consensus.vote_equivocation",
             "{evidence}",
-            kind => evidence.kind(),
             epoch => evidence.epoch,
             height => evidence.height,
-            public_key => evidence.public_key
+            public_key => evidence.public_key,
+            first_block_id => evidence.first.block_id,
+            second_block_id => evidence.second.block_id
         ));
     }
 

@@ -48,7 +48,7 @@ impl<V: Vote + Display + Clone> VoteCollector<V> {
         current_height: NodeHeight,
         vote: V,
         committee: &Committee<TAddr>,
-    ) -> Result<Option<(Vec<V>, QuorumDecision)>, VoteEquivocationDetected<V>> {
+    ) -> Result<Option<(Vec<V>, QuorumDecision)>, DuplicateVoteDetected<V>> {
         let mut access_mut = self.store.write().await;
         access_mut.clear_votes_before(current_epoch, current_height);
 
@@ -121,7 +121,7 @@ impl<V: Vote + Display + Clone> VoteCollector<V> {
                 // To panic or not to panic? That is the question...
                 error!(
                     target: LOG_TARGET,
-                    "❌: BUG DETECTED: EQUIVOCATION on returned votes should not be possible: {}", err,
+                    "❌: BUG DETECTED: a duplicate vote on returned votes should not be possible: {}", err,
                 );
             }
         }
@@ -150,13 +150,13 @@ impl<V: Vote + Display + Clone> VoteStoreInner<V> {
         self.log_buffer_size();
     }
 
-    /// Save a vote to the store. Returns VoteEquivocationDetected if a previous vote for the block by the sender was
-    /// already present.
+    /// Save a vote to the store. Returns DuplicateVoteDetected if a differently signed vote for this view by the
+    /// sender was already present.
     ///
-    /// The vote already held is kept and the conflicting one discarded. The first vote may be the honest
+    /// The vote already held is kept and the incoming one discarded. The first vote may be the honest
     /// one — this node cannot tell which is — and it may already be counted towards a quorum an honest
-    /// committee is forming, so dropping it would let the equivocator erase a real vote.
-    pub fn save_vote(&mut self, vote: V) -> Result<(), VoteEquivocationDetected<V>> {
+    /// committee is forming, so dropping it would let an equivocator erase a real vote.
+    pub fn save_vote(&mut self, vote: V) -> Result<(), DuplicateVoteDetected<V>> {
         let epoch_height = (vote.epoch(), vote.height());
         let view_votes_mut = self.store.entry(epoch_height).or_default();
         if let Some(prev_vote) = view_votes_mut.get(vote.public_key()) {
@@ -175,7 +175,7 @@ impl<V: Vote + Display + Clone> VoteStoreInner<V> {
                 "❓️ Received duplicate vote for {}. This could be malicious because a validator should only vote once for the same block.",
                 vote,
             );
-            return Err(VoteEquivocationDetected {
+            return Err(DuplicateVoteDetected {
                 epoch: vote.epoch(),
                 height: vote.height(),
                 public_key: *vote.public_key(),
@@ -281,9 +281,15 @@ pub struct ThresholdDecision {
     pub total_power: VotePower,
 }
 
+/// A second, differently signed vote from a signer that already has one in this view's bucket.
+///
+/// Whether this is equivocation depends on what the two votes attest to, which the caller decides:
+/// signing draws a fresh nonce, so one signer can produce many valid signatures over one message,
+/// and a vote type whose preimage carries nothing beyond the view it is bucketed under cannot
+/// express a conflict at all.
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("Vote equivocation detected at epoch {epoch}, height {height} from {public_key}")]
-pub struct VoteEquivocationDetected<V: Vote> {
+#[error("Duplicate vote detected at epoch {epoch}, height {height} from {public_key}")]
+pub struct DuplicateVoteDetected<V: Vote> {
     pub epoch: Epoch,
     pub height: NodeHeight,
     pub public_key: RistrettoPublicKeyBytes,

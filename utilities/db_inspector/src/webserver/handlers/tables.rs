@@ -207,13 +207,14 @@ fn create_table_for_cf<CF: Cf>() -> TableResponse {
                 Column::new("destroyed", "Destroyed"),
             ]);
         },
-        KeyPrefix::ProposalVoteEquivocations | KeyPrefix::TimeoutVoteEquivocations => {
+        KeyPrefix::VoteEquivocations => {
             table.with_columns([
                 Column::new("public_key", "Signer"),
                 Column::new("epoch", "Epoch"),
                 Column::new("height", "Height"),
                 Column::new("detected_at", "Detected at"),
-                Column::new("votes", "Conflicting votes"),
+                Column::new("first", "First vote"),
+                Column::new("second", "Second vote"),
             ]);
         },
         _ => {
