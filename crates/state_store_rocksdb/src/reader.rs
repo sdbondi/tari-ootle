@@ -1164,6 +1164,13 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         block_id: &BlockId,
         substate_id: T,
     ) -> Result<bool, StorageError> {
+        const OPERATION: &str = "block_diffs_contains_versioned_substate";
+        if !self.blocks_exists(block_id)? {
+            return Err(StorageError::QueryError {
+                reason: format!("{OPERATION}: Block {} does not exist", block_id),
+            });
+        }
+
         let versioned = substate_id.into();
         let applicable_blocks = self.get_pending_chain_until(block_id)?;
 
