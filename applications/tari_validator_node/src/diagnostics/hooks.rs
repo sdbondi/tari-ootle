@@ -14,7 +14,7 @@ use tari_ootle_common_types::{
     diag_event,
     diagnostics::{DiagnosticEvent, DiagnosticLevel},
 };
-use tari_ootle_storage::consensus_models::{Block, NoVoteReason, ValidBlock};
+use tari_ootle_storage::consensus_models::{Block, NoVoteReason, ValidBlock, VoteEquivocation};
 use tari_ootle_transaction::TransactionId;
 
 use crate::diagnostics::handle::DiagnosticsHandle;
@@ -132,6 +132,20 @@ impl ConsensusHooks for DiagnosticHooks {
             "Did not vote on block {block_id}: {reason}",
             block_id => block_id,
             reason => reason
+        ));
+    }
+
+    /// Fires only on the first evidence per view and signer, so an equivocator cannot flood the log.
+    fn on_vote_equivocation(&mut self, evidence: &VoteEquivocation) {
+        self.diagnostics.emit(diag_event!(
+            error,
+            "consensus.vote_equivocation",
+            "{evidence}",
+            epoch => evidence.epoch,
+            height => evidence.height,
+            public_key => evidence.public_key,
+            first_block_id => evidence.first.block_id,
+            second_block_id => evidence.second.block_id
         ));
     }
 

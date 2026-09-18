@@ -4,7 +4,10 @@
 use log::*;
 use tari_consensus_types::{HighPc, ProposalCertificate, ProposalVote, ValidatorSignatureBytes};
 use tari_ootle_common_types::{Epoch, NodeHeight, ProtocolVersion, optional::Optional};
-use tari_ootle_storage::{StateStore, consensus_models::Block};
+use tari_ootle_storage::{
+    StateStore,
+    consensus_models::{Block, VoteEquivocation},
+};
 use tari_ootle_transaction::Network;
 use tari_sidechain::{ProposalVoteMessage, QuorumDecision};
 
@@ -13,7 +16,10 @@ use crate::{
     hotstuff::{
         epoch_state::EpochState,
         error::HotStuffError,
-        vote_collector::{collector::exceeds_vote_lookahead, helpers::check_eligibility},
+        vote_collector::{
+            collector::exceeds_vote_lookahead,
+            helpers::{check_eligibility, record_equivocation},
+        },
     },
     tracing::TraceTimer,
     traits::{CertificateStore, ConsensusSpec, ValidatorSignatureVerifierService},
@@ -29,6 +35,7 @@ pub struct ProposalVoteCollector<TConsensusSpec: ConsensusSpec> {
     store: TConsensusSpec::StateStore,
     epoch_manager: TConsensusSpec::EpochManager,
     vote_signer_service: TConsensusSpec::SignerService,
+    hooks: TConsensusSpec::Hooks,
 }
 
 impl<TConsensusSpec> ProposalVoteCollector<TConsensusSpec>
@@ -39,6 +46,7 @@ where TConsensusSpec: ConsensusSpec
         store: TConsensusSpec::StateStore,
         epoch_manager: TConsensusSpec::EpochManager,
         vote_signer_service: TConsensusSpec::SignerService,
+        hooks: TConsensusSpec::Hooks,
     ) -> Self {
         Self {
             network,
@@ -46,6 +54,7 @@ where TConsensusSpec: ConsensusSpec
             vote_collector: VoteCollector::new(),
             epoch_manager,
             vote_signer_service,
+            hooks,
         }
     }
 
@@ -59,7 +68,7 @@ where TConsensusSpec: ConsensusSpec
 
     /// Returns Some if quorum is reached
     pub async fn check_and_collect_vote(
-        &self,
+        &mut self,
         from: TConsensusSpec::Addr,
         current_height: NodeHeight,
         epoch_state: &EpochState<TConsensusSpec::Addr>,
@@ -141,9 +150,20 @@ where TConsensusSpec: ConsensusSpec
                 );
                 Ok(None)
             },
-            Err(err) => {
-                warn!(target: LOG_TARGET, "❌ {}", err);
-                // TODO: store equivocation evidence and punish
+            Err(duplicate) => {
+                warn!(target: LOG_TARGET, "❌ {}", duplicate);
+                // A pair that attests to the same block and decision is one vote signed twice, which
+                // any signer can do at will and which proves nothing about them.
+                let Some(evidence) = VoteEquivocation::from_conflicting_votes(
+                    duplicate.epoch,
+                    duplicate.height,
+                    duplicate.public_key,
+                    duplicate.previous_vote,
+                    duplicate.new_vote,
+                ) else {
+                    return Ok(None);
+                };
+                record_equivocation::<TConsensusSpec>(&self.store, &mut self.hooks, evidence)?;
                 Ok(None)
             },
         }

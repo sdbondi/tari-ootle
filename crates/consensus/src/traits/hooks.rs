@@ -3,7 +3,7 @@
 
 use tari_consensus_types::BlockId;
 use tari_ootle_common_types::NodeHeight;
-use tari_ootle_storage::consensus_models::{Block, NoVoteReason, ValidBlock};
+use tari_ootle_storage::consensus_models::{Block, NoVoteReason, ValidBlock, VoteEquivocation};
 use tari_ootle_transaction::TransactionId;
 
 use crate::{
@@ -37,6 +37,10 @@ pub trait ConsensusHooks {
 
     /// Called when this node decided not to vote on an otherwise valid local proposal.
     fn on_no_vote(&mut self, _block_id: &BlockId, _reason: &NoVoteReason) {}
+
+    /// Called when a committee member is caught signing two different votes for one view. The
+    /// evidence is already persisted by the time this fires.
+    fn on_vote_equivocation(&mut self, _evidence: &VoteEquivocation) {}
 
     fn on_transaction_ready(&mut self, tx_id: &TransactionId);
     fn on_transaction_batch_finalized(&mut self, num_committed: usize, num_aborted: usize);
@@ -120,6 +124,12 @@ impl<T: ConsensusHooks> ConsensusHooks for OptionalHooks<T> {
     fn on_no_vote(&mut self, block_id: &BlockId, reason: &NoVoteReason) {
         if let Some(inner) = self.inner.as_mut() {
             inner.on_no_vote(block_id, reason);
+        }
+    }
+
+    fn on_vote_equivocation(&mut self, evidence: &VoteEquivocation) {
+        if let Some(inner) = self.inner.as_mut() {
+            inner.on_vote_equivocation(evidence);
         }
     }
 
@@ -239,6 +249,11 @@ impl<A: ConsensusHooks, B: ConsensusHooks> ConsensusHooks for CompositeHook<A, B
     fn on_no_vote(&mut self, block_id: &BlockId, reason: &NoVoteReason) {
         self.first.on_no_vote(block_id, reason);
         self.second.on_no_vote(block_id, reason);
+    }
+
+    fn on_vote_equivocation(&mut self, evidence: &VoteEquivocation) {
+        self.first.on_vote_equivocation(evidence);
+        self.second.on_vote_equivocation(evidence);
     }
 
     fn on_transaction_ready(&mut self, tx_id: &TransactionId) {

@@ -107,9 +107,13 @@ where TConsensusSpec: ConsensusSpec
                 debug!(target: LOG_TARGET, "🟡 No quorum reached yet for TimeoutVote at height {}", height);
                 Ok(None)
             },
-            Err(err) => {
-                warn!(target: LOG_TARGET, "❌ {}", err);
-                // TODO: track equivocation and penalize nodes
+            Err(duplicate) => {
+                // Not equivocation, and no evidence can be built from it: a timeout vote signs
+                // (epoch, height) and nothing else, which is the view it is bucketed under, so the
+                // two votes necessarily attest to the same thing and differ only in the signature's
+                // nonce. Re-signing one view is something an honest node does, for instance after a
+                // restart loses the in-memory record of the NEWVIEW it last sent.
+                warn!(target: LOG_TARGET, "❌ {}", duplicate);
                 Ok(None)
             },
         }

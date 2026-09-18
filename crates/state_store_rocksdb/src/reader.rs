@@ -146,6 +146,7 @@ use crate::{
         transaction_pool::TransactionPoolCf,
         transaction_pool_state_update,
         validator_node_epoch_stats::ValidatorNodeEpochStatsCf,
+        vote_equivocation,
     },
     error::RocksDbStorageError,
     read_only::ReadOnly,
@@ -2010,6 +2011,20 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         let cf = self.db().cf(ValidatorNodeEpochStatsCf)?;
         let stats = cf.get(&(epoch, *public_key), OPERATION)?;
         Ok(stats)
+    }
+
+    fn vote_equivocation_exists(
+        &self,
+        epoch: Epoch,
+        height: NodeHeight,
+        public_key: &RistrettoPublicKeyBytes,
+    ) -> Result<bool, StorageError> {
+        const OPERATION: &str = "vote_equivocation_exists";
+        let exists = self
+            .db()
+            .cf(vote_equivocation::VoteEquivocationCf)?
+            .exists(&(epoch, height, *public_key), OPERATION)?;
+        Ok(exists)
     }
 }
 

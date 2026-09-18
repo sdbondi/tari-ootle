@@ -58,6 +58,7 @@ pub enum KeyPrefix {
     RollbackHistory = 44,
     FinalizedTransactionEpochIndex = 45,
     DiagnosticEvents = 46,
+    VoteEquivocations = 47,
 }
 
 impl KeyPrefix {

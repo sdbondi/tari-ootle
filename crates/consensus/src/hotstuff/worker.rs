@@ -158,6 +158,7 @@ impl<TConsensusSpec: ConsensusSpec> HotstuffWorker<TConsensusSpec> {
             state_store.clone(),
             epoch_manager.clone(),
             signing_service.clone(),
+            hooks.clone(),
         );
         let timeout_vote_collector =
             TimeoutVoteCollector::new(state_store.clone(), epoch_manager.clone(), signing_service.clone());

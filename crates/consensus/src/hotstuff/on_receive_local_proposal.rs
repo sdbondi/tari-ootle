@@ -432,8 +432,6 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
             // And vote to move onto the next view
             self.send_vote_to_leader(next_leader, valid_block.block(), decision)
                 .await?;
-            self.store
-                .with_write_tx(|tx| valid_block.block().as_last_voted().set(tx))?;
         }
 
         if let Some(ref reason) = block_decision.no_vote_reason {
@@ -699,11 +697,18 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
 
         let last_sent_vote = LastSentVote::from(message.vote.clone());
 
+        // The vote must be durable before anyone can see it. A crash between the send and the write
+        // leaves a restarted node with no record that it voted at this height, free to vote again at
+        // that height for a competing block; a crash the other way round only loses a message, which
+        // the network may drop anyway and which the next NEWVIEW carries again.
+        self.store.with_write_tx(|tx| {
+            block.as_last_voted().set(tx)?;
+            last_sent_vote.set(tx)
+        })?;
+
         self.outbound_messaging
             .send(leader.clone(), HotstuffMessage::Vote(message))
             .await?;
-
-        self.store.with_write_tx(|tx| last_sent_vote.set(tx))?;
 
         Ok(())
     }
