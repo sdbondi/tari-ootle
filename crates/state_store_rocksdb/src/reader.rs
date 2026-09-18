@@ -70,6 +70,7 @@ use tari_ootle_storage::{
         BlockTransactionExecution,
         EpochCheckpoint,
         ForeignProposalRecord,
+        LivenessCounters,
         LockedSubstateValue,
         PendingShardStateTreeDiff,
         StateVersionTransitions,
@@ -145,6 +146,7 @@ use crate::{
         transaction::TransactionCf,
         transaction_pool::TransactionPoolCf,
         transaction_pool_state_update,
+        validator_liveness_log::ValidatorLivenessLogCf,
         validator_node_epoch_stats::ValidatorNodeEpochStatsCf,
         vote_equivocation,
     },
@@ -2011,6 +2013,24 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         let cf = self.db().cf(ValidatorNodeEpochStatsCf)?;
         let stats = cf.get(&(epoch, *public_key), OPERATION)?;
         Ok(stats)
+    }
+
+    fn validator_liveness_counters_as_of(
+        &self,
+        epoch: Epoch,
+        public_key: &RistrettoPublicKeyBytes,
+        as_of: NodeHeight,
+    ) -> Result<Option<LivenessCounters>, StorageError> {
+        let cf = self.db().cf(ValidatorLivenessLogCf)?;
+        let start = cf.encode_key(&(epoch, *public_key, NodeHeight::zero()));
+        // The upper bound is exclusive and the query is inclusive of `as_of`.
+        let end = cf.encode_key(&(epoch, *public_key, as_of.saturating_add(NodeHeight(1))));
+        let counters = cf
+            .range_iterator(Ordering::Descending, start..end)
+            .next()
+            .transpose()?
+            .map(|(_, counters)| counters);
+        Ok(counters)
     }
 
     fn vote_equivocation_exists(

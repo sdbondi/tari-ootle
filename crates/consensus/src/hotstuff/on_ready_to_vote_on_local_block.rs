@@ -1698,10 +1698,7 @@ where TConsensusSpec: ConsensusSpec
         block: &Block,
     ) -> Result<Vec<TransactionPoolRecord>, HotStuffError> {
         if block.is_dummy() {
-            block.increment_leader_failure_count(
-                tx,
-                self.config.consensus_constants.missed_proposal_recovery_threshold,
-            )?;
+            block.increment_leader_failure_count(tx, self.config.consensus_constants.liveness_thresholds())?;
 
             // Nothing to do here for empty dummy blocks. Just mark the block as committed.
             block.commit_block_without_state_changes(tx, commit_qc_id)?;
@@ -1765,15 +1762,18 @@ where TConsensusSpec: ConsensusSpec
             );
         }
 
+        let thresholds = self.config.consensus_constants.liveness_thresholds();
         tx.validator_epoch_stats_updates(
             block.justify().epoch(),
-            block.justify().signatures().iter().map(|s| s.public_key()).map(|pk| {
-                ValidatorStatsUpdate::new(pk)
-                    .increment_participation_share()
-                    .decrement_missed_proposal()
-            }),
+            block.height(),
+            block
+                .justify()
+                .signatures()
+                .iter()
+                .map(|s| s.public_key())
+                .map(|pk| ValidatorStatsUpdate::new(pk, thresholds).record_vote()),
         )?;
-        block.clear_leader_failure_count(tx)?;
+        block.clear_leader_failure_count(tx, thresholds)?;
 
         Ok(finalized_transactions)
     }
