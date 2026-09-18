@@ -426,9 +426,10 @@ impl<'store, TTx: StateStoreReadTransaction> PendingSubstateStore<'store, TTx> {
                 Err(err) => {
                     let error = err.ok_lock_failed()?;
                     match error {
-                        err @ LockFailedError::SubstateIsUp { .. } | err @ LockFailedError::SubstateNotFound { .. } => {
-                            // If the substate does not exist or is not UP (unversioned: previously DOWNed and never
-                            // UPed), the transaction is invalid
+                        err @ LockFailedError::SubstateExists { .. } |
+                        err @ LockFailedError::SubstateNotFound { .. } => {
+                            // An input with no live version, or an output claiming a version that already exists,
+                            // is invalid at every height - no later block can make either succeed
                             let index = lock_status.add_failed(err);
                             lock_status.hard_conflict_idx = Some(index);
                         },
@@ -852,32 +853,24 @@ impl<'store, TTx: StateStoreReadTransaction> PendingSubstateStore<'store, TTx> {
         Ok(())
     }
 
+    /// Asserts that the exact version `id` names has never existed in this chain.
+    ///
+    /// A change recorded against a versioned substate address - UP or DOWN - is proof that the version was created,
+    /// and `SubstateRecord`s outlive their destruction, so existence, not liveness, is the test.
     fn lock_assert_not_exist(&self, id: VersionedSubstateIdRef<'_>) -> Result<(), SubstateStoreError> {
-        if let Some(change) = self.get_pending(&id.to_substate_address()) {
-            if change.is_up() {
-                return Err(SubstateStoreError::LockFailed(LockFailedError::SubstateIsUp {
-                    id: id.to_owned(),
-                }));
-            }
-            return Ok(());
+        if self.get_pending(&id.to_substate_address()).is_some() {
+            return Err(LockFailedError::SubstateExists { id: id.to_owned() }.into());
         }
 
-        if let Some(change) =
-            BlockDiff::get_for_versioned_substate(self.read_transaction(), self.parent_block.block_id(), id)
-                .optional()?
+        if BlockDiff::get_for_versioned_substate(self.read_transaction(), self.parent_block.block_id(), id)
+            .optional()?
+            .is_some()
         {
-            if change.is_up() {
-                return Err(SubstateStoreError::LockFailed(LockFailedError::SubstateIsUp {
-                    id: id.to_owned(),
-                }));
-            }
-            return Ok(());
+            return Err(LockFailedError::SubstateExists { id: id.to_owned() }.into());
         }
 
         if SubstateRecord::exists(self.read_transaction(), id)? {
-            return Err(SubstateStoreError::LockFailed(LockFailedError::SubstateIsUp {
-                id: id.to_owned(),
-            }));
+            return Err(LockFailedError::SubstateExists { id: id.to_owned() }.into());
         }
 
         Ok(())

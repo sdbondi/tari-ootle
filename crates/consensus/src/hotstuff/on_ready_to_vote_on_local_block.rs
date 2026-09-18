@@ -645,8 +645,23 @@ where TConsensusSpec: ConsensusSpec
                         }
 
                         if pool_tx.current_decision().is_commit() {
-                            if let Some(diff) = execution.result().finalize.any_accept() {
-                                substate_store.put_diff(diff)?;
+                            if let Some(diff) = execution.result().finalize.any_accept() &&
+                                let Err(err) = substate_store.put_diff(diff)
+                            {
+                                // An honest proposer skips a transaction whose diff fails to apply with a lock
+                                // failure, so a block that sequences one must not be voted for. Any other store
+                                // error is fatal.
+                                let lock_err = err.ok_lock_failed()?;
+                                warn!(
+                                    target: LOG_TARGET,
+                                    "❌ LocalOnly transaction {} in block {} fails to apply its diff with a lock failure that an honest proposer defers: {}. Not voting on block.",
+                                    pool_tx.id(),
+                                    block,
+                                    lock_err,
+                                );
+                                return Ok(Some(NoVoteReason::DeferrableLockConflict {
+                                    transaction_id: *pool_tx.id(),
+                                }));
                             }
 
                             if atom.leader_fee.is_none() {
@@ -1445,7 +1460,21 @@ where TConsensusSpec: ConsensusSpec
         };
         *total_exhaust_burn += u128::from(exhaust_burn_portion);
 
-        substate_store.put_diff(&filter_diff_for_committee(local_committee_info, diff))?;
+        if let Err(err) = substate_store.put_diff(&filter_diff_for_committee(local_committee_info, diff)) {
+            // An honest proposer skips a transaction whose diff fails to apply with a lock failure, so a block that
+            // sequences one must not be voted for. Any other store error is fatal.
+            let lock_err = err.ok_lock_failed()?;
+            warn!(
+                target: LOG_TARGET,
+                "❌ AllAccept transaction {} in block {} fails to apply its diff with a lock failure that an honest proposer defers: {}. Not voting on block.",
+                tx_rec.id(),
+                block,
+                lock_err,
+            );
+            return Ok(Some(NoVoteReason::DeferrableLockConflict {
+                transaction_id: *tx_rec.id(),
+            }));
+        }
 
         tx_rec.set_next_stage_and_readiness(TransactionPoolStage::AllAccepted, block.shard_group())?;
         proposed_block_change_set.set_next_transaction_update(tx_rec)?;

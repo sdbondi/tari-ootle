@@ -8,7 +8,7 @@ use tari_consensus::{
 use tari_consensus_types::{BlockId, LeafBlock};
 use tari_engine_types::{
     component::{Component, ComponentBody, ComponentHeader},
-    substate::{Substate, SubstateId, SubstateValue},
+    substate::{Substate, SubstateDiff, SubstateId, SubstateValue},
 };
 use tari_ootle_common_types::{
     Epoch,
@@ -239,7 +239,7 @@ fn an_output_lock_over_a_write_lock_requires_the_version_to_not_exist() {
 
     assert!(matches!(
         err.ok_lock_failed().unwrap(),
-        LockFailedError::SubstateIsUp { .. }
+        LockFailedError::SubstateExists { .. }
     ));
 }
 
@@ -272,7 +272,7 @@ fn an_output_lock_over_a_read_lock_requires_the_version_to_not_exist() {
 
     assert!(matches!(
         err.ok_lock_failed().unwrap(),
-        LockFailedError::SubstateIsUp { .. }
+        LockFailedError::SubstateExists { .. }
     ));
 
     // The version the transaction will actually create is still lockable
@@ -287,7 +287,7 @@ fn an_output_lock_over_a_read_lock_requires_the_version_to_not_exist() {
 
 #[test]
 fn an_output_lock_for_a_live_version_is_a_hard_conflict() {
-    // try_lock_all classifies SubstateIsUp as a hard conflict, so the transaction ABORTs rather than being deferred
+    // try_lock_all classifies SubstateExists as a hard conflict, so the transaction ABORTs rather than being deferred
     // to a later block: the version it claims is taken for good.
     let (store, _tmp) = create_store();
 
@@ -316,7 +316,7 @@ fn an_output_lock_for_a_live_version_is_a_hard_conflict() {
     assert!(!lock_status.is_deferrable_conflict());
     assert!(matches!(
         lock_status.hard_conflict().unwrap(),
-        LockFailedError::SubstateIsUp { .. }
+        LockFailedError::SubstateExists { .. }
     ));
 }
 
@@ -413,6 +413,91 @@ fn a_substate_with_no_live_version_is_not_fatal_to_input_resolution() {
         BlockTransactionExecutorError::SubstateStoreError(SubstateStoreError::SubstateNotFound { id })
             .is_not_found_error()
     );
+}
+
+#[test]
+fn an_output_lock_for_a_destroyed_version_is_rejected() {
+    // An OUTPUT lock names the version the transaction will create. A version that an earlier command in the block
+    // destroyed has existed, so claiming it would UP a version that was already spent.
+    let (store, _tmp) = create_store();
+
+    let id = add_substate(&store, 0, 0);
+
+    let tx = store.create_read_tx().unwrap();
+    let mut store = create_pending_store::<TestStore>(&tx);
+
+    store
+        .try_lock(
+            tx_id(1),
+            &RequireLockIntentRef::new(id.substate_id(), 0, SubstateLockType::Write),
+            true,
+        )
+        .unwrap();
+    store.put_diff(&write_diff(&id)).unwrap();
+
+    let err = store
+        .try_lock(
+            tx_id(2),
+            &RequireLockIntentRef::new(id.substate_id(), 0, SubstateLockType::Output),
+            true,
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        err.ok_lock_failed().unwrap(),
+        LockFailedError::SubstateExists { .. }
+    ));
+}
+
+#[test]
+fn a_put_diff_over_a_spent_input_is_a_skippable_lock_failure() {
+    // The proposer skips a transaction whose diff no longer applies and the replica no-votes any block that
+    // sequences one. Both depend on this failure classifying as a lock failure rather than a fatal store error.
+    let (store, _tmp) = create_store();
+
+    let id = add_substate(&store, 0, 0);
+
+    let tx = store.create_read_tx().unwrap();
+    let mut store = create_pending_store::<TestStore>(&tx);
+
+    store.put_diff(&write_diff(&id)).unwrap();
+
+    let err = store.put_diff(&write_diff(&id)).unwrap_err();
+
+    assert!(matches!(
+        err.ok_lock_failed().unwrap(),
+        LockFailedError::SubstateNotFound { .. }
+    ));
+}
+
+#[test]
+fn a_put_diff_upping_over_a_live_version_is_fatal() {
+    // Only lock failures are deferred. A diff that UPs a version whose predecessor is still live is a broken
+    // execution result, and both the proposer and the replica must propagate it.
+    let (store, _tmp) = create_store();
+
+    let id = add_substate(&store, 0, 0);
+
+    let tx = store.create_read_tx().unwrap();
+    let mut store = create_pending_store::<TestStore>(&tx);
+
+    let mut diff = SubstateDiff::new();
+    diff.up(id.substate_id().clone(), new_substate(1, id.version() + 1));
+
+    let err = store.put_diff(&diff).unwrap_err();
+
+    assert!(matches!(
+        err.ok_lock_failed().unwrap_err(),
+        SubstateStoreError::ExpectedSubstateDown { .. }
+    ));
+}
+
+/// The diff of a transaction that takes `id` as a WRITE input: it spends the locked version and creates the next.
+fn write_diff(id: &VersionedSubstateId) -> SubstateDiff {
+    let mut diff = SubstateDiff::new();
+    diff.down(id.substate_id().clone(), id.version());
+    diff.up(id.substate_id().clone(), new_substate(1, id.version() + 1));
+    diff
 }
 
 fn add_substate(store: &TestStore, seed: u8, version: u32) -> VersionedSubstateId {
