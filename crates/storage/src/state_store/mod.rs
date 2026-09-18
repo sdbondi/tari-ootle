@@ -390,9 +390,6 @@ pub trait StateStoreReadTransaction: Sized {
         height: NodeHeight,
         public_key: &RistrettoPublicKeyBytes,
     ) -> Result<bool, StorageError>;
-
-    /// All equivocation evidence recorded for `epoch`, ordered by height then signer.
-    fn vote_equivocations_get_all_for_epoch(&self, epoch: Epoch) -> Result<Vec<VoteEquivocation>, StorageError>;
 }
 
 pub trait StateStoreWriteTransaction {

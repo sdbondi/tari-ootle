@@ -88,7 +88,6 @@ use tari_ootle_storage::{
         TransactionPoolStage,
         TransactionRecord,
         ValidatorConsensusStats,
-        VoteEquivocation,
     },
     time::PrimitiveDateTime,
 };
@@ -2026,15 +2025,6 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
             .cf(vote_equivocation::VoteEquivocationCf)?
             .exists(&(epoch, height, *public_key), OPERATION)?;
         Ok(exists)
-    }
-
-    fn vote_equivocations_get_all_for_epoch(&self, epoch: Epoch) -> Result<Vec<VoteEquivocation>, StorageError> {
-        let evidence = self
-            .db()
-            .cf(vote_equivocation::ByEpochQuery)?
-            .query_prefix_range_value_iterator(Ordering::Ascending, &epoch)
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(evidence)
     }
 }
 

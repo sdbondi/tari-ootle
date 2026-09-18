@@ -9,17 +9,30 @@ use helpers::{create_rocksdb, create_rocksdb_with_opts};
 use tari_consensus_types::{BlockId, ProposalVote, ValidatorSignatureBytes};
 use tari_ootle_common_types::{Epoch, NodeHeight};
 use tari_ootle_storage::{
+    Ordering,
     StateStore,
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
     consensus_models::VoteEquivocation,
 };
 use tari_sidechain::QuorumDecision;
-use tari_state_store_rocksdb::DatabaseOptions;
+use tari_state_store_rocksdb::{DatabaseOptions, RocksDbStateStore, column_families::vote_equivocation};
 use tari_template_lib_types::crypto::{RistrettoPublicKeyBytes, Scalar32Bytes, SchnorrSignatureBytes};
 
 const EPOCH: Epoch = Epoch(7);
 const HEIGHT: NodeHeight = NodeHeight(42);
+
+/// The column family has no read method on the state store: nothing in the node reads the evidence
+/// back yet. Operators reach it through db_inspector, which iterates the CF the same way this does.
+fn stored_for_epoch(db: &RocksDbStateStore<String>, epoch: Epoch) -> Vec<VoteEquivocation> {
+    let tx = db.create_read_tx().unwrap();
+    tx.db()
+        .cf(vote_equivocation::ByEpochQuery)
+        .unwrap()
+        .query_prefix_range_value_iterator(Ordering::Ascending, &epoch)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+}
 
 fn signer(byte: u8) -> RistrettoPublicKeyBytes {
     RistrettoPublicKeyBytes::from_bytes(&[byte; 32]).unwrap()
@@ -98,9 +111,7 @@ fn record_round_trips_both_votes() {
     let evidence = evidence(1);
     assert!(db.with_write_tx(|tx| tx.vote_equivocation_record(&evidence)).unwrap());
 
-    let stored = db
-        .with_read_tx(|tx| tx.vote_equivocations_get_all_for_epoch(EPOCH))
-        .unwrap();
+    let stored = stored_for_epoch(&db, EPOCH);
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].epoch, EPOCH);
     assert_eq!(stored[0].height, HEIGHT);
@@ -129,9 +140,7 @@ fn the_first_evidence_for_a_view_and_signer_is_kept() {
     assert!(db.with_write_tx(|tx| tx.vote_equivocation_record(&first)).unwrap());
     assert!(!db.with_write_tx(|tx| tx.vote_equivocation_record(&later)).unwrap());
 
-    let stored = db
-        .with_read_tx(|tx| tx.vote_equivocations_get_all_for_epoch(EPOCH))
-        .unwrap();
+    let stored = stored_for_epoch(&db, EPOCH);
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].first.signature, signature(1, 1));
 }
@@ -158,18 +167,8 @@ fn evidence_is_scoped_to_its_view_and_signer() {
     })
     .unwrap();
 
-    assert_eq!(
-        db.with_read_tx(|tx| tx.vote_equivocations_get_all_for_epoch(EPOCH))
-            .unwrap()
-            .len(),
-        2
-    );
-    assert_eq!(
-        db.with_read_tx(|tx| tx.vote_equivocations_get_all_for_epoch(EPOCH + Epoch(1)))
-            .unwrap()
-            .len(),
-        1
-    );
+    assert_eq!(stored_for_epoch(&db, EPOCH).len(), 2);
+    assert_eq!(stored_for_epoch(&db, EPOCH + Epoch(1)).len(), 1);
 }
 
 /// Evidence ages out with the blocks of the view it indicts, so an equivocator cannot grow this
@@ -187,15 +186,6 @@ fn epoch_cleanup_prunes_evidence_past_the_retention_window() {
     // Retention is 2 epochs, so cleaning up at EPOCH + 3 prunes everything at or below EPOCH + 1.
     db.with_write_tx(|tx| tx.epoch_cleanup(EPOCH + Epoch(3))).unwrap();
 
-    assert!(
-        db.with_read_tx(|tx| tx.vote_equivocations_get_all_for_epoch(EPOCH))
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        db.with_read_tx(|tx| tx.vote_equivocations_get_all_for_epoch(EPOCH + Epoch(2)))
-            .unwrap()
-            .len(),
-        1
-    );
+    assert!(stored_for_epoch(&db, EPOCH).is_empty());
+    assert_eq!(stored_for_epoch(&db, EPOCH + Epoch(2)).len(), 1);
 }
