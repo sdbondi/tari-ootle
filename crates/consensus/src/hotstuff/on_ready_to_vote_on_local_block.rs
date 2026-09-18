@@ -659,8 +659,9 @@ where TConsensusSpec: ConsensusSpec
                                     block,
                                     lock_err,
                                 );
-                                return Ok(Some(NoVoteReason::DiffNotApplicable {
+                                return Ok(Some(NoVoteReason::ConflictingTransactionProposed {
                                     transaction_id: *pool_tx.id(),
+                                    details: lock_err.to_string(),
                                 }));
                             }
 
@@ -1471,8 +1472,9 @@ where TConsensusSpec: ConsensusSpec
                 block,
                 lock_err,
             );
-            return Ok(Some(NoVoteReason::DiffNotApplicable {
+            return Ok(Some(NoVoteReason::ConflictingTransactionProposed {
                 transaction_id: *tx_rec.id(),
+                details: lock_err.to_string(),
             }));
         }
 

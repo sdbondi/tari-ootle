@@ -856,20 +856,18 @@ impl<'store, TTx: StateStoreReadTransaction> PendingSubstateStore<'store, TTx> {
     /// Asserts that the exact version `id` names has never existed in this chain.
     ///
     /// A change recorded against a versioned substate address - UP or DOWN - is proof that the version was created,
-    /// and `SubstateRecord`s outlive their destruction, so existence, not liveness, is the test.
+    /// and `SubstateRecord`s outlive their destruction, so existence, not liveness, is the test. The three sources are
+    /// checked cheapest first: the in-memory diff, then a point lookup, then the branch scan.
     fn lock_assert_not_exist(&self, id: VersionedSubstateIdRef<'_>) -> Result<(), SubstateStoreError> {
         if self.get_pending(&id.to_substate_address()).is_some() {
             return Err(LockFailedError::SubstateExists { id: id.to_owned() }.into());
         }
 
-        if BlockDiff::get_for_versioned_substate(self.read_transaction(), self.parent_block.block_id(), id)
-            .optional()?
-            .is_some()
-        {
+        if SubstateRecord::exists(self.read_transaction(), id)? {
             return Err(LockFailedError::SubstateExists { id: id.to_owned() }.into());
         }
 
-        if SubstateRecord::exists(self.read_transaction(), id)? {
+        if BlockDiff::contains_versioned_substate(self.read_transaction(), self.parent_block.block_id(), id)? {
             return Err(LockFailedError::SubstateExists { id: id.to_owned() }.into());
         }
 
