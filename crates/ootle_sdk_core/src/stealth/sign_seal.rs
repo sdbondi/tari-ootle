@@ -14,8 +14,10 @@
 //!
 //! Every signature (auth + seal) is signed with a **fresh random Schnorr nonce** ([`sign_random`]) over
 //! the `create_message_v1` digests, and [`crate::tx::bor_encode`] encodes the result. The
-//! `is_seal_signer_authorized` flag is set `true` before building the unsealed tx iff there are zero
-//! authorization signatures.
+//! `is_seal_signer_authorized` flag is set `true` before building the unsealed tx in every seal case:
+//! all three seal with a key the spender controls, so the seal signer is always an authority here.
+//! (The public path in [`crate::tx`] assigns the flag from the authorization-signature count instead,
+//! because a public transaction's seal signer need not be one.)
 //!
 //! ## Comparison mode
 //!
