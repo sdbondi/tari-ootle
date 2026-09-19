@@ -224,6 +224,15 @@ pub trait StateStoreReadTransaction: Sized {
         block_id: &BlockId,
         substate_id: T,
     ) -> Result<SubstateChange, StorageError>;
+    /// Returns whether the branch ending at `block_id` records any change for the given substate version. Selection
+    /// follows the same branch rules as [`Self::block_diffs_get_last_change_for_substate`].
+    ///
+    /// Implementations must answer without reading the change itself - an UP carries the whole substate value.
+    fn block_diffs_contains_versioned_substate<'a, T: Into<VersionedSubstateIdRef<'a>>>(
+        &self,
+        block_id: &BlockId,
+        substate_id: T,
+    ) -> Result<bool, StorageError>;
 
     // -------------------------------- ProposalCertificate -------------------------------- //
     fn proposal_certificates_get(&self, epoch: Epoch, qc_id: &PcId) -> Result<ProposalCertificate, StorageError>;

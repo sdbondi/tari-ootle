@@ -1159,6 +1159,34 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         Ok(change)
     }
 
+    fn block_diffs_contains_versioned_substate<'a, T: Into<VersionedSubstateIdRef<'a>>>(
+        &self,
+        block_id: &BlockId,
+        substate_id: T,
+    ) -> Result<bool, StorageError> {
+        const OPERATION: &str = "block_diffs_contains_versioned_substate";
+        if !self.blocks_exists(block_id)? {
+            return Err(StorageError::QueryError {
+                reason: format!("{OPERATION}: Block {} does not exist", block_id),
+            });
+        }
+
+        let versioned = substate_id.into();
+        let applicable_blocks = self.get_pending_chain_until(block_id)?;
+
+        let query = self.db().cf(block_diff::BySubstateIdQuery)?;
+        // Existence only: the first key for this version in the branch answers it, and the change value - which for
+        // an UP is the whole substate - is never read.
+        for result in query.query_prefix_range_key_iterator(Ordering::default(), versioned.substate_id()) {
+            let key = result?;
+            if key.version == versioned.version() && applicable_blocks.contains(&key.block_id) {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
     fn proposal_certificates_get(&self, epoch: Epoch, qc_id: &PcId) -> Result<ProposalCertificate, StorageError> {
         const OPERATION: &str = "proposal_certificates_get";
         let qc = self.db().cf(ProposalCertificateCf)?.get(&(epoch, *qc_id), OPERATION)?;

@@ -100,6 +100,14 @@ pub enum NoVoteReason {
     BlockExecutionPointsExceeded { total_points: u64, max_points: u64 },
     #[error("Transaction {transaction_id} has substate lock conflicts and must be deferred to a later block")]
     DeferrableLockConflict { transaction_id: TransactionId },
+    /// Locking succeeded but the transaction's state diff does not apply over the pending store. An honest proposer
+    /// skips such a transaction, so it is distinct from [NoVoteReason::DeferrableLockConflict]: the lock rules
+    /// classify the underlying failure as one that no later block can clear.
+    #[error("The proposer proposed a conflicting transaction {transaction_id}: {details}")]
+    ConflictingTransactionProposed {
+        transaction_id: TransactionId,
+        details: String,
+    },
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -148,6 +156,7 @@ impl NoVoteReason {
             Self::BlockWeightExceeded { .. } => "BlockWeightExceeded",
             Self::BlockExecutionPointsExceeded { .. } => "BlockExecutionPointsExceeded",
             Self::DeferrableLockConflict { .. } => "DeferrableLockConflict",
+            Self::ConflictingTransactionProposed { .. } => "ConflictingTransactionProposed",
         }
     }
 }
