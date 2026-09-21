@@ -3,10 +3,12 @@ name: Security audit
 
 'on':
   # A pull request's branch is usually pushed to this repository, so `push` is restricted to the
-  # base branch: otherwise every push to a branch with an open pull request runs the workflow twice.
+  # branches a merge lands on: otherwise every push to a branch with an open pull request runs the
+  # workflow twice.
   push:
     branches:
       - development
+      - main
     paths:
       # Run if workflow changes
       - '.github/workflows/audit.yml'
