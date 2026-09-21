@@ -46,15 +46,6 @@ impl<T> DbDecoder<T> for Minicbor<T>
 where T: for<'b> Decode<'b, ()>
 {
     fn decode(&self, bytes: &[u8]) -> Result<(T, usize), RocksDbStorageError> {
-        // Stored bytes are replayed into the same types the network wrote them as, so the nesting
-        // bound the ingest decoders apply holds on the way back out too.
-        tari_bor::check_nesting_depth(bytes).map_err(|e| RocksDbStorageError::DecodeError {
-            source: anyhow!(
-                "Minicbor decoding failed for type {}: {}",
-                std::any::type_name::<T>(),
-                e
-            ),
-        })?;
         let mut decoder = Decoder::new(bytes);
         let value = decoder.decode().map_err(|e| RocksDbStorageError::DecodeError {
             source: anyhow!(
