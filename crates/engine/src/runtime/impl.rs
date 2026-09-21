@@ -20,7 +20,7 @@
 //   WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use std::{ptr::NonNull, rc::Rc, sync::Arc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use log::{warn, *};
 use tari_bor::{MaybeTagged, decode_exact};
@@ -183,26 +183,40 @@ use crate::{
 
 const LOG_TARGET: &str = "tari::ootle::engine::runtime::impl";
 
+/// The engine's host interface for one transaction.
+///
+/// A nested call runs against the same execution state as the frame that made it, so everything
+/// mutable here is shared rather than owned: [`Self::for_nested_call`] hands out another interface
+/// over the same state, and the caller never has to keep a `&mut` alive across the re-entry.
 pub struct RuntimeInterfaceImpl<TStore, TTemplateProvider> {
-    tracker: StateTracker<TStore>,
+    tracker: Rc<StateTracker<TStore>>,
     template_provider: Arc<TTemplateProvider>,
-    entity_id_provider: EntityIdProvider,
+    entity_id_provider: Rc<RefCell<EntityIdProvider>>,
     seal_signer_public_key: RistrettoPublicKeyBytes,
     modules: ModulesCollection<TStore>,
     claim_burn_proof_verifier: Arc<dyn ClaimProofVerifier + Send + Sync + 'static>,
     /// Transaction blob payloads, immutable for the duration of execution. Used to resolve
     /// `InstructionArg::Blob(idx)` references against the surrounding transaction's blobs.
     blobs: Rc<tari_ootle_transaction::Blobs>,
-    /// A pointer to the runtime that is set after initialization to allow for cross-template calls.
-    runtime_pointer: Option<NonNull<Box<dyn RuntimeInterface>>>,
     /// The introspection context made available to a spend-script predicate for the duration of its evaluation. It is
-    /// set immediately before invoking the predicate and cleared immediately after, so `spend_context_invoke` (which
-    /// re-enters this same interface through the runtime pointer) can serve the `SpendContext` accessors.
-    spend_exec_context: Option<SpendScriptExecution>,
-    /// One-shot: when set, the next pushed call frame is restricted to this write mode and denied cross-template
-    /// calls. Used for the spend-script predicate frame (`ReadOnly`) and the resource auth hook frame
-    /// (`OwnComponent`). Consumed by `push_call_frame`.
-    restricted_frame_pending: Option<FrameWriteMode>,
+    /// set immediately before invoking the predicate and cleared immediately after, so `spend_context_invoke` — which
+    /// the predicate reaches through its own nested interface — can serve the `SpendContext` accessors.
+    spend_exec_context: Rc<RefCell<Option<SpendScriptExecution>>>,
+}
+
+impl<TStore, TTemplateProvider> Clone for RuntimeInterfaceImpl<TStore, TTemplateProvider> {
+    fn clone(&self) -> Self {
+        Self {
+            tracker: self.tracker.clone(),
+            template_provider: self.template_provider.clone(),
+            entity_id_provider: self.entity_id_provider.clone(),
+            seal_signer_public_key: self.seal_signer_public_key,
+            modules: self.modules.clone(),
+            claim_burn_proof_verifier: self.claim_burn_proof_verifier.clone(),
+            blobs: self.blobs.clone(),
+            spend_exec_context: self.spend_exec_context.clone(),
+        }
+    }
 }
 
 impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<Template = LoadedTemplate>>
@@ -217,30 +231,28 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         claim_burn_proof_verifier: Arc<dyn ClaimProofVerifier + Send + Sync + 'static>,
         blobs: Rc<tari_ootle_transaction::Blobs>,
     ) -> Result<Self, RuntimeError> {
-        let mut runtime = Self {
-            tracker,
+        let runtime = Self {
+            tracker: Rc::new(tracker),
             template_provider,
-            entity_id_provider,
+            entity_id_provider: Rc::new(RefCell::new(entity_id_provider)),
             seal_signer_public_key: signer_public_key,
             modules,
             claim_burn_proof_verifier,
             blobs,
-            runtime_pointer: None,
-            spend_exec_context: None,
-            restricted_frame_pending: None,
+            spend_exec_context: Rc::new(RefCell::new(None)),
         };
         runtime.invoke_modules_on_initialize()?;
         Ok(runtime)
     }
 
-    fn invoke_modules_on_initialize(&mut self) -> Result<(), RuntimeError> {
+    fn invoke_modules_on_initialize(&self) -> Result<(), RuntimeError> {
         for module in self.modules.iter() {
-            module.on_initialize(&mut self.tracker)?;
+            module.on_initialize(&self.tracker)?;
         }
         Ok(())
     }
 
-    fn invoke_modules_on_runtime_call(&mut self, function: &'static str) -> Result<(), RuntimeError> {
+    fn invoke_modules_on_runtime_call(&self, function: &'static str) -> Result<(), RuntimeError> {
         // Core sandbox enforcement runs first and unconditionally. It deliberately does NOT live in a
         // RuntimeModule: modules are optional, observer-style functionality (fees, call tracking), so making a
         // security invariant depend on one would mean dropping that module silently re-opens the sandbox. This is the
@@ -248,7 +260,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         // which modules are registered.
         self.enforce_frame_restrictions(function)?;
         for module in self.modules.iter() {
-            module.on_runtime_call(&mut self.tracker, function)?;
+            module.on_runtime_call(&self.tracker, function)?;
         }
         Ok(())
     }
@@ -288,9 +300,9 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         }
     }
 
-    fn invoke_modules_on_before_finalize(&mut self) -> Result<(), RuntimeError> {
+    fn invoke_modules_on_before_finalize(&self) -> Result<(), RuntimeError> {
         for module in self.modules.iter() {
-            module.on_before_finalize(&mut self.tracker)?;
+            module.on_before_finalize(&self.tracker)?;
         }
         Ok(())
     }
@@ -304,7 +316,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
     /// which on a fee-intent commit holds only what the fee intent touched. A transaction is
     /// therefore gated on the cost of the state it asked to commit, but pays for the state that is
     /// really persisted.
-    fn finalize_with(&mut self, failure: Option<RejectReason>) -> Result<FinalizeResult, RuntimeError> {
+    fn finalize_with(&self, failure: Option<RejectReason>) -> Result<FinalizeResult, RuntimeError> {
         self.invoke_modules_on_before_finalize()?;
         let mut finalized = self.tracker.select_finalized_state(failure)?;
         // A commit persists the very state the first pass charged against, so charging it again
@@ -316,23 +328,24 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         self.tracker.finalize(finalized)
     }
 
-    fn invoke_modules_on_fee_checkpoint(&mut self) -> Result<(), RuntimeError> {
+    fn invoke_modules_on_fee_checkpoint(&self) -> Result<(), RuntimeError> {
         for module in self.modules.iter() {
-            module.on_fee_checkpoint(&mut self.tracker.chargeable_state())?;
+            self.tracker
+                .with_chargeable_state(|state| module.on_fee_checkpoint(state))?;
         }
         Ok(())
     }
 
-    fn invoke_modules_on_before_persist(&mut self, finalized: &mut FinalizedState<TStore>) -> Result<(), RuntimeError> {
+    fn invoke_modules_on_before_persist(&self, finalized: &mut FinalizedState<TStore>) -> Result<(), RuntimeError> {
         for module in self.modules.iter() {
             module.on_before_persist(&mut finalized.chargeable_state())?;
         }
         Ok(())
     }
 
-    fn invoke_modules_on_runtime_event(&mut self, event: RuntimeEvent) -> Result<(), RuntimeError> {
+    fn invoke_modules_on_runtime_event(&self, event: RuntimeEvent) -> Result<(), RuntimeError> {
         for module in self.modules.iter() {
-            module.on_runtime_event(&mut self.tracker, &event)?;
+            module.on_runtime_event(&self.tracker, &event)?;
         }
         Ok(())
     }
@@ -423,7 +436,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
     }
 
     fn invoke_resource_access_hook(
-        &mut self,
+        &self,
         auth_hook: AuthHook,
         mut auth_caller: AuthHookCaller,
         action: ResourceAuthAction,
@@ -471,15 +484,14 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         })?;
 
         // The signature of a call back is (action: ResourceAuthAction, auth_caller: AuthHookCaller).
-        // The hook frame carries the acting component's caller badges, and the acting component never chose the hook
-        // code, so the frame is confined to its own component state: it cannot use those badges to act on any vault
-        // or resource, nor call out to a frame that could.
-        self.restricted_frame_pending = Some(FrameWriteMode::OwnComponent);
-        let ret = self.invoke_component_method(auth_hook.component_address, &auth_hook.method, invoke_args![
-            action,
-            auth_caller
-        ]);
-        self.restricted_frame_pending = None;
+        // The acting component never chose the hook code, so the hook's frame is confined to its own component
+        // state: it cannot act on any vault or resource it was handed, nor call out to a frame that could.
+        let ret = self.invoke_component_method(
+            auth_hook.component_address,
+            &auth_hook.method,
+            invoke_args![action, auth_caller],
+            Some(FrameWriteMode::OwnComponent),
+        );
         let ret = ret.map_err(|e| match e {
             RuntimeError::CrossTemplateCallMethodError { details, .. } => RuntimeError::AccessDeniedAuthHook {
                 action_ident: action.into(),
@@ -506,26 +518,30 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         Ok(())
     }
 
-    fn get_call_runtime(&self) -> Runtime {
-        // Load the runtime pointer that must be set by whoever initialized this interface
-        let ptr = self.runtime_pointer.expect("BUG: Runtime pointer not set");
-        Runtime::from_pointer(ptr.as_ptr()).expect("Runtime pointer is null")
+    /// An interface over this transaction's state for a nested call to run against.
+    ///
+    /// The nested frame shares the state, not the handle: every frame gets its own interface, so no
+    /// frame holds a borrow of another's while its call is in flight.
+    fn for_nested_call(&self) -> Runtime {
+        Runtime::new(Rc::new(self.clone()))
     }
 
     fn invoke_component_method(
-        &mut self,
+        &self,
         component_address: ComponentAddress,
         method: &str,
         args: Vec<Bytes>,
+        restrict_frame_to: Option<FrameWriteMode>,
     ) -> Result<InstructionResult, RuntimeError> {
-        let mut call_runtime = self.get_call_runtime();
+        let call_runtime = self.for_nested_call();
 
         TransactionProcessor::<TStore, _>::call_method(
             &*self.template_provider,
-            &mut call_runtime,
+            &call_runtime,
             component_address.into(),
             method,
             args.into_iter().map(InstructionArg::Literal).collect(),
+            restrict_frame_to,
         )
         .map_err(|e| RuntimeError::CrossTemplateCallMethodError {
             component_address,
@@ -535,19 +551,21 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
     }
 
     fn invoke_template_function(
-        &mut self,
+        &self,
         template_address: &TemplateAddress,
         function: &str,
         args: Vec<InstructionArg>,
+        restrict_frame_to: Option<FrameWriteMode>,
     ) -> Result<InstructionResult, RuntimeError> {
-        let mut call_runtime = self.get_call_runtime();
+        let call_runtime = self.for_nested_call();
 
         TransactionProcessor::<TStore, _>::call_function(
             &*self.template_provider,
-            &mut call_runtime,
+            &call_runtime,
             template_address,
             function,
             args,
+            restrict_frame_to,
         )
         .map_err(|e| RuntimeError::CrossTemplateCallFunctionError {
             template_address: *template_address,
@@ -559,7 +577,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
     /// Takes a resource's write lock back after its auth hook has run. A hook must be able to read the resource it
     /// guards, so the lock cannot be held across the call; the hook frame cannot write, so what it reads is what
     /// the operation goes on to alter.
-    fn relock_resource_for_write(&mut self, resource_address: ResourceAddress) -> Result<LockedSubstate, RuntimeError> {
+    fn relock_resource_for_write(&self, resource_address: ResourceAddress) -> Result<LockedSubstate, RuntimeError> {
         self.tracker
             .write_with(|state_mut| state_mut.write_lock_substate(SubstateId::Resource(resource_address)))
     }
@@ -582,7 +600,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
     /// of its proof crypto runs. The charged work must match what `WorkingState::mint_resource` goes on to verify:
     /// the value proof is only checked when the resource tracks supply and the statement mints a commitment.
     fn charge_confidential_mint(
-        &mut self,
+        &self,
         mint_arg: &MintArg,
         has_view_key: bool,
         is_total_supply_tracking_enabled: bool,
@@ -619,7 +637,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
 
     /// Validates that `hook` names a method with an authorization hook's signature. `argument` names the engine
     /// argument the hook arrived in, so that a rejection points at the call the caller actually made.
-    fn check_resource_auth_hook(&mut self, argument: &'static str, hook: &AuthHook) -> Result<(), RuntimeError> {
+    fn check_resource_auth_hook(&self, argument: &'static str, hook: &AuthHook) -> Result<(), RuntimeError> {
         let template_address = self
             .tracker
             .write_with(|state| state.get_template_for_component(hook.component_address))?;
@@ -762,7 +780,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
     ///   inclusion proof is verified exactly once, here), then the leaf is evaluated: an `AccessRule` leaf natively, a
     ///   `TemplateFunction` leaf as a read-only WASM predicate.
     fn verify_input_authorizations(
-        &mut self,
+        &self,
         resource_address: ResourceAddressRef,
         statement: &StealthTransferStatement,
     ) -> Result<(), RuntimeError> {
@@ -843,7 +861,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
     /// validates the revealed leaf's structure, binds it to the committed `condition_root`, then evaluates it.
     #[allow(clippy::too_many_arguments)]
     fn verify_script_path_authorization(
-        &mut self,
+        &self,
         leaf: &SpendCondition,
         proof: &MerkleProof,
         data: &Bytes,
@@ -929,7 +947,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
     /// `validate_condition_structure` guarantees by rejecting any other consumer).
     #[allow(clippy::too_many_arguments)]
     fn evaluate_condition_leaf(
-        &mut self,
+        &self,
         leaf: &SpendCondition,
         input_index: u32,
         input_commitment: PedersenCommitmentBytes,
@@ -956,7 +974,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
     /// [`TemplateFunction`], a native [`BuiltinPredicate`], or a native [`Covenant`].
     #[allow(clippy::too_many_arguments)]
     fn evaluate_atomic_condition(
-        &mut self,
+        &self,
         condition: &AtomicCondition,
         input_index: u32,
         input_commitment: PedersenCommitmentBytes,
@@ -1008,7 +1026,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
     /// spend with [`RuntimeError::SpendConditionNotMet`] if it does not hold. A data-consuming predicate (the hashlock)
     /// reads the entire witness `data` blob as raw bytes; `validate_condition_structure` guarantees it is the leaf's
     /// sole consumer, so the whole blob is unambiguously its input.
-    fn evaluate_builtin(&mut self, predicate: &BuiltinPredicate, data: &[u8]) -> Result<(), RuntimeError> {
+    fn evaluate_builtin(&self, predicate: &BuiltinPredicate, data: &[u8]) -> Result<(), RuntimeError> {
         let satisfied = match predicate {
             BuiltinPredicate::AfterEpoch(unlock_epoch) => self.tracker.get_current_epoch()?.as_u64() >= *unlock_epoch,
             BuiltinPredicate::BeforeEpoch(deadline_epoch) => {
@@ -1030,7 +1048,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
     /// WASM `TemplateFunction` reads it, via the host op.
     #[allow(clippy::too_many_arguments)]
     fn evaluate_covenant(
-        &mut self,
+        &self,
         covenant: &Covenant,
         input_index: u32,
         input_commitment: PedersenCommitmentBytes,
@@ -1067,7 +1085,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
     /// (`WriteInReadOnlyContext`) — aborts it as `SpendScriptRejected`.
     #[allow(clippy::too_many_arguments)]
     fn evaluate_spend_script(
-        &mut self,
+        &self,
         tf: &TemplateFunction,
         input_index: u32,
         input_commitment: PedersenCommitmentBytes,
@@ -1097,13 +1115,11 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
             tari_bor::encode(&SpendContext::new(input_index))?.into(),
         ));
 
-        // Make the introspection context reachable for the duration of the call (re-entered via the runtime pointer),
-        // and restrict the predicate's frame to a read-only, non-cross-template sandbox.
-        self.spend_exec_context = Some(exec);
-        self.restricted_frame_pending = Some(FrameWriteMode::ReadOnly);
-        let result = self.invoke_template_function(&tf.template, &tf.function, args);
-        self.spend_exec_context = None;
-        self.restricted_frame_pending = None;
+        // Make the introspection context reachable for the duration of the call, and restrict the predicate's frame
+        // to a read-only, non-cross-template sandbox.
+        *self.spend_exec_context.borrow_mut() = Some(exec);
+        let result = self.invoke_template_function(&tf.template, &tf.function, args, Some(FrameWriteMode::ReadOnly));
+        *self.spend_exec_context.borrow_mut() = None;
 
         result
             .map(|_| ())
@@ -1116,12 +1132,12 @@ where
     TStore: StateReader + Clone + 'static,
     TTemplateProvider: TemplateProvider<Template = LoadedTemplate>,
 {
-    fn next_entity_id(&mut self) -> Result<EntityId, RuntimeError> {
-        let id = self.entity_id_provider.next_entity_id()?;
+    fn next_entity_id(&self) -> Result<EntityId, RuntimeError> {
+        let id = self.entity_id_provider.borrow_mut().next_entity_id()?;
         Ok(id)
     }
 
-    fn emit_event(&mut self, topic: String, payload: Metadata) -> Result<(), RuntimeError> {
+    fn emit_event(&self, topic: String, payload: Metadata) -> Result<(), RuntimeError> {
         if let Err(reason) = Event::validate_custom_topic(&topic) {
             return Err(RuntimeError::InvalidEventTopic { topic, reason });
         }
@@ -1146,7 +1162,7 @@ where
         Ok(())
     }
 
-    fn emit_log(&mut self, level: LogLevel, message: String) -> Result<(), RuntimeError> {
+    fn emit_log(&self, level: LogLevel, message: String) -> Result<(), RuntimeError> {
         self.invoke_modules_on_runtime_call("emit_log")?;
 
         let log_level = match level {
@@ -1166,7 +1182,7 @@ where
         Ok(())
     }
 
-    fn load_component(&mut self, call: ComponentReference) -> Result<(ComponentAddress, Component), RuntimeError> {
+    fn load_component(&self, call: ComponentReference) -> Result<(ComponentAddress, Component), RuntimeError> {
         self.invoke_modules_on_runtime_call("load_component")?;
         match call {
             ComponentReference::Address(address) => self.tracker.write_with(|state_mut| {
@@ -1233,17 +1249,13 @@ where
         }
     }
 
-    fn lock_component(
-        &mut self,
-        address: ComponentAddress,
-        lock_flag: LockFlag,
-    ) -> Result<LockedSubstate, RuntimeError> {
+    fn lock_component(&self, address: ComponentAddress, lock_flag: LockFlag) -> Result<LockedSubstate, RuntimeError> {
         self.tracker.lock_substate(SubstateId::Component(address), lock_flag)
     }
 
     #[allow(clippy::too_many_lines)]
     fn component_invoke(
-        &mut self,
+        &self,
         component_ref: ComponentRef,
         action: ComponentAction,
         args: EngineArgs,
@@ -1507,7 +1519,7 @@ where
 
     #[allow(clippy::too_many_lines)]
     fn resource_invoke(
-        &mut self,
+        &self,
         resource_ref: ResourceRef,
         action: ResourceAction,
         args: EngineArgs,
@@ -2367,7 +2379,7 @@ where
 
     #[allow(clippy::too_many_lines)]
     fn vault_invoke(
-        &mut self,
+        &self,
         vault_ref: VaultRef,
         action: VaultAction,
         args: EngineArgs,
@@ -2960,7 +2972,7 @@ where
 
     #[allow(clippy::too_many_lines)]
     fn bucket_invoke(
-        &mut self,
+        &self,
         bucket_ref: BucketRef,
         action: BucketAction,
         args: EngineArgs,
@@ -3293,7 +3305,7 @@ where
     }
 
     fn proof_invoke(
-        &mut self,
+        &self,
         proof_ref: ProofRef,
         action: ProofAction,
         args: EngineArgs,
@@ -3409,7 +3421,7 @@ where
         }
     }
 
-    fn workspace_invoke(&mut self, action: WorkspaceAction, args: EngineArgs) -> Result<InvokeResult, RuntimeError> {
+    fn workspace_invoke(&self, action: WorkspaceAction, args: EngineArgs) -> Result<InvokeResult, RuntimeError> {
         self.invoke_modules_on_runtime_call("workspace_invoke")?;
 
         debug!(target: LOG_TARGET, "Workspace invoke: {:?}", action,);
@@ -3485,7 +3497,7 @@ where
     }
 
     fn non_fungible_invoke(
-        &mut self,
+        &self,
         nf_addr: NonFungibleAddress,
         action: NonFungibleAction,
         args: EngineArgs,
@@ -3540,7 +3552,7 @@ where
         }
     }
 
-    fn consensus_invoke(&mut self, action: ConsensusAction) -> Result<InvokeResult, RuntimeError> {
+    fn consensus_invoke(&self, action: ConsensusAction) -> Result<InvokeResult, RuntimeError> {
         self.invoke_modules_on_runtime_call("consensus_invoke")?;
         match action {
             ConsensusAction::GetCurrentEpoch => {
@@ -3554,7 +3566,7 @@ where
         }
     }
 
-    fn generate_random_invoke(&mut self, action: GenerateRandomAction) -> Result<InvokeResult, RuntimeError> {
+    fn generate_random_invoke(&self, action: GenerateRandomAction) -> Result<InvokeResult, RuntimeError> {
         self.invoke_modules_on_runtime_call("generate_random_invoke")?;
         match action {
             GenerateRandomAction::GetRandomBytes { len } => {
@@ -3568,7 +3580,7 @@ where
         }
     }
 
-    fn generate_uuid(&mut self) -> Result<[u8; 32], RuntimeError> {
+    fn generate_uuid(&self) -> Result<[u8; 32], RuntimeError> {
         self.invoke_modules_on_runtime_call("generate_uuid")?;
         self.tracker.write_with(|state| {
             let epoch_hash = state.get_current_epoch_hash()?;
@@ -3576,7 +3588,7 @@ where
         })
     }
 
-    fn set_last_instruction_output(&mut self, value: IndexedValue) -> Result<(), RuntimeError> {
+    fn set_last_instruction_output(&self, value: IndexedValue) -> Result<(), RuntimeError> {
         self.invoke_modules_on_runtime_call("set_last_instruction_output")?;
         self.tracker.write_with(|state| {
             state.set_last_instruction_output(value);
@@ -3584,11 +3596,7 @@ where
         Ok(())
     }
 
-    fn claim_burn(
-        &mut self,
-        claim: MinotariBurnClaimProof,
-        output_data: ClaimBurnOutputData,
-    ) -> Result<(), RuntimeError> {
+    fn claim_burn(&self, claim: MinotariBurnClaimProof, output_data: ClaimBurnOutputData) -> Result<(), RuntimeError> {
         let epoch = self.tracker.get_current_epoch()?;
         self.tracker
             .charge_native_execution(tari_engine_types::limits::NativeExecutionPoints::PER_CLAIM_BURN)?;
@@ -3630,7 +3638,7 @@ where
     }
 
     fn claim_validator_fees(
-        &mut self,
+        &self,
         pool_address: ValidatorFeePoolAddress,
         max_amount: Option<Amount>,
     ) -> Result<(), RuntimeError> {
@@ -3656,7 +3664,7 @@ where
         self.tracker.required_fee_payment()
     }
 
-    fn checkpoint_fee_intent(&mut self) -> Result<(), RuntimeError> {
+    fn checkpoint_fee_intent(&self) -> Result<(), RuntimeError> {
         // Price the state the fee intent ended on before testing what was paid against it. This is
         // the state a transaction that cannot afford its main intent falls back to committing, so a
         // payment that cannot cover it cannot commit anything at all — better established here,
@@ -3672,14 +3680,14 @@ where
         self.tracker.fee_checkpoint()
     }
 
-    fn finalize(&mut self) -> Result<FinalizeResult, RuntimeError> {
+    fn finalize(&self) -> Result<FinalizeResult, RuntimeError> {
         // Finalization adds no fee charge of its own. The template never invoked it, and the compute
         // allowance is sized against the charges standing when it is computed, so anything charged
         // afterwards puts the total past what that allowance was sized to fit inside.
         self.finalize_with(None)
     }
 
-    fn finalize_failure(&mut self, reason: RejectReason) -> Result<FinalizeResult, RuntimeError> {
+    fn finalize_failure(&self, reason: RejectReason) -> Result<FinalizeResult, RuntimeError> {
         self.finalize_with(Some(reason))
     }
 
@@ -3691,7 +3699,7 @@ where
     }
 
     fn caller_context_invoke(
-        &mut self,
+        &self,
         action: CallerContextAction,
         args: EngineArgs,
     ) -> Result<InvokeResult, RuntimeError> {
@@ -3733,7 +3741,7 @@ where
         }
     }
 
-    fn allocate_address_invoke(&mut self, action: AddressAllocationInvokeArg) -> Result<InvokeResult, RuntimeError> {
+    fn allocate_address_invoke(&self, action: AddressAllocationInvokeArg) -> Result<InvokeResult, RuntimeError> {
         self.invoke_modules_on_runtime_call("allocate_address_invoke")?;
 
         self.tracker.write_with(|state| {
@@ -3779,7 +3787,7 @@ where
         })
     }
 
-    fn call_invoke(&mut self, action: CallAction, args: EngineArgs) -> Result<InvokeResult, RuntimeError> {
+    fn call_invoke(&self, action: CallAction, args: EngineArgs) -> Result<InvokeResult, RuntimeError> {
         self.invoke_modules_on_runtime_call("call_invoke")?;
         self.tracker.read_with(|state| {
             let frame = state.current_call_frame()?;
@@ -3808,6 +3816,7 @@ where
                     &template_address,
                     &function,
                     args.into_iter().map(InstructionArg::Literal).collect(),
+                    None,
                 )?
             },
             CallAction::CallMethod => {
@@ -3817,14 +3826,14 @@ where
                     args,
                 } = args.assert_one_arg()?;
 
-                self.invoke_component_method(component_address, &method, args)?
+                self.invoke_component_method(component_address, &method, args, None)?
             },
         };
 
         Ok(InvokeResult::from_value(exec_result.indexed.into_value())?)
     }
 
-    fn builtin_template_invoke(&mut self, action: BuiltinTemplateAction) -> Result<InvokeResult, RuntimeError> {
+    fn builtin_template_invoke(&self, action: BuiltinTemplateAction) -> Result<InvokeResult, RuntimeError> {
         self.invoke_modules_on_runtime_call("builtin_template_invoke")?;
 
         let address = match action {
@@ -3852,7 +3861,7 @@ where
         })
     }
 
-    fn revoke_boundary_proofs(&mut self) -> Result<(), RuntimeError> {
+    fn revoke_boundary_proofs(&self) -> Result<(), RuntimeError> {
         self.tracker.write_with(|state| state.revoke_boundary_proofs())
     }
 
@@ -3873,7 +3882,7 @@ where
         })
     }
 
-    fn update_component_template(&mut self, new_template: TemplateAddress) -> Result<(), RuntimeError> {
+    fn update_component_template(&self, new_template: TemplateAddress) -> Result<(), RuntimeError> {
         self.tracker.write_with(|state_mut| {
             let locked = state_mut
                 .current_call_scope()?
@@ -3904,24 +3913,22 @@ where
             .read_with(|state| state.check_all_substates_known(value.well_known_types()))
     }
 
-    fn push_call_frame(&mut self, frame: PushCallFrame) -> Result<(), RuntimeError> {
+    fn push_call_frame(&self, frame: PushCallFrame, restrict_to: Option<FrameWriteMode>) -> Result<(), RuntimeError> {
         self.tracker.push_call_frame(frame)?;
-        // Spend-script predicates and auth hooks are invoked via the generic `call_function` / `call_method` paths,
-        // so we restrict the frame they just pushed here rather than threading a flag through those paths. The WASM
-        // only runs after this returns, so the restriction is in place before any host op can be issued.
-        if let Some(mode) = self.restricted_frame_pending.take() {
+        // The WASM only runs after this returns, so the restriction is in place before any host op can be issued.
+        if let Some(mode) = restrict_to {
             self.tracker.write_with(|state| state.restrict_current_frame(mode))?;
         }
         Ok(())
     }
 
-    fn pop_call_frame(&mut self, returned: &IndexedWellKnownTypes) -> Result<(), RuntimeError> {
+    fn pop_call_frame(&self, returned: &IndexedWellKnownTypes) -> Result<(), RuntimeError> {
         self.tracker.pop_call_frame(returned)?;
         Ok(())
     }
 
     fn publish_template(
-        &mut self,
+        &self,
         template: TemplateBlob,
         metadata_hash: Option<MetadataHash>,
         template_def: TemplateDef,
@@ -3971,7 +3978,7 @@ where
         })
     }
 
-    fn put_on_workspace(&mut self, id: WorkspaceId, value: IndexedValue) -> Result<(), RuntimeError> {
+    fn put_on_workspace(&self, id: WorkspaceId, value: IndexedValue) -> Result<(), RuntimeError> {
         self.invoke_modules_on_runtime_call("put_on_workspace")?;
 
         self.validate_return_value(&value)?;
@@ -3981,7 +3988,7 @@ where
         Ok(())
     }
 
-    fn intrinsic_invoke(&mut self, intrinsic: IntrinsicId, args: EngineArgs) -> Result<InvokeResult, RuntimeError> {
+    fn intrinsic_invoke(&self, intrinsic: IntrinsicId, args: EngineArgs) -> Result<InvokeResult, RuntimeError> {
         self.invoke_modules_on_runtime_call("intrinsic_invoke")?;
 
         // Priced from the declared arguments and charged before the work runs, so a transaction that
@@ -3992,15 +3999,13 @@ where
         intrinsics::dispatch(intrinsic, args)
     }
 
-    fn spend_context_invoke(&mut self, action: SpendContextAction) -> Result<InvokeResult, RuntimeError> {
+    fn spend_context_invoke(&self, action: SpendContextAction) -> Result<InvokeResult, RuntimeError> {
         self.invoke_modules_on_runtime_call("spend_context_invoke")?;
 
         // Only reachable while a spend-script predicate is executing; `spend_exec_context` is set immediately before
         // the predicate is invoked and cleared immediately after.
-        let ctx = self
-            .spend_exec_context
-            .as_ref()
-            .ok_or(RuntimeError::SpendContextUnavailable)?;
+        let ctx = self.spend_exec_context.borrow();
+        let ctx = ctx.as_ref().ok_or(RuntimeError::SpendContextUnavailable)?;
 
         match action {
             SpendContextAction::Inputs => Ok(InvokeResult::encode(&ctx.inputs)?),
@@ -4021,7 +4026,7 @@ where
 
     /// Create a new address allocation for the provided substate type and entity id
     fn allocate_address(
-        &mut self,
+        &self,
         substate_type: AllocatableAddressType,
         entity_id: EntityId,
         workspace_id: WorkspaceId,
@@ -4049,7 +4054,7 @@ where
     }
 
     fn stealth_transfer(
-        &mut self,
+        &self,
         resource_address: ResourceAddressRef,
         statement: StealthTransferStatement,
         revealed_funds_bucket_id: Option<BucketId>,
@@ -4103,7 +4108,7 @@ where
         })
     }
 
-    fn pay_fee(&mut self, pay_fee: PayFee) -> Result<(), RuntimeError> {
+    fn pay_fee(&self, pay_fee: PayFee) -> Result<(), RuntimeError> {
         if self.tracker.is_fee_intent_checkpointed() {
             return Err(RuntimeError::FeePaymentInMainIntent);
         }
@@ -4135,7 +4140,7 @@ where
     }
 
     fn track_template_loaded(
-        &mut self,
+        &self,
         template_address: &TemplateAddress,
         bytes_loaded: usize,
     ) -> Result<(), RuntimeError> {
@@ -4147,28 +4152,28 @@ where
         // Note: per-transaction dedup is intentionally pushed into the modules that want it (see
         // `FeeModule::on_template_loaded`), so observer-style modules continue to see every load.
         for module in self.modules.iter() {
-            module.on_template_loaded(&mut self.tracker, template_address, bytes_loaded)?;
+            module.on_template_loaded(&self.tracker, template_address, bytes_loaded)?;
         }
         Ok(())
     }
 
-    fn record_wasm_execution(&mut self, points_consumed: u64) -> Result<(), RuntimeError> {
+    fn record_wasm_execution(&self, points_consumed: u64) -> Result<(), RuntimeError> {
         // Accumulate into the transaction-wide total unconditionally (not via a module) so the
         // per-transaction budget is enforced even when fee charging is disabled. The fee module
         // reads this total in `on_before_finalize` to compute the WASM execution charge.
         self.tracker.accumulate_wasm_points(points_consumed);
         for module in self.modules.iter() {
-            module.on_wasm_execution(&mut self.tracker, points_consumed)?;
+            module.on_wasm_execution(&self.tracker, points_consumed)?;
         }
         Ok(())
     }
 
-    fn charge_template_instantiation(&mut self, shape: &ModuleShape) -> Result<(), RuntimeError> {
+    fn charge_template_instantiation(&self, shape: &ModuleShape) -> Result<(), RuntimeError> {
         self.tracker
             .charge_native_execution(tari_engine_types::limits::instantiation_points(shape))
     }
 
-    fn charge_template_compile(&mut self, binary_bytes: u64) -> Result<(), RuntimeError> {
+    fn charge_template_compile(&self, binary_bytes: u64) -> Result<(), RuntimeError> {
         self.tracker
             .charge_native_execution(tari_engine_types::limits::template_compile_points(binary_bytes))
     }
@@ -4233,10 +4238,6 @@ where
                 })
             })
         })?
-    }
-
-    fn set_runtime_pointer(&mut self, pointer: *mut Box<dyn RuntimeInterface>) {
-        self.runtime_pointer = NonNull::new(pointer);
     }
 }
 
