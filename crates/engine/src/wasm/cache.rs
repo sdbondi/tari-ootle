@@ -73,10 +73,11 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// say so.
 ///
 /// The inputs are the sources that define the engine configuration and the metering cost tables,
-/// the limits baked into the artifact, and this file's header layout. Source text is a coarse input
-/// — a comment edit moves the fingerprint — and coarse in the safe direction: a spurious move costs
-/// a recompile per template, and [`WasmModuleCache::build_index`] reaps the orphans, while a missed
-/// move is a consensus divergence.
+/// this file — whose header layout decides which field a hit reads each count out of — and every
+/// limit either bakes in. Source text is a coarse input — a comment edit moves the fingerprint —
+/// and coarse in the safe direction: a spurious move costs a recompile per template, and
+/// [`WasmModuleCache::build_index`] reaps the orphans, while a missed move is a consensus
+/// divergence.
 ///
 /// The wasmer version is the one input not derived here, because a crate cannot read its
 /// dependencies' resolved versions and a published crate cannot reach the lockfile. Two things
@@ -97,15 +98,36 @@ pub static ENGINE_FINGERPRINT: LazyLock<String> = LazyLock::new(|| {
         include_str!("bulk_metering.rs").as_bytes(),
         // The memory and table bounds applied when an instance's storage is created.
         include_str!("limiting_tunable.rs").as_bytes(),
+        // This file: the order and meaning of the header fields a hit reads the shape counts out
+        // of live here and nowhere else, so swapping two of them is a fee change.
+        include_str!("cache.rs").as_bytes(),
     ] {
+        // Length-prefixed, so that text moved from one part to another still moves the digest.
+        hasher.update((part.len() as u64).to_le_bytes());
         hasher.update(part);
     }
+    // Every limit, not just the ones the artifact bakes in: `validate_module_structure` enforces
+    // `max_tables` and `max_globals` at compile time only, and a hit goes straight to
+    // `finalize_loaded_module` without it. Destructured rather than read field by field, so that a
+    // limit added later does not compile until it is named here.
+    let limits::WasmLimits {
+        max_function_arguments,
+        max_function_name_length,
+        max_functions,
+        max_memory_pages,
+        max_globals,
+        max_tables,
+        max_table_elements,
+    } = limits::WASM_LIMITS;
     for limit in [
         u128::from(limits::MAX_WASM_POINTS_PER_CALL),
-        limits::WASM_LIMITS.max_memory_pages as u128,
-        u128::from(limits::WASM_LIMITS.max_table_elements),
-        HEADER_FIELD_COUNT as u128,
-        HEADER_BYTES as u128,
+        max_function_arguments as u128,
+        max_function_name_length as u128,
+        max_functions as u128,
+        max_memory_pages as u128,
+        max_globals as u128,
+        max_tables as u128,
+        u128::from(max_table_elements),
     ] {
         hasher.update(limit.to_le_bytes());
     }
@@ -273,13 +295,31 @@ fn parse_orphan_name(name: &str) -> Option<TemplateAddress> {
 /// `rkyv::access_unchecked` and hands one that fails the prefix check to an ELF loader. The
 /// integrity tag does not help — a writer can write a matching one — so the mode is what makes the
 /// directory's contents this process's own.
+///
+/// Hardening, so it reports rather than fails: a directory owned by another uid — an earlier run
+/// as root against the same mounted data dir, say — cannot be chmod'd, and a node that has to
+/// recompile every template is a better outcome than one that will not start. A deployment that
+/// shares this directory between two accounts through a group loses the second account's writes,
+/// which is the point rather than a side effect.
 #[cfg(unix)]
-fn restrict_dir_to_owner(dir: &Path) -> io::Result<()> {
+fn restrict_dir_to_owner(dir: &Path) {
     use std::os::unix::fs::PermissionsExt;
 
-    let mode = fs::metadata(dir)?.permissions().mode();
+    let mode = match fs::metadata(dir) {
+        Ok(meta) => meta.permissions().mode(),
+        Err(e) => {
+            warn!(
+                target: LOG_TARGET,
+                "Could not read the mode of the Wasm module cache at {}: {}. Anything able to write \
+                 there chooses the native code this node runs.",
+                dir.display(),
+                e,
+            );
+            return;
+        },
+    };
     if mode & 0o022 == 0 {
-        return Ok(());
+        return;
     }
     warn!(
         target: LOG_TARGET,
@@ -288,13 +328,19 @@ fn restrict_dir_to_owner(dir: &Path) -> io::Result<()> {
         mode & 0o7777,
         mode & 0o7777 & !0o022,
     );
-    fs::set_permissions(dir, fs::Permissions::from_mode(mode & !0o022))
+    if let Err(e) = fs::set_permissions(dir, fs::Permissions::from_mode(mode & !0o022)) {
+        warn!(
+            target: LOG_TARGET,
+            "Could not restrict the Wasm module cache at {} to its owner: {}. Anything able to \
+             write there chooses the native code this node runs.",
+            dir.display(),
+            e,
+        );
+    }
 }
 
 #[cfg(not(unix))]
-fn restrict_dir_to_owner(_dir: &Path) -> io::Result<()> {
-    Ok(())
-}
+fn restrict_dir_to_owner(_dir: &Path) {}
 
 /// The identity a later unlink compares against, where the platform has one.
 #[cfg(unix)]
@@ -398,7 +444,7 @@ impl WasmModuleCache {
     pub fn open(dir: impl Into<PathBuf>, cap_bytes: u64) -> io::Result<Self> {
         let dir = dir.into();
         fs::create_dir_all(&dir)?;
-        restrict_dir_to_owner(&dir)?;
+        restrict_dir_to_owner(&dir);
         let (writes, requests) = mpsc::sync_channel(WRITE_QUEUE_CAPACITY);
         let cache = Self {
             index: Arc::new(Mutex::new(Self::build_index(&dir, cap_bytes)?)),
@@ -543,9 +589,9 @@ impl WasmModuleCache {
     ///
     /// The file is `mmap`'d rather than read into a `Vec<u8>` — wasmer's
     /// deserialize path accepts `bytes::Bytes` and `Bytes::from_owner` lets us
-    /// hand it the mmap region without copying. Cache hits cost a single
-    /// `mmap` syscall (and the page faults wasmer's deserializer triggers as
-    /// it walks the artifact); no full-artifact allocation.
+    /// hand it the mmap region without copying. A hit costs one `mmap` syscall
+    /// and one pass over the mapping to verify the tag, which faults in every
+    /// page ahead of the deserializer; no full-artifact allocation.
     pub fn try_load(&self, addr: &TemplateAddress) -> Option<LoadedTemplate> {
         let path = self.path_for(addr);
         let file = match fs::File::open(&path) {
@@ -634,13 +680,12 @@ impl WasmModuleCache {
         let size_bytes = mmap.len() as u64;
         let body = bytes::Bytes::from_owner(mmap).slice(HEADER_BYTES..);
 
-        // SAFETY: bytes were written by [`Self::store`] in a previous run of
-        // this process (or an earlier process owning the same data dir) via
-        // `wasmer::Module::serialize`. The cache directory is node-local and
-        // not attacker-controlled in any sane operational setup. The
-        // fingerprint suffix in the filename guarantees the engine config
-        // matches this build; a deserialize failure simply triggers the
-        // recompile fallback.
+        // SAFETY: these bytes carry an [`integrity_tag`] computed over this node's
+        // [`ENGINE_FINGERPRINT`], the address they are filed under, the header fields and the body,
+        // and the tag was checked above. Only a writer holding this directory can produce a
+        // matching one, which is what [`restrict_dir_to_owner`] is for: `deserialize_unchecked`
+        // reads a body past its 32-byte prefix with `rkyv::access_unchecked` and hands one that
+        // fails the prefix check to an ELF loader, so bytes that reach it are already trusted.
         match unsafe { WasmModule::load_template_from_serialized(body, code_size, shape) } {
             Ok(loaded) => {
                 debug!(target: LOG_TARGET, "Cache hit for template {}", addr);
@@ -839,10 +884,11 @@ impl WasmModuleCache {
 /// Write `bytes` to `path`, flushed to the device before returning, and report the identity of the
 /// file written.
 ///
-/// [`WasmModuleCache::store`] publishes a file by rename, which can expose contents still held in
-/// the page cache. The artifact body lies past the header CRC's coverage, so it must reach the
-/// device before the rename names it. Durability stops at the contents: a rename lost to a crash
-/// costs one recompile.
+/// [`WasmModuleCache::store`] publishes a file by rename, which can name contents still held in the
+/// page cache. A torn artifact is only ever a tag mismatch and a recompile, so this buys latency
+/// rather than safety: without it, a crash leaves a file that is found, mmap'd and hashed in full
+/// before it is discarded. Durability stops at the contents — a rename lost to a crash costs one
+/// recompile.
 fn write_durable(path: &Path, bytes: &[u8]) -> io::Result<Option<u64>> {
     use std::io::Write;
 
