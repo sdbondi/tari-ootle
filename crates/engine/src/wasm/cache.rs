@@ -296,46 +296,43 @@ fn parse_orphan_name(name: &str) -> Option<TemplateAddress> {
 /// integrity tag does not help — a writer can write a matching one — so the mode is what makes the
 /// directory's contents this process's own.
 ///
-/// Hardening, so it reports rather than fails: a directory owned by another uid — an earlier run
-/// as root against the same mounted data dir, say — cannot be chmod'd, and a node that has to
-/// recompile every template is a better outcome than one that will not start. A deployment that
-/// shares this directory between two accounts through a group loses the second account's writes,
-/// which is the point rather than a side effect.
+/// Hardening, so it reports rather than fails. A directory owned by another uid — an earlier run as
+/// root against the same mounted data dir, say — cannot be chmod'd, and the choice there is between
+/// running against a directory this process does not exclusively own and not starting at all. The
+/// first is the lesser of the two, and it is what every caller gets. A deployment that shares this
+/// directory between two accounts through a group loses the second account's writes, which is the
+/// point rather than a side effect.
 #[cfg(unix)]
 fn restrict_dir_to_owner(dir: &Path) {
     use std::os::unix::fs::PermissionsExt;
 
+    /// What the node runs with when the mode cannot be read or cannot be changed.
+    fn warn_unrestricted(dir: &Path, e: io::Error) {
+        warn!(
+            target: LOG_TARGET,
+            "Could not restrict the Wasm module cache at {} to its owner: {}. Continuing: anything \
+             able to write there chooses the native code this node runs.",
+            dir.display(),
+            e,
+        );
+    }
+
     let mode = match fs::metadata(dir) {
         Ok(meta) => meta.permissions().mode(),
-        Err(e) => {
-            warn!(
-                target: LOG_TARGET,
-                "Could not read the mode of the Wasm module cache at {}: {}. Anything able to write \
-                 there chooses the native code this node runs.",
-                dir.display(),
-                e,
-            );
-            return;
-        },
+        Err(e) => return warn_unrestricted(dir, e),
     };
     if mode & 0o022 == 0 {
         return;
     }
-    warn!(
-        target: LOG_TARGET,
-        "Wasm module cache at {} was writable beyond its owner (mode {:#o}); restricting it to {:#o}.",
-        dir.display(),
-        mode & 0o7777,
-        mode & 0o7777 & !0o022,
-    );
-    if let Err(e) = fs::set_permissions(dir, fs::Permissions::from_mode(mode & !0o022)) {
-        warn!(
+    match fs::set_permissions(dir, fs::Permissions::from_mode(mode & !0o022)) {
+        Ok(_) => warn!(
             target: LOG_TARGET,
-            "Could not restrict the Wasm module cache at {} to its owner: {}. Anything able to \
-             write there chooses the native code this node runs.",
+            "Wasm module cache at {} was writable beyond its owner (mode {:#o}); restricted it to {:#o}.",
             dir.display(),
-            e,
-        );
+            mode & 0o7777,
+            mode & 0o7777 & !0o022,
+        ),
+        Err(e) => warn_unrestricted(dir, e),
     }
 }
 
