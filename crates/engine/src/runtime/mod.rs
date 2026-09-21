@@ -321,9 +321,9 @@ pub trait RuntimeInterface {
 /// under borrows that close before any nested call is made.
 ///
 /// Frames reach that state two ways. [`Runtime::clone`] shares the interface itself, while
-/// `RuntimeInterface::for_nested_call` builds a new `RuntimeInterfaceImpl` over the same tracker,
-/// entity-id provider and spend-script context. What is shared in both cases is the state; the
-/// interface is shared only in the first.
+/// `RuntimeInterfaceImpl::for_nested_call` builds a new one over the same tracker, entity-id
+/// provider and spend-script context. What is shared in both cases is the state; the interface is
+/// shared only in the first.
 #[derive(Clone)]
 pub struct Runtime {
     interface: Arc<dyn RuntimeInterface>,
