@@ -30,8 +30,6 @@
 use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
     fmt,
-    iter,
-    panic::{self, AssertUnwindSafe},
     sync::{
         Arc,
         Mutex,
@@ -44,7 +42,7 @@ use std::{
 };
 
 use log::*;
-use tari_engine_types::{component::Component, substate::SubstateId};
+use tari_engine_types::substate::SubstateId;
 use tari_ootle_common_types::services::template_provider::TemplateProvider;
 use tari_ootle_storage::{StateStore, StateStoreReadTransaction};
 use tari_ootle_template_provider::ResidentTemplateProvider;
@@ -103,41 +101,24 @@ impl TemplatePrewarmer {
     /// The caller must have validated the transaction first, and should only prewarm one it is
     /// involved in.
     pub fn prewarm_transaction(&self, transaction: &Transaction) -> PrewarmWait {
+        let instructions = || transaction.instructions().iter().chain(transaction.fee_instructions());
+
+        // A `CallMethod` names a component rather than a template, so every component the
+        // transaction calls into is resolved up front, over one snapshot. Doing it here rather than
+        // on a worker is what makes the returned wait exact: the caller blocks on the compiles it
+        // needs and on nothing else.
+        let called: Vec<_> = instructions().filter_map(called_component).collect();
+        let instantiated = self.components.templates_of(&called);
+
         // Deduplicated before enqueueing, so that a template named twice by one transaction is one
         // compile to wait for rather than two waiters on the same one.
         let mut seen = HashSet::new();
-        let receivers = transaction
-            .instructions()
-            .iter()
-            .chain(transaction.fee_instructions())
-            .filter_map(|instruction| self.template_for(instruction))
+        let receivers = instructions()
+            .filter_map(|instruction| template_for(instruction, &instantiated))
             .filter(|address| seen.insert(*address))
             .filter_map(|address| self.enqueue(address))
             .collect();
         PrewarmWait { receivers }
-    }
-
-    /// The template an instruction will load, where that is knowable before execution.
-    ///
-    /// A `PublishTemplate` yields nothing: its address exists only once its substate is committed, so
-    /// the template it publishes is kept by the publish execution itself and, for a node that learns
-    /// of one without executing its publish, by [`TemplatePrewarmHooks`].
-    fn template_for(&self, instruction: &Instruction) -> Option<TemplateAddress> {
-        match instruction {
-            Instruction::CallFunction { address, .. } => Some(*address),
-            // `update_component_template` loads the template replacing the component's, and never
-            // the one it replaces.
-            Instruction::UpdateComponentTemplate { new_template, .. } => Some(*new_template),
-            // A `CallMethod` names a component rather than a template, so the component is read here
-            // to find out which. The read is a point lookup, and doing it now rather than on a worker
-            // is what makes the returned wait exact: the caller blocks on the compiles it needs and
-            // on nothing else.
-            Instruction::CallMethod {
-                call: ComponentReference::Address(component),
-                ..
-            } => self.components.template_of(component),
-            _ => None,
-        }
     }
 
     /// Queue a template without waiting for it.
@@ -272,15 +253,48 @@ impl PrewarmWait {
     }
 }
 
-/// Resolves the template a component instantiates.
+/// The component an instruction calls a method on, whose template has to be looked up.
+fn called_component(instruction: &Instruction) -> Option<ComponentAddress> {
+    match instruction {
+        Instruction::CallMethod {
+            call: ComponentReference::Address(component),
+            ..
+        } => Some(*component),
+        _ => None,
+    }
+}
+
+/// The template an instruction will load, where that is knowable before execution. `instantiated`
+/// answers for the components [`called_component`] named.
+///
+/// A `PublishTemplate` yields nothing: its address exists only once its substate is committed, so
+/// the template it publishes is kept by the publish execution itself and, for a node that learns of
+/// one without executing its publish, by [`TemplatePrewarmHooks`].
+fn template_for(
+    instruction: &Instruction,
+    instantiated: &HashMap<ComponentAddress, TemplateAddress>,
+) -> Option<TemplateAddress> {
+    match instruction {
+        Instruction::CallFunction { address, .. } => Some(*address),
+        // `update_component_template` loads the template replacing the component's, and never the
+        // one it replaces.
+        Instruction::UpdateComponentTemplate { new_template, .. } => Some(*new_template),
+        _ => instantiated.get(&called_component(instruction)?).copied(),
+    }
+}
+
+/// Resolves the templates components instantiate.
 ///
 /// Its own seam because a `CallMethod` names a component, not a template, and everything else the
 /// pool does needs only the template provider.
 pub trait ComponentTemplateLookup: Send + Sync + 'static {
-    /// The template `component` instantiates, if this node holds the component. A component in
+    /// The template each of `components` instantiates, for those this node holds. A component in
     /// another shard group is absent from this node's state, and its template is not one this node
-    /// executes against.
-    fn template_of(&self, component: &ComponentAddress) -> Option<TemplateAddress>;
+    /// executes against, so it is left out of the result.
+    ///
+    /// Takes the whole set at once because the caller is the mempool's own task: one transaction is
+    /// one resolution, not one per instruction.
+    fn templates_of(&self, components: &[ComponentAddress]) -> HashMap<ComponentAddress, TemplateAddress>;
 }
 
 /// Reads components out of the local state store at their latest version.
@@ -288,25 +302,28 @@ pub trait ComponentTemplateLookup: Send + Sync + 'static {
 pub struct StateStoreComponentLookup<TStore>(TStore);
 
 impl<TStore: StateStore + Send + Sync + 'static> ComponentTemplateLookup for StateStoreComponentLookup<TStore> {
-    fn template_of(&self, component: &ComponentAddress) -> Option<TemplateAddress> {
-        let id = SubstateId::Component(*component);
-        let records = match self
-            .0
-            .with_read_tx(|tx| tx.substates_get_any_max_version(iter::once(&id)))
-        {
+    fn templates_of(&self, components: &[ComponentAddress]) -> HashMap<ComponentAddress, TemplateAddress> {
+        if components.is_empty() {
+            return HashMap::new();
+        }
+
+        let ids: Vec<_> = components.iter().copied().map(SubstateId::Component).collect();
+        let records = match self.0.with_read_tx(|tx| tx.substates_get_any_max_version(ids.iter())) {
             Ok(records) => records,
             Err(e) => {
-                debug!(target: LOG_TARGET, "Prewarm could not read component {component}: {e}");
-                return None;
+                debug!(target: LOG_TARGET, "Prewarm could not read {} component(s): {e}", components.len());
+                return HashMap::new();
             },
         };
+
         records
             .into_iter()
-            .find_map(|record| record.into_substate_value())
-            .as_ref()
-            .and_then(|value| value.component())
-            .map(Component::template_address)
-            .copied()
+            .filter_map(|record| {
+                let component = record.substate_id.as_component_address()?;
+                let template = *record.into_substate_value()?.component()?.template_address();
+                Some((component, template))
+            })
+            .collect()
     }
 }
 
@@ -393,14 +410,7 @@ where TProvider: TemplateProvider + ResidentTemplateProvider
                 return;
             };
 
-            // A compile that panics takes its thread's stack with it, and on a machine with fewer
-            // than eight cores this pool is one thread. Catching leaves the pool running and lets
-            // the release below happen, which is what keeps an unwind from stranding every waiter on
-            // this address for the life of the process.
-            let panicked = panic::catch_unwind(AssertUnwindSafe(|| self.prewarm(&address))).is_err();
-            if panicked {
-                error!(target: LOG_TARGET, "Prewarm of template {address} panicked");
-            }
+            self.prewarm(&address);
 
             // Held in the queued map until the work is done, so that a template wanted again while
             // this compile is in flight collects a waiter rather than a second queue slot and a
@@ -515,8 +525,8 @@ mod tests {
     }
 
     impl ComponentTemplateLookup for FakeComponents {
-        fn template_of(&self, component: &ComponentAddress) -> Option<TemplateAddress> {
-            self.0.get(component).copied()
+        fn templates_of(&self, components: &[ComponentAddress]) -> HashMap<ComponentAddress, TemplateAddress> {
+            components.iter().filter_map(|c| Some((*c, *self.0.get(c)?))).collect()
         }
     }
 

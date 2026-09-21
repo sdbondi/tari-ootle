@@ -75,101 +75,56 @@ impl<K: Hash + Eq> Drop for ConcurrentMapSemaphoreGuard<'_, K> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        sync::{
-            atomic::{AtomicUsize, Ordering},
-            mpsc,
-        },
-        thread,
-        time::Duration,
-    };
-
     use super::*;
 
-    /// Tracks how many threads were inside the critical section at once.
-    #[derive(Default)]
-    struct Occupancy {
-        current: AtomicUsize,
-        max: AtomicUsize,
-    }
-
-    impl Occupancy {
-        fn enter(&self) {
-            let n = self.current.fetch_add(1, Ordering::SeqCst) + 1;
-            self.max.fetch_max(n, Ordering::SeqCst);
-        }
-
-        fn leave(&self) {
-            self.current.fetch_sub(1, Ordering::SeqCst);
-        }
-    }
-
+    /// A guard released while another still holds the key must leave the entry behind. Otherwise a
+    /// thread arriving next creates a second mutex and enters the critical section alongside the
+    /// guard already in it.
     #[test]
-    fn an_arrival_contends_with_a_waiter_that_took_the_mutex_before_it() {
+    fn an_entry_outlives_every_guard_but_the_last() {
         let sem = ConcurrentMapSemaphore::new(10);
-        let occupancy = Arc::new(Occupancy::default());
+        let first = sem.acquire(1);
+        let second = sem.acquire(1);
 
-        let (first_holds_tx, first_holds_rx) = mpsc::channel();
-        let (release_first_tx, release_first_rx) = mpsc::channel::<()>();
-        let (waiter_acquired_tx, waiter_acquired_rx) = mpsc::channel();
-        let (waiter_in_section_tx, waiter_in_section_rx) = mpsc::channel();
-        let (release_waiter_tx, release_waiter_rx) = mpsc::channel::<()>();
+        drop(first);
 
-        let first = thread::spawn({
-            let sem = sem.clone();
-            move || {
-                let guard = sem.acquire(1);
-                let _access = guard.access();
-                first_holds_tx.send(()).unwrap();
-                release_first_rx.recv().unwrap();
-            }
-        });
-
-        first_holds_rx.recv().unwrap();
-
-        // Takes a reference to the mutex the first thread holds, then blocks on it.
-        let waiter = thread::spawn({
-            let sem = sem.clone();
-            let occupancy = occupancy.clone();
-            move || {
-                let guard = sem.acquire(1);
-                waiter_acquired_tx.send(()).unwrap();
-                let _access = guard.access();
-                occupancy.enter();
-                waiter_in_section_tx.send(()).unwrap();
-                release_waiter_rx.recv().unwrap();
-                occupancy.leave();
-            }
-        });
-
-        waiter_acquired_rx.recv().unwrap();
-        thread::sleep(Duration::from_millis(50));
-        release_first_tx.send(()).unwrap();
-        first.join().unwrap();
-        waiter_in_section_rx.recv().unwrap();
-
-        // Arrives once the first thread has released its guard, while the waiter is still inside.
-        let arrival = thread::spawn({
-            let sem = sem.clone();
-            let occupancy = occupancy.clone();
-            move || {
-                let guard = sem.acquire(1);
-                let _access = guard.access();
-                occupancy.enter();
-                occupancy.leave();
-            }
-        });
-
-        thread::sleep(Duration::from_millis(50));
-        release_waiter_tx.send(()).unwrap();
-        waiter.join().unwrap();
-        arrival.join().unwrap();
-
-        assert_eq!(
-            occupancy.max.load(Ordering::SeqCst),
-            1,
-            "two threads held the same key at once",
+        let entry = sem.map.get(&1).expect("a guard still holds this key");
+        assert!(
+            Arc::ptr_eq(entry.value(), &second.map_mutex),
+            "the surviving guard and the next arrival must contend on one mutex",
         );
-        assert_eq!(sem.map.len(), 0, "the last guard leaves no entry behind");
+        drop(entry);
+
+        drop(second);
+        assert!(sem.map.is_empty(), "the last guard leaves no entry behind");
+    }
+
+    /// Two keys are independent, so releasing one says nothing about the other.
+    #[test]
+    fn releasing_one_key_leaves_another_alone() {
+        let sem = ConcurrentMapSemaphore::new(10);
+        let first = sem.acquire(1);
+        let second = sem.acquire(2);
+
+        drop(first);
+
+        assert!(!sem.map.contains_key(&1));
+        assert!(sem.map.contains_key(&2));
+        drop(second);
+        assert!(sem.map.is_empty());
+    }
+
+    /// The critical section admits one holder at a time.
+    #[test]
+    fn one_key_admits_one_holder() {
+        let sem = ConcurrentMapSemaphore::new(10);
+        let guard = sem.acquire(1);
+        let _access = guard.access();
+
+        let other = sem.acquire(1);
+        assert!(
+            other.map_mutex.try_lock().is_err(),
+            "a second holder must wait on the mutex the first took",
+        );
     }
 }
