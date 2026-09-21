@@ -3,6 +3,93 @@
 All notable changes to this project will be documented in this file.
 See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [0.41.1](https://github.com/tari-project/tari-ootle/compare/v0.41.0...v0.41.1) (2026-09-21)
+
+The consensus audit release. It closes the ways a byzantine leader could fork a committee, stall it
+or crash its replicas, and stops a peer deciding how much work a node does for it. Also: a wallet
+send that could hang the daemon, a disk cache that only ever grew, and a queryable log of what a
+validator saw go wrong.
+
+### ⚠️ Upgrade notes
+
+- **Coordinated upgrade required.** Consensus and execution both change in ways that cannot be
+  epoch-gated, so every validator and indexer restarts on the new binary together. No reset.
+- **Operators — the memory budget rises.** The in-memory module cache default moves from 200 MiB to
+  1 GiB, taking the node's enforced budget to roughly 2.3 GiB and the RAM it asks of the machine
+  from \~2.3 GiB to \~3.5 GiB.
+- **Operators — two new config sections**: `templates.max_disk_cache_size_bytes`
+  (default 10 GiB, and the indexer gains a `templates` section of its own) and
+  `[validator_node.diagnostics]`.
+- **Template authors** — a non-fungible's `data` or `mutable_data` can no longer hold a `BucketId`,
+  `ProofId` or address allocation.
+- **Rust API** — `WasmModuleCache::open` takes a `cap_bytes` argument,
+  `RuntimeError::transient_in_component_state` is now `transient_value_in_substate`, and
+  `TemplateBlob` is `MaxBytes<MAX_TEMPLATE_BLOB_WIRE_BYTES>`.
+
+### Consensus
+
+- `fix!` — **Fixes a possible committee split**, where a byzantine leader could get two conflicting
+  branches of the chain committed. (#2635)
+- `fix!` — **A byzantine leader can no longer make replicas vote for a transaction an honest leader
+  would have deferred.** (#2650)
+- `fix!` — **A byzantine leader can no longer crash every replica's consensus worker**, repeatedly.
+  (#2651)
+- `fix!` — **Substate lock checks are tightened**, closing a gap the audit found in how output
+  locks are granted. (#2650)
+- `fix` — **A committee member can no longer take back a vote it has already cast** to break a
+  quorum that is forming. (#2649)
+- `feat` — **Equivocation is recorded as evidence** when a committee member votes two ways, visible
+  as a diagnostic event, a Prometheus counter and in db-inspector. Nothing acts on it yet. (#2649)
+- `fix` — **A node that crashes just after voting can no longer vote again at that height.** (#2649)
+- `fix` — **Only committee members can feed a node's consensus**, and a response is accepted only
+  from the peer that was asked. (#2646)
+- `fix` — **A peer can no longer decide how much memory and work a node spends on it** — catch-up
+  responses, buffered messages and stored votes are all bounded. (#2647)
+- `fix` — **A leader that is ahead of the committee can still end its view**, where it previously
+  had to wait one out. (#2638)
+- `refactor` — **A commit proof is now a fixed size**, small enough that a long stall cannot push it
+  past what the base layer will verify. (#2643)
+
+### Engine
+
+- `fix!` — **Transaction-scoped ids can no longer be stored in non-fungible data**, where they would
+  outlive the transaction that named them. (#2634)
+- `fix!` — **Anyone may call `deposit_with_auth`**, which is the point of the method — it was locked
+  to the account owner, the one caller who never needs it. (#2627)
+- `feat!` — **The compiled-template caches are bounded.** The on-disk one only ever grew, and would
+  have reached about 29 GiB at 10,000 templates. (#2619)
+- `refactor` — **The maximum published-template size can now be changed** without making larger
+  already-published templates unreadable. (#2629)
+
+### Wallet
+
+- `fix` — **A wallet holding many equal-valued outputs could hang the whole daemon** while selecting
+  inputs for a send. The search is now capped. (#2639)
+
+### Validator observability
+
+- `feat` — **A validator records its own abnormal moments** — leader failures, no-votes, consensus
+  errors, sync transitions, panics — in a bounded event log, queryable over JSON-RPC and in the web
+  UI. (#2644)
+
+### Release tooling and CI
+
+- `feat` — **Release checklists, plus a pre-tag gate and a post-tag dashboard**
+  (`scripts/release_check.py`, `scripts/release_status.py`). (#2630)
+- `fix` — **The release build selects packages**, which is why v0.41.0 shipped no Windows binaries.
+  (#2631)
+- `fix` — **A failed required build leg turns the tag run red** instead of reporting green over an
+  incomplete draft. Tag builds also restore the cargo cache, riscv64 is dropped, and windows-arm64
+  links again. (#2632, #2633)
+- `fix` — **The swarm burns funds into the wallet daemon**, not the console wallet. (#2628)
+- `fix` — **The tariswap bench stamps a distinct nonce per transaction**, so identical calls no
+  longer collide on one id. (#2626)
+
+### Tests
+
+- `test` — **Within-epoch catch-up sync has a cucumber scenario**, covering over real networking
+  what only the in-process harness covered. (#2648)
+
 ## [0.41.0](https://github.com/tari-project/tari-ootle/compare/v0.40.2...v0.41.0) (2026-09-16)
 
 The security release. Four waves of an execution-engine audit close every fund-theft and
