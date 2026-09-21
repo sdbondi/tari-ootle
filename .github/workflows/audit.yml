@@ -2,7 +2,11 @@
 name: Security audit
 
 'on':
+  # A pull request's branch is usually pushed to this repository, so `push` is restricted to the
+  # base branch: otherwise every push to a branch with an open pull request runs the workflow twice.
   push:
+    branches:
+      - development
     paths:
       # Run if workflow changes
       - '.github/workflows/audit.yml'
@@ -58,3 +62,6 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check bans licenses sources
+          # The action's default is `--all-features`. Naming it here keeps the graph CI resolves
+          # the same one `deny.toml` describes and a reviewer reproduces from the command line.
+          arguments: --all-features

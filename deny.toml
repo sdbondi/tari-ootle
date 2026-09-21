@@ -7,7 +7,9 @@
 # FSF status.
 
 [graph]
-all-features = false
+# The widest graph: a dependency reachable only under a feature is still a dependency this
+# repository ships. `.github/workflows/audit.yml` passes `--all-features` to match.
+all-features = true
 no-default-features = false
 # Every target the workspace ships for. Empty means all of them, which is what a validator binary,
 # the wasm guest and the ledger app together amount to.
@@ -46,7 +48,6 @@ allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "ISC",
-    "Unicode-DFS-2016",
     "Unicode-3.0",
     "CC0-1.0",
     "BlueOak-1.0.0",
@@ -61,19 +62,6 @@ allow = [
 ]
 confidence-threshold = 0.8
 exceptions = []
-
-# `ring` states its licensing in prose rather than in machine-readable metadata.
-[[licenses.clarify]]
-name = "ring"
-expression = "MIT AND ISC AND OpenSSL"
-license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
-
-# A crate of the project's own libp2p fork, carrying no `license` field. libp2p is MIT upstream and
-# the fork inherits it; the field belongs in the fork's manifest, and this entry goes when it lands.
-[[licenses.clarify]]
-name = "libp2p-peersync"
-expression = "MIT"
-license-files = []
 
 [licenses.private]
 ignore = false
