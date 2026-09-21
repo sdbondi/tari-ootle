@@ -43,6 +43,7 @@ pub mod node;
 mod p2p;
 #[cfg(feature = "metrics")]
 mod state_store_metrics;
+mod template_prewarm;
 
 use std::{fs, io, iter, process, time::Instant};
 

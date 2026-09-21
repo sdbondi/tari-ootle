@@ -43,6 +43,7 @@ use crate::{
         gossip::{IncomingMessage, MempoolGossip},
         handle::MempoolRequest,
     },
+    template_prewarm::TemplatePrewarmer,
 };
 
 const LOG_TARGET: &str = "tari::validator_node::mempool::service";
@@ -61,6 +62,7 @@ pub struct MempoolService<TValidator, TStateStore> {
     state_store: TStateStore,
     gossip: MempoolGossip,
     consensus_handle: ConsensusHandle,
+    template_prewarmer: TemplatePrewarmer,
     #[cfg(feature = "metrics")]
     metrics: PrometheusMempoolMetrics,
 }
@@ -78,6 +80,7 @@ where
         consensus_handle: ConsensusHandle,
         networking: NetworkingHandle<TariMessagingSpec>,
         rx_gossip: mpsc::Receiver<GossipMessage>,
+        template_prewarmer: TemplatePrewarmer,
         #[cfg(feature = "metrics")] metrics: PrometheusMempoolMetrics,
     ) -> Self {
         Self {
@@ -88,6 +91,7 @@ where
             before_execute_validator,
             state_store,
             consensus_handle,
+            template_prewarmer,
             #[cfg(feature = "metrics")]
             metrics,
         }
@@ -299,6 +303,9 @@ where
 
         if is_involved {
             debug!(target: LOG_TARGET, "🎱 New transaction {tx_id} in mempool");
+            // Validated and ours to execute, which is what makes the compile this queues work the
+            // node is going to do anyway rather than work anyone who can gossip can ask it for.
+            self.template_prewarmer.prewarm_transaction(&transaction);
             self.transactions.insert(tx_id);
             self.consensus_handle
                 .notify_new_transaction(transaction.clone(), num_pending)

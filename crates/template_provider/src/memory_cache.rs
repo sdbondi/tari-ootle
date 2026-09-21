@@ -89,6 +89,15 @@ impl TemplateConfig {
     }
 }
 
+/// A provider that can say whether a template is already compiled and held in memory.
+///
+/// Answered from memory alone: a `false` is "not resident", which is distinct from "not known" —
+/// the template may still be on disk or in the state store. Callers that want the template itself
+/// go through [`TemplateProvider::get_template`].
+pub trait ResidentTemplateProvider {
+    fn is_resident(&self, address: &TemplateAddress) -> bool;
+}
+
 /// Outermost layer of the template provider chain.
 ///
 /// Holds an in-memory moka cache of `LoadedTemplate`s keyed by address and a
@@ -151,6 +160,12 @@ where TInner: TemplateProvider<Template = LoadedTemplate>
             cache,
             cmap_semaphore: cmap_semaphore::ConcurrentMapSemaphore::new(CONCURRENT_ACCESS_LIMIT),
         }
+    }
+}
+
+impl<TInner> ResidentTemplateProvider for MemoryCacheTemplateProvider<TInner> {
+    fn is_resident(&self, address: &TemplateAddress) -> bool {
+        self.builtins.contains_key(address) || self.cache.contains_key(address)
     }
 }
 

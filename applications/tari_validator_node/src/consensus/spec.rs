@@ -24,6 +24,7 @@ use crate::{
         NopLogger,
         services::messaging::{ConsensusInboundMessaging, ConsensusOutboundMessaging},
     },
+    template_prewarm::TemplatePrewarmHooks,
 };
 
 pub type ValidatorNodeStateStore = tari_state_store_rocksdb::RocksDbStateStore<PeerAddress>;
@@ -38,9 +39,10 @@ impl ConsensusSpec for TariConsensusSpec {
     type EpochManager = EpochManagerHandle<Self::Addr>;
     // Template metadata is now persisted from execution artifacts during block commit/propose
     #[cfg(not(feature = "metrics"))]
-    type Hooks = CompositeHook<tari_consensus::traits::hooks::NoopHooks, DiagnosticHooks>;
+    type Hooks =
+        CompositeHook<TemplatePrewarmHooks, CompositeHook<tari_consensus::traits::hooks::NoopHooks, DiagnosticHooks>>;
     #[cfg(feature = "metrics")]
-    type Hooks = CompositeHook<PrometheusConsensusMetrics, DiagnosticHooks>;
+    type Hooks = CompositeHook<TemplatePrewarmHooks, CompositeHook<PrometheusConsensusMetrics, DiagnosticHooks>>;
     type InboundMessaging = ConsensusInboundMessaging<NopLogger>;
     type LeaderStrategy = RoundRobinLeaderStrategy;
     type OutboundMessaging = ConsensusOutboundMessaging<NopLogger>;
