@@ -2,15 +2,23 @@
 name: Security audit
 
 'on':
-  # push:
-  #   paths:
-  #     # Run if workflow changes
-  #     - '.github/workflows/audit.yml'
-  #     # Run on changed dependencies
-  #     - '**/Cargo.toml'
-  #     - '**/Cargo.lock'
-  #     # Run if the configuration file changes
-  #     - '**/audit.toml'
+  push:
+    paths:
+      # Run if workflow changes
+      - '.github/workflows/audit.yml'
+      # Run on changed dependencies
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      # Run if the configuration files change
+      - '**/audit.toml'
+      - 'deny.toml'
+  pull_request:
+    paths:
+      - '.github/workflows/audit.yml'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/audit.toml'
+      - 'deny.toml'
   # Rerun periodicly to pick up new advisories
   schedule:
     - cron: '43 05 * * *'
@@ -32,3 +40,18 @@ jobs:
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  # `deny.toml`'s bans, licences and sources policies. Advisories are deliberately not among them —
+  # see the note above `[advisories]` in `deny.toml`; `security_audit` above reports those, and
+  # opens an issue per finding.
+  cargo_deny:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check bans licenses sources

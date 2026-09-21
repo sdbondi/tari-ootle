@@ -1,5 +1,6 @@
 [package]
 name = "integration_tests"
+publish = false
 description = "The Tari integration tests"
 version.workspace = true
 edition.workspace = true
