@@ -1,5 +1,5 @@
-# Supply-chain policy for `cargo deny check`, run by `.github/workflows/audit.yml` on every
-# dependency change and nightly.
+# Supply-chain policy for `cargo deny check`, run by `.github/workflows/cargo-deny.yml` on every
+# dependency change.
 #
 # Schema: cargo-deny 0.20. Values the older schema carried and this one does not — `vulnerability`,
 # `notice`, `unlicensed`, `copyleft`, `allow-osi-fsf-free` — are now fixed: a security advisory and
@@ -8,7 +8,7 @@
 
 [graph]
 # The widest graph: a dependency reachable only under a feature is still a dependency this
-# repository ships. `.github/workflows/audit.yml` passes `--all-features` to match.
+# repository ships. `.github/workflows/cargo-deny.yml` passes `--all-features` to match.
 all-features = true
 no-default-features = false
 # Every target the workspace ships for. Empty means all of them, which is what a validator binary,
@@ -18,12 +18,13 @@ targets = []
 [output]
 feature-depth = 1
 
-# NOT part of the pull-request gate. `.github/workflows/audit.yml` runs `bans`, `licenses` and
-# `sources` on every dependency change; advisories are reported nightly by `rustsec/audit-check`,
-# which opens an issue per finding. The tree carries a backlog of live advisories, and gating on it
-# before that backlog is triaged would mean either blocking every pull request or filling `ignore`
-# below with entries nobody has assessed — and an unassessed ignore reads exactly like a clean
-# check. Moving `advisories` into the gate is what closing the backlog is for.
+# NOT part of the pull-request gate. `.github/workflows/cargo-deny.yml` runs `bans`, `licenses`
+# and `sources` on every dependency change; advisories are reported nightly by `rustsec/audit-check`
+# in `.github/workflows/audit.yml`, which opens an issue per finding. The tree carries a backlog of
+# live advisories, and gating on it before that backlog is triaged would mean either blocking every
+# pull request or filling `ignore` below with entries nobody has assessed — and an unassessed ignore
+# reads exactly like a clean check. Moving `advisories` into the gate is what closing the backlog is
+# for.
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
