@@ -33,7 +33,7 @@ pub use raw::RawCbor;
 #[cfg(feature = "serde")]
 pub use serde::{self, Deserialize, Serialize, de::DeserializeOwned};
 pub use tag::*;
-pub use value::{MAX_DECODE_DEPTH, Value};
+pub use value::{INTEGER_RANGE, MAX_DECODE_DEPTH, Value};
 pub use walker::*;
 
 /// Encode a value into a freshly allocated `Vec<u8>` using the unit context.

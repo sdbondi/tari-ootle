@@ -21,7 +21,7 @@
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use log::*;
-use tari_bor::{ByteCounter, decode_exact, encode_into_writer, encoded_len};
+use tari_bor::{ByteCounter, decode_exact_with_max_depth, encode_into_writer, encoded_len};
 use tari_engine_types::{indexed_value::IndexedValue, instruction_result::InstructionResult, limits};
 use tari_template_abi::{
     CallInfo,
@@ -471,7 +471,9 @@ impl WasmProcess {
             // SAFETY: WasmProcess is not used concurrently and templates are not able to spawn threads
             unsafe {
                 env_mut.with_memory_slice(&mut store, arg_ptr, arg_len, |arg| {
-                    decode_exact(arg).map_err(|e| {
+                    // An engine op's payload is whatever the guest wrote into its memory, decoded
+                    // here on the validator's own stack.
+                    decode_exact_with_max_depth(arg, limits::MAX_CBOR_NESTING_DEPTH).map_err(|e| {
                         log::error!(target: LOG_TARGET, "Failed to decode args for engine call: {}", e);
                         WasmExecutionError::EngineArgDecodeFailed(e)
                     })
