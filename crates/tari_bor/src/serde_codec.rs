@@ -113,6 +113,7 @@ pub fn to_vec<T: Serialize>(val: T) -> Result<Vec<u8>, EncodeError<core::convert
 }
 
 pub fn from_slice<'de, T: Deserialize<'de>>(b: &'de [u8]) -> Result<T, DecodeError> {
+    crate::check_nesting_depth(b)?;
     T::deserialize(&mut Deserializer::new(b))
 }
 

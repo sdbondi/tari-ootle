@@ -278,7 +278,15 @@ fn decode_value<'b, C>(d: &mut Decoder<'b>, ctx: &mut C, depth: usize) -> Result
         Type::Bool => Ok(Value::Bool(d.bool()?)),
         Type::U8 | Type::U16 | Type::U32 | Type::U64 => Ok(Value::Integer(i128::from(d.u64()?))),
         Type::I8 | Type::I16 | Type::I32 | Type::I64 => Ok(Value::Integer(i128::from(d.i64()?))),
-        Type::Int => Ok(Value::Integer(i128::from(d.int()?))),
+        Type::Int => {
+            let i = i128::from(d.int()?);
+            // The encoder emits a CBOR integer out of the `u64` or `i64` range and nothing wider,
+            // so a value outside that range is one this type can hold but never write back.
+            if i < i128::from(i64::MIN) || i > i128::from(u64::MAX) {
+                return Err(decode::Error::message("Value::Integer out of CBOR range"));
+            }
+            Ok(Value::Integer(i))
+        },
         Type::F16 | Type::F32 | Type::F64 => Ok(Value::Float(d.f64()?)),
         Type::Bytes => Ok(Value::Bytes(d.bytes()?.to_vec())),
         Type::BytesIndef => {
@@ -561,5 +569,28 @@ mod tests {
     fn deeply_nested_tag_errors_instead_of_overflow() {
         let bytes = vec![0xc0u8; 100_000]; // chain of CBOR "tag"
         assert!(minicbor::decode::<Value>(&bytes).is_err());
+    }
+
+    // CBOR major type 1 carries the value `-1 - argument`, so a 64-bit argument reaches
+    // -18446744073709551616 — an order of magnitude below `i64::MIN`.
+    const NEGATIVE_BELOW_I64_MIN: [u8; 9] = [0x3b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+
+    // The accepted range is the encodable range: a value this decoder admits but the encoder
+    // cannot write back is one no caller can round-trip.
+    #[test]
+    fn integer_below_i64_min_is_rejected_at_decode() {
+        assert!(minicbor::decode::<Value>(&NEGATIVE_BELOW_I64_MIN).is_err());
+    }
+
+    #[test]
+    fn integer_range_bounds_round_trip() {
+        for v in [
+            Value::Integer(i128::from(i64::MIN)),
+            Value::Integer(i128::from(u64::MAX)),
+            Value::Integer(0),
+            Value::Integer(-1),
+        ] {
+            assert_eq!(roundtrip(&v), v);
+        }
     }
 }

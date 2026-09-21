@@ -10,6 +10,7 @@ extern crate alloc;
 use alloc::{format, vec::Vec};
 
 pub mod adapters;
+mod depth;
 mod error;
 mod macros;
 mod raw;
@@ -24,6 +25,7 @@ mod walker;
 mod byte_counter;
 
 pub use byte_counter::ByteCounter;
+pub use depth::{MAX_NESTING_DEPTH, check_nesting_depth};
 pub use error::BorError;
 pub use macros::__cbor_macro;
 pub use minicbor::{self, CborLen, Decode, Encode};
@@ -147,12 +149,14 @@ pub fn from_value<T: for<'b> Decode<'b, ()>>(val: &Value) -> Result<T, BorError>
 
 /// Decode a single value from a byte slice (unit context). Extra trailing bytes are ignored.
 pub fn decode<T: for<'b> Decode<'b, ()>>(input: &[u8]) -> Result<T, BorError> {
+    check_nesting_depth(input)?;
     minicbor::decode(input).map_err(BorError::from)
 }
 
 /// Decode a single value from a byte slice using a user-provided context. Extra trailing bytes are ignored.
 pub fn decode_with<C, T>(input: &[u8], ctx: &mut C) -> Result<T, BorError>
 where T: for<'b> Decode<'b, C> {
+    check_nesting_depth(input)?;
     minicbor::decode_with(input, ctx).map_err(BorError::from)
 }
 
@@ -166,6 +170,7 @@ pub fn decode_exact<T: for<'b> Decode<'b, ()>>(input: &[u8]) -> Result<T, BorErr
 /// remain after decoding.
 pub fn decode_exact_with<C, T>(input: &[u8], ctx: &mut C) -> Result<T, BorError>
 where T: for<'b> Decode<'b, C> {
+    check_nesting_depth(input)?;
     let mut d = minicbor::Decoder::new(input);
     let value = d.decode_with(ctx).map_err(BorError::from)?;
     let consumed = d.position();
