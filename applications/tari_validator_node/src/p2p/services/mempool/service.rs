@@ -20,7 +20,7 @@
 //   WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use std::{collections::HashSet, fmt::Display, mem, time::Duration};
+use std::{collections::HashSet, fmt::Display, mem};
 
 use libp2p::gossipsub::MessageAcceptance;
 use log::*;
@@ -47,16 +47,6 @@ use crate::{
 };
 
 const LOG_TARGET: &str = "tari::validator_node::mempool::service";
-
-/// How long admission waits for a transaction's templates to compile before handing it to consensus
-/// anyway.
-///
-/// Sized off the worst compile a transaction can require rather than a typical one. The largest
-/// publishable binary is `EngineLimits::max_template_binary_size_bytes` (1 MiB), which compiles in
-/// ~140 ms on the faster of the two machines this was measured on and ~265 ms on the slower;
-/// doubling that leaves room for one compile to sit behind another in the pool. Past this point the
-/// transaction is worth more to consensus than the warm-up is, and the compile continues regardless.
-const PREWARM_WAIT_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Transaction ids the mempool remembers having seen. See [`SeenTransactions`] for the footprint
 /// this implies; it is a cache with a database fallback, so this trades memory against how often a
@@ -341,10 +331,7 @@ where
         // proposal it appears in a warm one. The bound is what keeps that a latency decision rather
         // than a liveness one: on timeout, on a full queue, or on a failed compile the transaction is
         // handed over regardless, and the compile it was waiting on runs on for the executor to join.
-        self.template_prewarmer
-            .prewarm_transaction(&transaction)
-            .wait(PREWARM_WAIT_TIMEOUT)
-            .await;
+        self.template_prewarmer.prewarm_transaction(&transaction).wait().await;
 
         self.consensus_handle
             .notify_new_transaction(transaction, num_pending)

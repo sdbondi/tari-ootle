@@ -28,7 +28,7 @@
 //! [`MemoryCacheTemplateProvider`]: tari_ootle_template_provider::MemoryCacheTemplateProvider
 
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::{HashMap, HashSet, hash_map::Entry},
     fmt,
     iter,
     sync::{
@@ -114,7 +114,14 @@ impl TemplatePrewarmer {
             .as_referenced_components()
             .filter_map(|component| self.components.template_of(component));
 
-        let receivers = named.chain(instantiated).filter_map(|a| self.enqueue(a)).collect();
+        // Deduplicated before enqueueing, so that a template named twice by one transaction is one
+        // compile to wait for rather than two waiters on the same one.
+        let mut seen = HashSet::new();
+        let receivers = named
+            .chain(instantiated)
+            .filter(|address| seen.insert(*address))
+            .filter_map(|address| self.enqueue(address))
+            .collect();
         PrewarmWait { receivers }
     }
 
@@ -174,6 +181,32 @@ impl fmt::Debug for TemplatePrewarmer {
     }
 }
 
+/// Allowance per cold template in [`PrewarmWait::timeout`].
+///
+/// About twice the ~260 ms a 1 MiB binary — the largest publishable, per
+/// `EngineLimits::max_template_binary_size_bytes` — takes to compile, measured at 52 ms for 151 KiB
+/// and 142 ms for 530 KiB. The doubling is what absorbs a loaded machine.
+///
+/// It scales linearly in the number of templates although `N` workers finish `K` of them in about
+/// `ceil(K / N)` compiles' time. The generosity is deliberate: this is a starvation valve, and
+/// dividing by the worker count would tighten it towards the point where a busy pool starts handing
+/// transactions over cold.
+///
+/// The unit is templates rather than bytes even though compile time tracks size closely
+/// (~0.25 ms/KiB + 16 ms). A size is known only for a binary the transaction carries; for a
+/// `CallFunction` or `CallMethod` it takes fetching the template to learn, which is the work being
+/// waited on.
+const PREWARM_WAIT_PER_TEMPLATE: Duration = Duration::from_millis(512);
+
+/// Bound on [`PrewarmWait::timeout`] however many templates a transaction needs.
+///
+/// Nothing caps the distinct templates one transaction may call, so this is the real bound and the
+/// per-template rate only shapes the ramp up to it. Reaching it hands the transaction over cold,
+/// which is where a node without a prewarm pool starts: a degradation, not a stall. The gossip
+/// verdict and the propagation of a locally introduced transaction both happen before the wait, so
+/// what a waiting transaction costs is its own admission delay and nothing else's.
+const PREWARM_WAIT_CEILING: Duration = Duration::from_secs(2);
+
 /// What a caller holds while the compiles it asked for are in flight.
 #[must_use = "a prewarm that is never waited on is fire-and-forget"]
 pub struct PrewarmWait {
@@ -181,12 +214,27 @@ pub struct PrewarmWait {
 }
 
 impl PrewarmWait {
-    /// Complete once every compile this wait covers has finished, or `timeout` elapses.
+    /// Complete once every compile this wait covers has finished, or [`PrewarmWait::timeout`]
+    /// elapses.
     ///
     /// The timeout abandons the wait, never the compile: the worker runs on, so an executor that
     /// asks for the template next joins the compile already in flight through the provider's
-    /// per-address semaphore.
-    pub async fn wait(self, timeout: Duration) {
+    /// per-address semaphore. Consensus never waits on a bound of its own — a `get_template` that
+    /// joins an in-flight compile is unbounded, because there is no execution result without the
+    /// artifact and abandoning the join to compile the same module again is strictly worse.
+    pub async fn wait(self) {
+        let timeout = self.timeout();
+        self.wait_for(timeout).await;
+    }
+
+    /// Allowance for the compiles this wait covers, which is one unit per template that was cold
+    /// when the transaction was admitted. Three resident templates and one new one is one unit.
+    fn timeout(&self) -> Duration {
+        let cold_unique_templates = u32::try_from(self.receivers.len()).unwrap_or(u32::MAX);
+        (PREWARM_WAIT_PER_TEMPLATE * cold_unique_templates).min(PREWARM_WAIT_CEILING)
+    }
+
+    async fn wait_for(self, timeout: Duration) {
         if self.receivers.is_empty() {
             return;
         }
@@ -521,7 +569,7 @@ mod tests {
         // What a worker does when it finishes an address.
         prewarmer.queued().remove(&template(1));
 
-        tokio::time::timeout(Duration::from_secs(5), wait.wait(Duration::from_secs(5)))
+        tokio::time::timeout(Duration::from_secs(5), wait.wait())
             .await
             .expect("wait outlived its own timeout");
     }
@@ -533,7 +581,7 @@ mod tests {
             receivers: vec![prewarmer.enqueue(template(1)).unwrap()],
         };
 
-        wait.wait(Duration::from_millis(50)).await;
+        wait.wait_for(Duration::from_millis(50)).await;
 
         assert!(
             prewarmer.queued().contains_key(&template(1)),
@@ -547,7 +595,32 @@ mod tests {
         let wait = PrewarmWait {
             receivers: vec![prewarmer.enqueue(template(1))].into_iter().flatten().collect(),
         };
-        wait.wait(Duration::ZERO).await;
+        wait.wait().await;
+    }
+
+    #[test]
+    fn the_wait_scales_with_the_cold_templates_and_stops_at_the_ceiling() {
+        let (prewarmer, _rx) = undrained(FakeProvider::default());
+        let wait_for = |n: u8| PrewarmWait {
+            receivers: (1..=n).filter_map(|i| prewarmer.enqueue(template(i))).collect(),
+        };
+
+        assert_eq!(wait_for(0).timeout(), Duration::ZERO);
+        assert_eq!(wait_for(1).timeout(), PREWARM_WAIT_PER_TEMPLATE);
+        assert_eq!(wait_for(3).timeout(), PREWARM_WAIT_PER_TEMPLATE * 3);
+        assert_eq!(wait_for(64).timeout(), PREWARM_WAIT_CEILING);
+    }
+
+    #[test]
+    fn a_template_named_twice_is_waited_on_once() {
+        let (prewarmer, _rx) = undrained(FakeProvider::default());
+        assert!(prewarmer.enqueue(template(1)).is_some());
+        assert!(prewarmer.enqueue(template(1)).is_some());
+        assert_eq!(
+            prewarmer.queued()[&template(1)].len(),
+            2,
+            "both callers wait on the one compile"
+        );
     }
 
     #[test]
