@@ -369,10 +369,7 @@ pub const ENGINE_LIMITS: EngineLimits = EngineLimits {
 /// and another rejects is a consensus split.
 ///
 /// It sits generously above anything a legitimate payload nests to, because rejecting a valid
-/// payload is the worse failure. The semantic depth limits are the types' own and are far lower —
-/// 50 for a materialised `IndexedValue` tree, 64 for the dynamic `tari_bor::Value` it comes from —
-/// but those count from the top of their own subtree, while this counts from the top of the whole
-/// payload. What this figure has to guarantee is that the deepest accepted input still decodes
+/// payload is the worse failure. This figure guarantees that the deepest accepted input still decodes
 /// within the smallest stack untrusted decode runs on: a 2 MiB tokio worker.
 pub const MAX_CBOR_NESTING_DEPTH: usize = 256;
 

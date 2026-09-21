@@ -126,11 +126,8 @@ mod tests {
         })
     }
 
-    // The `tari_tdef` section is attacker-controlled — anyone may publish a template — and `Type`
-    // is self-recursive through `Vec`/`Tuple`/`Option` with both of its decoders derived, so
-    // neither can thread a nesting bound of its own. Without the bound this decoder applies, the
-    // payload below recurses once per level and the stack overflow aborts the process instead of
-    // returning an error.
+    // The `tari_tdef` section is attacker-controlled and `Type` is self-recursive. This test asserts
+    // that a maliciously deep template definition encoding does not decode.
     #[test]
     fn a_deeply_nested_arg_type_is_rejected_rather_than_overflowing() {
         const LEVELS: usize = 100_000;
