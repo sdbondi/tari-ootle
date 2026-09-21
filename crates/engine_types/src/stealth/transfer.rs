@@ -18,7 +18,7 @@ use crate::{
     stealth::ValidatedStealthOutput,
 };
 
-const LOG_TARGET: &str = "tari::engine_types::stealth::transfer";
+const LOG_TARGET: &str = "tari::ootle::engine_types::stealth::transfer";
 
 #[derive(Debug, Clone)]
 pub struct ValidatedStealthTransfer {
