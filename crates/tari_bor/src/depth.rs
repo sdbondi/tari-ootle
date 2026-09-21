@@ -8,23 +8,15 @@ use alloc::vec::Vec;
 
 use minicbor::{Decoder, data::Type, decode};
 
-/// The nesting bound [`crate::decode`] and its siblings apply.
-///
-/// Nesting is a property of the input bytes, so this is the only bound that covers every target
-/// type. A `#[derive(Decode)]` on a self-recursive type descends one native stack frame per level
-/// and has no way to thread a counter of its own, so without this bound a payload of a few hundred
-/// bytes can drive the decoder off the end of the stack — a guard-page abort of the whole process,
-/// which no caller can catch.
-///
-/// It is set generously above anything a legitimate payload nests to, because rejecting a valid
-/// payload is the worse failure: semantic depth limits are the types' own business (see
-/// [`crate::MAX_DECODE_DEPTH`] for the dynamic `Value` tree), and those apply to a subtree whose
-/// own nesting starts at zero, while this one counts from the top of the whole payload. What this
-/// bound must guarantee is that the deepest accepted input still decodes within the smallest stack
-/// untrusted decode runs on — a 2 MiB tokio worker.
-pub const MAX_NESTING_DEPTH: usize = 256;
-
 /// Rejects input nested deeper than `max_depth`.
+///
+/// Nesting is a property of the bytes, not of the target type: a `#[derive(Decode)]` on a
+/// self-recursive type descends one native stack frame per level and has no way to thread a counter
+/// of its own, so a bound reached this way is the only one that covers every type. What `max_depth`
+/// should be is the caller's, because only the caller knows whether its input is untrusted and what
+/// stack it is decoding on — a guest's overflow is a trap its embedder reports, a validator's is a
+/// guard-page abort of the process. `tari_engine_types::limits::MAX_CBOR_NESTING_DEPTH` is the
+/// figure this project's own trust boundaries use.
 ///
 /// The walk is iterative and reads only item heads, so it costs a fraction of the decode it guards
 /// and is itself immune to the recursion it rejects.
@@ -99,6 +91,9 @@ fn walk(d: &mut Decoder<'_>, max_depth: usize) -> Result<bool, decode::Error> {
 mod tests {
     use super::*;
 
+    // Any bound will do for exercising the walk; the real one is the caller's.
+    const MAX: usize = 256;
+
     #[test]
     fn scalars_and_flat_containers_pass() {
         for input in [
@@ -114,10 +109,7 @@ mod tests {
             &[0x5f, 0x41, 0x01, 0x41, 0x02, 0xff][..],                   // (_ h'01', h'02')
             &[0xc0, 0x01][..],                                           // 0(1)
         ] {
-            assert!(
-                check_nesting_depth(input, MAX_NESTING_DEPTH).is_ok(),
-                "rejected {input:x?}"
-            );
+            assert!(check_nesting_depth(input, MAX).is_ok(), "rejected {input:x?}");
         }
     }
 
@@ -126,7 +118,7 @@ mod tests {
         // A flat item followed by a nesting bomb: only the first item is this walk's business.
         let mut input = vec![0x00];
         input.extend(core::iter::repeat_n(0x81u8, 10_000));
-        assert!(check_nesting_depth(&input, MAX_NESTING_DEPTH).is_ok());
+        assert!(check_nesting_depth(&input, MAX).is_ok());
     }
 
     #[test]
@@ -137,19 +129,14 @@ mod tests {
             0x9f,   // indefinite array
             0xc0,   // tag
         ] {
-            let at_bound: Vec<u8> = core::iter::repeat_n(head, MAX_NESTING_DEPTH)
-                .chain(core::iter::once(0x00))
-                .collect();
-            assert!(
-                check_nesting_depth(&at_bound, MAX_NESTING_DEPTH).is_ok(),
-                "head {head:#x} at bound"
-            );
+            let at_bound: Vec<u8> = core::iter::repeat_n(head, MAX).chain(core::iter::once(0x00)).collect();
+            assert!(check_nesting_depth(&at_bound, MAX).is_ok(), "head {head:#x} at bound");
 
-            let over_bound: Vec<u8> = core::iter::repeat_n(head, MAX_NESTING_DEPTH + 1)
+            let over_bound: Vec<u8> = core::iter::repeat_n(head, MAX + 1)
                 .chain(core::iter::once(0x00))
                 .collect();
             assert!(
-                check_nesting_depth(&over_bound, MAX_NESTING_DEPTH).is_err(),
+                check_nesting_depth(&over_bound, MAX).is_err(),
                 "head {head:#x} over bound"
             );
         }
@@ -157,21 +144,18 @@ mod tests {
 
     #[test]
     fn an_empty_container_at_the_bound_is_accepted_as_a_scalar_there_is() {
-        let containers: Vec<u8> = core::iter::repeat_n(0x81u8, MAX_NESTING_DEPTH).collect();
+        let containers: Vec<u8> = core::iter::repeat_n(0x81u8, MAX).collect();
         for innermost in [0x00u8, 0x80, 0xa0] {
             let mut input = containers.clone();
             input.push(innermost);
-            assert!(
-                check_nesting_depth(&input, MAX_NESTING_DEPTH).is_ok(),
-                "innermost {innermost:#x}"
-            );
+            assert!(check_nesting_depth(&input, MAX).is_ok(), "innermost {innermost:#x}");
         }
     }
 
     #[test]
     fn a_nesting_bomb_is_rejected_without_recursing() {
         let bomb = vec![0x81u8; 1_000_000];
-        assert!(check_nesting_depth(&bomb, MAX_NESTING_DEPTH).is_err());
+        assert!(check_nesting_depth(&bomb, MAX).is_err());
     }
 
     #[test]
@@ -182,10 +166,7 @@ mod tests {
             &[0xff][..], // a stray break
             &[0x1c][..], // a reserved additional-information value
         ] {
-            assert!(
-                check_nesting_depth(input, MAX_NESTING_DEPTH).is_ok(),
-                "claimed {input:x?} for itself"
-            );
+            assert!(check_nesting_depth(input, MAX).is_ok(), "claimed {input:x?} for itself");
         }
     }
 }

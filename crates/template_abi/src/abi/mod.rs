@@ -30,7 +30,7 @@ pub use wasm::*;
 mod non_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub use non_wasm::*;
-use tari_bor::{decode_exact_with_max_depth, encode_into_writer, encoded_len};
+use tari_bor::{decode_exact, encode_into_writer, encoded_len};
 
 use crate::{
     ops::EngineOp,
@@ -73,11 +73,8 @@ where
     // SAFETY: The pointer returned by `tari_engine` is valid and points to a length-prefixed block of memory allocated
     // by `tari_alloc`.
     let owned = unsafe { OwnedData::owned_from_ptr(result_ptr) };
-    // Decode the output data, skipping the length prefix. No nesting bound: these bytes are the
-    // engine's own reply, and a guest that runs off its stack traps, which the engine reports and
-    // charges for.
-    decode_exact_with_max_depth(owned.data(), None)
-        .unwrap_or_else(|e| panic!("DECODEFAIL op {} input len: {}: {}", op.as_i32(), len, e))
+    // Decode the output data, skipping the length prefix
+    decode_exact(owned.data()).unwrap_or_else(|e| panic!("DECODEFAIL op {} input len: {}: {}", op.as_i32(), len, e))
 }
 
 /// Takes ownership of a length-prefixed block of memory allocated by `tari_alloc` and provides access to the data.

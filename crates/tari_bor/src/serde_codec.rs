@@ -112,22 +112,17 @@ pub fn to_vec<T: Serialize>(val: T) -> Result<Vec<u8>, EncodeError<core::convert
     Ok(v)
 }
 
-/// Input nested deeper than [`crate::MAX_NESTING_DEPTH`] is rejected. Use
-/// [`from_slice_with_max_depth`] to choose another bound, or none.
+/// The target type's recursion is bounded by the stack. Deserializing untrusted input on a native
+/// stack wants [`from_slice_with_max_depth`] instead.
 pub fn from_slice<'de, T: Deserialize<'de>>(b: &'de [u8]) -> Result<T, DecodeError> {
-    from_slice_with_max_depth(b, Some(crate::MAX_NESTING_DEPTH))
+    T::deserialize(&mut Deserializer::new(b))
 }
 
-/// Deserialize under a caller-chosen nesting bound. See [`crate::decode_with_max_depth`] for what
-/// `None` means and who it is for.
-pub fn from_slice_with_max_depth<'de, T: Deserialize<'de>>(
-    b: &'de [u8],
-    max_depth: Option<usize>,
-) -> Result<T, DecodeError> {
-    if let Some(max_depth) = max_depth {
-        crate::check_nesting_depth(b, max_depth)?;
-    }
-    T::deserialize(&mut Deserializer::new(b))
+/// Deserialize, rejecting input nested deeper than `max_depth`. See [`crate::check_nesting_depth`]
+/// for why the bound is the caller's to set.
+pub fn from_slice_with_max_depth<'de, T: Deserialize<'de>>(b: &'de [u8], max_depth: usize) -> Result<T, DecodeError> {
+    crate::check_nesting_depth(b, max_depth)?;
+    from_slice(b)
 }
 
 // ============================================================================

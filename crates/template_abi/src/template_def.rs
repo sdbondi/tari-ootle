@@ -194,9 +194,12 @@ impl std::fmt::Display for Type {
 
 #[cfg(all(test, feature = "std"))]
 mod nesting_depth_tests {
-    use tari_bor::MAX_NESTING_DEPTH;
-
     use super::*;
+
+    // The bound the engine applies at its trust boundaries
+    // (`tari_engine_types::limits::MAX_CBOR_NESTING_DEPTH`). Named here rather than imported
+    // because `tari_engine_types` depends on this crate, not the other way around.
+    const MAX_NESTING_DEPTH: usize = 256;
 
     // `Type` is self-recursive through `Vec`/`Tuple`/`Option` and both of its decoders are derived,
     // so neither can thread a nesting bound of its own. The bound belongs to `tari_bor`'s decode
@@ -248,14 +251,14 @@ mod nesting_depth_tests {
     #[test]
     fn deeply_nested_type_is_rejected_by_the_minicbor_decoder() {
         let bytes = minicbor_payload(PAST_THE_BOUND);
-        assert!(tari_bor::decode::<Type>(&bytes).is_err());
+        assert!(tari_bor::decode_with_max_depth::<Type>(&bytes, MAX_NESTING_DEPTH).is_err());
     }
 
     #[test]
     fn minicbor_decode_at_the_bound_fits_a_worker_stack() {
         let bytes = deepest_payload_within_bound(minicbor_payload);
         on_a_worker_sized_stack(move || {
-            tari_bor::decode::<Type>(&bytes).unwrap();
+            tari_bor::decode_with_max_depth::<Type>(&bytes, MAX_NESTING_DEPTH).unwrap();
         });
     }
 
@@ -274,14 +277,14 @@ mod nesting_depth_tests {
         #[test]
         fn deeply_nested_type_is_rejected_by_the_serde_decoder() {
             let bytes = serde_payload(PAST_THE_BOUND);
-            assert!(serde_codec::from_slice::<Type>(&bytes).is_err());
+            assert!(serde_codec::from_slice_with_max_depth::<Type>(&bytes, MAX_NESTING_DEPTH).is_err());
         }
 
         #[test]
         fn serde_decode_at_the_bound_fits_a_worker_stack() {
             let bytes = deepest_payload_within_bound(serde_payload);
             on_a_worker_sized_stack(move || {
-                serde_codec::from_slice::<Type>(&bytes).unwrap();
+                serde_codec::from_slice_with_max_depth::<Type>(&bytes, MAX_NESTING_DEPTH).unwrap();
             });
         }
     }
