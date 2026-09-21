@@ -138,6 +138,7 @@ use crate::{
             messaging::{ConsensusInboundMessaging, ConsensusOutboundMessaging},
         },
     },
+    template_prewarm::{self, TemplatePrewarmHooks},
 };
 
 const LOG_TARGET: &str = "tari::validator_node::bootstrap";
@@ -349,6 +350,15 @@ pub async fn spawn_services(
         &config.validator_node.templates,
     );
 
+    // Prewarm pool. Takes a clone of the shared provider: a prewarm and an execution wanting the
+    // same template then meet on the provider's per-address semaphore and compile it once.
+    let template_prewarmer = template_prewarm::spawn(
+        template_provider.clone(),
+        state_store.clone(),
+        #[cfg(feature = "metrics")]
+        tari_metrics_registry,
+    );
+
     info!(target: LOG_TARGET, "Payload processor initializing");
     // Payload processor
 
@@ -405,7 +415,10 @@ pub async fn spawn_services(
     let metrics = PrometheusConsensusMetrics::register(tari_metrics_registry);
     #[cfg(not(feature = "metrics"))]
     let metrics = NoopHooks;
-    let hooks = CompositeHook::new(metrics, DiagnosticHooks::new(diagnostics.clone()));
+    let hooks = CompositeHook::new(
+        TemplatePrewarmHooks::new(template_prewarmer.clone()),
+        CompositeHook::new(metrics, DiagnosticHooks::new(diagnostics.clone())),
+    );
 
     let sidechain_id = config.validator_node.sidechain_id.as_ref().map(|pk| pk.to_byte_type());
 
@@ -439,6 +452,7 @@ pub async fn spawn_services(
         consensus_handle.clone(),
         networking.clone(),
         rx_transaction_gossip_messages,
+        template_prewarmer,
         #[cfg(feature = "metrics")]
         tari_metrics_registry,
     );

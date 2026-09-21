@@ -58,6 +58,9 @@ validator saw go wrong.
   to the account owner, the one caller who never needs it. (#2627)
 - `feat!` — **The compiled-template caches are bounded.** The on-disk one only ever grew, and would
   have reached about 29 GiB at 10,000 templates. (#2619)
+- `perf` — **Templates are compiled before they are needed**, and a cached artifact is written
+  off the execution path, so a transaction no longer waits on a cold compile or a disk flush.
+  (#2660, #2661)
 - `refactor` — **The maximum published-template size can now be changed** without making larger
   already-published templates unreadable. (#2629)
 

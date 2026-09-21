@@ -16,6 +16,7 @@ mod memory_cache;
 pub use memory_cache::{
     MemoryCacheTemplateProvider,
     MemoryCacheTemplateProviderError,
+    ResidentTemplateProvider,
     TemplateConfig,
     builtin_resident_bytes,
 };
