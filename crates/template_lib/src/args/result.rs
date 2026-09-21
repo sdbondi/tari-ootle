@@ -31,7 +31,9 @@ impl InvokeResult {
         match self.0 {
             Ok(output) => {
                 let span = metrics::Span::start();
-                let decoded = output.decode();
+                // No nesting bound: this is the engine's own reply, and a guest that runs off its
+                // stack traps, which the engine reports and charges for.
+                let decoded = output.decode_with_max_depth(None);
                 metrics::record_decode(span);
                 decoded
             },

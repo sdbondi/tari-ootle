@@ -148,29 +148,67 @@ pub fn from_value<T: for<'b> Decode<'b, ()>>(val: &Value) -> Result<T, BorError>
 }
 
 /// Decode a single value from a byte slice (unit context). Extra trailing bytes are ignored.
+///
+/// Input nested deeper than [`MAX_NESTING_DEPTH`] is rejected. Use [`decode_with_max_depth`] to
+/// choose another bound, or none.
 pub fn decode<T: for<'b> Decode<'b, ()>>(input: &[u8]) -> Result<T, BorError> {
-    check_nesting_depth(input)?;
+    decode_with_max_depth(input, Some(MAX_NESTING_DEPTH))
+}
+
+/// Decode a single value from a byte slice (unit context) under a caller-chosen nesting bound.
+///
+/// `None` applies no bound, and the target type's own recursion is then bounded by the stack. That
+/// belongs to callers for whom exceeding the stack is a recoverable failure rather than a process
+/// abort — a WASM guest, whose overflow is a trap the embedder reports — or whose input is bytes
+/// this process produced. Anything reading untrusted input on a native stack wants [`decode`].
+pub fn decode_with_max_depth<T: for<'b> Decode<'b, ()>>(input: &[u8], max_depth: Option<usize>) -> Result<T, BorError> {
+    if let Some(max_depth) = max_depth {
+        check_nesting_depth(input, max_depth)?;
+    }
     minicbor::decode(input).map_err(BorError::from)
 }
 
 /// Decode a single value from a byte slice using a user-provided context. Extra trailing bytes are ignored.
 pub fn decode_with<C, T>(input: &[u8], ctx: &mut C) -> Result<T, BorError>
 where T: for<'b> Decode<'b, C> {
-    check_nesting_depth(input)?;
+    check_nesting_depth(input, MAX_NESTING_DEPTH)?;
     minicbor::decode_with(input, ctx).map_err(BorError::from)
 }
 
 /// Decode a single value from a byte slice (unit context). Returns an error if any bytes remain after
 /// decoding.
+///
+/// Input nested deeper than [`MAX_NESTING_DEPTH`] is rejected. Use [`decode_exact_with_max_depth`]
+/// to choose another bound, or none.
 pub fn decode_exact<T: for<'b> Decode<'b, ()>>(input: &[u8]) -> Result<T, BorError> {
-    decode_exact_with(input, &mut ())
+    decode_exact_with_max_depth(input, Some(MAX_NESTING_DEPTH))
+}
+
+/// Decode a single value from a byte slice (unit context) under a caller-chosen nesting bound,
+/// returning an error if any bytes remain after decoding.
+///
+/// See [`decode_with_max_depth`] for what `None` means and who it is for.
+pub fn decode_exact_with_max_depth<T: for<'b> Decode<'b, ()>>(
+    input: &[u8],
+    max_depth: Option<usize>,
+) -> Result<T, BorError> {
+    if let Some(max_depth) = max_depth {
+        check_nesting_depth(input, max_depth)?;
+    }
+    decode_exact_unbounded_with(input, &mut ())
 }
 
 /// Decode a single value from a byte slice using a user-provided context. Returns an error if any bytes
 /// remain after decoding.
 pub fn decode_exact_with<C, T>(input: &[u8], ctx: &mut C) -> Result<T, BorError>
 where T: for<'b> Decode<'b, C> {
-    check_nesting_depth(input)?;
+    check_nesting_depth(input, MAX_NESTING_DEPTH)?;
+    decode_exact_unbounded_with(input, ctx)
+}
+
+/// The tail of [`decode_exact_with`], without the nesting check its callers have already made.
+fn decode_exact_unbounded_with<C, T>(input: &[u8], ctx: &mut C) -> Result<T, BorError>
+where T: for<'b> Decode<'b, C> {
     let mut d = minicbor::Decoder::new(input);
     let value = d.decode_with(ctx).map_err(BorError::from)?;
     let consumed = d.position();

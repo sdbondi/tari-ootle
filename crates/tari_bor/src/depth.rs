@@ -3,14 +3,12 @@
 
 //! Codec-wide nesting bound applied to untrusted input before any typed decode runs.
 
-#[cfg(all(not(feature = "std"), not(target_arch = "wasm32")))]
+#[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
-use minicbor::decode;
-#[cfg(not(target_arch = "wasm32"))]
-use minicbor::{Decoder, data::Type};
+use minicbor::{Decoder, data::Type, decode};
 
-/// Maximum container nesting accepted by [`crate::decode`] and its siblings.
+/// The nesting bound [`crate::decode`] and its siblings apply.
 ///
 /// Nesting is a property of the input bytes, so this is the only bound that covers every target
 /// type. A `#[derive(Decode)]` on a self-recursive type descends one native stack frame per level
@@ -26,37 +24,22 @@ use minicbor::{Decoder, data::Type};
 /// untrusted decode runs on — a 2 MiB tokio worker.
 pub const MAX_NESTING_DEPTH: usize = 256;
 
-/// Rejects input nested deeper than [`MAX_NESTING_DEPTH`].
+/// Rejects input nested deeper than `max_depth`.
 ///
 /// The walk is iterative and reads only item heads, so it costs a fraction of the decode it guards
 /// and is itself immune to the recursion it rejects.
-pub fn check_nesting_depth(input: &[u8]) -> Result<(), decode::Error> {
-    if within_bound(input) {
+pub fn check_nesting_depth(input: &[u8], max_depth: usize) -> Result<(), decode::Error> {
+    if walk(&mut Decoder::new(input), max_depth).unwrap_or(true) {
         return Ok(());
     }
     Err(decode::Error::message("maximum CBOR nesting depth exceeded"))
 }
 
-/// On `wasm32` the bound is the embedder's to enforce: running off the stack there is a trap it
-/// reports as an error, and this crate is linked into every template, where the walk's cost would
-/// be metered onto each of the guest's own decodes.
-#[cfg(target_arch = "wasm32")]
-fn within_bound(_input: &[u8]) -> bool {
-    true
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn within_bound(input: &[u8]) -> bool {
-    walk(&mut Decoder::new(input)).unwrap_or(true)
-}
-
-/// Walks the heads of the first item in `d`, returning whether it stays within
-/// [`MAX_NESTING_DEPTH`].
+/// Walks the heads of the first item in `d`, returning whether it stays within `max_depth`.
 ///
 /// Malformed input is reported as `Err` and treated by the caller as within bound: the decode that
 /// follows produces a parse error far more specific than anything this walk could say.
-#[cfg(not(target_arch = "wasm32"))]
-fn walk(d: &mut Decoder<'_>) -> Result<bool, decode::Error> {
+fn walk(d: &mut Decoder<'_>, max_depth: usize) -> Result<bool, decode::Error> {
     // Items still to read per open container, innermost last: `Some(n)` for a definite-length
     // container, `None` for an indefinite-length one that ends at a break byte. The outermost frame
     // is the single top-level item, so an item's nesting depth is `stack.len() - 1`.
@@ -85,7 +68,7 @@ fn walk(d: &mut Decoder<'_>) -> Result<bool, decode::Error> {
         // An item is about to be read, and the frames open around it are its nesting. Checked here
         // rather than where a container is opened, so an empty container at the bound is accepted
         // exactly as a scalar there is.
-        if stack.len() - 1 > MAX_NESTING_DEPTH {
+        if stack.len() - 1 > max_depth {
             return Ok(false);
         }
 
@@ -112,7 +95,7 @@ fn walk(d: &mut Decoder<'_>) -> Result<bool, decode::Error> {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -131,7 +114,10 @@ mod tests {
             &[0x5f, 0x41, 0x01, 0x41, 0x02, 0xff][..],                   // (_ h'01', h'02')
             &[0xc0, 0x01][..],                                           // 0(1)
         ] {
-            assert!(check_nesting_depth(input).is_ok(), "rejected {input:x?}");
+            assert!(
+                check_nesting_depth(input, MAX_NESTING_DEPTH).is_ok(),
+                "rejected {input:x?}"
+            );
         }
     }
 
@@ -140,7 +126,7 @@ mod tests {
         // A flat item followed by a nesting bomb: only the first item is this walk's business.
         let mut input = vec![0x00];
         input.extend(core::iter::repeat_n(0x81u8, 10_000));
-        assert!(check_nesting_depth(&input).is_ok());
+        assert!(check_nesting_depth(&input, MAX_NESTING_DEPTH).is_ok());
     }
 
     #[test]
@@ -154,12 +140,18 @@ mod tests {
             let at_bound: Vec<u8> = core::iter::repeat_n(head, MAX_NESTING_DEPTH)
                 .chain(core::iter::once(0x00))
                 .collect();
-            assert!(check_nesting_depth(&at_bound).is_ok(), "head {head:#x} at bound");
+            assert!(
+                check_nesting_depth(&at_bound, MAX_NESTING_DEPTH).is_ok(),
+                "head {head:#x} at bound"
+            );
 
             let over_bound: Vec<u8> = core::iter::repeat_n(head, MAX_NESTING_DEPTH + 1)
                 .chain(core::iter::once(0x00))
                 .collect();
-            assert!(check_nesting_depth(&over_bound).is_err(), "head {head:#x} over bound");
+            assert!(
+                check_nesting_depth(&over_bound, MAX_NESTING_DEPTH).is_err(),
+                "head {head:#x} over bound"
+            );
         }
     }
 
@@ -169,14 +161,17 @@ mod tests {
         for innermost in [0x00u8, 0x80, 0xa0] {
             let mut input = containers.clone();
             input.push(innermost);
-            assert!(check_nesting_depth(&input).is_ok(), "innermost {innermost:#x}");
+            assert!(
+                check_nesting_depth(&input, MAX_NESTING_DEPTH).is_ok(),
+                "innermost {innermost:#x}"
+            );
         }
     }
 
     #[test]
     fn a_nesting_bomb_is_rejected_without_recursing() {
         let bomb = vec![0x81u8; 1_000_000];
-        assert!(check_nesting_depth(&bomb).is_err());
+        assert!(check_nesting_depth(&bomb, MAX_NESTING_DEPTH).is_err());
     }
 
     #[test]
@@ -187,7 +182,10 @@ mod tests {
             &[0xff][..], // a stray break
             &[0x1c][..], // a reserved additional-information value
         ] {
-            assert!(check_nesting_depth(input).is_ok(), "claimed {input:x?} for itself");
+            assert!(
+                check_nesting_depth(input, MAX_NESTING_DEPTH).is_ok(),
+                "claimed {input:x?} for itself"
+            );
         }
     }
 }

@@ -134,7 +134,7 @@ fn get_function_block(template_ident: &Ident, ast: &FunctionAst, stateless: bool
                 stmts.extend([
                     parse_quote! { let next_arg = call_info.next_arg_unchecked(); },
                     parse_quote! {
-                        let component_address = decode_exact::<::tari_template_lib::types::ComponentAddress>(next_arg)
+                        let component_address = decode_exact_with_max_depth::<::tari_template_lib::types::ComponentAddress>(next_arg, None)
                             .unwrap_or_else(|e| panic!(#error_failed_decode_component, e));
                     },
                     parse_quote! {
@@ -152,7 +152,7 @@ fn get_function_block(template_ident: &Ident, ast: &FunctionAst, stateless: bool
                     stmts.extend([
                         parse_quote! { let next_arg = call_info.next_arg_unchecked(); },
                         parse_quote! {
-                            let component_address = decode_exact::<::tari_template_lib::types::ComponentAddress>(next_arg)
+                            let component_address = decode_exact_with_max_depth::<::tari_template_lib::types::ComponentAddress>(next_arg, None)
                                 .unwrap_or_else(|e| panic!(#error_failed_decode_component, e));
                         },
                         parse_quote! {
@@ -168,7 +168,7 @@ fn get_function_block(template_ident: &Ident, ast: &FunctionAst, stateless: bool
                     stmts.extend([
                         parse_quote! { let next_arg = call_info.next_arg_unchecked(); },
                         parse_quote! {
-                            let #arg_ident = decode_exact::<#type_path>(next_arg)
+                            let #arg_ident = decode_exact_with_max_depth::<#type_path>(next_arg, None)
                                 .unwrap_or_else(|e| panic!(#error_failed_decode_arg, e));
                         },
                     ]);
@@ -180,7 +180,7 @@ fn get_function_block(template_ident: &Ident, ast: &FunctionAst, stateless: bool
                 stmts.extend([
                     parse_quote! { let next_arg = call_info.next_arg_unchecked(); },
                     parse_quote! {
-                        let #arg_ident = decode_exact::<#type_tuple>(next_arg)
+                        let #arg_ident = decode_exact_with_max_depth::<#type_tuple>(next_arg, None)
                             .unwrap_or_else(|e| panic!(#error_failed_decode_arg, e));
                     },
                 ]);

@@ -226,7 +226,7 @@ mod nesting_depth_tests {
         (1..=MAX_NESTING_DEPTH)
             .rev()
             .map(build)
-            .find(|bytes| tari_bor::check_nesting_depth(bytes).is_ok())
+            .find(|bytes| tari_bor::check_nesting_depth(bytes, MAX_NESTING_DEPTH).is_ok())
             .expect("no nesting level is within the bound")
     }
 
