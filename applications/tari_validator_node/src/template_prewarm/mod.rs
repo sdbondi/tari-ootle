@@ -38,7 +38,7 @@ use std::{
         mpsc::{self, Receiver, SyncSender},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use log::*;
@@ -435,11 +435,13 @@ where TProvider: TemplateProvider + ResidentTemplateProvider
 
         // Compiles and caches as a side effect. The template itself is of no interest here: the
         // point is that the executor's next lookup finds it resident.
+        let started = Instant::now();
         match self.provider.get_template(address) {
             Ok(Some(_)) => {
-                debug!(target: LOG_TARGET, "Prewarmed template {address}");
+                let elapsed = started.elapsed();
+                debug!(target: LOG_TARGET, "Prewarmed template {address} in {elapsed:.1?}");
                 #[cfg(feature = "metrics")]
-                self.metrics.on_compiled();
+                self.metrics.on_loaded(elapsed);
             },
             Ok(None) => {
                 debug!(target: LOG_TARGET, "Template {address} is not known to this node");

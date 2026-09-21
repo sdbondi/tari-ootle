@@ -1,8 +1,14 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
+use std::time::Duration;
+
 use prometheus_client::{
-    metrics::{counter::Counter, gauge::Gauge},
+    metrics::{
+        counter::Counter,
+        gauge::Gauge,
+        histogram::{Histogram, exponential_buckets},
+    },
     registry::Registry,
 };
 
@@ -14,11 +20,12 @@ use crate::metrics::CollectorRegister;
 pub struct PrometheusPrewarmMetrics {
     enqueued: Counter,
     dropped: Counter,
-    compiled: Counter,
+    loaded: Counter,
     already_resident: Counter,
     not_found: Counter,
     failed: Counter,
     queue_depth: Gauge,
+    load_seconds: Histogram,
 }
 
 impl PrometheusPrewarmMetrics {
@@ -35,9 +42,10 @@ impl PrometheusPrewarmMetrics {
                 "Number of prewarm requests dropped because the queue was full",
                 registry,
             ),
-            compiled: Counter::default().register_at(
-                "compiled",
-                "Number of templates compiled by the prewarm pool",
+            loaded: Counter::default().register_at(
+                "loaded",
+                "Number of templates the prewarm pool made resident, whether it compiled them or read an artifact the \
+                 disk cache already held",
                 registry,
             ),
             already_resident: Counter::default().register_at(
@@ -62,6 +70,16 @@ impl PrometheusPrewarmMetrics {
                 "Targets queued for background compilation, including the one each worker is compiling",
                 registry,
             ),
+            // A worker asks the provider chain for a template and is not told which tier answered,
+            // so the two kinds of work this pool does are told apart by how long they take: reading
+            // an artifact off disk is around a millisecond, a Cranelift compile is tens to hundreds.
+            // Counting them together would hide the only number the pool exists to move. Buckets run
+            // from 1 ms so the fast mode is resolved rather than piled into the first one.
+            load_seconds: Histogram::new(exponential_buckets(0.001, 2.0, 12)).register_at(
+                "load_seconds",
+                "Time a prewarm worker spent making one template resident, in seconds",
+                registry,
+            ),
         }
     }
 
@@ -78,8 +96,9 @@ impl PrometheusPrewarmMetrics {
         self.dropped.inc();
     }
 
-    pub fn on_compiled(&self) {
-        self.compiled.inc();
+    pub fn on_loaded(&self, elapsed: Duration) {
+        self.loaded.inc();
+        self.load_seconds.observe(elapsed.as_secs_f64());
     }
 
     pub fn on_already_resident(&self) {
