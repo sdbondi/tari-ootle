@@ -27,8 +27,8 @@ name: Dependency policy
 permissions: {}
 
 jobs:
-  # `deny.toml`'s bans, licences and sources policies, on every dependency change. Advisories are
-  # reported by `.github/workflows/audit.yml` — see the note above `[advisories]` in `deny.toml`.
+  # `deny.toml`'s bans, licences and sources policies. Advisories are reported by
+  # `.github/workflows/audit.yml` — see the note above `[advisories]` in `deny.toml`.
   cargo_deny:
     runs-on: ubuntu-latest
     permissions:
