@@ -149,9 +149,8 @@ pub fn from_value<T: for<'b> Decode<'b, ()>>(val: &Value) -> Result<T, BorError>
 
 /// Decode a single value from a byte slice (unit context). Extra trailing bytes are ignored.
 ///
-/// The target type's recursion is bounded by the stack. Decoding untrusted input on a native stack
-/// wants [`decode_with_max_depth`] instead — see [`check_nesting_depth`] for why the bound is the
-/// caller's to set.
+/// The target type's recursion is bounded by the stack, so decoding untrusted input on a native
+/// stack wants [`decode_with_max_depth`] and a bound of the caller's choosing.
 pub fn decode<T: for<'b> Decode<'b, ()>>(input: &[u8]) -> Result<T, BorError> {
     minicbor::decode(input).map_err(BorError::from)
 }
@@ -172,9 +171,8 @@ where T: for<'b> Decode<'b, C> {
 /// Decode a single value from a byte slice (unit context). Returns an error if any bytes remain after
 /// decoding.
 ///
-/// The target type's recursion is bounded by the stack. Decoding untrusted input on a native stack
-/// wants [`decode_exact_with_max_depth`] instead — see [`check_nesting_depth`] for why the bound is
-/// the caller's to set.
+/// The target type's recursion is bounded by the stack, so decoding untrusted input on a native
+/// stack wants [`decode_exact_with_max_depth`] and a bound of the caller's choosing.
 pub fn decode_exact<T: for<'b> Decode<'b, ()>>(input: &[u8]) -> Result<T, BorError> {
     decode_exact_with(input, &mut ())
 }

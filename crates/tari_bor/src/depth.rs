@@ -10,14 +10,6 @@ use minicbor::{Decoder, data::Type, decode};
 
 /// Rejects input nested deeper than `max_depth`.
 ///
-/// Nesting is a property of the bytes, not of the target type: a `#[derive(Decode)]` on a
-/// self-recursive type descends one native stack frame per level and has no way to thread a counter
-/// of its own, so a bound reached this way is the only one that covers every type. What `max_depth`
-/// should be is the caller's, because only the caller knows whether its input is untrusted and what
-/// stack it is decoding on — a guest's overflow is a trap its embedder reports, a validator's is a
-/// guard-page abort of the process. `tari_engine_types::limits::MAX_CBOR_NESTING_DEPTH` is the
-/// figure this project's own trust boundaries use.
-///
 /// The walk is iterative and reads only item heads, so it costs a fraction of the decode it guards
 /// and is itself immune to the recursion it rejects.
 pub fn check_nesting_depth(input: &[u8], max_depth: usize) -> Result<(), decode::Error> {
