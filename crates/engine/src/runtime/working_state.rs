@@ -91,7 +91,7 @@ use crate::{
     state_store::StateReader,
 };
 
-const LOG_TARGET: &str = "dan::engine::runtime::working_state";
+const LOG_TARGET: &str = "tari::ootle::engine::runtime::working_state";
 
 /// The view of a transaction's state that a runtime module is given when charging for it.
 ///
