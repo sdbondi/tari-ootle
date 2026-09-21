@@ -28,7 +28,11 @@ name: Security audit
 permissions: {}
 
 jobs:
+  # Advisories, reported nightly and on demand. Not on push or pull request: the tree carries a
+  # backlog of live advisories, so this fails today whatever a change does, and a check that is red
+  # before you start is one nobody reads. `cargo_deny` below is the per-change gate.
   security_audit:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -41,9 +45,8 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-  # `deny.toml`'s bans, licences and sources policies. Advisories are deliberately not among them —
-  # see the note above `[advisories]` in `deny.toml`; `security_audit` above reports those, and
-  # opens an issue per finding.
+  # `deny.toml`'s bans, licences and sources policies, on every dependency change. Advisories are
+  # deliberately not among them — see the note above `[advisories]` in `deny.toml`.
   cargo_deny:
     runs-on: ubuntu-latest
     permissions:
