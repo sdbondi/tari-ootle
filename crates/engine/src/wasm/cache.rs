@@ -54,7 +54,7 @@ use crate::{
     wasm::WasmModule,
 };
 
-const LOG_TARGET: &str = "tari::engine::wasm::cache";
+const LOG_TARGET: &str = "tari::ootle::engine::wasm::cache";
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
