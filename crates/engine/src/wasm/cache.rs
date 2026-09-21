@@ -33,7 +33,9 @@ use std::{
         MutexGuard,
         PoisonError,
         atomic::{self, AtomicU64},
+        mpsc,
     },
+    thread,
     time::{Duration, SystemTime},
 };
 
@@ -263,10 +265,35 @@ fn remove_tracked_file(path: &Path, identity: Option<u64>) {
 ///
 /// Eviction is node-local policy with no consensus reach, because an evicted artifact costs only a
 /// recompile of bytes that remain on-chain.
+///
+/// [`WasmModuleCache::store`] hands its artifact to a writer thread instead of writing it. Writing
+/// one means serializing a multi-megabyte artifact and flushing it to the device, and `store`'s
+/// caller is an execution: on a validator that is consensus, on the indexer a dry run. What the
+/// caller needs from a store is that the artifact is on disk before it is wanted again, which is
+/// the next transaction to call the template at the earliest, not before the call that compiled it
+/// returns.
 #[derive(Debug, Clone)]
 pub struct WasmModuleCache {
     dir: PathBuf,
     index: Arc<Mutex<CacheIndex>>,
+    writes: mpsc::SyncSender<Write>,
+}
+
+/// Artifacts the writer thread will accept before [`WasmModuleCache::store`] starts dropping them.
+///
+/// A queued artifact is one already held in memory by whoever compiled it, so a slot costs a
+/// pointer. A dropped one costs a recompile the next time the template is wanted cold.
+const WRITE_QUEUE_CAPACITY: usize = 64;
+
+/// A request to the writer thread.
+enum Write {
+    Artifact {
+        addr: TemplateAddress,
+        loaded: LoadedTemplate,
+    },
+    /// Answered once every artifact queued before it has been written.
+    #[cfg(test)]
+    Barrier(mpsc::SyncSender<()>),
 }
 
 impl WasmModuleCache {
@@ -282,11 +309,14 @@ impl WasmModuleCache {
     pub fn open(dir: impl Into<PathBuf>, cap_bytes: u64) -> io::Result<Self> {
         let dir = dir.into();
         fs::create_dir_all(&dir)?;
+        let (writes, requests) = mpsc::sync_channel(WRITE_QUEUE_CAPACITY);
         let cache = Self {
             index: Arc::new(Mutex::new(Self::build_index(&dir, cap_bytes)?)),
             dir,
+            writes,
         };
         cache.evict_to_fit();
+        cache.spawn_writer(requests);
         // A default that decides how much disk this node uses and what it deletes is logged
         // unconditionally: an operator who upgraded without touching their config should be able to
         // see what changed underneath them in their own logs.
@@ -542,10 +572,71 @@ impl WasmModuleCache {
         }
     }
 
-    /// Persist a compiled module under `addr`. Best-effort: on any failure
-    /// (serialize, write, rename) a warning is logged and the call returns
-    /// successfully — the caller's compiled module is still valid.
+    /// One thread per cache, so that artifacts are written in the order they were offered and two
+    /// stores of one address never race for its filename.
+    ///
+    /// It ends when the cache and every clone of it are dropped, which closes the queue. An
+    /// artifact still queued at that point is lost, and costs the recompile any artifact that was
+    /// never written costs.
+    fn spawn_writer(&self, requests: mpsc::Receiver<Write>) {
+        let cache = self.clone_without_writer();
+        let spawned = thread::Builder::new()
+            .name("wasm-cache-writer".to_string())
+            .spawn(move || {
+                for request in requests {
+                    match request {
+                        Write::Artifact { addr, loaded } => cache.write_now(&addr, &loaded),
+                        #[cfg(test)]
+                        Write::Barrier(reply) => {
+                            let _ignore = reply.send(());
+                        },
+                    }
+                }
+                debug!(target: LOG_TARGET, "Wasm module cache writer exiting");
+            });
+        if let Err(e) = spawned {
+            warn!(
+                target: LOG_TARGET,
+                "Failed to spawn the wasm module cache writer: {}; artifacts will not be cached", e,
+            );
+        }
+    }
+
+    /// A handle onto the same directory and index whose own `writes` sender is disconnected.
+    ///
+    /// The writer thread holds this rather than a full clone: a clone would keep the queue's sender
+    /// alive from inside the thread that drains it, so the queue would never close and the thread
+    /// would never end.
+    fn clone_without_writer(&self) -> Self {
+        let (writes, _dropped) = mpsc::sync_channel(0);
+        Self {
+            dir: self.dir.clone(),
+            index: self.index.clone(),
+            writes,
+        }
+    }
+
+    /// Offer a compiled module to the cache under `addr`.
+    ///
+    /// Returns as soon as the artifact is queued for the writer thread. Best-effort throughout: a
+    /// full queue drops the artifact and any failure to write it is logged, because the caller's
+    /// compiled module is valid either way and the only cost of no cache entry is a later
+    /// recompile.
     pub fn store(&self, addr: &TemplateAddress, loaded: &LoadedTemplate) {
+        let request = Write::Artifact {
+            addr: *addr,
+            loaded: loaded.clone(),
+        };
+        if self.writes.try_send(request).is_err() {
+            debug!(
+                target: LOG_TARGET,
+                "Dropping the compiled module for template {}: the cache writer is behind", addr,
+            );
+        }
+    }
+
+    /// Serialize `loaded` and publish it at `addr`'s cache filename.
+    fn write_now(&self, addr: &TemplateAddress, loaded: &LoadedTemplate) {
         let LoadedTemplate::Wasm(wasm) = loaded;
         let serialized = match wasm.wasm_module().serialize() {
             Ok(s) => s,
@@ -614,6 +705,15 @@ impl WasmModuleCache {
         self.evict_to_fit();
     }
 
+    /// Block until every artifact offered before this call has been written.
+    #[cfg(test)]
+    fn flush(&self) {
+        let (reply, done) = mpsc::sync_channel(0);
+        if self.writes.send(Write::Barrier(reply)).is_ok() {
+            let _ignore = done.recv();
+        }
+    }
+
     /// Bytes of artifact this cache is tracking.
     pub fn total_bytes(&self) -> u64 {
         self.index().total_bytes
@@ -654,7 +754,8 @@ fn write_durable(path: &Path, bytes: &[u8]) -> io::Result<Option<u64>> {
 /// 1. If the cache file `{addr}_{ENGINE_FINGERPRINT}.bin` exists, deserialize and return — no compile, no
 ///    inner-provider call.
 /// 2. Otherwise delegate to `inner` for the raw `PublishedTemplate`, compile via
-///    [`WasmModule::load_template_from_code`], persist the compiled module to the cache, return.
+///    [`WasmModule::load_template_from_code`], offer the compiled module to the cache, return. The artifact is written
+///    by the cache's writer thread, so the caller pays the compile but not the flush.
 ///
 /// Intended placement is between an outer in-memory cache (e.g. moka) and the
 /// raw state-store provider, so a process-lifetime hot path skips disk
@@ -819,6 +920,7 @@ mod tests {
         let addr = addr_of_byte(0x01);
         let loaded = WasmModule::load_template_from_code(account_binary()).unwrap();
         cache.store(&addr, &loaded);
+        cache.flush();
         let size = fs::metadata(cache.path_for(&addr)).unwrap().len();
         (loaded, size)
     }
@@ -866,10 +968,14 @@ mod tests {
 
         // First call: cache miss, compile-then-store.
         let first = provider.get_template(&addr).unwrap().expect("loaded");
+        cache.flush();
+        cache.flush();
         assert!(cache.path_for(&addr).exists(), "store should write a file");
 
         // Second call: cache hit, deserialize-only path.
         let second = provider.get_template(&addr).unwrap().expect("loaded");
+        cache.flush();
+        cache.flush();
         assert_eq!(first.template_name(), second.template_name());
         assert_eq!(first.code_size(), second.code_size());
         assert_eq!(
@@ -896,6 +1002,7 @@ mod tests {
         // Provider compiles fresh and writes a valid file.
         let provider = DiskCachedWasmTemplateProvider::new(store, cache.clone());
         provider.get_template(&addr).unwrap().expect("loaded");
+        cache.flush();
         assert!(path.exists(), "fresh compile should re-populate the cache");
 
         // And the freshly-cached file deserializes cleanly.
@@ -909,6 +1016,7 @@ mod tests {
         let (store, addr) = make_store();
         let provider = DiskCachedWasmTemplateProvider::new(store, cache.clone());
         provider.get_template(&addr).unwrap().expect("loaded");
+        cache.flush();
 
         // Damage a shape count, leaving the wasmer artifact itself intact.
         let path = cache.path_for(&addr);
@@ -927,6 +1035,7 @@ mod tests {
         let (store, addr) = make_store();
         let provider = DiskCachedWasmTemplateProvider::new(store, cache.clone());
         provider.get_template(&addr).unwrap().expect("loaded");
+        cache.flush();
 
         let path = cache.path_for(&addr);
         let mut bytes = fs::read(&path).unwrap();
@@ -957,6 +1066,8 @@ mod tests {
         let (store, addr) = make_store();
         let provider = DiskCachedWasmTemplateProvider::new(store, cache.clone());
         let loaded = provider.get_template(&addr).unwrap().expect("loaded");
+        cache.flush();
+        cache.flush();
 
         let bytes = fs::read(cache.path_for(&addr)).unwrap();
         let stored_crc = u64::from_le_bytes(bytes[CRC_OFFSET..HEADER_BYTES].try_into().unwrap());
@@ -973,6 +1084,42 @@ mod tests {
     }
 
     #[test]
+    fn an_offered_artifact_is_published_by_the_writer() {
+        let (loaded, size) = compiled_artifact();
+        let dir = TempDir::new().unwrap();
+        let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
+        let addr = addr_of_byte(0x11);
+
+        cache.store(&addr, &loaded);
+        cache.flush();
+
+        assert!(cache.try_load(&addr).is_some());
+        assert_eq!(cache.total_bytes(), size);
+    }
+
+    #[test]
+    fn the_writer_outlives_a_write_it_cannot_complete() {
+        let (loaded, _) = compiled_artifact();
+        let dir = TempDir::new().unwrap();
+        let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
+
+        // Nowhere to write, so the first artifact fails somewhere between tempfile and rename.
+        fs::remove_dir_all(dir.path()).unwrap();
+        cache.store(&addr_of_byte(0x11), &loaded);
+        cache.flush();
+
+        fs::create_dir_all(dir.path()).unwrap();
+        let addr = addr_of_byte(0x22);
+        cache.store(&addr, &loaded);
+        cache.flush();
+
+        assert!(
+            cache.path_for(&addr).exists(),
+            "one artifact that could not be written must not cost every artifact after it",
+        );
+    }
+
+    #[test]
     fn evicts_the_least_recently_used_artifact_over_the_cap() {
         let (loaded, size) = compiled_artifact();
         let dir = TempDir::new().unwrap();
@@ -983,6 +1130,7 @@ mod tests {
         let second = addr_of_byte(0x22);
         cache.store(&first, &loaded);
         cache.store(&second, &loaded);
+        cache.flush();
 
         assert!(
             !cache.path_for(&first).exists(),
@@ -1007,8 +1155,10 @@ mod tests {
         let third = addr_of_byte(0x33);
         cache.store(&first, &loaded);
         cache.store(&second, &loaded);
+        cache.flush();
         cache.try_load(&first).expect("hit");
         cache.store(&third, &loaded);
+        cache.flush();
 
         assert!(cache.path_for(&first).exists(), "the artifact just read should be kept");
         assert!(
@@ -1026,6 +1176,7 @@ mod tests {
 
         let addr = addr_of_byte(0x11);
         cache.store(&addr, &loaded);
+        cache.flush();
 
         assert!(
             cache.path_for(&addr).exists(),
@@ -1043,6 +1194,7 @@ mod tests {
             let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
             cache.store(&first, &loaded);
             cache.store(&second, &loaded);
+            cache.flush();
         }
 
         let reopened = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
@@ -1061,6 +1213,7 @@ mod tests {
         {
             let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
             cache.store(&addr, &loaded);
+            cache.flush();
         }
 
         // An artifact this build cannot read, left by a run under an older engine config, and a file
@@ -1121,11 +1274,13 @@ mod tests {
         let addr = addr_of_byte(0x11);
 
         cache.store(&addr, &loaded);
+        cache.flush();
         let path = cache.path_for(&addr);
         let stale_identity = fs::metadata(&path).ok().as_ref().and_then(identity_of);
 
         // A second store publishes a new inode over the same name.
         cache.store(&addr, &loaded);
+        cache.flush();
 
         remove_tracked_file(&path, stale_identity);
 
