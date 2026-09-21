@@ -4,7 +4,7 @@
 use std::{
     fmt::{Debug, Formatter},
     hash::Hash,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 #[derive(Clone)]
@@ -56,8 +56,10 @@ pub struct ConcurrentMapSemaphoreGuard<'a, K: Hash + Eq> {
 
 impl<K: Hash + Eq> ConcurrentMapSemaphoreGuard<'_, K> {
     pub fn access(&self) -> MutexGuard<'_, ()> {
-        // Unwrap: only errors if the mutex is poisoned, which is a bug
-        self.map_mutex.lock().unwrap()
+        // The mutex guards `()`, so a panic under it leaves nothing half-written and the next
+        // caller can take it. Propagating the poison instead would turn one panicking load into a
+        // panic for every later caller of that key.
+        self.map_mutex.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 

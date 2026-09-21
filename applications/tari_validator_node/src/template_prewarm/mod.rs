@@ -31,6 +31,7 @@ use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
     fmt,
     iter,
+    panic::{self, AssertUnwindSafe},
     sync::{
         Arc,
         Mutex,
@@ -47,7 +48,7 @@ use tari_engine_types::{component::Component, substate::SubstateId};
 use tari_ootle_common_types::services::template_provider::TemplateProvider;
 use tari_ootle_storage::{StateStore, StateStoreReadTransaction};
 use tari_ootle_template_provider::ResidentTemplateProvider;
-use tari_ootle_transaction::Transaction;
+use tari_ootle_transaction::{ComponentReference, Instruction, Transaction};
 use tari_template_builtin::is_builtin_template_address;
 use tari_template_lib::types::{ComponentAddress, TemplateAddress};
 use tokio::sync::oneshot;
@@ -102,27 +103,41 @@ impl TemplatePrewarmer {
     /// The caller must have validated the transaction first, and should only prewarm one it is
     /// involved in.
     pub fn prewarm_transaction(&self, transaction: &Transaction) -> PrewarmWait {
-        // A published template's address exists only once its substate is committed, so the
-        // templates a transaction publishes are kept by the publish execution itself and, for a node
-        // that learns of one without executing its publish, by TemplatePrewarmHooks.
-        let named = transaction.referenced_templates_iter().copied();
-        // A `CallMethod` names a component rather than a template, so the component is read here to
-        // find out which. The read is a point lookup, and doing it now rather than on a worker is
-        // what makes the returned wait exact: the caller blocks on the compiles it needs and on
-        // nothing else.
-        let instantiated = transaction
-            .as_referenced_components()
-            .filter_map(|component| self.components.template_of(component));
-
         // Deduplicated before enqueueing, so that a template named twice by one transaction is one
         // compile to wait for rather than two waiters on the same one.
         let mut seen = HashSet::new();
-        let receivers = named
-            .chain(instantiated)
+        let receivers = transaction
+            .instructions()
+            .iter()
+            .chain(transaction.fee_instructions())
+            .filter_map(|instruction| self.template_for(instruction))
             .filter(|address| seen.insert(*address))
             .filter_map(|address| self.enqueue(address))
             .collect();
         PrewarmWait { receivers }
+    }
+
+    /// The template an instruction will load, where that is knowable before execution.
+    ///
+    /// A `PublishTemplate` yields nothing: its address exists only once its substate is committed, so
+    /// the template it publishes is kept by the publish execution itself and, for a node that learns
+    /// of one without executing its publish, by [`TemplatePrewarmHooks`].
+    fn template_for(&self, instruction: &Instruction) -> Option<TemplateAddress> {
+        match instruction {
+            Instruction::CallFunction { address, .. } => Some(*address),
+            // `update_component_template` loads the template replacing the component's, and never
+            // the one it replaces.
+            Instruction::UpdateComponentTemplate { new_template, .. } => Some(*new_template),
+            // A `CallMethod` names a component rather than a template, so the component is read here
+            // to find out which. The read is a point lookup, and doing it now rather than on a worker
+            // is what makes the returned wait exact: the caller blocks on the compiles it needs and
+            // on nothing else.
+            Instruction::CallMethod {
+                call: ComponentReference::Address(component),
+                ..
+            } => self.components.template_of(component),
+            _ => None,
+        }
     }
 
     /// Queue a template without waiting for it.
@@ -202,9 +217,12 @@ const PREWARM_WAIT_PER_TEMPLATE: Duration = Duration::from_millis(512);
 ///
 /// Nothing caps the distinct templates one transaction may call, so this is the real bound and the
 /// per-template rate only shapes the ramp up to it. Reaching it hands the transaction over cold,
-/// which is where a node without a prewarm pool starts: a degradation, not a stall. The gossip
-/// verdict and the propagation of a locally introduced transaction both happen before the wait, so
-/// what a waiting transaction costs is its own admission delay and nothing else's.
+/// which is where a node without a prewarm pool starts: a degradation, not a stall.
+///
+/// What a waiting transaction costs is its own admission delay. Its gossip verdict is reported and,
+/// if it is local, it is propagated before the wait begins, and the caller waits on a task of its
+/// own — the mempool service is a single task and would otherwise pay this bound on behalf of every
+/// message queued behind it.
 const PREWARM_WAIT_CEILING: Duration = Duration::from_secs(2);
 
 /// What a caller holds while the compiles it asked for are in flight.
@@ -214,6 +232,12 @@ pub struct PrewarmWait {
 }
 
 impl PrewarmWait {
+    /// True when there is nothing to wait for: every template the transaction needs is already
+    /// compiled, or what was not could not be queued.
+    pub fn is_empty(&self) -> bool {
+        self.receivers.is_empty()
+    }
+
     /// Complete once every compile this wait covers has finished, or [`PrewarmWait::timeout`]
     /// elapses.
     ///
@@ -369,7 +393,14 @@ where TProvider: TemplateProvider + ResidentTemplateProvider
                 return;
             };
 
-            self.prewarm(&address);
+            // A compile that panics takes its thread's stack with it, and on a machine with fewer
+            // than eight cores this pool is one thread. Catching leaves the pool running and lets
+            // the release below happen, which is what keeps an unwind from stranding every waiter on
+            // this address for the life of the process.
+            let panicked = panic::catch_unwind(AssertUnwindSafe(|| self.prewarm(&address))).is_err();
+            if panicked {
+                error!(target: LOG_TARGET, "Prewarm of template {address} panicked");
+            }
 
             // Held in the queued map until the work is done, so that a template wanted again while
             // this compile is in flight collects a waiter rather than a second queue slot and a
@@ -403,7 +434,7 @@ where TProvider: TemplateProvider + ResidentTemplateProvider
             Ok(None) => {
                 debug!(target: LOG_TARGET, "Template {address} is not known to this node");
                 #[cfg(feature = "metrics")]
-                self.metrics.on_failed();
+                self.metrics.on_not_found();
             },
             Err(e) => {
                 debug!(target: LOG_TARGET, "Prewarm of template {address} failed: {e}");
@@ -424,6 +455,9 @@ mod tests {
         },
     };
 
+    use tari_crypto::{keys::SecretKey, ristretto::RistrettoSecretKey};
+    use tari_ootle_common_types::Epoch;
+    use tari_ootle_transaction::{TransactionBuilder, args};
     use tari_template_builtin::ACCOUNT_TEMPLATE_ADDRESS;
 
     use super::*;
@@ -474,6 +508,12 @@ mod tests {
     #[derive(Default)]
     struct FakeComponents(HashMap<ComponentAddress, TemplateAddress>);
 
+    impl FakeComponents {
+        fn holding(component: ComponentAddress, template: TemplateAddress) -> Self {
+            Self([(component, template)].into_iter().collect())
+        }
+    }
+
     impl ComponentTemplateLookup for FakeComponents {
         fn template_of(&self, component: &ComponentAddress) -> Option<TemplateAddress> {
             self.0.get(component).copied()
@@ -482,16 +522,38 @@ mod tests {
 
     /// A handle whose queue nothing drains, so that a test sees exactly what was enqueued.
     fn undrained(provider: FakeProvider) -> (TemplatePrewarmer, Receiver<TemplateAddress>) {
+        undrained_with(provider, FakeComponents::default())
+    }
+
+    fn undrained_with(
+        provider: FakeProvider,
+        components: FakeComponents,
+    ) -> (TemplatePrewarmer, Receiver<TemplateAddress>) {
         let (tx, rx) = mpsc::sync_channel(QUEUE_CAPACITY);
         let prewarmer = TemplatePrewarmer {
             tx,
             queued: Arc::new(Mutex::new(HashMap::new())),
             residency: Arc::new(provider),
-            components: Arc::new(FakeComponents::default()),
+            components: Arc::new(components),
             #[cfg(feature = "metrics")]
             metrics: PrometheusPrewarmMetrics::new(&mut prometheus_client::registry::Registry::default()),
         };
         (prewarmer, rx)
+    }
+
+    fn component(n: u8) -> ComponentAddress {
+        ComponentAddress::from_array([n; 32])
+    }
+
+    /// Builds and seals a transaction over `build`'s instructions.
+    fn transaction(build: impl FnOnce(TransactionBuilder) -> TransactionBuilder) -> Transaction {
+        let secret = RistrettoSecretKey::random(&mut rand::rng());
+        build(Transaction::builder_localnet(Epoch(1))).build_and_seal(&secret)
+    }
+
+    /// Every address a queue holds, in the order it was offered.
+    fn queued_in(rx: &Receiver<TemplateAddress>) -> Vec<TemplateAddress> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
 
     /// Runs one worker over `addresses` and returns once it has drained them all.
@@ -621,6 +683,91 @@ mod tests {
             2,
             "both callers wait on the one compile"
         );
+    }
+
+    #[test]
+    fn a_call_function_queues_the_template_it_names() {
+        let (prewarmer, rx) = undrained(FakeProvider::default());
+        let tx = transaction(|b| b.call_function(template(1), "new", args![]));
+
+        let wait = prewarmer.prewarm_transaction(&tx);
+
+        assert!(!wait.is_empty());
+        assert_eq!(queued_in(&rx), vec![template(1)]);
+    }
+
+    #[test]
+    fn a_call_method_queues_the_template_its_component_instantiates() {
+        let (prewarmer, rx) = undrained_with(
+            FakeProvider::default(),
+            FakeComponents::holding(component(7), template(2)),
+        );
+        let tx = transaction(|b| b.call_method(component(7), "withdraw", args![]));
+
+        let wait = prewarmer.prewarm_transaction(&tx);
+
+        assert!(!wait.is_empty());
+        assert_eq!(queued_in(&rx), vec![template(2)]);
+    }
+
+    #[test]
+    fn a_component_this_node_does_not_hold_is_no_work() {
+        let (prewarmer, rx) = undrained(FakeProvider::default());
+        let tx = transaction(|b| b.call_method(component(7), "withdraw", args![]));
+
+        let wait = prewarmer.prewarm_transaction(&tx);
+
+        assert!(wait.is_empty());
+        assert!(queued_in(&rx).is_empty());
+    }
+
+    #[test]
+    fn an_update_queues_the_template_that_will_replace_the_component_s() {
+        let (prewarmer, rx) = undrained_with(
+            FakeProvider::default(),
+            FakeComponents::holding(component(7), template(2)),
+        );
+        let tx = transaction(|b| b.update_component_template(component(7), template(3)));
+
+        let _wait = prewarmer.prewarm_transaction(&tx);
+
+        assert_eq!(
+            queued_in(&rx),
+            vec![template(3)],
+            "the template being replaced is never loaded, so compiling it is work thrown away",
+        );
+    }
+
+    #[test]
+    fn one_template_reached_two_ways_is_waited_on_once() {
+        let (prewarmer, rx) = undrained_with(
+            FakeProvider::default(),
+            FakeComponents::holding(component(7), template(1)),
+        );
+        let tx = transaction(|b| {
+            b.call_function(template(1), "new", args![])
+                .call_method(component(7), "withdraw", args![])
+        });
+
+        let wait = prewarmer.prewarm_transaction(&tx);
+
+        assert_eq!(queued_in(&rx), vec![template(1)]);
+        assert_eq!(wait.receivers.len(), 1);
+    }
+
+    #[test]
+    fn a_transaction_whose_templates_are_resident_waits_for_nothing() {
+        let (prewarmer, rx) = undrained_with(
+            FakeProvider::with_resident(template(1)),
+            FakeComponents::holding(component(7), ACCOUNT_TEMPLATE_ADDRESS),
+        );
+        let tx = transaction(|b| {
+            b.call_function(template(1), "new", args![])
+                .call_method(component(7), "withdraw", args![])
+        });
+
+        assert!(prewarmer.prewarm_transaction(&tx).is_empty());
+        assert!(queued_in(&rx).is_empty());
     }
 
     #[test]

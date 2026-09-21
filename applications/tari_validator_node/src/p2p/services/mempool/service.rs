@@ -20,7 +20,7 @@
 //   WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use std::{collections::HashSet, fmt::Display, mem};
+use std::{collections::HashSet, fmt::Display, mem, sync::Arc};
 
 use libp2p::gossipsub::MessageAcceptance;
 use log::*;
@@ -32,7 +32,7 @@ use tari_ootle_p2p::{GossipValidation, NewTransactionMessage, PeerAddress, TariM
 use tari_ootle_storage::{StateStore, StateStoreReadTransaction, StorageError, consensus_models::TransactionRecord};
 use tari_ootle_transaction::{Transaction, TransactionId};
 use tari_ootle_transaction_validation::{TransactionValidationError, Validator};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
 
 use super::MempoolError;
 #[cfg(feature = "metrics")]
@@ -47,6 +47,13 @@ use crate::{
 };
 
 const LOG_TARGET: &str = "tari::validator_node::mempool::service";
+
+/// Admissions that may be waiting on a prewarm at one time.
+///
+/// Each holds its transaction until its wait ends, so this is what bounds the memory a burst of cold
+/// templates can tie up, and the tasks it can create. Past it a transaction is handed to consensus
+/// without waiting, which is where a node with no prewarm pool starts.
+const MAX_CONCURRENT_PREWARM_WAITS: usize = 64;
 
 /// Transaction ids the mempool remembers having seen. See [`SeenTransactions`] for the footprint
 /// this implies; it is a cache with a database fallback, so this trades memory against how often a
@@ -63,6 +70,7 @@ pub struct MempoolService<TValidator, TStateStore> {
     gossip: MempoolGossip,
     consensus_handle: ConsensusHandle,
     template_prewarmer: TemplatePrewarmer,
+    prewarm_waits: Arc<Semaphore>,
     #[cfg(feature = "metrics")]
     metrics: PrometheusMempoolMetrics,
 }
@@ -92,6 +100,7 @@ where
             state_store,
             consensus_handle,
             template_prewarmer,
+            prewarm_waits: Arc::new(Semaphore::new(MAX_CONCURRENT_PREWARM_WAITS)),
             #[cfg(feature = "metrics")]
             metrics,
         }
@@ -331,14 +340,54 @@ where
         // proposal it appears in a warm one. The bound is what keeps that a latency decision rather
         // than a liveness one: on timeout, on a full queue, or on a failed compile the transaction is
         // handed over regardless, and the compile it was waiting on runs on for the executor to join.
-        self.template_prewarmer.prewarm_transaction(&transaction).wait().await;
+        let wait = self.template_prewarmer.prewarm_transaction(&transaction);
 
+        // A transaction with nothing to wait for is handed over on this task, which keeps the common
+        // case in arrival order and keeps this function's error path intact.
+        if wait.is_empty() {
+            return self.notify_consensus(transaction, num_pending).await;
+        }
+
+        // Anything that does wait, waits on a task of its own. This service is a single task serving
+        // gossip, mempool requests and consensus events from one `select!`, and its inbound gossip
+        // queue drops on overflow rather than pushing back, so a wait taken here would be paid by
+        // every message queued behind it and would turn a burst of cold templates into lost
+        // transactions. The permit bounds how many transactions can be held this way at once; without
+        // one the transaction is handed over immediately, as it is when the prewarm queue is full.
+        let Ok(permit) = self.prewarm_waits.clone().try_acquire_owned() else {
+            debug!(
+                target: LOG_TARGET,
+                "🎱 Handing transaction {tx_id} to consensus without waiting: too many admissions are already waiting",
+            );
+            return self.notify_consensus(transaction, num_pending).await;
+        };
+
+        let consensus_handle = self.consensus_handle.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            wait.wait().await;
+            if let Err(e) = consensus_handle.notify_new_transaction(transaction, num_pending).await {
+                warn!(
+                    target: LOG_TARGET,
+                    "⚠️ Failed to hand transaction {tx_id} to consensus after its prewarm: {e}",
+                );
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Hand a transaction this node is involved in to consensus.
+    ///
+    /// Ordering between transactions is not preserved once one of them waits for a prewarm, and does
+    /// not need to be: consensus holds its pool as a set and a proposal orders from it by its own
+    /// rules, so what arrival order decides here is which transaction a leader sees first, not what
+    /// any block contains.
+    async fn notify_consensus(&self, transaction: Transaction, num_pending: usize) -> Result<(), MempoolError> {
         self.consensus_handle
             .notify_new_transaction(transaction, num_pending)
             .await
-            .map_err(|_| MempoolError::ConsensusChannelClosed)?;
-
-        Ok(())
+            .map_err(|_| MempoolError::ConsensusChannelClosed)
     }
 
     /// Publish a transaction this node introduced to the network.

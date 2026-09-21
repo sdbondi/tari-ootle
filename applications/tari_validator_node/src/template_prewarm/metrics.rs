@@ -16,6 +16,7 @@ pub struct PrometheusPrewarmMetrics {
     dropped: Counter,
     compiled: Counter,
     already_resident: Counter,
+    not_found: Counter,
     failed: Counter,
     queue_depth: Gauge,
 }
@@ -45,9 +46,15 @@ impl PrometheusPrewarmMetrics {
                  because execution compiled it first",
                 registry,
             ),
+            not_found: Counter::default().register_at(
+                "not_found",
+                "Number of prewarm requests for a template this node does not hold, which is what a node still \
+                 catching up is expected to see",
+                registry,
+            ),
             failed: Counter::default().register_at(
                 "failed",
-                "Number of prewarm requests whose template could not be loaded",
+                "Number of prewarm requests whose template this node holds but could not load",
                 registry,
             ),
             queue_depth: Gauge::default().register_at(
@@ -77,6 +84,10 @@ impl PrometheusPrewarmMetrics {
 
     pub fn on_already_resident(&self) {
         self.already_resident.inc();
+    }
+
+    pub fn on_not_found(&self) {
+        self.not_found.inc();
     }
 
     pub fn on_failed(&self) {
