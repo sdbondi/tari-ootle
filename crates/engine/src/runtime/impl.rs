@@ -3924,8 +3924,8 @@ where
         &mut self,
         template: TemplateBlob,
         metadata_hash: Option<MetadataHash>,
-        template_def: TemplateDef,
-    ) -> Result<(), RuntimeError> {
+        template_def: &TemplateDef,
+    ) -> Result<PublishedTemplateAddress, RuntimeError> {
         self.invoke_modules_on_runtime_call("publish_template")?;
         self.tracker.write_with(|state_mut| {
             let template_byte_size = template.len();
@@ -3967,7 +3967,7 @@ where
                 metadata,
             ))?;
 
-            Ok(())
+            Ok(template_address)
         })
     }
 

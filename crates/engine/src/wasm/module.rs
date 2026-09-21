@@ -77,15 +77,17 @@ impl WasmModule {
 
     /// Compiles a module whose [`Self::prevalidate_code`] pass has already run, so neither of that
     /// pass's two walks over the binary is repeated.
-    pub fn compile_prevalidated(code: &[u8], shape: ModuleShape) -> Result<TemplateDef, TemplateLoaderError> {
+    ///
+    /// Yields the compiled module and not only its [`TemplateDef`], so that a caller with somewhere
+    /// to keep the artifact is not made to compile the same binary again to get one.
+    pub fn compile_prevalidated(code: &[u8], shape: ModuleShape) -> Result<LoadedTemplate, TemplateLoaderError> {
         // TODO: evaluate if there are acceptable cheaper ways to fully validate
-        let loaded = Self::compile(code, shape)?;
-        Ok(loaded.into_template_def())
+        Self::compile(code, shape)
     }
 
     pub fn validate_code(code: &[u8]) -> Result<TemplateDef, TemplateLoaderError> {
         let shape = Self::prevalidate_code(code)?;
-        Self::compile_prevalidated(code, shape)
+        Ok(Self::compile_prevalidated(code, shape)?.into_template_def())
     }
 
     pub fn load_template_from_code(code: &[u8]) -> Result<LoadedTemplate, TemplateLoaderError> {

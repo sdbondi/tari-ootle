@@ -64,7 +64,7 @@ use tari_engine_types::{
     indexed_value::{IndexedValue, IndexedWellKnownTypes},
     limits::ModuleShape,
     lock::LockFlag,
-    published_template::TemplateBlob,
+    published_template::{PublishedTemplateAddress, TemplateBlob},
 };
 use tari_ootle_template_metadata::MetadataHash;
 use tari_ootle_transaction::{
@@ -230,12 +230,14 @@ pub trait RuntimeInterface {
 
     fn push_call_frame(&mut self, frame: PushCallFrame) -> Result<(), RuntimeError>;
     fn pop_call_frame(&mut self, returned: &IndexedWellKnownTypes) -> Result<(), RuntimeError>;
+    /// Publishes `template` and returns the address it was published at. The address is derived
+    /// from the sealing signer and the binary, which only the runtime knows.
     fn publish_template(
         &mut self,
         template: TemplateBlob,
         metadata_hash: Option<MetadataHash>,
-        template_def: TemplateDef,
-    ) -> Result<(), RuntimeError>;
+        template_def: &TemplateDef,
+    ) -> Result<PublishedTemplateAddress, RuntimeError>;
     fn put_on_workspace(&mut self, id: WorkspaceId, value: IndexedValue) -> Result<(), RuntimeError>;
 
     /// Runs a native intrinsic — a pure function of its arguments, priced from those arguments and

@@ -197,6 +197,15 @@ where TInner: TemplateProvider<Template = LoadedTemplate> + Clone + 'static
         Ok(Some(loaded))
     }
 
+    /// Passed to the inner provider without being cached here.
+    ///
+    /// An offered template belongs to a substate that has not committed, and this cache is consulted
+    /// before anything that could say whether it exists. The disk tier below keys its own answer to
+    /// that question off the state store, so an offer is safe there and would not be here.
+    fn offer_compiled(&self, address: &TemplateAddress, template: &Self::Template) {
+        self.inner.offer_compiled(address, template);
+    }
+
     fn has_template(&self, id: &TemplateAddress) -> Result<bool, Self::Error> {
         Ok(self.builtins.contains_key(id) ||
             self.cache.contains_key(id) ||

@@ -765,11 +765,42 @@ fn write_durable(path: &Path, bytes: &[u8]) -> io::Result<Option<u64>> {
 pub struct DiskCachedWasmTemplateProvider<TStore> {
     inner: TStore,
     cache: WasmModuleCache,
+    offers: Offers,
+}
+
+/// Whether a provider keeps the artifacts executions offer it.
+///
+/// An offered artifact belongs to a template the offering execution derived rather than one this
+/// provider served, so its substate may never commit. A provider that keeps offers therefore holds
+/// artifacts for templates that may not exist, and must confirm existence with `inner` before it
+/// serves one — the cache is an authority on bytes, `inner` on what exists. A provider that ignores
+/// offers only ever caches what `inner` already gave it, and can serve a hit on sight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Offers {
+    Kept,
+    Ignored,
 }
 
 impl<TStore> DiskCachedWasmTemplateProvider<TStore> {
     pub fn new(inner: TStore, cache: WasmModuleCache) -> Self {
-        Self { inner, cache }
+        Self {
+            inner,
+            cache,
+            offers: Offers::Ignored,
+        }
+    }
+
+    /// Keep the artifacts executions offer this provider, at the cost of an existence check on
+    /// `inner` per cache hit.
+    ///
+    /// Worth it where `inner` answers existence from local state and an execution compiles
+    /// templates the node will go on to call — a validator executing `PublishTemplate`. Not worth it
+    /// where existence costs a network fetch, or where the executions are speculative and run on
+    /// input nobody has authenticated: the indexer's dry runs are both, and an accepted offer there
+    /// would let anyone fill the node's cache with artifacts for templates that will never exist.
+    pub fn keeping_offers(mut self) -> Self {
+        self.offers = Offers::Kept;
+        self
     }
 
     /// Opens a cache at `path`, bounded to `cap_bytes`, for this provider's exclusive use. A process whose cache
@@ -778,6 +809,10 @@ impl<TStore> DiskCachedWasmTemplateProvider<TStore> {
     pub fn open(inner: TStore, path: impl Into<PathBuf>, cap_bytes: u64) -> io::Result<Self> {
         let wasm_cache = WasmModuleCache::open(path, cap_bytes)?;
         Ok(Self::new(inner, wasm_cache))
+    }
+
+    fn keeps_offers(&self) -> bool {
+        self.offers == Offers::Kept
     }
 }
 
@@ -805,7 +840,16 @@ where TStore: TemplateProvider<Template = PublishedTemplate> + Clone + 'static
             return Ok(Some(WasmModule::load_template_from_code(published.binary.as_slice())?));
         }
 
-        if let Some(loaded) = self.cache.try_load(address) {
+        // An existence check before the artifact, so that a template whose publish never committed
+        // is not callable on a node that happens to hold its artifact and nowhere else.
+        let exists = if self.keeps_offers() {
+            self.inner
+                .has_template(address)
+                .map_err(|e| DiskCachedWasmTemplateProviderError::Inner(e.into()))?
+        } else {
+            true
+        };
+        if exists && let Some(loaded) = self.cache.try_load(address) {
             return Ok(Some(loaded));
         }
 
@@ -823,15 +867,24 @@ where TStore: TemplateProvider<Template = PublishedTemplate> + Clone + 'static
     }
 
     fn has_template(&self, address: &TemplateAddress) -> Result<bool, Self::Error> {
-        // Cheap path: cache hit implies the template exists. A miss falls
-        // through to the inner provider, which is allowed to answer without
-        // materialising the binary.
-        if !is_builtin_template_address(address) && self.cache.path_for(address).exists() {
+        // Cheap path: an artifact this provider wrote itself is one `inner` gave it, so its presence
+        // answers the question without materialising the binary. A provider keeping offers holds
+        // artifacts `inner` never served and has to ask.
+        if !self.keeps_offers() && !is_builtin_template_address(address) && self.cache.path_for(address).exists() {
             return Ok(true);
         }
         self.inner
             .has_template(address)
             .map_err(|e| DiskCachedWasmTemplateProviderError::Inner(e.into()))
+    }
+
+    fn offer_compiled(&self, address: &TemplateAddress, template: &Self::Template) {
+        // A builtin's address is a constant rather than a hash of its binary, so an artifact filed
+        // under one would outlive the binary it was compiled from. The lookup path bypasses them for
+        // the same reason.
+        if self.keeps_offers() && !is_builtin_template_address(address) {
+            self.cache.store(address, template);
+        }
     }
 }
 
@@ -868,7 +921,7 @@ mod tests {
     use std::sync::Arc;
 
     use tari_engine_types::published_template::PublishedTemplate;
-    use tari_template_builtin::all_builtin_templates;
+    use tari_template_builtin::{ACCOUNT_TEMPLATE_ADDRESS, all_builtin_templates};
     use tari_template_lib::types::crypto::RistrettoPublicKeyBytes;
     use tempfile::TempDir;
 
@@ -1081,6 +1134,64 @@ mod tests {
         let LoadedTemplate::Wasm(reloaded) = &reloaded;
         let LoadedTemplate::Wasm(loaded) = &loaded;
         assert_eq!(reloaded.shape(), loaded.shape());
+    }
+
+    #[test]
+    fn an_offered_artifact_is_kept_but_does_not_make_its_template_exist() {
+        let (loaded, _) = compiled_artifact();
+        let dir = TempDir::new().unwrap();
+        let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
+        let (store, addr) = make_store();
+
+        let nothing_published = StaticStore {
+            templates: Arc::new(std::collections::HashMap::new()),
+        };
+        let provider = DiskCachedWasmTemplateProvider::new(nothing_published, cache.clone()).keeping_offers();
+        provider.offer_compiled(&addr, &loaded);
+        cache.flush();
+
+        assert!(cache.path_for(&addr).exists(), "the artifact is kept");
+        assert!(
+            provider.get_template(&addr).unwrap().is_none(),
+            "a template whose publish never committed must not become callable",
+        );
+        assert!(!provider.has_template(&addr).unwrap());
+
+        // The same artifact, once the substate it belongs to is there.
+        let published = DiskCachedWasmTemplateProvider::new(store, cache.clone()).keeping_offers();
+        assert!(published.get_template(&addr).unwrap().is_some());
+        assert!(published.has_template(&addr).unwrap());
+    }
+
+    #[test]
+    fn a_provider_that_ignores_offers_keeps_nothing() {
+        let (loaded, _) = compiled_artifact();
+        let dir = TempDir::new().unwrap();
+        let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
+        let (store, addr) = make_store();
+
+        let provider = DiskCachedWasmTemplateProvider::new(store, cache.clone());
+        provider.offer_compiled(&addr, &loaded);
+        cache.flush();
+
+        assert!(!cache.path_for(&addr).exists());
+    }
+
+    #[test]
+    fn an_offered_builtin_is_never_kept() {
+        let (loaded, _) = compiled_artifact();
+        let dir = TempDir::new().unwrap();
+        let cache = WasmModuleCache::open(dir.path(), TEST_CAP_BYTES).unwrap();
+        let (store, _) = make_store();
+
+        let provider = DiskCachedWasmTemplateProvider::new(store, cache.clone()).keeping_offers();
+        provider.offer_compiled(&ACCOUNT_TEMPLATE_ADDRESS, &loaded);
+        cache.flush();
+
+        assert!(
+            !cache.path_for(&ACCOUNT_TEMPLATE_ADDRESS).exists(),
+            "a builtin's address is not a hash of its binary, so an artifact under it would outlive it",
+        );
     }
 
     #[test]

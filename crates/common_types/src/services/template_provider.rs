@@ -14,6 +14,18 @@ pub trait TemplateProvider: Send + Sync + Clone + 'static {
     fn has_template(&self, address: &TemplateAddress) -> Result<bool, Self::Error> {
         Ok(self.get_template(address)?.is_some())
     }
+
+    /// Offer a template an execution has just produced, so that a provider able to keep it does not
+    /// have to produce it again.
+    ///
+    /// An offer is a gift, not a request: a provider is free to ignore it, and an implementor that
+    /// does is indistinguishable from one that keeps it except in how long the next load takes. The
+    /// caller learns nothing either way.
+    ///
+    /// The template is one the execution derived rather than one this provider served, so it may
+    /// belong to a substate that never commits. A provider that keeps offers must therefore treat
+    /// what it keeps as an artifact alone and not as evidence that the template exists.
+    fn offer_compiled(&self, _address: &TemplateAddress, _template: &Self::Template) {}
 }
 
 pub trait TemplateMetadataProvider: TemplateProvider {

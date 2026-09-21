@@ -422,7 +422,7 @@ where
                     index: binary,
                     count: blobs.len(),
                 })?;
-                Self::publish_template(runtime, bytes, metadata_hash)
+                Self::publish_template(template_provider, runtime, bytes, metadata_hash)
             },
             Instruction::AllocateAddress {
                 allocatable_type: substate_type,
@@ -638,6 +638,7 @@ where
     /// Load, validate template binary and adds it to TemplateProvider.
     /// Adds a template artifact if successful
     fn publish_template(
+        template_provider: &TTemplateProvider,
         runtime: &mut Runtime,
         binary: &[u8],
         metadata_hash: Option<MetadataHash>,
@@ -657,13 +658,18 @@ where
         // is paid for before it runs. The size cap above is what keeps this charge affordable.
         runtime.interface_mut().charge_template_compile(binary.len() as u64)?;
 
-        let template_def = WasmModule::compile_prevalidated(binary, shape)?;
+        let loaded = WasmModule::compile_prevalidated(binary, shape)?;
         // The size cap above holds the binary within `MAX_TEMPLATE_BLOB_WIRE_BYTES` — a const assertion keeps the two
         // ordered — so constructing TemplateBlob is infallible.
         let blob = TemplateBlob::new_checked(binary).expect("template binary size verified above");
-        runtime
+        let address = runtime
             .interface_mut()
-            .publish_template(blob, metadata_hash, template_def)?;
+            .publish_template(blob, metadata_hash, loaded.template_def())?;
+
+        // The compile above is charged to this transaction and the network has already performed it.
+        // Offering the artifact is what stops every validator compiling the same binary a second
+        // time, on the first call to the template it just published.
+        template_provider.offer_compiled(&address.as_template_address(), &loaded);
 
         Ok(InstructionResult::empty())
     }

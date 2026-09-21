@@ -345,7 +345,8 @@ pub async fn spawn_services(
             state_store.clone(),
             wasm_cache_dir,
             config.validator_node.templates.max_disk_cache_size_bytes(),
-        )?,
+        )?
+        .keeping_offers(),
         &config.validator_node.templates,
     );
 
