@@ -3,10 +3,12 @@
 
 //! Codec-wide nesting bound applied to untrusted input before any typed decode runs.
 
-#[cfg(not(feature = "std"))]
-use alloc::{vec, vec::Vec};
+#[cfg(all(not(feature = "std"), not(target_arch = "wasm32")))]
+use alloc::vec::Vec;
 
-use minicbor::{Decoder, data::Type, decode};
+use minicbor::decode;
+#[cfg(not(target_arch = "wasm32"))]
+use minicbor::{Decoder, data::Type};
 
 /// Maximum container nesting accepted by [`crate::decode`] and its siblings.
 ///
@@ -29,10 +31,23 @@ pub const MAX_NESTING_DEPTH: usize = 256;
 /// The walk is iterative and reads only item heads, so it costs a fraction of the decode it guards
 /// and is itself immune to the recursion it rejects.
 pub fn check_nesting_depth(input: &[u8]) -> Result<(), decode::Error> {
-    if walk(&mut Decoder::new(input)).unwrap_or(true) {
+    if within_bound(input) {
         return Ok(());
     }
     Err(decode::Error::message("maximum CBOR nesting depth exceeded"))
+}
+
+/// On `wasm32` the bound is the embedder's to enforce: running off the stack there is a trap it
+/// reports as an error, and this crate is linked into every template, where the walk's cost would
+/// be metered onto each of the guest's own decodes.
+#[cfg(target_arch = "wasm32")]
+fn within_bound(_input: &[u8]) -> bool {
+    true
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn within_bound(input: &[u8]) -> bool {
+    walk(&mut Decoder::new(input)).unwrap_or(true)
 }
 
 /// Walks the heads of the first item in `d`, returning whether it stays within
@@ -40,11 +55,13 @@ pub fn check_nesting_depth(input: &[u8]) -> Result<(), decode::Error> {
 ///
 /// Malformed input is reported as `Err` and treated by the caller as within bound: the decode that
 /// follows produces a parse error far more specific than anything this walk could say.
+#[cfg(not(target_arch = "wasm32"))]
 fn walk(d: &mut Decoder<'_>) -> Result<bool, decode::Error> {
     // Items still to read per open container, innermost last: `Some(n)` for a definite-length
     // container, `None` for an indefinite-length one that ends at a break byte. The outermost frame
     // is the single top-level item, so an item's nesting depth is `stack.len() - 1`.
-    let mut stack: Vec<Option<u64>> = vec![Some(1)];
+    let mut stack: Vec<Option<u64>> = Vec::with_capacity(16);
+    stack.push(Some(1));
 
     loop {
         let Some(frame) = stack.last().copied() else {
@@ -63,6 +80,13 @@ fn walk(d: &mut Decoder<'_>) -> Result<bool, decode::Error> {
                     continue;
                 }
             },
+        }
+
+        // An item is about to be read, and the frames open around it are its nesting. Checked here
+        // rather than where a container is opened, so an empty container at the bound is accepted
+        // exactly as a scalar there is.
+        if stack.len() - 1 > MAX_NESTING_DEPTH {
+            return Ok(false);
         }
 
         if let Some(Some(n)) = stack.last_mut() {
@@ -85,13 +109,10 @@ fn walk(d: &mut Decoder<'_>) -> Result<bool, decode::Error> {
         };
 
         stack.push(remaining);
-        if stack.len() - 1 > MAX_NESTING_DEPTH {
-            return Ok(false);
-        }
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 
@@ -139,6 +160,16 @@ mod tests {
                 .chain(core::iter::once(0x00))
                 .collect();
             assert!(check_nesting_depth(&over_bound).is_err(), "head {head:#x} over bound");
+        }
+    }
+
+    #[test]
+    fn an_empty_container_at_the_bound_is_accepted_as_a_scalar_there_is() {
+        let containers: Vec<u8> = core::iter::repeat_n(0x81u8, MAX_NESTING_DEPTH).collect();
+        for innermost in [0x00u8, 0x80, 0xa0] {
+            let mut input = containers.clone();
+            input.push(innermost);
+            assert!(check_nesting_depth(&input).is_ok(), "innermost {innermost:#x}");
         }
     }
 

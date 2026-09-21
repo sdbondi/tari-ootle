@@ -22,8 +22,8 @@ use minicbor::{
 pub enum Value {
     Null,
     Bool(bool),
-    /// CBOR integer. The CBOR spec allows the range `-2^64 ..= 2^64 - 1` which fits in `i128`.
-    /// Encoding values outside `i64::MIN ..= u64::MAX` will return an error.
+    /// CBOR integer, within [`INTEGER_RANGE`]. Build one with [`Value::integer`], which is what
+    /// every decoder into this type goes through.
     Integer(i128),
     Float(f64),
     Bytes(Vec<u8>),
@@ -33,7 +33,20 @@ pub enum Value {
     Tag(u64, Box<Value>),
 }
 
+/// The integers a [`Value::Integer`] may hold: exactly what [`Value`]'s encoder writes back as a
+/// CBOR integer head. The CBOR spec's own integer range is wider — `-2^64 ..= 2^64 - 1` — so a
+/// decoder that admitted all of it would produce values no caller could round-trip.
+pub const INTEGER_RANGE: core::ops::RangeInclusive<i128> = (i64::MIN as i128)..=(u64::MAX as i128);
+
 impl Value {
+    /// A [`Value::Integer`], or `None` when `value` falls outside [`INTEGER_RANGE`].
+    pub fn integer(value: i128) -> Option<Self> {
+        if INTEGER_RANGE.contains(&value) {
+            return Some(Value::Integer(value));
+        }
+        None
+    }
+
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)
     }
@@ -278,15 +291,8 @@ fn decode_value<'b, C>(d: &mut Decoder<'b>, ctx: &mut C, depth: usize) -> Result
         Type::Bool => Ok(Value::Bool(d.bool()?)),
         Type::U8 | Type::U16 | Type::U32 | Type::U64 => Ok(Value::Integer(i128::from(d.u64()?))),
         Type::I8 | Type::I16 | Type::I32 | Type::I64 => Ok(Value::Integer(i128::from(d.i64()?))),
-        Type::Int => {
-            let i = i128::from(d.int()?);
-            // The encoder emits a CBOR integer out of the `u64` or `i64` range and nothing wider,
-            // so a value outside that range is one this type can hold but never write back.
-            if i < i128::from(i64::MIN) || i > i128::from(u64::MAX) {
-                return Err(decode::Error::message("Value::Integer out of CBOR range"));
-            }
-            Ok(Value::Integer(i))
-        },
+        Type::Int => Value::integer(i128::from(d.int()?))
+            .ok_or_else(|| decode::Error::message("Value::Integer out of CBOR range")),
         Type::F16 | Type::F32 | Type::F64 => Ok(Value::Float(d.f64()?)),
         Type::Bytes => Ok(Value::Bytes(d.bytes()?.to_vec())),
         Type::BytesIndef => {
