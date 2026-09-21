@@ -53,7 +53,7 @@ mod validation;
 mod working_state;
 mod workspace;
 
-use std::{fmt::Debug, rc::Rc};
+use std::{fmt::Debug, sync::Arc};
 
 pub use pay_fee::PayFee;
 use tari_engine_types::{
@@ -315,25 +315,34 @@ pub trait RuntimeInterface {
 
 /// The handle to the host interface that a WASM invocation carries as its function environment.
 ///
-/// It is a shared handle: every frame of a transaction holds one over the same interface, and each
-/// hands out `&dyn RuntimeInterface` only. A frame therefore never holds a unique borrow of the
+/// It is a shared handle: every frame of a transaction holds one over that transaction's state, and
+/// each hands out `&dyn RuntimeInterface` only. A frame therefore never holds a unique borrow of the
 /// interface while a nested call runs against it — the interface's own state is mutated internally,
 /// under borrows that close before any nested call is made.
+///
+/// Frames reach that state two ways. [`Runtime::clone`] shares the interface itself, while
+/// `RuntimeInterface::for_nested_call` builds a new `RuntimeInterfaceImpl` over the same tracker,
+/// entity-id provider and spend-script context. What is shared in both cases is the state; the
+/// interface is shared only in the first.
 #[derive(Clone)]
 pub struct Runtime {
-    interface: Rc<dyn RuntimeInterface>,
+    interface: Arc<dyn RuntimeInterface>,
 }
 
-// SAFETY: A `Runtime` is created, cloned and used on the one thread that executes a transaction, and
-// is never sent between threads. The bounds exist because wasmer requires them of a `FunctionEnv`'s
-// data, which it stores in the `Store` and hands out only by reference — it never clones or drops
-// the value itself, so the reference counts below are only ever touched by this engine's own code.
+// SAFETY: wasmer requires `Send + Sync` of a `FunctionEnv`'s data. A `Runtime` satisfies neither
+// structurally — the interface's state is `RefCell`, and the handles inside it are `Rc` — so what
+// makes the impls sound is that a `Runtime` stays on one thread. The `Store` holding it is created
+// and dropped inside `TransactionProcessor::invoke_template`, on the thread executing the
+// transaction, so every touch of it, wasmer's own drop of the `FunctionEnv` data included, happens
+// there. The interface handle is `Arc` rather than `Rc` so that the cheapest way to break that
+// invariant — a `Runtime` cloned from two threads — is a contended refcount rather than a
+// use-after-free.
 unsafe impl Sync for Runtime {}
 // SAFETY: See the `Sync` impl above.
 unsafe impl Send for Runtime {}
 
 impl Runtime {
-    pub fn new(interface: Rc<dyn RuntimeInterface>) -> Self {
+    pub fn new(interface: Arc<dyn RuntimeInterface>) -> Self {
         Self { interface }
     }
 
