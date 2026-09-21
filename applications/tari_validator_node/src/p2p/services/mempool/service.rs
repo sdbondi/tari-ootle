@@ -20,7 +20,7 @@
 //   WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use std::{collections::HashSet, fmt::Display, mem};
+use std::{collections::HashSet, fmt::Display, mem, time::Duration};
 
 use libp2p::gossipsub::MessageAcceptance;
 use log::*;
@@ -47,6 +47,16 @@ use crate::{
 };
 
 const LOG_TARGET: &str = "tari::validator_node::mempool::service";
+
+/// How long admission waits for a transaction's templates to compile before handing it to consensus
+/// anyway.
+///
+/// Sized off the worst compile a transaction can require rather than a typical one. The largest
+/// publishable binary is `EngineLimits::max_template_binary_size_bytes` (1 MiB), which compiles in
+/// ~140 ms on the faster of the two machines this was measured on and ~265 ms on the slower;
+/// doubling that leaves room for one compile to sit behind another in the pool. Past this point the
+/// transaction is worth more to consensus than the warm-up is, and the compile continues regardless.
+const PREWARM_WAIT_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Transaction ids the mempool remembers having seen. See [`SeenTransactions`] for the footprint
 /// this implies; it is a cache with a database fallback, so this trades memory against how often a
@@ -301,44 +311,69 @@ where
         let local_committee_shard = self.epoch_manager.get_local_committee_info(current_epoch).await?;
         let is_involved = transaction.is_involved(&local_committee_shard);
 
-        if is_involved {
-            debug!(target: LOG_TARGET, "🎱 New transaction {tx_id} in mempool");
-            // Validated and ours to execute, which is what makes the compile this queues work the
-            // node is going to do anyway rather than work anyone who can gossip can ask it for.
-            self.template_prewarmer.prewarm_transaction(&transaction);
-            self.transactions.insert(tx_id);
-            self.consensus_handle
-                .notify_new_transaction(transaction.clone(), num_pending)
-                .await
-                .map_err(|_| MempoolError::ConsensusChannelClosed)?;
-        } else {
+        if !is_involved {
             debug!(
                 target: LOG_TARGET,
                 "🙇 Not in committee for transaction {tx_id}",
             );
+            if is_local {
+                self.propagate(tx_id, transaction).await;
+            }
+            return Ok(());
         }
 
-        // Transactions are gossiped on a single network-wide topic, so a single publish reaches every validator
-        // (including all involved shard groups). Only the node that first introduces the transaction (received from a
-        // local client) needs to publish it; transactions received from gossip are already seen by the whole network,
-        // so re-publishing them would only produce Duplicate errors.
+        debug!(target: LOG_TARGET, "🎱 New transaction {tx_id} in mempool");
+        self.transactions.insert(tx_id);
+
+        // Propagated before the prewarm below, so that every other involved validator starts its own
+        // compile at the same moment this one does. Holding it until this node is warm would serialise
+        // what is meant to happen network-wide in parallel.
         if is_local {
-            debug!(
-                target: LOG_TARGET,
-                "🎱 Propagating transaction {} ({} input(s))",
-                tx_id,
-                transaction.num_inputs(),
-            );
-            if let Err(e) = self.gossip.forward(NewTransactionMessage { transaction }).await {
-                warn!(
-                    target: LOG_TARGET,
-                    "⚠️ Failed to propagate transaction {tx_id}: {}",
-                    e
-                );
-            }
+            self.propagate(tx_id, transaction.clone()).await;
         }
+
+        // Validated and ours to execute, which is what makes this compile work the node is going to
+        // do anyway rather than work anyone who can gossip can ask it for.
+        //
+        // Consensus is told about the transaction only once the compile is done or the wait expires.
+        // A leader executes inline while building a proposal, so a transaction handed over cold is a
+        // Cranelift compile inside the proposal path; withholding it until this node is warm keeps any
+        // proposal it appears in a warm one. The bound is what keeps that a latency decision rather
+        // than a liveness one: on timeout, on a full queue, or on a failed compile the transaction is
+        // handed over regardless, and the compile it was waiting on runs on for the executor to join.
+        self.template_prewarmer
+            .prewarm_transaction(&transaction)
+            .wait(PREWARM_WAIT_TIMEOUT)
+            .await;
+
+        self.consensus_handle
+            .notify_new_transaction(transaction, num_pending)
+            .await
+            .map_err(|_| MempoolError::ConsensusChannelClosed)?;
 
         Ok(())
+    }
+
+    /// Publish a transaction this node introduced to the network.
+    ///
+    /// Transactions are gossiped on a single network-wide topic, so a single publish reaches every
+    /// validator, including every involved shard group. Only the node a transaction was submitted to
+    /// publishes it; one received from gossip is already seen by the whole network, and re-publishing
+    /// it would only produce Duplicate errors.
+    async fn propagate(&mut self, tx_id: TransactionId, transaction: Transaction) {
+        debug!(
+            target: LOG_TARGET,
+            "🎱 Propagating transaction {} ({} input(s))",
+            tx_id,
+            transaction.num_inputs(),
+        );
+        if let Err(e) = self.gossip.forward(NewTransactionMessage { transaction }).await {
+            warn!(
+                target: LOG_TARGET,
+                "⚠️ Failed to propagate transaction {tx_id}: {}",
+                e
+            );
+        }
     }
 
     fn transaction_exists(&self, id: &TransactionId) -> Result<bool, MempoolError> {
