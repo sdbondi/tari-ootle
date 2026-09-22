@@ -203,7 +203,7 @@ where
 
         let blobs = std::rc::Rc::new(instructions.blobs);
 
-        let runtime_interface = std::sync::Arc::new(RuntimeInterfaceImpl::initialize(
+        let runtime_interface = std::rc::Rc::new(RuntimeInterfaceImpl::initialize(
             tracker,
             template_provider.clone(),
             transaction_signer_public_key,
@@ -211,7 +211,7 @@ where
             modules,
             claim_burn_proof_verifier,
             std::rc::Rc::clone(&blobs),
-        )?) as std::sync::Arc<dyn RuntimeInterface>;
+        )?) as std::rc::Rc<dyn RuntimeInterface>;
 
         let runtime = Runtime::new(runtime_interface);
 

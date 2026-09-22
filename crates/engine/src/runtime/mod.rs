@@ -53,7 +53,7 @@ mod validation;
 mod working_state;
 mod workspace;
 
-use std::{fmt::Debug, sync::Arc};
+use std::{fmt::Debug, rc::Rc};
 
 pub use pay_fee::PayFee;
 use tari_engine_types::{
@@ -326,23 +326,23 @@ pub trait RuntimeInterface {
 /// shared only in the first.
 #[derive(Clone)]
 pub struct Runtime {
-    interface: Arc<dyn RuntimeInterface>,
+    interface: Rc<dyn RuntimeInterface>,
 }
 
 // SAFETY: wasmer requires `Send + Sync` of a `FunctionEnv`'s data. A `Runtime` satisfies neither
-// structurally — the interface's state is `RefCell`, and the handles inside it are `Rc` — so what
-// makes the impls sound is that a `Runtime` stays on one thread. The `Store` holding it is created
-// and dropped inside `TransactionProcessor::invoke_template`, on the thread executing the
-// transaction, so every touch of it, wasmer's own drop of the `FunctionEnv` data included, happens
-// there. The interface handle is `Arc` rather than `Rc` so that the cheapest way to break that
-// invariant — a `Runtime` cloned from two threads — is a contended refcount rather than a
-// use-after-free.
+// structurally — its interface handle is `Rc` and the state behind it is `RefCell` — so what makes
+// the impls sound is that a `Runtime` stays on one thread. Its whole lifetime is one execution: it
+// is built in `TransactionProcessor::execute`, and the `Store` that holds it is created and dropped
+// inside `TransactionProcessor::invoke_template` on the thread executing the transaction, so every
+// refcount touch — wasmer's own drop of the `FunctionEnv` data included — happens there. Nothing a
+// `Runtime` reaches outlives that execution: the handles `TransactionProcessor` is given from
+// outside it, which do cross threads, stay `Arc`.
 unsafe impl Sync for Runtime {}
 // SAFETY: See the `Sync` impl above.
 unsafe impl Send for Runtime {}
 
 impl Runtime {
-    pub fn new(interface: Arc<dyn RuntimeInterface>) -> Self {
+    pub fn new(interface: Rc<dyn RuntimeInterface>) -> Self {
         Self { interface }
     }
 

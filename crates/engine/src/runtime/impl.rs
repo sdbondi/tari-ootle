@@ -523,7 +523,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
     /// The nested frame shares the state, not the handle: every frame gets its own interface, so no
     /// frame holds a borrow of another's while its call is in flight.
     fn for_nested_call(&self) -> Runtime {
-        Runtime::new(Arc::new(self.clone()))
+        Runtime::new(Rc::new(self.clone()))
     }
 
     fn invoke_component_method(
