@@ -18,13 +18,12 @@ targets = []
 [output]
 feature-depth = 1
 
-# NOT part of the pull-request gate. `.github/workflows/cargo-deny.yml` runs `bans`, `licenses`
-# and `sources` on every pull request; advisories are reported nightly by `rustsec/audit-check`
-# in `.github/workflows/audit.yml`, which opens an issue per finding. The tree carries a backlog of
-# live advisories, and gating on it before that backlog is triaged would mean either blocking every
-# pull request or filling `ignore` below with entries nobody has assessed — and an unassessed ignore
-# reads exactly like a clean check. Moving `advisories` into the gate is what closing the backlog is
-# for.
+# Part of the pull-request gate, alongside bans, licences and sources — see
+# `.github/workflows/cargo-deny.yml`. A newly published advisory against anything in the tree turns
+# every pull request red until someone either bumps the crate or writes an entry below, which is
+# the intended cost: an advisory nobody has looked at is the state this check exists to end.
+# `rustsec/audit-check` still reports nightly in `.github/workflows/audit.yml` and opens an issue
+# per finding, so a new advisory is visible before a pull request runs into it.
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
@@ -37,7 +36,34 @@ yanked = "deny"
 unmaintained = "workspace"
 # Every ignore needs a reason and a way out. An entry with neither is a permanent exception nobody
 # will revisit.
-ignore = []
+#
+# Reachability below is per binary (`cargo tree -p <bin> -i <crate>`) rather than across the
+# workspace: `--all-features` over every member unions graphs that are never linked together, so a
+# crate the workspace "depends on" can be absent from everything this project ships. Being absent
+# from every binary is a reason to rank an advisory, never on its own a reason to keep it: each
+# entry here also has to say why the fix is out of reach.
+ignore = [
+    { id = "RUSTSEC-2025-0141", reason = """
+bincode is unmaintained by its authors' decision rather than defective — they consider 1.3.3
+complete. It is linked into every binary here, and it decodes exactly one thing: the
+`tari_mmr::MerkleProof` inside a burn claim, in the v1 format the base layer wrote it in
+(`claim_burn_proof_verifier.rs` pins `bincode::config::legacy()`). The encoding belongs to the base
+layer, so moving off the crate is an L1 change rather than one this repository can make. Revisit
+when the L1 changes that format.""" },
+    { id = "RUSTSEC-2023-0071", reason = """
+Marvin timing sidechannel in RSA private-key operations, with no patched release. Absent from every
+binary this project ships: `pgp` is an optional dependency of `tari_p2p`, enabled only by its
+`auto-update` feature, which only the base layer's own `minotari_node` and wallet binaries turn on.
+It reaches the graph because `integration_tests` runs those binaries to stand up a local L1. What
+`tari_p2p` does with it is verify detached signatures on release hash files against maintainer
+public keys, which performs no private-key operation and so offers no timing oracle. Revisit if
+`rsa` publishes a fix or the L1 drops `pgp`.""" },
+    { id = "RUSTSEC-2025-0055", reason = """
+ANSI escape sequences in logged user input, in tracing-subscriber 0.2. Reachable only through
+dev-dependencies — `ark-groth16`'s dev-deps pull `ark-relations`, which still depends on the 0.2
+line — so `cargo tree -i tracing-subscriber@0.2.25 -e normal` is empty and nothing that ships links
+it. Fixed in 0.3.20; the way out is arkworks moving off 0.2.""" },
+]
 
 [licenses]
 # Permissive licenses only. Anything not listed here fails the check — there is no default-allow.
