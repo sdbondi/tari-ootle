@@ -344,22 +344,24 @@ mod tests {
     }
 
     /// The charge must cover every argument `dispatch` decodes, not only the one the term count is read
-    /// from. A caller declaring no points and a long scalar list makes the engine decode that list before
-    /// the count mismatch is caught, so the list has to be priced.
+    /// from. A caller declaring one list empty and the other long makes the engine decode the long one before
+    /// the count mismatch is caught, so either side being the long one has to be priced.
     #[test]
     fn msm_prices_every_argument_it_decodes() {
-        let encode = |v: &Vec<Scalar32Bytes>| Bytes::from(tari_bor::encode(v).unwrap());
-        let no_points = Bytes::from(tari_bor::encode(&Vec::<RistrettoPublicKeyBytes>::new()).unwrap());
+        let points = |n: usize| Bytes::from(tari_bor::encode(&vec![RistrettoPublicKeyBytes::zero(); n]).unwrap());
+        let scalars = |n: usize| Bytes::from(tari_bor::encode(&vec![Scalar32Bytes::zero(); n]).unwrap());
+        let msm = |a: Bytes, b: Bytes| price(IntrinsicId::RISTRETTO_MSM, &EngineArgs::from(vec![a, b])).unwrap();
 
-        let empty = EngineArgs::from(vec![no_points.clone(), encode(&Vec::new())]);
-        let lopsided = EngineArgs::from(vec![no_points, encode(&vec![Scalar32Bytes::zero(); 1000])]);
-
-        let empty_price = price(IntrinsicId::RISTRETTO_MSM, &empty).unwrap();
-        let lopsided_price = price(IntrinsicId::RISTRETTO_MSM, &lopsided).unwrap();
-        assert!(
-            lopsided_price > empty_price,
-            "1000 unpriced scalars cost the same {empty_price} points as none",
-        );
+        let empty = msm(points(0), scalars(0));
+        for (side, lopsided) in [
+            ("scalars", msm(points(0), scalars(1000))),
+            ("points", msm(points(1000), scalars(0))),
+        ] {
+            assert!(
+                lopsided > empty,
+                "1000 unpriced {side} cost the same {empty} points as none",
+            );
+        }
     }
 
     /// An id priced but not dispatched charges for work never done; one dispatched but not priced

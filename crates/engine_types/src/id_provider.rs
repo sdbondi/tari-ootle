@@ -191,6 +191,28 @@ impl ObjectIds {
 mod tests {
     use super::*;
 
+    /// A counter refuses on the call that cannot advance it, which costs the last id and is what keeps one
+    /// from being served twice. The test asserts both halves: the id before the ceiling is served, and the
+    /// call that would have to repeat it errors instead.
+    #[test]
+    fn an_exhausted_transient_counter_refuses_rather_than_repeating() {
+        let mut object_ids = ObjectIds::new(1);
+        object_ids.bucket_or_proof_id = u32::MAX - 1;
+        object_ids.uuid = u32::MAX - 1;
+
+        assert_eq!(object_ids.next_bucket_id().unwrap(), BucketId::from(u32::MAX - 1));
+        assert!(matches!(
+            object_ids.next_proof_id(),
+            Err(IdProviderError::CounterExhausted { .. })
+        ));
+
+        assert_eq!(object_ids.next_uuid_id().unwrap(), u32::MAX - 1);
+        assert!(matches!(
+            object_ids.next_uuid_id(),
+            Err(IdProviderError::CounterExhausted { .. })
+        ));
+    }
+
     #[test]
     fn it_fails_if_generating_more_ids_than_the_max() {
         let mut object_ids = ObjectIds::new(0);

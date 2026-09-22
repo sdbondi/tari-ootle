@@ -1,7 +1,12 @@
 //    Copyright 2025 The Tari Project
 //    SPDX-License-Identifier: BSD-3-Clause
 
+//! Implementation macros for this crate's two amount types. They are `#[macro_export]`ed because that is how a
+//! `macro_rules!` reaches the crate's other modules, not because they are callable from outside it: half of
+//! them expand to calls on a private accessor. `#[doc(hidden)]` is the label that says so.
+
 /// Macro to implement `From` trait for a type that can be constructed from an integer.
+#[doc(hidden)]
 #[macro_export]
 macro_rules! impl_from {
     ($ty:ty, $int:ty) => {
@@ -13,6 +18,7 @@ macro_rules! impl_from {
     };
 }
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! impl_try_from {
     ($ty:ty, $int:ty) => {
@@ -26,6 +32,7 @@ macro_rules! impl_try_from {
     };
 }
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! partial_eq_impl {
     ($ty:ty, $other:ty) => {
@@ -38,6 +45,7 @@ macro_rules! partial_eq_impl {
     };
 }
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! partial_ord_impl {
     ($ty:ty, $other:ty) => {
@@ -69,6 +77,7 @@ macro_rules! partial_ord_impl {
 ///
 /// A divisor takes the second form, which names the by-zero case separately: the checked operator answers
 /// `None` to both, and the two are not the same mistake.
+#[doc(hidden)]
 #[macro_export]
 macro_rules! op_impl {
     ($item:ident, $trt:ident, $method:ident, $checked:ident, $overflow:literal) => {
@@ -102,6 +111,7 @@ macro_rules! op_impl {
 
 /// Implements a compound-assignment `core::ops` operator for an amount type in terms of the binary operator
 /// [`op_impl`] generated, so both reject the same results.
+#[doc(hidden)]
 #[macro_export]
 macro_rules! op_assign_impl {
     ($item:ident, $trt:ident, $method:ident, $op_trt:ident, $op_method:ident) => {

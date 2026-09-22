@@ -219,7 +219,10 @@ impl Amount {
             Some(Self(div))
         } else {
             // Otherwise, we round up
-            Some(Self(div + 1))
+            match div.checked_add(1) {
+                Some(value) => Some(Self(value)),
+                None => None,
+            }
         }
     }
 

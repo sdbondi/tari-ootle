@@ -292,12 +292,21 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
         })
     }
 
-    /// Both halves are a filter: an entry is one of this transaction's new vaults only if its address is a
-    /// vault id and its value is a vault.
-    pub fn new_vaults(&self) -> impl Iterator<Item = (VaultId, &Vault)> + '_ {
+    /// The address kind is the filter; a value that disagrees with it is the invariant break `down_utxo`
+    /// names, not an entry to skip. This feeds the dangling-locked-value check at commit, so skipping one
+    /// would skip the check rather than report anything.
+    pub fn new_vaults(&self) -> Result<Vec<(VaultId, &Vault)>, RuntimeError> {
         self.new_substates
             .iter()
-            .filter_map(|(addr, value)| Some((addr.as_vault_id()?, value.as_vault()?)))
+            .filter_map(|(addr, value)| Some((addr.as_vault_id()?, value)))
+            .map(|(vault_id, value)| {
+                let vault = value.as_vault().ok_or_else(|| RuntimeError::InvariantError {
+                    function: "new_vaults",
+                    details: format!("Substate at vault address {} does not hold a vault", vault_id),
+                })?;
+                Ok((vault_id, vault))
+            })
+            .collect()
     }
 
     /// Loads and caches the component address. No lock is required for this operation.

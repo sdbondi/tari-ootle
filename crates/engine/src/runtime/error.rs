@@ -192,8 +192,8 @@ pub enum RuntimeError {
     NoLastInstructionOutput,
     #[error(transparent)]
     TransactionCommitError(#[from] TransactionCommitError),
-    #[error("Transaction generated too many outputs: {0}")]
-    TooManyOutputs(#[from] IdProviderError),
+    #[error(transparent)]
+    IdAllocation(#[from] IdProviderError),
     #[error("Transaction generated too many new entities: {0}")]
     TooManyEntities(#[from] EntityIdProviderError),
     #[error("Duplicate NFT token id: {token_id}")]

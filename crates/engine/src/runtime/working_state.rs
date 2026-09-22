@@ -598,7 +598,7 @@ impl<TStore: StateReader> WorkingState<TStore> {
             .into());
         }
 
-        for (vault_id, vault) in self.store.new_vaults() {
+        for (vault_id, vault) in self.store.new_vaults()? {
             // A confidential vault's locked value is a set of commitments whose amounts are hidden, so the locked
             // balance alone reports zero for it.
             if vault.has_locked_funds() {

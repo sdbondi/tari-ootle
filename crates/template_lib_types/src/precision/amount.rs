@@ -277,7 +277,8 @@ impl PrecisionAmount {
         }
     }
 
-    /// Returns the remainder of dividing two amounts, returning `None` if the divisor is zero.
+    /// Returns the remainder of dividing two amounts, returning `None` if the divisor is zero or if the
+    /// result overflows, which for a signed type means `MIN % -1`.
     pub const fn checked_rem(&self, other: Self) -> Option<Self> {
         match self.into_inner_value().checked_rem(other.into_inner_value()) {
             Some(value) => Some(Self(value)),
@@ -315,7 +316,10 @@ impl PrecisionAmount {
             Some(Self(div))
         } else {
             // Otherwise, we round up
-            Some(Self(div.add(I192::ONE)))
+            match div.checked_add(I192::ONE) {
+                Some(value) => Some(Self(value)),
+                None => None,
+            }
         }
     }
 
