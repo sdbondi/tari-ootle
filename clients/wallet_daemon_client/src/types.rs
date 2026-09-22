@@ -1508,8 +1508,6 @@ pub struct WebauthnFinishRegisterRequest {
     /// [`RegisterPublicKeyCredential`]
     #[cfg_attr(feature = "ts", ts(type = "object"))]
     pub credential: RegisterPublicKeyCredential,
-    /// Permissions requested by the client to be associated with the registered credential.
-    pub requested_permissions: Vec<Permission>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
