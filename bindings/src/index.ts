@@ -32,6 +32,8 @@ export * from "./types/BuiltinPredicate";
 export * from "./types/BurnOutput";
 export * from "./types/BurnOutputFeatures";
 export * from "./types/BurnOutputInclusionProof";
+export * from "./types/BurnRateChange";
+export * from "./types/BurnRateGovernanceState";
 export * from "./types/BurnSidechainId";
 export * from "./types/Bytes";
 export * from "./types/CheckOrd";

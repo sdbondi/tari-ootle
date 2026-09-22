@@ -29,6 +29,7 @@ use tari_ootle_common_types::optional::Optional;
 use tari_template_lib_types::Amount;
 
 use crate::{
+    exhaust_burn_rate::resolve_exhaust_burn_rate_for_epoch,
     network_state_sync::ProbeFailure,
     rest_api::{context::HandlerContext, error::ErrorResponse, handlers::HandlerResult},
 };
@@ -63,7 +64,10 @@ pub async fn get_economics(Extension(context): Extension<HandlerContext>) -> Han
         .await
         .map_err(ErrorResponse::anyhow)?;
 
-    let target_burn_rate_bps = context.consensus_constants().exhaust_burn_rate(current_epoch).as_bps();
+    let target_burn_rate_bps =
+        resolve_exhaust_burn_rate_for_epoch(context.substate_manager(), context.network(), current_epoch)
+            .await
+            .as_bps();
     // Supply nets the receipt-sourced burn against claimed (both advance on the state-sync frontier), matching
     // `get_xtr_total_supply`; `total_exhaust_burned` (header) is reported alongside as a cross-check.
     let total_supply = econ
