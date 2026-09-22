@@ -4,9 +4,16 @@
 //! Tests for the liveness state machine that decides whether leader selection skips a validator's
 //! slot.
 
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use ootle_byte_type::ToByteType;
+use tari_consensus::messages::HotstuffMessage;
 use tari_consensus_types::{Decision, LastExecuted};
 use tari_ootle_common_types::{Epoch, NodeHeight, optional::Optional};
 use tari_ootle_storage::{
@@ -14,7 +21,7 @@ use tari_ootle_storage::{
     consensus_models::{BookkeepingModel, LivenessState, LivenessThresholds, ValidatorConsensusStats},
 };
 
-use crate::support::{Test, TestAddress, TestVnDestination, helpers, logging::setup_logger};
+use crate::support::{MessageFilter, Test, TestAddress, TestVnDestination, helpers, logging::setup_logger};
 
 const SUSPEND_AFTER_MISSED: u64 = 2;
 
@@ -66,7 +73,15 @@ fn liveness_state_of(
 }
 
 fn start_test(committee: Vec<&'static str>, thresholds: LivenessThresholds) -> impl Future<Output = Test> {
-    Test::builder()
+    start_test_with_filter(committee, thresholds, None)
+}
+
+fn start_test_with_filter(
+    committee: Vec<&'static str>,
+    thresholds: LivenessThresholds,
+    message_filter: Option<MessageFilter>,
+) -> impl Future<Output = Test> {
+    let mut builder = Test::builder()
         .with_test_timeout(Duration::from_secs(120))
         .modify_consensus_constants(move |constants| {
             constants.missed_proposal_suspend_threshold = thresholds.suspend_after_missed;
@@ -75,8 +90,30 @@ fn start_test(committee: Vec<&'static str>, thresholds: LivenessThresholds) -> i
             constants.probation_max_backoff_exp = thresholds.probation_max_backoff_exp;
             constants.pacemaker_block_time = Duration::from_secs(2);
         })
-        .add_committee(0, committee)
-        .start()
+        .add_committee(0, committee);
+    if let Some(message_filter) = message_filter {
+        builder = builder.with_message_filter(message_filter);
+    }
+    builder.start()
+}
+
+/// A validator whose proposals the committee never sees while the returned switch is on. It
+/// receives, votes and follows the chain throughout, so it is charged for every view it fails to
+/// fill while its own view stays level with the committee's.
+///
+/// Staying level is what the harness requires: it has no block sync, so a validator more than
+/// `MAX_VIEW_LOOKAHEAD` views behind the tip has every proposal it would catch up on discarded.
+fn mute_proposals_of(subject: &TestAddress) -> (MessageFilter, Arc<AtomicBool>) {
+    let is_muted = Arc::new(AtomicBool::new(false));
+    let switch = is_muted.clone();
+    let subject = subject.clone();
+    let filter: MessageFilter = Box::new(move |from, _to, msg| {
+        if *from != subject || !is_muted.load(Ordering::SeqCst) {
+            return true;
+        }
+        !matches!(msg, HotstuffMessage::Proposal(_))
+    });
+    (filter, switch)
 }
 
 /// Keeps transactions flowing so that the leaders that do propose have something to propose, and
@@ -175,14 +212,13 @@ async fn a_suspended_validators_slot_is_skipped() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_returning_validator_is_restored() {
     setup_logger();
-    let mut test = start_test(vec!["1", "2", "3", "4", "5"], SHORT_PROBATION).await;
-
     let returning = TestAddress::new("4");
+    let (message_filter, is_muted) = mute_proposals_of(&returning);
+    let mut test = start_test_with_filter(vec!["1", "2", "3", "4", "5"], SHORT_PROBATION, Some(message_filter)).await;
+
     test.start_epoch(Epoch(1)).await;
-    // It takes part before it goes away, so that when it comes back its view is close enough behind
-    // the tip for the view buffer to admit the proposals it has to catch up on.
     commit_a_block(&mut test).await;
-    test.network().go_offline(returning.clone()).await;
+    is_muted.store(true, Ordering::SeqCst);
 
     while liveness_state_of(&test, "1", &returning, &SHORT_PROBATION) != LivenessState::Suspended {
         let height = commit_a_block(&mut test).await;
@@ -192,7 +228,7 @@ async fn a_returning_validator_is_restored() {
         );
     }
 
-    test.network().go_online(&returning).await;
+    is_muted.store(false, Ordering::SeqCst);
 
     let mut saw_probation = false;
     loop {
