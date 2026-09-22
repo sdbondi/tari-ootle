@@ -19,8 +19,8 @@ function SearchedRange({ searched }: SearchedRangeProps) {
   if (searched.clamped) {
     return (
       <Alert severity="warning" sx={{ marginBottom: 2 }}>
-        Only values {range} were searched, which is less than you asked for. A balance shown as undecryptable may
-        simply be above {searched.max.toString()}. Configure a value lookup table file to search further.
+        Only values {range} were searched, which is less than you asked for. A balance shown as undecryptable may simply
+        be above {searched.max.toString()}. Configure a value lookup table file to search further.
       </Alert>
     );
   }
