@@ -27,8 +27,7 @@ name: Dependency policy
 permissions: {}
 
 jobs:
-  # `deny.toml`'s bans, licences and sources policies. Advisories are reported by
-  # `.github/workflows/audit.yml` — see the note above `[advisories]` in `deny.toml`.
+  # Every policy in `deny.toml`: advisories, bans, licences and sources.
   cargo_deny:
     runs-on: ubuntu-latest
     permissions:
@@ -39,7 +38,7 @@ jobs:
           persist-credentials: false
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
-          command: check bans licenses sources
+          command: check advisories bans licenses sources
           # The action's default is `--all-features`. Naming it here keeps the graph CI resolves
           # the same one `deny.toml` describes and a reviewer reproduces from the command line.
           arguments: --all-features
