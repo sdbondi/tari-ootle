@@ -199,3 +199,4 @@ export * from "./types/wallet-types/AccountsCreateResponse";
 export * from "./types/wallet-types/IssuedApiKey";
 export * from "./types/wallet-types/TransactionWaitResultResponse";
 export * from "./types/wallet-types/AccountGetRequest";
+export * from "./types/wallet-types/ValueScanCoverage";
