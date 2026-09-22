@@ -344,8 +344,11 @@ fn load_template_def_from_custom_section(module: &wasmer::Module) -> Result<Temp
             ),
         });
     }
-    let template = tari_bor::decode::<TemplateDef>(&section[WASM_PTR_SIZE..full_len])
-        .map_err(WasmExecutionError::AbiTemplateDefDecodeError)?;
+    let template = tari_bor::decode_with_max_depth::<TemplateDef>(
+        &section[WASM_PTR_SIZE..full_len],
+        limits::MAX_CBOR_NESTING_DEPTH,
+    )
+    .map_err(WasmExecutionError::AbiTemplateDefDecodeError)?;
     Ok(template)
 }
 
