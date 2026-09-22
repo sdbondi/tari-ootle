@@ -137,12 +137,13 @@ pub async fn handle_decrypt_value(
         )
     });
     let _drop_guard = AbortQueuedOnDropGuard::new(handle.abort_handle());
-    let balances = handle.await??;
+    let recovery = handle.await??;
 
     info!(target: LOG_TARGET, "Brute force balance lookup took {:.2?}", timer.elapsed());
 
     Ok(StealthUtxosDecryptValueResponse {
-        values: proofs.into_keys().zip(balances).collect(),
+        values: proofs.into_keys().zip(recovery.balances).collect(),
+        searched: recovery.searched,
     })
 }
 

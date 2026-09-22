@@ -430,7 +430,7 @@ pub async fn handle_view_vault_balance(
         )
     });
     let _drop_guard = AbortQueuedOnDropGuard::new(handle.abort_handle());
-    let balances = handle.await??;
+    let recovery = handle.await??;
 
     info!(target: LOG_TARGET, "Brute force balance lookup took {:.2?}", timer.elapsed());
 
@@ -438,7 +438,8 @@ pub async fn handle_view_vault_balance(
         balances: viewable
             .iter()
             .map(|(commitment, _)| *commitment)
-            .zip(balances)
+            .zip(recovery.balances)
             .collect(),
+        searched: recovery.searched,
     })
 }

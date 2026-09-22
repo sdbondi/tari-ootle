@@ -9,7 +9,7 @@ use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_engine_types::crypto::ElgamalVerifiableBalanceBytes;
 use tari_ootle_wallet_crypto::{GenerateValueLookup, SortedPrefixFileLookup};
 use tari_ootle_wallet_sdk::apis::viewable_balance::ViewableBalanceApi;
-use tari_ootle_walletd_client::types::StealthUtxosGetValueLookupInfoResponse;
+use tari_ootle_walletd_client::types::{StealthUtxosGetValueLookupInfoResponse, ValueScanCoverage};
 use tokio::task::AbortHandle;
 
 const LOG_TARGET: &str = "tari::ootle::walletd::handlers::value_lookup";
@@ -50,6 +50,25 @@ impl ValueRangeRequest {
             requested_max: max_expected,
         }
     }
+
+    /// Reports `searched` back to the caller, flagging it as clamped when it stops short of the
+    /// maximum the caller named.
+    fn coverage(&self, searched: &RangeInclusive<u64>) -> ValueScanCoverage {
+        ValueScanCoverage {
+            min: *searched.start(),
+            max: *searched.end(),
+            clamped: self.requested_max.is_some_and(|max| max > *searched.end()),
+        }
+    }
+}
+
+/// One recovered value per proof, in the order the proofs were given, and what the search covered.
+///
+/// The coverage travels with the balances because a `None` is ambiguous without it: the value may be
+/// absent, or it may lie outside what this search reached.
+pub(crate) struct BalanceRecovery {
+    pub balances: Vec<Option<u64>>,
+    pub searched: ValueScanCoverage,
 }
 
 /// Aborts a blocking balance-recovery task when the request that spawned it is dropped.
@@ -91,7 +110,7 @@ pub(crate) fn brute_force_viewable_balances(
     secret_view_key: &RistrettoSecretKey,
     proofs: &[ElgamalVerifiableBalanceBytes],
     range: ValueRangeRequest,
-) -> anyhow::Result<Vec<Option<u64>>> {
+) -> anyhow::Result<BalanceRecovery> {
     let Some(path) = lookup_file else {
         warn!(
             target: LOG_TARGET,
@@ -100,8 +119,12 @@ pub(crate) fn brute_force_viewable_balances(
             range.scan_range.start(),
             range.scan_range.end(),
         );
-        let lookup = GenerateValueLookup::new(range.scan_range);
-        return Ok(api.try_decrypt_commitment_balances(secret_view_key, proofs.iter(), &lookup)?);
+        let searched = range.coverage(&range.scan_range);
+        let lookup = GenerateValueLookup::new(range.scan_range.clone());
+        return Ok(BalanceRecovery {
+            balances: api.try_decrypt_commitment_balances(secret_view_key, proofs.iter(), &lookup)?,
+            searched,
+        });
     };
 
     let file =
@@ -147,7 +170,11 @@ pub(crate) fn brute_force_viewable_balances(
         );
     }
 
-    Ok(results)
+    Ok(BalanceRecovery {
+        balances: results,
+        // The whole file is searched whatever the caller asked for, so its coverage is the answer's.
+        searched: range.coverage(&lookup.range()),
+    })
 }
 
 /// Reports the configured value lookup table's format and coverage for diagnostics. When no file is
@@ -219,6 +246,39 @@ mod tests {
     fn the_requested_maximum_is_reported_unclamped() {
         let resolved = ValueRangeRequest::resolve(None, Some(u64::MAX));
         assert_eq!(resolved.requested_max, Some(u64::MAX));
+    }
+
+    /// A `None` is only interpretable next to what was searched, so a request cut short by the
+    /// ceiling has to say so.
+    #[test]
+    fn a_clamped_request_is_reported_as_clamped() {
+        let request = ValueRangeRequest::resolve(None, Some(1_000_000_000));
+        let searched = request.coverage(&request.scan_range);
+
+        assert!(searched.clamped);
+        assert_eq!(searched.max, MAX_NO_FILE_SCAN_CANDIDATES);
+    }
+
+    #[test]
+    fn a_request_the_search_covers_is_not_reported_as_clamped() {
+        // Within the ceiling, the caller got the range it asked for.
+        let request = ValueRangeRequest::resolve(Some(1_000), Some(2_000));
+        assert!(!request.coverage(&request.scan_range).clamped);
+
+        // Naming no maximum cannot be cut short, whatever the ceiling is.
+        let request = ValueRangeRequest::resolve(None, None);
+        assert!(!request.coverage(&request.scan_range).clamped);
+    }
+
+    /// With a lookup file the whole file is searched, so the coverage reported is the file's -- and a
+    /// caller asking past its end is told the answer stops there.
+    #[test]
+    fn a_lookup_file_reports_its_own_coverage() {
+        let request = ValueRangeRequest::resolve(Some(5), Some(u64::MAX));
+        let searched = request.coverage(&(0..=1_000));
+
+        assert_eq!((searched.min, searched.max), (0, 1_000));
+        assert!(searched.clamped);
     }
 
     #[test]

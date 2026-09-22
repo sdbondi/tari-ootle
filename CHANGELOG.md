@@ -10,6 +10,8 @@ See [standard-version](https://github.com/conventional-changelog/standard-versio
 - **A client holding only `settings:update` can no longer change the indexer URL.** That one field of
   `settings.set` now needs `admin`; the remaining fields are unchanged, and the web UI already holds
   `admin`.
+- **`ConfidentialViewVaultBalanceResponse` and `StealthUtxosDecryptValueResponse` carry a new
+  `searched` field.** Additive on the wire; Rust callers that construct either response must set it.
 
 ### Wallet
 
@@ -21,6 +23,9 @@ See [standard-version](https://github.com/conventional-changelog/standard-versio
 - `fix` — **One balance-recovery request can no longer occupy a thread indefinitely.** The
   brute-force value scan is bounded whatever the caller asks for, a vault's proof count is bounded,
   and the work no longer runs on a runtime worker thread. (#2673)
+- `feat!` — **A balance recovery now reports which values it searched**, so an undecryptable balance
+  can be told apart from one the search never reached. `confidential.view_vault_balance` and
+  `stealth_utxos.decrypt_value` both gain a `searched` field. (#2673)
 
 ## [0.41.1](https://github.com/tari-project/tari-ootle/compare/v0.41.0...v0.41.1) (2026-09-21)
 

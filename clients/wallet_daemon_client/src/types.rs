@@ -886,6 +886,27 @@ pub struct ConfidentialViewVaultBalanceRequest {
 pub struct ConfidentialViewVaultBalanceResponse {
     #[cfg_attr(feature = "ts", ts(type = "Record<string, number | null>"))]
     pub balances: HashMap<PedersenCommitmentBytes, Option<u64>>,
+    pub searched: ValueScanCoverage,
+}
+
+/// The values a balance recovery actually covered, so a `None` result can be told apart from a value
+/// the search never reached.
+///
+/// Recovering a viewable balance is a reverse lookup over a range of candidate values, and the range
+/// is not always the one the caller named: without a lookup table file the daemon caps how much of it
+/// one request may scan, and with one the file's own coverage is what bounds the answer. A client that
+/// only sees `None` cannot tell "this output does not hold that value" from "nobody looked there".
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct ValueScanCoverage {
+    /// Lowest value the search covered.
+    pub min: u64,
+    /// Highest value the search covered.
+    pub max: u64,
+    /// True when `max` is below the maximum the caller asked for. Any `None` in the same response may
+    /// then be a value the search did not reach, and finding it needs a wider lookup table file
+    /// rather than a retry.
+    pub clamped: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1784,6 +1805,7 @@ pub struct StealthUtxosDecryptValueRequest {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct StealthUtxosDecryptValueResponse {
     pub values: HashMap<UtxoId, Option<u64>>,
+    pub searched: ValueScanCoverage,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
