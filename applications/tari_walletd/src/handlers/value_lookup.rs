@@ -51,13 +51,20 @@ impl ValueRangeRequest {
         }
     }
 
-    /// Reports `searched` back to the caller, flagging it as clamped when it stops short of the
-    /// maximum the caller named.
+    /// Reports `searched` back to the caller, flagging it as clamped when it covers less than the
+    /// caller asked for at either end.
+    ///
+    /// Both ends matter, and a lookup file is where they differ: a file covering `1000..=2000` answers
+    /// a caller asking from 0 without ever looking below 1000, so a `None` there is "not searched"
+    /// exactly as it is above the file's top. `scan_range`'s start is the minimum the caller named, or
+    /// 0 when it named none.
     fn coverage(&self, searched: &RangeInclusive<u64>) -> ValueScanCoverage {
+        let below = *searched.start() > *self.scan_range.start();
+        let above = self.requested_max.is_some_and(|max| max > *searched.end());
         ValueScanCoverage {
             min: *searched.start(),
             max: *searched.end(),
-            clamped: self.requested_max.is_some_and(|max| max > *searched.end()),
+            clamped: below || above,
         }
     }
 }
@@ -279,6 +286,24 @@ mod tests {
 
         assert_eq!((searched.min, searched.max), (0, 1_000));
         assert!(searched.clamped);
+    }
+
+    /// A file that starts above the caller's minimum leaves the bottom of the request unsearched, so
+    /// the flag has to fire on that end too.
+    #[test]
+    fn coverage_short_at_the_bottom_is_reported_as_clamped() {
+        let request = ValueRangeRequest::resolve(Some(0), Some(2_000));
+        let searched = request.coverage(&(1_000..=2_000));
+
+        assert!(searched.clamped);
+        assert_eq!((searched.min, searched.max), (1_000, 2_000));
+    }
+
+    /// A file covering more than was asked for is not short at either end.
+    #[test]
+    fn coverage_wider_than_the_request_is_not_clamped() {
+        let request = ValueRangeRequest::resolve(Some(1_000), Some(2_000));
+        assert!(!request.coverage(&(0..=5_000)).clamped);
     }
 
     #[test]

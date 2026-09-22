@@ -903,9 +903,9 @@ pub struct ValueScanCoverage {
     pub min: u64,
     /// Highest value the search covered.
     pub max: u64,
-    /// True when `max` is below the maximum the caller asked for. Any `None` in the same response may
-    /// then be a value the search did not reach, and finding it needs a wider lookup table file
-    /// rather than a retry.
+    /// True when `min`-`max` covers less than the caller asked for, at either end. Any `None` in the
+    /// same response may then be a value the search did not reach, and finding it needs a wider lookup
+    /// table file rather than a retry.
     pub clamped: bool,
 }
 

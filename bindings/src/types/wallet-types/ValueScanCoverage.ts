@@ -9,4 +9,19 @@
  * one request may scan, and with one the file's own coverage is what bounds the answer. A client that
  * only sees `None` cannot tell "this output does not hold that value" from "nobody looked there".
  */
-export type ValueScanCoverage = { min: bigint; max: bigint; clamped: boolean };
+export type ValueScanCoverage = {
+  /**
+   * Lowest value the search covered.
+   */
+  min: bigint;
+  /**
+   * Highest value the search covered.
+   */
+  max: bigint;
+  /**
+   * True when `min`-`max` covers less than the caller asked for, at either end. Any `None` in the
+   * same response may then be a value the search did not reach, and finding it needs a wider lookup
+   * table file rather than a retry.
+   */
+  clamped: boolean;
+};
