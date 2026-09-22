@@ -1504,7 +1504,7 @@ where
                         return Err(RuntimeError::SignerBadgeNotInScope { public_key: owner });
                     }
 
-                    let proof_id = state_mut.id_provider()?.new_proof_id();
+                    let proof_id = state_mut.id_provider()?.new_proof_id()?;
                     let container = ResourceContainer::public_key(owner);
                     let locked = LockedResource::new(ContainerRef::Runtime, container);
                     state_mut.new_proof(proof_id, locked)?;
@@ -1637,7 +1637,7 @@ where
                     let mut output_bucket = None;
                     if let Some(mint_arg) = arg.mint_arg {
                         let container = state_mut.mint_resource(&resource_lock, mint_arg)?;
-                        let bucket_id = state_mut.id_provider()?.new_bucket_id();
+                        let bucket_id = state_mut.id_provider()?.new_bucket_id()?;
                         state_mut.new_bucket(bucket_id, container)?;
                         output_bucket = Some(tari_template_lib::models::Bucket::from_id(bucket_id));
                     }
@@ -1732,7 +1732,7 @@ where
                     let mint_arg = mint_resource.mint_arg;
 
                     let resource = state_mut.mint_resource(&resource_lock, mint_arg)?;
-                    let bucket_id = state_mut.id_provider()?.new_bucket_id();
+                    let bucket_id = state_mut.id_provider()?.new_bucket_id()?;
 
                     let payload = Metadata::from_iter([("amount", resource.unlocked_amount().to_string())]);
                     Self::emit_std_event("resource", "mint", resource_address, payload, state_mut)?;
@@ -1798,7 +1798,7 @@ where
                     ]);
                     Self::emit_std_event("resource", "recall", resource_address, payload, state_mut)?;
 
-                    let bucket_id = state_mut.id_provider()?.new_bucket_id();
+                    let bucket_id = state_mut.id_provider()?.new_bucket_id()?;
                     state_mut.new_bucket(bucket_id, resource)?;
 
                     state_mut.unlock_substate(vault_lock)?;
@@ -2613,7 +2613,7 @@ where
 
                     Self::emit_std_event("vault", "withdraw", vault_id, payload, state)?;
 
-                    let bucket_id = state.id_provider()?.new_bucket_id();
+                    let bucket_id = state.id_provider()?.new_bucket_id()?;
                     state.new_bucket(bucket_id, resource_container)?;
 
                     state.unlock_substate(vault_lock)?;
@@ -2831,7 +2831,7 @@ where
                 }
 
                 self.tracker.write_with(|state| {
-                    let proof_id = state.id_provider()?.new_proof_id();
+                    let proof_id = state.id_provider()?.new_proof_id()?;
                     let vault_mut = state.get_vault_mut(&vault_lock)?;
                     let locked_funds = vault_mut.lock_all(vault_id)?;
                     state.new_proof(proof_id, locked_funds)?;
@@ -2881,7 +2881,7 @@ where
                 }
 
                 self.tracker.write_with(|state| {
-                    let proof_id = state.id_provider()?.new_proof_id();
+                    let proof_id = state.id_provider()?.new_proof_id()?;
                     let vault_mut = state.get_vault_mut(&vault_lock)?;
                     let locked_funds = vault_mut.lock_by_amount(vault_id, arg.amount)?;
                     state.new_proof(proof_id, locked_funds)?;
@@ -2931,7 +2931,7 @@ where
                 }
 
                 self.tracker.write_with(|state| {
-                    let proof_id = state.id_provider()?.new_proof_id();
+                    let proof_id = state.id_provider()?.new_proof_id()?;
                     let vault_mut = state.get_vault_mut(&vault_lock)?;
                     let locked_funds = vault_mut.lock_by_non_fungible_ids(vault_id, arg.ids)?;
                     state.new_proof(proof_id, locked_funds)?;
@@ -3054,7 +3054,7 @@ where
                 self.tracker.write_with(|state| {
                     let bucket = state.get_bucket_mut(bucket_id)?;
                     let resource = bucket.take(amount)?;
-                    let bucket_id = state.new_bucket_id();
+                    let bucket_id = state.new_bucket_id()?;
                     state.new_bucket(bucket_id, resource)?;
                     Ok(InvokeResult::encode(&bucket_id)?)
                 })
@@ -3101,7 +3101,7 @@ where
                     let (resource, effects) = bucket_mut.take_confidential(proof, view_key.as_ref())?;
                     let resource_address = *resource.resource_address();
                     state.materialize_confidential_outputs(resource_address, effects)?;
-                    let bucket_id = state.id_provider()?.new_bucket_id();
+                    let bucket_id = state.id_provider()?.new_bucket_id()?;
                     state.new_bucket(bucket_id, resource)?;
                     state.unlock_substate(resource_lock)?;
                     Ok(InvokeResult::encode(&bucket_id)?)
@@ -3232,7 +3232,7 @@ where
                 self.tracker.write_with(|state| {
                     let locked_funds = state.get_bucket_mut(bucket_id)?.lock_all()?;
 
-                    let proof_id = state.id_provider()?.new_proof_id();
+                    let proof_id = state.id_provider()?.new_proof_id()?;
                     state.new_proof(proof_id, locked_funds)?;
 
                     Ok(InvokeResult::encode(&proof_id)?)
@@ -3647,7 +3647,7 @@ where
                 Some(max_amount) => state.withdraw_fees_from_pool_up_to(pool_address, max_amount)?,
                 None => state.withdraw_all_fees_from_pool(pool_address)?,
             };
-            let bucket_id = state.new_bucket_id();
+            let bucket_id = state.new_bucket_id()?;
             state.new_bucket(bucket_id, resource)?;
             state.set_last_instruction_output(IndexedValue::from_type(&bucket_id)?);
             Ok(())
@@ -3730,7 +3730,7 @@ where
                         return Err(RuntimeError::SignerBadgeNotInScope { public_key });
                     }
 
-                    let proof_id = state_mut.id_provider()?.new_proof_id();
+                    let proof_id = state_mut.id_provider()?.new_proof_id()?;
                     let resx = ResourceContainer::public_key(public_key);
                     let locked = LockedResource::new(ContainerRef::Runtime, resx);
                     state_mut.new_proof(proof_id, locked)?;
@@ -4102,7 +4102,7 @@ where
             else {
                 return Ok(None);
             };
-            let bucket_id = state_mut.new_bucket_id();
+            let bucket_id = state_mut.new_bucket_id()?;
             state_mut.new_bucket(bucket_id, container)?;
             Ok(Some(bucket_id))
         })

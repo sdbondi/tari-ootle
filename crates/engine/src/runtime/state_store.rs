@@ -227,7 +227,10 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
                 function: "down_utxo",
                 details: format!("Substate at address {} is not a UTXO", substate_id),
             })?;
-        const EXPECT: &str = "invariant: substate found at utxo address is not a UTXO";
+        let mismatch = || RuntimeError::InvariantError {
+            function: "down_utxo",
+            details: format!("Substate at utxo address {} does not hold a UTXO", substate_id),
+        };
         if let Some(value) = self.new_substates.shift_remove(substate_id) {
             // `new_substates` holds mutated substates as well as created ones, so presence here does not mean
             // the UTXO is new: one mutated earlier in this transaction (unfrozen, say) was moved here from
@@ -236,11 +239,11 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
             if self.get_unmodified_substate(substate_id).optional()?.is_some() {
                 self.downed_utxos.insert(address);
             }
-            return Ok(value.into_utxo().expect(EXPECT));
+            return value.into_utxo().ok_or_else(mismatch);
         }
         if let Some(substate) = self.loaded_substates.remove(substate_id) {
             self.downed_utxos.insert(address);
-            return Ok(substate.into_substate_value().into_utxo().expect(EXPECT));
+            return substate.into_substate_value().into_utxo().ok_or_else(mismatch);
         }
 
         Err(RuntimeError::SubstateNotFound {
@@ -259,7 +262,13 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
                     function: "down_confidential_output",
                     details: format!("Substate at address {} is not a confidential output", substate_id),
                 })?;
-        const EXPECT: &str = "invariant: substate found at confidential output address is not a confidential output";
+        let mismatch = || RuntimeError::InvariantError {
+            function: "down_confidential_output",
+            details: format!(
+                "Substate at confidential output address {} does not hold a confidential output",
+                substate_id
+            ),
+        };
         if let Some(value) = self.new_substates.shift_remove(substate_id) {
             // `new_substates` holds mutated substates as well as created ones, so presence here does not mean
             // the output is new: an output mutated earlier in this transaction (unfrozen, say) was moved here
@@ -268,11 +277,14 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
             if self.get_unmodified_substate(substate_id).optional()?.is_some() {
                 self.downed_confidential_outputs.insert(address);
             }
-            return Ok(value.into_confidential_output().expect(EXPECT));
+            return value.into_confidential_output().ok_or_else(mismatch);
         }
         if let Some(substate) = self.loaded_substates.remove(substate_id) {
             self.downed_confidential_outputs.insert(address);
-            return Ok(substate.into_substate_value().into_confidential_output().expect(EXPECT));
+            return substate
+                .into_substate_value()
+                .into_confidential_output()
+                .ok_or_else(mismatch);
         }
 
         Err(RuntimeError::SubstateNotFound {
@@ -280,11 +292,12 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
         })
     }
 
+    /// Both halves are a filter: an entry is one of this transaction's new vaults only if its address is a
+    /// vault id and its value is a vault.
     pub fn new_vaults(&self) -> impl Iterator<Item = (VaultId, &Vault)> + '_ {
         self.new_substates
             .iter()
-            .filter(|(address, _)| address.is_vault())
-            .map(|(addr, vault)| (addr.as_vault_id().unwrap(), vault.as_vault().unwrap()))
+            .filter_map(|(addr, value)| Some((addr.as_vault_id()?, value.as_vault()?)))
     }
 
     /// Loads and caches the component address. No lock is required for this operation.
