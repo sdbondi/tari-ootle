@@ -22,7 +22,7 @@
 
 //! A hash that runs in a `const` context.
 //!
-//! [`ENGINE_FINGERPRINT`](super::cache::ENGINE_FINGERPRINT) folds several source files into one
+//! [`ENGINE_FINGERPRINT`](super::ENGINE_FINGERPRINT) folds several source files into one
 //! 64-bit value. Doing it at compile time keeps the digest a constant and keeps the text it reads
 //! out of the binary — the bytes are consumed during const evaluation and nothing references them
 //! afterwards.
@@ -55,16 +55,10 @@ pub(crate) const fn part(state: u64, input: &[u8]) -> u64 {
     bytes(bytes(state, &(input.len() as u64).to_le_bytes()), input)
 }
 
-pub(crate) const fn names(mut state: u64, input: &[&str]) -> u64 {
-    let mut i = 0;
-    while i < input.len() {
-        state = part(state, input[i].as_bytes());
-        i += 1;
-    }
-    state
-}
-
+/// Absorb a length-prefixed run of values, so that a value moved from one run to an adjacent one
+/// still moves the digest.
 pub(crate) const fn values(mut state: u64, input: &[u128]) -> u64 {
+    state = bytes(state, &(input.len() as u64).to_le_bytes());
     let mut i = 0;
     while i < input.len() {
         state = bytes(state, &input[i].to_le_bytes());

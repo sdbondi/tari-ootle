@@ -22,6 +22,8 @@
 //! - [`DiskCachedWasmTemplateProvider`] — a `TemplateProvider` middleware that wraps a raw `PublishedTemplate` provider
 //!   and outputs `LoadedTemplate`, doing compile-or-deserialize behind the scenes.
 
+mod const_hash;
+
 use std::{
     collections::HashMap,
     fs,
@@ -51,7 +53,7 @@ use tari_template_lib::types::TemplateAddress;
 
 use crate::{
     template::{LoadedTemplate, TemplateLoaderError},
-    wasm::{WasmModule, const_hash},
+    wasm::WasmModule,
 };
 
 const LOG_TARGET: &str = "tari::ootle::engine::wasm::cache";
@@ -89,16 +91,16 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const ENGINE_FINGERPRINT_BITS: u64 = {
     let h = const_hash::init(b"tari.ootle.wasm_cache.engine_fingerprint.v2");
     // The compiler flags, feature set and tunables every artifact is built under.
-    let h = const_hash::part(h, include_bytes!("engine_config.rs"));
+    let h = const_hash::part(h, include_bytes!("../engine_config.rs"));
     // The derivation of the shape counts a hit serves verbatim out of the header.
-    let h = const_hash::part(h, include_bytes!("module_shape.rs"));
+    let h = const_hash::part(h, include_bytes!("../module_shape.rs"));
     // The per-operator cost tables the middlewares bake into the emitted instrumentation.
-    let h = const_hash::part(h, include_bytes!("metering.rs"));
-    let h = const_hash::part(h, include_bytes!("bulk_metering.rs"));
+    let h = const_hash::part(h, include_bytes!("../metering.rs"));
+    let h = const_hash::part(h, include_bytes!("../bulk_metering.rs"));
     // The memory and table bounds, which reach codegen through the style each one is adjusted to.
-    let h = const_hash::part(h, include_bytes!("limiting_tunable.rs"));
+    let h = const_hash::part(h, include_bytes!("../limiting_tunable.rs"));
     // Which count a hit reads out of each header slot. Swapping two of these is a fee change.
-    let h = const_hash::names(h, &header_field_names());
+    let h = const_hash::values(h, &header_layout());
     // Every limit, not just the ones the artifact bakes in: `validate_module_structure` enforces
     // `max_tables` and `max_globals` at compile time only, and a hit goes straight to
     // `finalize_loaded_module` without it. Destructured rather than read field by field, so that a
@@ -162,19 +164,7 @@ const HEADER_FIELDS: [HeaderField; 5] = [
 ];
 
 impl HeaderField {
-    /// What the fingerprint hashes. A name rather than a discriminant, so that repurposing a slot
-    /// moves the digest even if its position does not.
-    const fn name(self) -> &'static str {
-        match self {
-            HeaderField::CodeSize => "code_size",
-            HeaderField::DataSegmentBytes => "data_segment_bytes",
-            HeaderField::DataSegmentCount => "data_segment_count",
-            HeaderField::ElementSegmentEntries => "element_segment_entries",
-            HeaderField::DeclaredTableSlots => "declared_table_slots",
-        }
-    }
-
-    fn read_from(self, code_size: usize, shape: &ModuleShape) -> u64 {
+    const fn read_from(self, code_size: usize, shape: &ModuleShape) -> u64 {
         match self {
             HeaderField::CodeSize => code_size as u64,
             HeaderField::DataSegmentBytes => shape.data_segment_bytes,
@@ -195,14 +185,32 @@ impl HeaderField {
     }
 }
 
-const fn header_field_names() -> [&'static str; HEADER_FIELD_COUNT] {
-    let mut names = [""; HEADER_FIELD_COUNT];
+/// A shape whose every field is a different number, and a code size unlike any of them.
+///
+/// Written out field by field rather than built from a default, so a field added to `ModuleShape`
+/// does not compile until it is given a witness value here.
+const LAYOUT_WITNESS_SHAPE: ModuleShape = ModuleShape {
+    data_segment_bytes: 0x11,
+    data_segment_count: 0x22,
+    element_segment_entries: 0x33,
+    declared_table_slots: 0x44,
+};
+const LAYOUT_WITNESS_CODE_SIZE: usize = 0x55;
+
+/// What each header slot means, as the slot itself answers it.
+///
+/// Reading the witness back through [`HeaderField::read_from`] yields one witness value per slot,
+/// in slot order. Reordering the slots permutes it and repurposing one replaces a value, so the
+/// sequence the fingerprint hashes is produced by the accessor a hit actually uses rather than
+/// restated alongside it, and the two cannot drift.
+const fn header_layout() -> [u128; HEADER_FIELD_COUNT] {
+    let mut layout = [0u128; HEADER_FIELD_COUNT];
     let mut i = 0;
     while i < HEADER_FIELD_COUNT {
-        names[i] = HEADER_FIELDS[i].name();
+        layout[i] = HEADER_FIELDS[i].read_from(LAYOUT_WITNESS_CODE_SIZE, &LAYOUT_WITNESS_SHAPE) as u128;
         i += 1;
     }
-    names
+    layout
 }
 
 /// The 8-byte LE fields at the head of each cache file. `wasmer::Module::serialize` preserves none
@@ -1197,6 +1205,20 @@ mod tests {
             first.template_def().functions().len(),
             second.template_def().functions().len(),
         );
+    }
+
+    #[test]
+    fn every_header_slot_reads_back_the_field_it_wrote() {
+        // [`ENGINE_FINGERPRINT`] witnesses each slot through `read_from` alone. This is what holds
+        // `write_into` to the same field, so that a hit puts a count back where the writer took it
+        // from: every other field starts at zero, so a slot that crossed over reads one back.
+        for field in HEADER_FIELDS {
+            let expected = field.read_from(LAYOUT_WITNESS_CODE_SIZE, &LAYOUT_WITNESS_SHAPE);
+            let mut code_size = 0;
+            let mut shape = ModuleShape::default();
+            field.write_into(expected, &mut code_size, &mut shape);
+            assert_eq!(field.read_from(code_size, &shape), expected);
+        }
     }
 
     #[test]
