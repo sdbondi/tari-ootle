@@ -342,7 +342,10 @@ unsafe impl Sync for Runtime {}
 unsafe impl Send for Runtime {}
 
 impl Runtime {
-    pub fn new(interface: Rc<dyn RuntimeInterface>) -> Self {
+    /// `pub(crate)` so that the confinement the `Send`/`Sync` impls rest on is the crate boundary's
+    /// to keep rather than a caller's to respect: `Runtime` is `Send`, so a constructor reachable
+    /// from outside would put a handle on another thread from safe code.
+    pub(crate) fn new(interface: Rc<dyn RuntimeInterface>) -> Self {
         Self { interface }
     }
 

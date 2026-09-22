@@ -222,7 +222,7 @@ impl<TStore, TTemplateProvider> Clone for RuntimeInterfaceImpl<TStore, TTemplate
 impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<Template = LoadedTemplate>>
     RuntimeInterfaceImpl<TStore, TTemplateProvider>
 {
-    pub fn initialize(
+    pub(crate) fn initialize(
         tracker: StateTracker<TStore>,
         template_provider: Arc<TTemplateProvider>,
         signer_public_key: RistrettoPublicKeyBytes,
