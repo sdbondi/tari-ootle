@@ -29,7 +29,6 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        LazyLock,
         Mutex,
         MutexGuard,
         PoisonError,
@@ -40,8 +39,6 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use blake2::Blake2b;
-use digest::{Digest, consts::U32};
 use log::*;
 use memmap2::Mmap;
 use tari_engine_types::{limits, limits::ModuleShape, published_template::PublishedTemplate};
@@ -54,7 +51,7 @@ use tari_template_lib::types::TemplateAddress;
 
 use crate::{
     template::{LoadedTemplate, TemplateLoaderError},
-    wasm::WasmModule,
+    wasm::{WasmModule, const_hash},
 };
 
 const LOG_TARGET: &str = "tari::ootle::engine::wasm::cache";
@@ -72,12 +69,15 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// the fingerprint is what ties the filename to those settings without anyone having to remember to
 /// say so.
 ///
-/// The inputs are the sources that define the engine configuration and the metering cost tables,
-/// this file — whose header layout decides which field a hit reads each count out of — and every
-/// limit either bakes in. Source text is a coarse input — a comment edit moves the fingerprint —
-/// and coarse in the safe direction: a spurious move costs a recompile per template, and
-/// [`WasmModuleCache::build_index`] reaps the orphans, while a missed move is a consensus
-/// divergence.
+/// Every source input is a file narrow enough that each line in it decides what an artifact
+/// contains, which is what [`engine_config`](super::engine_config) and
+/// [`module_shape`](super::module_shape) exist as separate files for: a digest over a file is only
+/// as precise as that file is narrow, and imprecision here is paid for by every node recompiling
+/// every template. What is configuration rather than logic — the header layout and the limits — is
+/// hashed as values instead, so restating it cannot drift from applying it.
+///
+/// Computed in a `const` context, so the digest is a compile-time constant and the source text it
+/// reads never reaches the binary.
 ///
 /// The wasmer version is the one input not derived here, because a crate cannot read its
 /// dependencies' resolved versions and a published crate cannot reach the lockfile. Two things
@@ -86,26 +86,19 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// `wasmer-types` and `wasmer-vm` at an exact version, so the resolved version moves only when a
 /// manifest does. A wasmer bump that keeps the artifact format and changes codegen is what this
 /// leaves to the upgrade itself.
-pub static ENGINE_FINGERPRINT: LazyLock<String> = LazyLock::new(|| {
-    let mut hasher = Blake2b::<U32>::new();
-    for part in [
-        b"tari.ootle.wasm_cache.engine_fingerprint.v1".as_slice(),
-        // `create_engine`'s compiler flags, feature set and tunables, and `validate_module_structure`'s
-        // derivation of the shape counts a hit serves verbatim.
-        include_str!("module.rs").as_bytes(),
-        // The per-operator cost tables the middlewares bake into the emitted instrumentation.
-        include_str!("metering.rs").as_bytes(),
-        include_str!("bulk_metering.rs").as_bytes(),
-        // The memory and table bounds applied when an instance's storage is created.
-        include_str!("limiting_tunable.rs").as_bytes(),
-        // This file: the order and meaning of the header fields a hit reads the shape counts out
-        // of live here and nowhere else, so swapping two of them is a fee change.
-        include_str!("cache.rs").as_bytes(),
-    ] {
-        // Length-prefixed, so that text moved from one part to another still moves the digest.
-        hasher.update((part.len() as u64).to_le_bytes());
-        hasher.update(part);
-    }
+const ENGINE_FINGERPRINT_BITS: u64 = {
+    let h = const_hash::init(b"tari.ootle.wasm_cache.engine_fingerprint.v2");
+    // The compiler flags, feature set and tunables every artifact is built under.
+    let h = const_hash::part(h, include_bytes!("engine_config.rs"));
+    // The derivation of the shape counts a hit serves verbatim out of the header.
+    let h = const_hash::part(h, include_bytes!("module_shape.rs"));
+    // The per-operator cost tables the middlewares bake into the emitted instrumentation.
+    let h = const_hash::part(h, include_bytes!("metering.rs"));
+    let h = const_hash::part(h, include_bytes!("bulk_metering.rs"));
+    // The memory and table bounds, which reach codegen through the style each one is adjusted to.
+    let h = const_hash::part(h, include_bytes!("limiting_tunable.rs"));
+    // Which count a hit reads out of each header slot. Swapping two of these is a fee change.
+    let h = const_hash::names(h, &header_field_names());
     // Every limit, not just the ones the artifact bakes in: `validate_module_structure` enforces
     // `max_tables` and `max_globals` at compile time only, and a hit goes straight to
     // `finalize_loaded_module` without it. Destructured rather than read field by field, so that a
@@ -119,31 +112,103 @@ pub static ENGINE_FINGERPRINT: LazyLock<String> = LazyLock::new(|| {
         max_tables,
         max_table_elements,
     } = limits::WASM_LIMITS;
-    for limit in [
-        u128::from(limits::MAX_WASM_POINTS_PER_CALL),
+    const_hash::finish(const_hash::values(h, &[
+        limits::MAX_WASM_POINTS_PER_CALL as u128,
         max_function_arguments as u128,
         max_function_name_length as u128,
         max_functions as u128,
         max_memory_pages as u128,
         max_globals as u128,
         max_tables as u128,
-        u128::from(max_table_elements),
-    ] {
-        hasher.update(limit.to_le_bytes());
-    }
-    // Short enough for a filename, wide enough that no node will see two configurations collide.
-    let digest = hasher.finalize();
-    format!(
-        "{:016x}",
-        u64::from_le_bytes(digest[..8].try_into().expect("Blake2b<U32> is 32 bytes")),
-    )
-});
+        max_table_elements as u128,
+    ]))
+};
 
-/// Five 8-byte LE fields at the head of each cache file: the original WASM source byte count
-/// followed by the four counts of [`ModuleShape`]. `wasmer::Module::serialize` preserves none of
-/// them, and all are needed after a cache hit — the first for accounting (e.g. moka weighing), the
-/// rest to price instantiation.
-const HEADER_FIELD_COUNT: usize = 5;
+/// The fingerprint as the lowercase hex it appears in a filename as.
+///
+/// Short enough for a filename, wide enough that no node will see two configurations collide. The
+/// hash is not cryptographic, and the property wanted of it is separation rather than resistance:
+/// every input is this build's own source and constants, so there is no party to search for a
+/// collision.
+static ENGINE_FINGERPRINT_HEX: [u8; 16] = const_hash::to_hex(ENGINE_FINGERPRINT_BITS);
+
+pub static ENGINE_FINGERPRINT: &str = match str::from_utf8(&ENGINE_FINGERPRINT_HEX) {
+    Ok(hex) => hex,
+    Err(_) => panic!("hex digits are ASCII"),
+};
+
+/// An 8-byte little-endian field at the head of a cache file.
+///
+/// The order of [`HEADER_FIELDS`] is the file format: it decides which count a hit reads each slot
+/// into. Both the write and the read are driven from that array rather than repeating it, so the
+/// order the fingerprint hashes is the order the file is actually written and parsed in.
+#[derive(Clone, Copy)]
+enum HeaderField {
+    /// The original WASM source byte count, which `wasmer::Module::serialize` does not preserve
+    /// and downstream caches weigh by.
+    CodeSize,
+    DataSegmentBytes,
+    DataSegmentCount,
+    ElementSegmentEntries,
+    DeclaredTableSlots,
+}
+
+const HEADER_FIELDS: [HeaderField; 5] = [
+    HeaderField::CodeSize,
+    HeaderField::DataSegmentBytes,
+    HeaderField::DataSegmentCount,
+    HeaderField::ElementSegmentEntries,
+    HeaderField::DeclaredTableSlots,
+];
+
+impl HeaderField {
+    /// What the fingerprint hashes. A name rather than a discriminant, so that repurposing a slot
+    /// moves the digest even if its position does not.
+    const fn name(self) -> &'static str {
+        match self {
+            HeaderField::CodeSize => "code_size",
+            HeaderField::DataSegmentBytes => "data_segment_bytes",
+            HeaderField::DataSegmentCount => "data_segment_count",
+            HeaderField::ElementSegmentEntries => "element_segment_entries",
+            HeaderField::DeclaredTableSlots => "declared_table_slots",
+        }
+    }
+
+    fn read_from(self, code_size: usize, shape: &ModuleShape) -> u64 {
+        match self {
+            HeaderField::CodeSize => code_size as u64,
+            HeaderField::DataSegmentBytes => shape.data_segment_bytes,
+            HeaderField::DataSegmentCount => shape.data_segment_count,
+            HeaderField::ElementSegmentEntries => shape.element_segment_entries,
+            HeaderField::DeclaredTableSlots => shape.declared_table_slots,
+        }
+    }
+
+    fn write_into(self, value: u64, code_size: &mut usize, shape: &mut ModuleShape) {
+        match self {
+            HeaderField::CodeSize => *code_size = value as usize,
+            HeaderField::DataSegmentBytes => shape.data_segment_bytes = value,
+            HeaderField::DataSegmentCount => shape.data_segment_count = value,
+            HeaderField::ElementSegmentEntries => shape.element_segment_entries = value,
+            HeaderField::DeclaredTableSlots => shape.declared_table_slots = value,
+        }
+    }
+}
+
+const fn header_field_names() -> [&'static str; HEADER_FIELD_COUNT] {
+    let mut names = [""; HEADER_FIELD_COUNT];
+    let mut i = 0;
+    while i < HEADER_FIELD_COUNT {
+        names[i] = HEADER_FIELDS[i].name();
+        i += 1;
+    }
+    names
+}
+
+/// The 8-byte LE fields at the head of each cache file. `wasmer::Module::serialize` preserves none
+/// of them, and all are needed after a cache hit — the first for accounting (e.g. moka weighing),
+/// the rest to price instantiation.
+const HEADER_FIELD_COUNT: usize = HEADER_FIELDS.len();
 const HEADER_FIELD_BYTES: usize = HEADER_FIELD_COUNT * 8;
 
 /// Zero padding between the fields and the tag. This is the knob that satisfies the alignment
@@ -282,7 +347,7 @@ fn parse_artifact_name(name: &str, suffix: &str) -> Option<TemplateAddress> {
 fn parse_orphan_name(name: &str) -> Option<TemplateAddress> {
     let stem = name.strip_suffix(".bin")?;
     let (addr, fingerprint) = stem.rsplit_once('_')?;
-    if fingerprint == *ENGINE_FINGERPRINT {
+    if fingerprint == ENGINE_FINGERPRINT {
         return None;
     }
     TemplateAddress::from_hex(addr).ok()
@@ -478,7 +543,7 @@ impl WasmModuleCache {
     /// the next restart at the cost of a write on every read, and a mis-ordered eviction costs one
     /// recompile.
     fn build_index(dir: &Path, cap_bytes: u64) -> io::Result<CacheIndex> {
-        let suffix = format!("_{}.bin", *ENGINE_FINGERPRINT);
+        let suffix = format!("_{}.bin", ENGINE_FINGERPRINT);
         let stale_before = SystemTime::now().checked_sub(STALE_TEMPFILE_AGE);
         let mut found = Vec::new();
 
@@ -576,7 +641,7 @@ impl WasmModuleCache {
     }
 
     fn path_for(&self, addr: &TemplateAddress) -> PathBuf {
-        self.dir.join(format!("{}_{}.bin", addr, *ENGINE_FINGERPRINT))
+        self.dir.join(format!("{}_{}.bin", addr, ENGINE_FINGERPRINT))
     }
 
     /// Try to load a previously-cached module for `addr`. Returns `None` on
@@ -656,18 +721,12 @@ impl WasmModuleCache {
             return None;
         }
 
-        let mut field = [0u8; 8];
-        let mut read_field = |i: usize| {
-            field.copy_from_slice(&mmap[i * 8..(i + 1) * 8]);
-            u64::from_le_bytes(field)
-        };
-        let code_size = read_field(0) as usize;
-        let shape = ModuleShape {
-            data_segment_bytes: read_field(1),
-            data_segment_count: read_field(2),
-            element_segment_entries: read_field(3),
-            declared_table_slots: read_field(4),
-        };
+        let mut code_size = 0usize;
+        let mut shape = ModuleShape::default();
+        for (slot, field) in mmap[..HEADER_FIELD_BYTES].chunks_exact(8).zip(HEADER_FIELDS) {
+            let value = u64::from_le_bytes(slot.try_into().expect("chunks_exact(8) yields 8 bytes"));
+            field.write_into(value, &mut code_size, &mut shape);
+        }
 
         // Wrap the mmap as a Bytes that owns it, then slice past the
         // header. `Bytes::slice` is zero-copy (pointer + length
@@ -802,23 +861,15 @@ impl WasmModuleCache {
         let tmp = self.dir.join(format!(
             "{}_{}.bin.tmp.{}.{}",
             addr,
-            *ENGINE_FINGERPRINT,
+            ENGINE_FINGERPRINT,
             std::process::id(),
             TMP_COUNTER.fetch_add(1, atomic::Ordering::Relaxed),
         ));
 
         let shape = wasm.shape();
-        // `HEADER_FIELD_COUNT` fields, in the order `try_load` reads them.
-        let fields: [u64; HEADER_FIELD_COUNT] = [
-            wasm.code_size() as u64,
-            shape.data_segment_bytes,
-            shape.data_segment_count,
-            shape.element_segment_entries,
-            shape.declared_table_slots,
-        ];
         let mut header = [0u8; HEADER_BYTES];
-        for (slot, value) in header.chunks_exact_mut(8).zip(fields) {
-            slot.copy_from_slice(&value.to_le_bytes());
+        for (slot, field) in header.chunks_exact_mut(8).zip(HEADER_FIELDS) {
+            slot.copy_from_slice(&field.read_from(wasm.code_size(), &shape).to_le_bytes());
         }
         let tag = integrity_tag(addr, &header[..TAG_OFFSET], &serialized);
         header[TAG_OFFSET..].copy_from_slice(&tag.to_le_bytes());
@@ -1458,10 +1509,10 @@ mod tests {
         let addr = addr_of_byte(0x11);
         let abandoned = dir
             .path()
-            .join(format!("{}_{}.bin.tmp.1234.0", addr, *ENGINE_FINGERPRINT));
+            .join(format!("{}_{}.bin.tmp.1234.0", addr, ENGINE_FINGERPRINT));
         let in_flight = dir
             .path()
-            .join(format!("{}_{}.bin.tmp.5678.0", addr, *ENGINE_FINGERPRINT));
+            .join(format!("{}_{}.bin.tmp.5678.0", addr, ENGINE_FINGERPRINT));
         fs::write(&abandoned, b"partial").unwrap();
         fs::write(&in_flight, b"partial").unwrap();
 
