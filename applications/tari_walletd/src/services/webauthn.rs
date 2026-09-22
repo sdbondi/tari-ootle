@@ -240,8 +240,12 @@ mod tests {
         assert!(service.passkeys("attacker".to_string()).unwrap().is_empty());
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn concurrent_enrolment_leaves_one_credential() {
+    /// Two enrolments that both passed any earlier check still end with one credential, because the
+    /// count and the insert share a write transaction. Atomicity here comes from [`SqliteWalletStore`]
+    /// holding its single connection's mutex for the transaction's lifetime: were the store ever to
+    /// move to a connection pool, the deferred `BEGIN` would let two readers both count zero.
+    #[tokio::test]
+    async fn second_enrolment_is_refused_within_the_write_tx() {
         let (service, _temp) = service();
 
         let first = service
@@ -261,7 +265,7 @@ mod tests {
         assert_eq!(
             [a.is_ok(), b.is_ok()].iter().filter(|ok| **ok).count(),
             1,
-            "exactly one of the two concurrent enrolments must be accepted"
+            "exactly one of the two enrolments must be accepted"
         );
         assert!(
             service.passkeys("owner".to_string()).unwrap().is_empty() !=

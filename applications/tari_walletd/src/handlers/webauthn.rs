@@ -23,7 +23,7 @@ use webauthn_rs::Webauthn;
 
 use crate::{
     handlers::{HandlerContext, auth::REFRESH_TOKEN_COOKIE, helpers::invalid_request},
-    services::WebauthnService,
+    services::{WebauthnService, WebauthnServiceError},
 };
 
 /// The permissions granted to the credential this wallet is enrolled with. Registration is
@@ -114,7 +114,11 @@ pub async fn handle_finish_registration(
     let passkey = webauthn.finish_passkey_registration(&request.credential, session_data.passkey_reg())?;
     webauthn_service
         .finish_registration(request.session_id, passkey)
-        .await?;
+        .await
+        .map_err(|e| match e {
+            WebauthnServiceError::AlreadyEnrolled => invalid_request(e),
+            e => e.into(),
+        })?;
 
     let jwt = context.jwt_api();
     let claims = jwt.generate_auth_claims(Permissions::from(BOOTSTRAP_PERMISSIONS.to_vec()))?;
