@@ -40,8 +40,8 @@ impl ValueRangeRequest {
     /// Clamps the caller's bounds to the [`MAX_NO_FILE_SCAN_CANDIDATES`] candidates one request may
     /// scan.
     ///
-    /// A minimum above the maximum resolves to the single-candidate range at the minimum rather than
-    /// an empty one, so a contradictory request reports `None` instead of succeeding without looking.
+    /// A minimum above the maximum resolves to the single-candidate range at the minimum, so the
+    /// range the no-file scan logs reads coherently. An empty range would recover the same `None`s.
     pub fn resolve(min_expected: Option<u64>, max_expected: Option<u64>) -> Self {
         let min = min_expected.unwrap_or(0);
         let ceiling = min.saturating_add(MAX_NO_FILE_SCAN_CANDIDATES);

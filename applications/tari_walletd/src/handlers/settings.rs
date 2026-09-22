@@ -78,24 +78,27 @@ fn required_permissions(req: &SettingsSetRequest) -> Vec<Permission> {
 /// call that set it. Embedded credentials are refused because the endpoint is persisted in the
 /// config store and appears in `settings.get`, so a password in it leaks by being stored at all.
 ///
+/// No refusal formats the `Url` itself. `Url`'s `Display` is its full serialization including
+/// userinfo, and a rejection message is rendered into the JSON-RPC error and warned to the log, so a
+/// message carrying the URL would write the very password this refuses to store.
+///
 /// The host is deliberately unconstrained. A wallet's indexer normally runs on loopback or on the
 /// local network, so refusing private ranges would reject the ordinary deployment; `Admin` is what
 /// separates a caller allowed to choose it from one that is not.
 fn validate_indexer_url(url: &Url) -> Result<(), anyhow::Error> {
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err(invalid_params(
-            "indexer_url",
-            Some(format!(
-                "The indexer is reached over HTTP, but '{}' has scheme '{}'",
-                url,
-                url.scheme()
-            )),
-        ));
-    }
     if !url.username().is_empty() || url.password().is_some() {
         return Err(invalid_params(
             "indexer_url",
             Some("The indexer URL is persisted in the wallet's settings and must not embed credentials"),
+        ));
+    }
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(invalid_params(
+            "indexer_url",
+            Some(format!(
+                "The indexer is reached over HTTP, but the URL has scheme '{}'",
+                url.scheme()
+            )),
         ));
     }
     Ok(())
@@ -170,6 +173,19 @@ mod tests {
     fn an_indexer_url_embedding_credentials_is_refused() {
         validate_indexer_url(&Url::parse("http://user:pass@indexer.example/").unwrap()).unwrap_err();
         validate_indexer_url(&Url::parse("http://user@indexer.example/").unwrap()).unwrap_err();
+    }
+
+    /// A refusal is rendered into the JSON-RPC error and warned to the log, so no branch of it may
+    /// echo the URL -- `Url`'s `Display` carries userinfo.
+    #[test]
+    fn no_refusal_echoes_the_credentials() {
+        for url in [
+            "ftp://user:swordfish@indexer.example/",
+            "http://user:swordfish@indexer.example/",
+        ] {
+            let err = validate_indexer_url(&Url::parse(url).unwrap()).unwrap_err().to_string();
+            assert!(!err.contains("swordfish"), "{err}");
+        }
     }
 
     /// A loopback indexer is the default deployment, so no host restriction may reject it.

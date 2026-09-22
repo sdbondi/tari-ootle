@@ -21,6 +21,7 @@ See [standard-version](https://github.com/conventional-changelog/standard-versio
 - `fix` — **One balance-recovery request can no longer occupy a thread indefinitely.** The
   brute-force value scan is bounded whatever the caller asks for, a vault's proof count is bounded,
   and the work no longer runs on a runtime worker thread. (#2673)
+
 ## [0.41.1](https://github.com/tari-project/tari-ootle/compare/v0.41.0...v0.41.1) (2026-09-21)
 
 The consensus audit release. It closes the ways a byzantine leader could fork a committee, stall it
