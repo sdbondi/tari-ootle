@@ -3,6 +3,21 @@
 All notable changes to this project will be documented in this file.
 See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [Unreleased]
+
+### ⚠️ Upgrade notes
+
+- **A client holding only `settings:update` can no longer change the indexer URL.** That one field of
+  `settings.set` now needs `admin`; the remaining fields are unchanged, and the web UI already holds
+  `admin`.
+
+### Wallet
+
+- `fix!` — **Choosing which indexer the wallet trusts now takes an administrative token.** A
+  preference-level permission could decide which server the wallet believes is the chain, and the URL
+  itself was unchecked. (#2673)
+- `fix` — **JSON-RPC parameters are no longer written to the log.** Under the shipped log config an
+  imported spending key was left in plaintext in `json_rpc.log`. (#2673)
 ## [0.41.1](https://github.com/tari-project/tari-ootle/compare/v0.41.0...v0.41.1) (2026-09-21)
 
 The consensus audit release. It closes the ways a byzantine leader could fork a committee, stall it
