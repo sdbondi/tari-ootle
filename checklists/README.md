@@ -97,14 +97,12 @@ Common situations:
 
 ---
 
-## When `development` goes away
+## Branches
 
-These checklists assume PRs land on `development` and releases are cut from `main`. If the split is
-removed and PRs go straight to `main`, only these change:
+`development` is the only long-lived branch. PRs land on it and a release is tagged from its tip,
+so every tag is an ancestor of the next one and `release_check.py` needs no `--since` in the normal
+case. A hotfix is the exception: it branches from the tag it patches, is tagged on that `hotfix/*`
+branch, and reaches `development` afterwards. `main` is no longer merged into or tagged from.
 
-- [release.md](release.md) loses its last pre-flight item (the merge into `main`); everything else is
-  unchanged.
-- [hotfix.md](hotfix.md) loses the forward-port step, but still branches from the **tag**, not from
-  `main` — that is what keeps a hotfix free of unreleased work.
-- `RELEASE_BRANCHES` in `scripts/release_check.py` already carries the set of branches a release may
-  be cut from; it stays `{"main"}`.
+`RELEASE_BRANCHES` in `scripts/release_check.py` holds the branches a release may be cut from;
+`hotfix/*` branches are accepted alongside it.

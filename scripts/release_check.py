@@ -71,9 +71,10 @@ NPM_PACKAGES = [
     ("clients/javascript/indexer_client", "@tari-project/indexer-client"),
 ]
 
-# Branches a release may be cut from. Kept as a set so the eventual collapse of the
-# main/development split is a one-line edit.
-RELEASE_BRANCHES = {"main"}
+# Branches a release may be cut from: `development` for a release, and a `hotfix/*` branch
+# made from the tag it patches.
+RELEASE_BRANCHES = {"development"}
+HOTFIX_BRANCH_PREFIX = "hotfix/"
 
 # A change here moves a network's protocol activation schedule, which is an epoch
 # decision per network — never a value carried over from the previous release.
@@ -218,10 +219,11 @@ def satisfies(req: str, version: str) -> bool:
 def check_tree(rep: Report, args):
     rep.section("Tree")
     branch = git("rev-parse", "--abbrev-ref", "HEAD")
-    if branch in RELEASE_BRANCHES:
+    if branch in RELEASE_BRANCHES or branch.startswith(HOTFIX_BRANCH_PREFIX):
         rep.ok(f"on {branch}")
     else:
-        rep.warn(f"on {branch}, not a release branch ({', '.join(sorted(RELEASE_BRANCHES))})")
+        release_branches = ", ".join(sorted(RELEASE_BRANCHES) + [HOTFIX_BRANCH_PREFIX + "*"])
+        rep.warn(f"on {branch}, not a release branch ({release_branches})")
 
     if git("status", "--porcelain"):
         rep.fail("working tree is dirty — a tag must name a committed state")
