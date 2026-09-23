@@ -25,9 +25,9 @@ const LOG_TARGET: &str = "tari::indexer::exhaust_burn_rate";
 /// The rate `epoch` runs at.
 ///
 /// Reporting and dry-run estimation only, so a component that cannot be fetched or decoded falls
-/// back to [`ExhaustBurnRateSchedule`] with a warning rather than failing the caller. The burn is a
-/// share of what was collected and never part of what a transaction is charged, so a stale rate
-/// moves what a dry run reports as burned and nothing a caller has to pay.
+/// back to [`ExhaustBurnRateSchedule`] rather than failing the caller. The burn is a share of what
+/// was collected and never part of what a transaction is charged, so a stale rate moves what a dry
+/// run reports as burned and nothing a caller has to pay.
 pub async fn resolve_exhaust_burn_rate_for_epoch(
     substate_manager: &SubstateManager,
     network: Network,

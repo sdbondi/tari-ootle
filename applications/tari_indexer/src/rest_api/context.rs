@@ -66,8 +66,6 @@ impl HandlerContext {
         &self.inner.global_db
     }
 
-    /// The constants this indexer started with, which on a LocalNet may differ from the network's
-    /// built-in values.
     pub fn network(&self) -> Network {
         self.inner.network
     }

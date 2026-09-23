@@ -418,8 +418,8 @@ impl ForeignProposal {
     ///
     /// `exhaust_burn_rate` is supplied rather than read off the proposal: a foreign proposal is
     /// proved against the layer-1 shaped header, which carries the block's metadata hash and not the
-    /// extra data the rate lives in. The caller resolves it from the block that opened
-    /// [`Self::epoch`], which every node in every shard group agrees on.
+    /// extra data the rate lives in. The caller resolves it for [`Self::epoch`] from the governance
+    /// schedule, which keeps the rate of every epoch a foreign proposal can still carry.
     pub fn to_locked_epoch(&self, exhaust_burn_rate: ExhaustBurnRate) -> LockedEpoch {
         LockedEpoch::new(self.epoch(), self.epoch_hash().into_array().into(), exhaust_burn_rate)
     }

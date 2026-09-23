@@ -34,6 +34,7 @@ mod template {
     /// component's state as.
     pub struct BurnRateGovernance {
         schedule: Vec<BurnRateChange>,
+        retired_from: Option<u64>,
     }
 
     impl BurnRateGovernance {
@@ -57,7 +58,9 @@ mod template {
                  {current_epoch} may activate at is {earliest}"
             );
 
-            prune_before(&mut self.schedule, current_epoch);
+            // A foreign proposal from the previous epoch can still reach a shard group after this
+            // commits, and resolves its rate from this schedule, so the entry in force there stays.
+            prune_before(&mut self.schedule, current_epoch.saturating_sub(1));
             schedule_change(&mut self.schedule, BurnRateChange {
                 activation_epoch,
                 rate_bps,
@@ -80,16 +83,22 @@ mod template {
             ]);
         }
 
-        /// Gives up the component's say over the burn rate: the schedule is dropped and the council
-        /// dismissed for good, since no caller satisfies the rule this leaves behind.
+        /// Gives up the component's say over the burn rate. The council is dismissed for good at
+        /// once, since no caller satisfies the rule this leaves behind, but the rate hands back to the
+        /// release-scheduled table only from the earliest epoch a rate set now could activate at.
         ///
-        /// The rate then comes from the release-scheduled table for as long as the network's source
-        /// schedule names this component, so the network is never left without a rate.
+        /// Until then the schedule governs as it did, which keeps a retirement from changing the rate
+        /// of an epoch some shard group may already have resolved. From then on the rate comes from
+        /// the table for as long as the network's source schedule names this component, so the
+        /// network is never left without a rate.
         pub fn retire(&mut self) {
-            self.schedule = Vec::new();
+            let retired_from = Consensus::current_epoch() + MIN_BURN_RATE_ACTIVATION_LEAD_EPOCHS;
+            self.retired_from = Some(retired_from);
             ComponentManager::current().set_owner_rule(no_council_owner_rule());
 
-            emit_event("retire", metadata![]);
+            emit_event("retire", metadata![
+                "retired_from" => retired_from.to_string(),
+            ]);
         }
     }
 }
