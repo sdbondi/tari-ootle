@@ -36,9 +36,10 @@ Shared reference: [README.md](README.md).
 
 ## 3. Land it
 
-- [ ] Open the PR into `main` — a hotfix is a release-line change. `development` gets it by
-      forward-port in step 5.
-- [ ] CI green on `main`.
+- [ ] Push the `hotfix/*` branch to the canonical repo and open a PR from it into `development`
+      as a draft, so CI runs on the branch. The PR is not merged until step 5; the tag in step 4 is
+      cut from the branch itself.
+- [ ] CI green on the `hotfix/*` branch.
 
 ## 4. Release it
 
@@ -49,8 +50,9 @@ Shared reference: [README.md](README.md).
 
 ## 5. Forward-port
 
-- [ ] Merge `main` back into `development` (or cherry-pick the fix there) the **same day**, so the
-      next release does not silently revert it.
+- [ ] Land the fix on `development` the **same day** — merge the hotfix PR, or cherry-pick the fix
+      if `development` has moved too far for the branch to merge — so the next release does not
+      silently revert it.
 - [ ] Confirm: `git log development --oneline | grep <fix-subject>` finds it.
 
 ## 6. Downstream
