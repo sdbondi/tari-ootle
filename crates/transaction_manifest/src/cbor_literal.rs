@@ -41,7 +41,9 @@ use crate::{
     value::address_value,
 };
 
-/// Deeper than this and the value could not be decoded by anything that reads it back.
+/// A bound on how deeply one literal nests, so that parsing stays shallow. A nested `cbor!` or
+/// `metadata!` starts its own count, and the engine rejects any metadata value nested past
+/// [`tari_bor::MAX_DECODE_DEPTH`] in all.
 const MAX_DEPTH: usize = tari_bor::MAX_DECODE_DEPTH;
 
 /// The value a `cbor!` invocation writes.
