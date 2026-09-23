@@ -6,8 +6,8 @@
 //! The rate a transaction is settled at is never read from here at execution time. It is resolved
 //! once, when the end-of-epoch block that opens the next epoch is proposed, ratified by the quorum
 //! that commits that block, and then carried in every block header of the epoch it governs. This
-//! module is the pure part of that resolution: given the rate the previous epoch ran at and whatever
-//! the active source asks for, it says what the next epoch runs at.
+//! module is the pure part of that resolution: given an epoch and whatever the active source asks
+//! for, it says what that epoch runs at.
 
 use ootle_network::Network;
 

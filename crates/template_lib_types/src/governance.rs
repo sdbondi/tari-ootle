@@ -66,19 +66,33 @@ pub struct BurnRateGovernanceState {
     /// since genesis.
     ///
     /// Empty means the release-scheduled table governs, which covers a network whose council has
-    /// never acted and one whose council has retired.
+    /// never acted.
     #[n(0)]
     pub schedule: Vec<BurnRateChange>,
+    /// The first epoch the release-scheduled table governs again because the council retired.
+    ///
+    /// Retirement is an activation like any other, held to the same lead time, so every epoch that
+    /// could already have been resolved keeps the rate the schedule gave it. The schedule is left in
+    /// place for the epochs before this one.
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    #[n(1)]
+    pub retired_from: Option<u64>,
 }
 
 impl BurnRateGovernanceState {
     pub const fn new() -> Self {
-        Self { schedule: Vec::new() }
+        Self {
+            schedule: Vec::new(),
+            retired_from: None,
+        }
     }
 
     /// The rate in force at `epoch`: the newest entry that has activated by it, or `None` if the
-    /// council has scheduled nothing that reaches `epoch`.
+    /// council has scheduled nothing that reaches `epoch` or has retired by it.
     pub fn rate_at(&self, epoch: u64) -> Option<u16> {
+        if self.retired_from.is_some_and(|retired_from| epoch >= retired_from) {
+            return None;
+        }
         rate_at(&self.schedule, epoch)
     }
 }
@@ -217,6 +231,18 @@ mod tests {
         prune_before(&mut schedule, 25);
         assert_eq!(schedule, vec![change(20, 900), change(30, 100)]);
         assert_eq!(rate_at(&schedule, 25), Some(900));
+    }
+
+    #[test]
+    fn a_retired_council_governs_only_the_epochs_before_retirement() {
+        let state = BurnRateGovernanceState {
+            schedule: schedule(&[(10, 700), (20, 900)]),
+            retired_from: Some(15),
+        };
+        assert_eq!(state.rate_at(9), None);
+        assert_eq!(state.rate_at(14), Some(700));
+        assert_eq!(state.rate_at(15), None);
+        assert_eq!(state.rate_at(20), None);
     }
 
     #[test]

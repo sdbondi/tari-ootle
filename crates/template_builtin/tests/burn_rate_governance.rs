@@ -186,7 +186,7 @@ fn a_retired_council_leaves_the_rate_with_the_table_for_good() {
     council.test.execute_expect_success(transaction, vec![]);
 
     assert_eq!(council.owner_rule(), SubstateOwnerRule::None);
-    assert_eq!(council.state().rate_at(EARLIEST_ACTIVATION), None);
+    assert_eq!(council.state().retired_from, Some(EARLIEST_ACTIVATION));
 
     let transaction = council.set_burn_rate(&[0, 1], 700, EARLIEST_ACTIVATION);
     let reason = council.test.execute_expect_failure(transaction, vec![]);
@@ -196,6 +196,54 @@ fn a_retired_council_leaves_the_rate_with_the_table_for_good() {
     let transaction = council.call("set_council", &[0, 1], args![1u16, vec![member]]);
     let reason = council.test.execute_expect_failure(transaction, vec![]);
     assert_reject_reason(&reason, "Access Denied");
+}
+
+/// The rate of the epoch retirement executes in, and of the one after it, may already have been
+/// resolved by some shard group, so retiring holds them where the schedule put them.
+#[test]
+fn retiring_leaves_the_rate_of_the_current_and_next_epoch_unchanged() {
+    let mut council = Council::seated(3, 2);
+    let transaction = council.set_burn_rate(&[0, 1], 700, EARLIEST_ACTIVATION);
+    council.test.execute_expect_success(transaction, vec![]);
+
+    council.test.set_virtual_substate(
+        VirtualSubstateId::CurrentEpoch,
+        VirtualSubstate::CurrentEpoch(EARLIEST_ACTIVATION),
+    );
+    let transaction = council.call("retire", &[0, 1], vec![]);
+    council.test.execute_expect_success(transaction, vec![]);
+
+    let state = council.state();
+    assert_eq!(state.rate_at(EARLIEST_ACTIVATION), Some(700));
+    assert_eq!(state.rate_at(EARLIEST_ACTIVATION + 1), Some(700));
+    assert_eq!(state.rate_at(EARLIEST_ACTIVATION + 2), None);
+}
+
+/// A foreign proposal from the previous epoch can be processed after a council transaction commits,
+/// so that epoch's rate must resolve the same afterwards.
+#[test]
+fn setting_a_rate_keeps_the_previous_epoch_resolvable() {
+    let mut council = Council::seated(3, 2);
+    let transaction = council.set_burn_rate(&[0, 1], 700, EARLIEST_ACTIVATION);
+    council.test.execute_expect_success(transaction, vec![]);
+
+    council.test.set_virtual_substate(
+        VirtualSubstateId::CurrentEpoch,
+        VirtualSubstate::CurrentEpoch(EARLIEST_ACTIVATION),
+    );
+    let transaction = council.set_burn_rate(&[0, 1], 900, EARLIEST_ACTIVATION + 2);
+    council.test.execute_expect_success(transaction, vec![]);
+
+    council.test.set_virtual_substate(
+        VirtualSubstateId::CurrentEpoch,
+        VirtualSubstate::CurrentEpoch(EARLIEST_ACTIVATION + 2),
+    );
+    let transaction = council.set_burn_rate(&[0, 1], 50, EARLIEST_ACTIVATION + 4);
+    council.test.execute_expect_success(transaction, vec![]);
+
+    let state = council.state();
+    assert_eq!(state.rate_at(EARLIEST_ACTIVATION + 1), Some(700));
+    assert_eq!(state.rate_at(EARLIEST_ACTIVATION + 2), Some(900));
 }
 
 #[test]
