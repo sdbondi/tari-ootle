@@ -635,8 +635,18 @@ mod m_of_n_threshold {
         assert_reject_reason(reason, invalid_threshold("access_rules", 0, 1));
         let reason = test.execute_expect_failure(resource_updater, vec![badge.clone()]);
         assert_reject_reason(reason, invalid_threshold("resource_access_rules", 2, 1));
-        let reason = test.execute_expect_failure(nested_owner_rule, vec![badge]);
+        let component_owner_rule = Transaction::builder_localnet(Epoch(1))
+            .call_function(
+                test.get_template_address("AccessRulesTest"),
+                "with_component_owner_rule",
+                args![OwnerRule::ByAccessRule(two_of_one(&badge))],
+            )
+            .build_and_seal(test.secret_key());
+
+        let reason = test.execute_expect_failure(nested_owner_rule, vec![badge.clone()]);
         assert_reject_reason(reason, invalid_threshold("resource_owner_rule", 0, 1));
+        let reason = test.execute_expect_failure(component_owner_rule, vec![badge]);
+        assert_reject_reason(reason, invalid_threshold("owner_rule", 2, 1));
     }
 
     #[test]

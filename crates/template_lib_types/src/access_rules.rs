@@ -346,7 +346,7 @@ pub struct ComponentAccessRules {
 impl ComponentAccessRules {
     /// Builds a new set of access rules for a component.
     /// By default, all methods of the component are inaccessible and must be explicitly allowed
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             method_access: BTreeMap::new(),
             default: AccessRule::DenyAll,
