@@ -254,6 +254,33 @@ macro_rules! metadata {
     };
 }
 
+/// Creates a metadata object like [`metadata!`], returning an encoding failure instead of panicking.
+///
+/// # Example
+///
+/// ```rust
+/// # use tari_template_lib_types::try_metadata;
+/// let metadata = try_metadata!("name" => "My NFT", "index" => 123u32)?;
+/// # Ok::<_, tari_template_lib_types::BorError>(())
+/// ```
+#[macro_export]
+macro_rules! try_metadata {
+    () => {
+        ::core::result::Result::<$crate::Metadata, $crate::BorError>::Ok($crate::Metadata::new())
+    };
+    ($($key:expr => $value:expr),+ $(,)?) => {
+        'try_metadata: {
+            let mut metadata = $crate::Metadata::new();
+            $(
+                if let ::core::result::Result::Err(e) = metadata.try_insert($key, &$value) {
+                    break 'try_metadata ::core::result::Result::Err(e);
+                }
+            )*
+            ::core::result::Result::<$crate::Metadata, $crate::BorError>::Ok(metadata)
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,6 +310,15 @@ mod tests {
             metadata.get("index").unwrap().as_bytes(),
             tari_bor::encode(&123u32).unwrap().as_slice()
         );
+    }
+
+    #[test]
+    fn try_metadata_matches_metadata() {
+        assert_eq!(
+            try_metadata!("name" => "My NFT", "index" => 123u32).unwrap(),
+            metadata!("name" => "My NFT", "index" => 123u32)
+        );
+        assert_eq!(try_metadata!().unwrap(), Metadata::new());
     }
 
     #[test]
