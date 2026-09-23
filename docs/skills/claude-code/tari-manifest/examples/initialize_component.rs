@@ -15,9 +15,9 @@ fn main() {
     StableCoin::initialize(
         "100000000000000000000000000",
         "STC",
-        Metadata("provider_name=StableCoin Inc."),
+        metadata!({"provider_name": "StableCoin Inc."}),
         8,
-        PublicKey("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        public_key!("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
         true,
     );
 }

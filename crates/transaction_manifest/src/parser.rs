@@ -12,6 +12,7 @@ use syn::{
     ExprMacro,
     ExprMethodCall,
     ExprPath,
+    ExprUnary,
     Item,
     ItemFn,
     ItemUse,
@@ -25,13 +26,14 @@ use syn::{
     Path,
     Signature,
     Stmt,
+    UnOp,
     UseTree,
     parse::ParseStream,
     parse2,
     punctuated::Punctuated,
     token::Comma,
 };
-use tari_engine_types::{json_cbor::convert_json_to_cbor, substate::SubstateId};
+use tari_engine_types::substate::SubstateId;
 use tari_ootle_transaction::AllocatableAddressType;
 use tari_template_builtin::ACCOUNT_TEMPLATE_ADDRESS;
 use tari_template_lib_types::{
@@ -43,7 +45,10 @@ use tari_template_lib_types::{
     hex::bytes_from_hex,
 };
 
-use crate::error::ManifestError;
+use crate::{
+    cbor_literal::{cbor_from_macro, metadata_from_macro, negative_int_value},
+    error::ManifestError,
+};
 
 #[derive(Debug, Clone)]
 pub enum ManifestIntent {
@@ -567,25 +572,18 @@ fn build_arguments(args: Punctuated<Expr, Comma>) -> Result<Vec<ManifestLiteral>
                     ))
                 }
             },
-            // Support for 100 syntax
-            Expr::Call(ExprCall { func, args, .. }) => {
-                if let Expr::Path(ExprPath {
-                    path: Path { segments, .. },
-                    ..
-                }) = &*func
-                {
-                    let name = segments
-                        .first()
-                        .ok_or_else(|| syn::Error::new_spanned(func.clone(), "Invalid function call"))?;
-
-                    handle_special_literals(&name.ident, args)
-                } else {
-                    Err(syn::Error::new_spanned(
-                        func,
-                        "Invalid function call, only Amount is supported",
-                    ))
-                }
+            Expr::Unary(ExprUnary {
+                op: UnOp::Neg(_), expr, ..
+            }) => match *expr {
+                Expr::Lit(ExprLit { lit: Lit::Int(lit), .. }) => Ok(ManifestLiteral::Special(SpecialLiteral::Cbor(
+                    negative_int_value(&lit)?,
+                ))),
+                expr => Err(syn::Error::new_spanned(expr, "expected an integer after `-`")),
             },
+            Expr::Call(ExprCall { func, .. }) => Err(syn::Error::new_spanned(&func, match macro_for_call(&func) {
+                Some(mac) => format!("function-call literals are not supported, use `{mac}!(..)` instead"),
+                None => "function calls are not supported as arguments".to_string(),
+            })),
             Expr::Macro(ExprMacro { mac, .. }) => Ok(handle_macro_argument(mac)?),
             _ => Err(syn::Error::new_spanned(
                 arg,
@@ -595,181 +593,37 @@ fn build_arguments(args: Punctuated<Expr, Comma>) -> Result<Vec<ManifestLiteral>
         .collect()
 }
 
-#[allow(clippy::too_many_lines)]
-fn handle_special_literals(name: &Ident, args: Punctuated<Expr, Comma>) -> Result<ManifestLiteral, syn::Error> {
-    let name_str = name.to_string();
-    match name_str.as_str() {
-        "Amount" => {
-            let amt = args
-                .first()
-                .ok_or_else(|| syn::Error::new_spanned(name, "Invalid function call"))?;
-            match amt {
-                Expr::Lit(ExprLit { lit: Lit::Int(lit), .. }) => {
-                    Ok(ManifestLiteral::Special(SpecialLiteral::Amount(lit.base10_parse()?)))
-                },
-                _ => Err(syn::Error::new_spanned(
-                    amt,
-                    "Invalid argument, only literals and variables are supported",
-                )),
-            }
-        },
-        "SubstateId" | "Address" => {
-            let arg = args
-                .first()
-                .ok_or_else(|| syn::Error::new_spanned(name, "Invalid function call"))?;
-            match arg {
-                Expr::Lit(ExprLit {
-                    lit: Lit::Str(lit_str), ..
-                }) => {
-                    let id = lit_str.value().parse().map_err(|e| {
-                        syn::Error::new_spanned(lit_str, format!("Failed to parse Bytes from hex string: {}", e))
-                    })?;
-                    if name_str == "Address" {
-                        Ok(ManifestLiteral::Special(SpecialLiteral::Address(OrVar::Value(id))))
-                    } else {
-                        Ok(ManifestLiteral::Special(SpecialLiteral::SubstateId(OrVar::Value(id))))
-                    }
-                },
-                // TODO: more general support for this
-                Expr::Path(ExprPath { path, .. }) => {
-                    if let Some(seg) = path.segments.first() {
-                        if name_str == "Address" {
-                            Ok(ManifestLiteral::Special(SpecialLiteral::Address(OrVar::Var(
-                                seg.ident.clone(),
-                            ))))
-                        } else {
-                            Ok(ManifestLiteral::Special(SpecialLiteral::SubstateId(OrVar::Var(
-                                seg.ident.clone(),
-                            ))))
-                        }
-                    } else {
-                        Err(syn::Error::new_spanned(
-                            path,
-                            "Invalid path, only single segment paths are supported",
-                        ))
-                    }
-                },
-                _ => Err(syn::Error::new_spanned(
-                    arg,
-                    "Invalid argument, only string literals are supported for Substate",
-                )),
-            }
-        },
-        "NonFungibleId" => {
-            let arg = args
-                .first()
-                .ok_or_else(|| syn::Error::new_spanned(name, "Invalid function call"))?;
-            if let Expr::Lit(ExprLit { lit, .. }) = arg {
-                let id = lit_to_nonfungible_id(lit)
-                    .map_err(|e| syn::Error::new_spanned(lit, format!("Failed to parse NonFungibleId: {}", e)))?;
-                Ok(ManifestLiteral::Special(SpecialLiteral::NonFungibleId(id)))
-            } else {
-                Err(syn::Error::new_spanned(
-                    arg,
-                    "Invalid argument, only literals and variables are supported",
-                ))
-            }
-        },
-        "Metadata" => {
-            let arg = args
-                .first()
-                .ok_or_else(|| syn::Error::new_spanned(name, "Invalid function call"))?;
-            if let Expr::Lit(ExprLit {
-                lit: Lit::Str(lit_str), ..
-            }) = arg
-            {
-                let metadata: Metadata = lit_str.value().parse().map_err(|e| {
-                    syn::Error::new_spanned(lit_str, format!("Failed to parse Metadata JSON value: {}", e))
-                })?;
-                Ok(ManifestLiteral::Special(SpecialLiteral::Metadata(metadata)))
-            } else {
-                Err(syn::Error::new_spanned(
-                    arg,
-                    "Invalid argument, only string literals are supported for Metadata",
-                ))
-            }
-        },
-        "HexBytes" | "PublicKey" => {
-            let arg = args
-                .first()
-                .ok_or_else(|| syn::Error::new_spanned(name, "Invalid function call"))?;
-            if let Expr::Lit(ExprLit {
-                lit: Lit::Str(lit_str), ..
-            }) = arg
-            {
-                let bytes = bytes_from_hex(&lit_str.value()).map_err(|e| {
-                    syn::Error::new_spanned(lit_str, format!("Failed to parse Bytes from hex string: {}", e))
-                })?;
-                Ok(ManifestLiteral::Special(SpecialLiteral::Cbor(tari_bor::Value::Bytes(
-                    bytes,
-                ))))
-            } else {
-                Err(syn::Error::new_spanned(
-                    arg,
-                    "Invalid argument, only string literals are supported for Bytes",
-                ))
-            }
-        },
-        "Cbor" => {
-            let expr = args
-                .first()
-                .ok_or_else(|| syn::Error::new_spanned(name, "Invalid function call"))?;
-            match expr {
-                Expr::Lit(ExprLit { lit: Lit::Str(lit), .. }) => {
-                    let cbor_value: serde_json::Value = serde_json::from_str(&lit.value())
-                        .map_err(|e| syn::Error::new_spanned(lit, format!("Failed to parse CBOR JSON value: {}", e)))?;
-                    let cbor = convert_json_to_cbor(cbor_value).map_err(|e| {
-                        syn::Error::new_spanned(lit, format!("Failed to convert JSON to CBOR value: {}", e))
-                    })?;
-                    Ok(ManifestLiteral::Special(SpecialLiteral::Cbor(cbor)))
-                },
-                _ => Err(syn::Error::new_spanned(
-                    expr,
-                    "Invalid argument, only string literals are supported",
-                )),
-            }
-        },
-        s => Err(syn::Error::new_spanned(
-            name,
-            format!(
-                "Invalid function call '{s}', only Amount, SubstateId, Address, NonFungibleId, Metadata, HexBytes, \
-                 Cbor and PublicKey are supported"
-            ),
-        )),
-    }
+/// The argument macro for a function-call literal named after the macro's type, e.g. `amount!` for
+/// `Amount(..)`, so that the error can point at it.
+fn macro_for_call(func: &Expr) -> Option<&'static str> {
+    let Expr::Path(ExprPath { path, .. }) = func else {
+        return None;
+    };
+    let name = path.get_ident()?.to_string();
+    Some(match name.as_str() {
+        "Amount" => "amount",
+        "Address" => "address",
+        "SubstateId" => "substate_id",
+        "NonFungibleId" => "non_fungible_id",
+        "Metadata" => "metadata",
+        "HexBytes" => "hex_bytes",
+        "PublicKey" => "public_key",
+        "Cbor" => "cbor",
+        _ => return None,
+    })
 }
 
-fn handle_macro_argument(mac: Macro) -> Result<ManifestLiteral, syn::Error> {
+pub(crate) fn handle_macro_argument(mac: Macro) -> Result<ManifestLiteral, syn::Error> {
     let name = mac
         .path
         .get_ident()
         .ok_or_else(|| syn::Error::new_spanned(&mac.path, "macro path must have a single segment"))?;
 
     match name.to_string().as_str() {
-        "cbor" => {
-            let cbor_value: serde_json::Value = serde_json::from_str(&mac.tokens.to_string())
-                .map_err(|e| syn::Error::new_spanned(&mac.tokens, format!("Failed to parse CBOR JSON value: {}", e)))?;
-            let cbor = convert_json_to_cbor(cbor_value).map_err(|e| {
-                syn::Error::new_spanned(&mac.tokens, format!("Failed to convert JSON to CBOR value: {}", e))
-            })?;
-            Ok(ManifestLiteral::Special(SpecialLiteral::Cbor(cbor)))
-        },
-        "metadata" => {
-            let tokens_str = mac.tokens.to_string();
-            let trimmed = tokens_str.trim();
-            if trimmed.is_empty() {
-                Ok(ManifestLiteral::Special(SpecialLiteral::Metadata(Metadata::new())))
-            } else {
-                let lit_str: LitStr = parse2(mac.tokens).map_err(|e| {
-                    syn::Error::new_spanned(name, format!("Expected string literal in metadata!: {}", e))
-                })?;
-                let metadata: Metadata = lit_str
-                    .value()
-                    .parse()
-                    .map_err(|e| syn::Error::new_spanned(&lit_str, format!("Failed to parse Metadata value: {}", e)))?;
-                Ok(ManifestLiteral::Special(SpecialLiteral::Metadata(metadata)))
-            }
-        },
+        "cbor" => Ok(ManifestLiteral::Special(SpecialLiteral::Cbor(cbor_from_macro(&mac)?))),
+        "metadata" => Ok(ManifestLiteral::Special(SpecialLiteral::Metadata(metadata_from_macro(
+            &mac,
+        )?))),
         "amount" => {
             let lit: syn::LitInt = parse2(mac.tokens)
                 .map_err(|e| syn::Error::new_spanned(name, format!("Expected integer literal in amount!: {}", e)))?;

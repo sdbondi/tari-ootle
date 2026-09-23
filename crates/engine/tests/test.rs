@@ -938,16 +938,16 @@ mod basic_nft {
             let account = var!["account"];
             let sparkle_nft = var!["nft"];
 
-            let nft_bucket = sparkle_nft.mint_specific(NonFungibleId("SpecialNft"));
+            let nft_bucket = sparkle_nft.mint_specific(non_fungible_id!("SpecialNft"));
             account.deposit(nft_bucket);
 
-            let nft_bucket = sparkle_nft.mint_specific(NonFungibleId(123u32));
+            let nft_bucket = sparkle_nft.mint_specific(non_fungible_id!(123u32));
             account.deposit(nft_bucket);
 
-            let nft_bucket = sparkle_nft.mint_specific(NonFungibleId(456u64));
+            let nft_bucket = sparkle_nft.mint_specific(non_fungible_id!(456u64));
             account.deposit(nft_bucket);
 
-            let nft_bucket = sparkle_nft.mint_specific(NonFungibleId(b"this will be interpreted as uuid"));
+            let nft_bucket = sparkle_nft.mint_specific(non_fungible_id!(b"this will be interpreted as uuid"));
             account.deposit(nft_bucket);
 
             sparkle_nft.total_supply();
@@ -990,8 +990,8 @@ mod basic_nft {
             let account = var!["account"];
             let sparkle_nft = var!["nft"];
 
-            let nft_bucket1 = sparkle_nft.mint_specific(NonFungibleId("Duplicate"));
-            let nft_bucket2 = sparkle_nft.mint_specific(NonFungibleId("Duplicate"));
+            let nft_bucket1 = sparkle_nft.mint_specific(non_fungible_id!("Duplicate"));
+            let nft_bucket2 = sparkle_nft.mint_specific(non_fungible_id!("Duplicate"));
             account.deposit(nft_bucket1);
             account.deposit(nft_bucket2);
         "#,
@@ -1020,7 +1020,7 @@ mod basic_nft {
             let account = var!["account"];
             let sparkle_nft = var!["nft"];
 
-            let nft_bucket = sparkle_nft.mint_specific(NonFungibleId("Burn!"));
+            let nft_bucket = sparkle_nft.mint_specific(non_fungible_id!("Burn!"));
             account.deposit(nft_bucket);
         "#,
                 vars.clone(),
@@ -1038,7 +1038,7 @@ mod basic_nft {
             let sparkle_nft = var!["nft"];
             let nft_resx = var!["nft_resx"];
 
-            let bucket = account.withdraw_non_fungible(nft_resx, NonFungibleId("Burn!"));
+            let bucket = account.withdraw_non_fungible(nft_resx, non_fungible_id!("Burn!"));
             sparkle_nft.burn(bucket);
             sparkle_nft.total_supply();
         "#,
@@ -1061,7 +1061,7 @@ mod basic_nft {
             let sparkle_nft = var!["nft"];
             let nft_resx = var!["nft_resx"];
 
-            let nft_bucket = sparkle_nft.mint_specific(NonFungibleId("Burn!"));
+            let nft_bucket = sparkle_nft.mint_specific(non_fungible_id!("Burn!"));
             account.deposit(nft_bucket);
         "#,
                 vars.clone(),

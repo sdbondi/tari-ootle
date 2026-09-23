@@ -21,7 +21,7 @@ Feature: Confidential transfers
     """
     let faucet = global!["FAUCET/components/confidential_faucet"];
     let mut acc1 = global!["ACCOUNT_1/accounts/ACCOUNT_1"];
-    let coins = faucet.take_free_coins(Amount(5000));
+    let coins = faucet.take_free_coins(amount!(5000));
     acc1.deposit(coins);
     """
     When I check the balance of ACCOUNT_1 for resource FAUCET/resources/CONF on wallet daemon WALLET_D the amount is exactly 5000

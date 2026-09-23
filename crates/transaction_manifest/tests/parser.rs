@@ -34,6 +34,7 @@ use tari_ootle_transaction::{
 use tari_template_lib_types::{
     ComponentAddress,
     ObjectKey,
+    ResourceAddress,
     TemplateAddress,
     constants::TARI_TOKEN,
     crypto::RistrettoPublicKeyBytes,
@@ -537,34 +538,81 @@ fn metadata_macro_with_values() {
 }
 
 #[test]
-fn empty_metadata_function_call_syntax() {
-    // Metadata("") should also work now
+fn function_call_literals_name_their_macro() {
     let manifest = r#"
         use template_c2b621869ec2929d3b9503ea41054f01b468ce99e50254b58e460f608ae377f7 as MyTemplate;
 
         fn main() {
-            MyTemplate::create(Metadata(""));
+            MyTemplate::create(Amount(100));
         }
     "#;
 
-    let ManifestInstructions {
-        instructions,
-        fee_instructions,
-        ..
-    } = parse_manifest(manifest, HashMap::new(), Default::default(), Default::default()).unwrap();
+    let err = parse_manifest(manifest, HashMap::new(), Default::default(), Default::default())
+        .err()
+        .expect("a function-call literal must not parse");
+    assert!(err.to_string().contains("amount!"), "{err}");
+}
+
+#[test]
+fn typed_metadata_values() {
+    let manifest = r#"
+        use template_c2b621869ec2929d3b9503ea41054f01b468ce99e50254b58e460f608ae377f7 as MyTemplate;
+
+        fn main() {
+            MyTemplate::create(metadata!({
+                "name": "My NFT",
+                "index": -1,
+                "resource": address!("resource_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+                "price": amount!(1000),
+            }));
+        }
+    "#;
+
+    let ManifestInstructions { instructions, .. } =
+        parse_manifest(manifest, HashMap::new(), Default::default(), Default::default()).unwrap();
 
     let template_addr =
         TemplateAddress::from_hex("c2b621869ec2929d3b9503ea41054f01b468ce99e50254b58e460f608ae377f7").unwrap();
+    let resource =
+        ResourceAddress::from_str("resource_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").unwrap();
 
-    use tari_template_lib_types::Metadata;
-    let expected = vec![Instruction::CallFunction {
+    use tari_template_lib_types::{Amount, Metadata};
+    let mut expected_metadata = Metadata::new();
+    expected_metadata
+        .insert("name", "My NFT")
+        .insert("index", &-1i64)
+        .insert("resource", &resource)
+        .insert("price", &Amount::from(1000u64));
+    assert_eq!(instructions, vec![Instruction::CallFunction {
         address: template_addr,
         function: "create".try_into().unwrap(),
-        args: call_args![Metadata::new()],
-    }];
+        args: call_args![expected_metadata],
+    }]);
+}
 
-    assert_eq!(instructions, expected);
-    assert_eq!(fee_instructions, vec![]);
+#[test]
+fn negative_integer_arguments() {
+    let manifest = r#"
+        use template_c2b621869ec2929d3b9503ea41054f01b468ce99e50254b58e460f608ae377f7 as MyTemplate;
+
+        fn main() {
+            MyTemplate::create(-5, -128i8);
+        }
+    "#;
+
+    let ManifestInstructions { instructions, .. } =
+        parse_manifest(manifest, HashMap::new(), Default::default(), Default::default()).unwrap();
+
+    let template_addr =
+        TemplateAddress::from_hex("c2b621869ec2929d3b9503ea41054f01b468ce99e50254b58e460f608ae377f7").unwrap();
+    assert_eq!(instructions, vec![Instruction::CallFunction {
+        address: template_addr,
+        function: "create".try_into().unwrap(),
+        args: call_args![-5i64, -128i8],
+    }]);
+
+    let out_of_range = manifest.replace("-128i8", "-129i8");
+    assert!(parse_manifest(&out_of_range, HashMap::new(), Default::default(), Default::default()).is_err());
 }
 
 #[test]

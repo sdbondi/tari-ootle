@@ -10,6 +10,9 @@ See [standard-version](https://github.com/conventional-changelog/standard-versio
 - **Metadata values are CBOR, not strings.** `Metadata::get` returns the raw encoding: read a value
   with `get_as::<T>()` or `get_str()`, and pass `insert` any encodable value by reference. The
   engine's `std.*` event payloads carry typed amounts and addresses.
+- **Manifests write typed values as macros only.** `Amount(..)`, `Address(..)`, `SubstateId(..)`,
+  `NonFungibleId(..)`, `Metadata(..)`, `PublicKey(..)`, `HexBytes(..)` and `Cbor(..)` are gone; use
+  `amount!(..)`, `address!(..)` and the rest.
 - **SDK `ArgValue::Metadata` maps to `ArgValue`s, and event payload values are JSON.** A text value
   is written `{"String": ".."}`; `EventSummary::payload` and the indexer's GraphQL event `payload`
   carry each value's JSON form.
@@ -95,6 +98,12 @@ of costing the network a timeout, and templates compile before the transaction t
 
 - `chore` — **All open dependency advisories are closed**, and advisories now fail CI. (#2670)
 - `docs` — **New guide: burning Minotari and claiming TARI.** (#2680)
+
+### Transaction manifest
+
+- `feat!` — **`metadata!` and `cbor!` take a JSON-shaped value with typed values nested in it**, e.g.
+  `metadata!({"resource": address!("resource_..")})`. Negative numbers and the full `u64` range now
+  parse, where the old `cbor!` rejected the first and turned the second into a float.
 
 ## [0.41.1](https://github.com/tari-project/tari-ootle/compare/v0.41.0...v0.41.1) (2026-09-21)
 

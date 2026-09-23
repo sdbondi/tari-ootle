@@ -41,7 +41,7 @@ Feature: Wallet Daemon
   let faucet_resource = global!["FAUCET/resources/FAUCET"];
 
   // Withdraw 50 of the tokens and send them to acc2
-  let tokens = acc1.withdraw(faucet_resource, Amount(1000));
+  let tokens = acc1.withdraw(faucet_resource, amount!(1000));
   acc2.deposit(tokens);
   acc2.balance(faucet_resource);
   acc1.balance(faucet_resource);

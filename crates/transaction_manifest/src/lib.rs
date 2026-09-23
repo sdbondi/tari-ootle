@@ -32,6 +32,7 @@ pub use crate::value::ManifestValue;
 use crate::{error::ManifestError, generator::ManifestInstructionGenerator};
 
 mod ast;
+mod cbor_literal;
 mod error;
 mod generator;
 mod parser;
