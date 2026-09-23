@@ -418,7 +418,7 @@ mod component_owner_rule {
             .clone()
     }
 
-    fn version_of(test: &TemplateTest, component: ComponentAddress) -> u32 {
+    fn version_of(test: &TemplateTest, component: ComponentAddress) -> u64 {
         test.read_only_state_store()
             .get_substate(&SubstateId::Component(component))
             .unwrap()
