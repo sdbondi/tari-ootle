@@ -58,6 +58,21 @@ mod access_rules_template {
             .create()
         }
 
+        pub fn with_component_owner_rule(owner_rule: OwnerRule) -> Component<AccessRulesTest> {
+            let tokens = ResourceBuilder::public_fungible().initial_supply(1000u32);
+            let badges = create_badge_resource(rule!(deny_all));
+
+            Component::new(Self {
+                value: 0,
+                tokens: Vault::from_bucket(tokens),
+                badges: Vault::from_bucket(badges),
+                allowed: true,
+                attack_component: None,
+            })
+            .with_owner_rule(owner_rule)
+            .create()
+        }
+
         pub fn default_rules() -> Component<AccessRulesTest> {
             let badges = create_badge_resource(rule!(deny_all));
 

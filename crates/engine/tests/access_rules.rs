@@ -567,6 +567,130 @@ mod component_owner_rule {
     }
 }
 
+mod m_of_n_threshold {
+    use tari_template_lib::types::{NonFungibleAddress, SubstateOwnerRule};
+
+    use super::*;
+
+    fn invalid_threshold(argument: &'static str, threshold: u16, num_requirements: usize) -> RuntimeError {
+        RuntimeError::InvalidMOfNThreshold {
+            argument,
+            threshold,
+            num_requirements,
+        }
+    }
+
+    fn signer_badge(test: &TemplateTest) -> NonFungibleAddress {
+        NonFungibleAddress::from_public_key(test.to_public_key_bytes())
+    }
+
+    fn zero_of_one(badge: &NonFungibleAddress) -> AccessRule {
+        rule!(m_of_n(0, non_fungible(badge.clone())))
+    }
+
+    fn two_of_one(badge: &NonFungibleAddress) -> AccessRule {
+        rule!(m_of_n(2, non_fungible(badge.clone())))
+    }
+
+    fn create_component(
+        test: &TemplateTest,
+        owner_rule: OwnerRule,
+        component_rules: ComponentAccessRules,
+        resource_rules: ResourceAccessRules,
+    ) -> Transaction {
+        Transaction::builder_localnet(Epoch(1))
+            .call_function(
+                test.get_template_address("AccessRulesTest"),
+                "with_configured_rules",
+                args![owner_rule, component_rules, resource_rules, AccessRule::DenyAll,],
+            )
+            .build_and_seal(test.secret_key())
+    }
+
+    #[test]
+    fn creating_a_component_or_resource_with_an_invalid_threshold_is_rejected() {
+        let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/access_rules"]);
+        let badge = signer_badge(&test);
+
+        let component_rule = create_component(
+            &test,
+            OwnerRule::OwnedBySigner,
+            ComponentAccessRules::new().default(zero_of_one(&badge)),
+            ResourceAccessRules::new(),
+        );
+        let resource_updater = create_component(
+            &test,
+            OwnerRule::OwnedBySigner,
+            ComponentAccessRules::new(),
+            ResourceAccessRules::new().set_auth_hook_updater(two_of_one(&badge)),
+        );
+        let nested_owner_rule = create_component(
+            &test,
+            OwnerRule::ByAccessRule(rule!(resource(TARI_TOKEN)).or(zero_of_one(&badge))),
+            ComponentAccessRules::new(),
+            ResourceAccessRules::new(),
+        );
+
+        let reason = test.execute_expect_failure(component_rule, vec![badge.clone()]);
+        assert_reject_reason(reason, invalid_threshold("access_rules", 0, 1));
+        let reason = test.execute_expect_failure(resource_updater, vec![badge.clone()]);
+        assert_reject_reason(reason, invalid_threshold("resource_access_rules", 2, 1));
+        let component_owner_rule = Transaction::builder_localnet(Epoch(1))
+            .call_function(
+                test.get_template_address("AccessRulesTest"),
+                "with_component_owner_rule",
+                args![OwnerRule::ByAccessRule(two_of_one(&badge))],
+            )
+            .build_and_seal(test.secret_key());
+
+        let reason = test.execute_expect_failure(nested_owner_rule, vec![badge.clone()]);
+        assert_reject_reason(reason, invalid_threshold("resource_owner_rule", 0, 1));
+        let reason = test.execute_expect_failure(component_owner_rule, vec![badge]);
+        assert_reject_reason(reason, invalid_threshold("owner_rule", 2, 1));
+    }
+
+    #[test]
+    fn changing_a_rule_to_an_invalid_threshold_is_rejected() {
+        let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/access_rules"]);
+        let badge = signer_badge(&test);
+        let result = test.execute_expect_success(
+            create_component(
+                &test,
+                OwnerRule::OwnedBySigner,
+                ComponentAccessRules::new().default(AccessRule::AllowAll),
+                ResourceAccessRules::new().mintable(AccessRule::DenyAll, UpdateRule::Owner),
+            ),
+            vec![badge.clone()],
+        );
+        let component = result.finalize.execution_results[0]
+            .decode::<ComponentAddress>()
+            .unwrap();
+
+        let call = |method: &str, args| {
+            Transaction::builder_localnet(Epoch(1))
+                .call_method(component, method, args)
+                .build_and_seal(test.secret_key())
+        };
+        let set_owner_rule = call("set_component_owner_rule", args![SubstateOwnerRule::ByAccessRule(
+            zero_of_one(&badge)
+        )]);
+        let set_access_rules = call("set_component_access_rules", args![
+            ComponentAccessRules::new().method("set_value", two_of_one(&badge))
+        ]);
+        let update_resource_rule = call("update_tokens_access_rule", args![
+            ResourceAuthAction::Mint,
+            zero_of_one(&badge)
+        ]);
+
+        let reason = test.execute_expect_failure(set_owner_rule, vec![badge.clone()]);
+        assert_reject_reason(reason, invalid_threshold("owner_rule", 0, 1));
+        let reason = test.execute_expect_failure(set_access_rules, vec![badge.clone()]);
+        assert_reject_reason(reason, invalid_threshold("access_rules", 2, 1));
+        let reason = test.execute_expect_failure(update_resource_rule, vec![badge]);
+        assert_reject_reason(reason, invalid_threshold("new_rule", 0, 1));
+    }
+}
+
 mod resource_access_rules {
     use tari_engine::runtime::NativeAction;
     use tari_template_lib::{invoke_args, types::Amount};
