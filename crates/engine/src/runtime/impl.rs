@@ -133,7 +133,7 @@ use tari_template_lib::{
         TemplateAddress,
         UtxoAddress,
         ValidatorFeePoolAddress,
-        access_rules::{ComponentAccessRules, ResourceAuthAction, UpdateRule},
+        access_rules::{ComponentAccessRules, InvalidMOfN, ResourceAuthAction, UpdateRule},
         bytes::Bytes,
         constants::{TARI_TOKEN, TOKEN_SYMBOL},
         crypto::{PedersenCommitmentBytes, RistrettoPublicKeyBytes, UtxoTag},
@@ -1289,6 +1289,8 @@ where
                             .to_string(),
                     });
                 }
+                reject_invalid_m_of_n("access_rules", access_rules.find_invalid_m_of_n())?;
+                reject_invalid_m_of_n("owner_rule", owner_rule_m_of_n(&owner_rule))?;
                 // A component owner rule is only ever evaluated with the component's own frame on top, so
                 // `component(..)`/`template(..)` would be constant (true for the component's own address).
                 if let OwnerRule::ByAccessRule(rule) = &owner_rule &&
@@ -1415,6 +1417,7 @@ where
                             .to_string(),
                     });
                 }
+                reject_invalid_m_of_n("access_rules", access_rules.find_invalid_m_of_n())?;
 
                 self.tracker.write_with(|state| {
                     let component_lock = state
@@ -1471,6 +1474,9 @@ where
                         argument: "owner_rule",
                         reason: "component(..)/template(..) cannot be used in a component owner rule".to_string(),
                     });
+                }
+                if let SubstateOwnerRule::ByAccessRule(rule) = &owner_rule {
+                    reject_invalid_m_of_n("owner_rule", rule.find_invalid_m_of_n())?;
                 }
 
                 self.tracker.write_with(|state| {
@@ -1628,6 +1634,8 @@ where
                 }
 
                 Self::check_token_symbol_length(&arg.metadata)?;
+                reject_invalid_m_of_n("access_rules", arg.access_rules.find_invalid_m_of_n())?;
+                reject_invalid_m_of_n("owner_rule", owner_rule_m_of_n(&arg.owner_rule))?;
 
                 let owner_rule = match arg.owner_rule {
                     OwnerRule::OwnedBySigner => SubstateOwnerRule::ByPublicKey(self.seal_signer_public_key),
@@ -1969,6 +1977,7 @@ where
                             reason: "UpdateAccessRule resource action requires a resource address".to_string(),
                         })?;
                 let UpdateAccessRuleArg { action, new_rule } = args.assert_one_arg()?;
+                reject_invalid_m_of_n("new_rule", new_rule.find_invalid_m_of_n())?;
 
                 let resource_lock = self.tracker.write_with(|state_mut| {
                     let resource_lock = state_mut.write_lock_substate(SubstateId::Resource(resource_address))?;
@@ -4295,6 +4304,27 @@ where
                 })
             })
         })?
+    }
+}
+
+fn reject_invalid_m_of_n(argument: &'static str, invalid: Option<InvalidMOfN>) -> Result<(), RuntimeError> {
+    match invalid {
+        Some(InvalidMOfN {
+            threshold,
+            num_requirements,
+        }) => Err(RuntimeError::InvalidMOfNThreshold {
+            argument,
+            threshold,
+            num_requirements,
+        }),
+        None => Ok(()),
+    }
+}
+
+fn owner_rule_m_of_n(owner_rule: &OwnerRule) -> Option<InvalidMOfN> {
+    match owner_rule {
+        OwnerRule::ByAccessRule(rule) => rule.find_invalid_m_of_n(),
+        OwnerRule::OwnedBySigner | OwnerRule::None | OwnerRule::ByPublicKey(_) => None,
     }
 }
 
