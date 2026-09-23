@@ -41,7 +41,8 @@ pub struct Event {
     pub template_address: [u8; 32],
     pub tx_hash: [u8; 32],
     pub topic: String,
-    pub payload: BTreeMap<String, String>,
+    /// Each value is the JSON form of its CBOR, `{"@cbor": ...}` sentinels included.
+    pub payload: BTreeMap<String, serde_json::Value>,
     pub resource_address: Option<String>,
 }
 
@@ -56,7 +57,11 @@ impl Event {
             template_address: event.template_address().into_array(),
             tx_hash: transaction_id.into_array(),
             topic: event.topic().to_string(),
-            payload: event.into_payload().into_iter().collect(),
+            payload: event
+                .into_payload()
+                .into_iter()
+                .map(|(key, value)| Ok((key, serde_json::to_value(&value)?)))
+                .collect::<Result<_, anyhow::Error>>()?,
             resource_address,
         })
     }

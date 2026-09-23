@@ -30,10 +30,7 @@ fn basic_emit_event() {
     assert_eq!(result.finalize.events[0].topic(), format!("EventEmitter.{}", topic));
     assert_eq!(*result.finalize.events[0].template_address(), event_emitter_template);
     assert_eq!(result.finalize.events[0].substate_id(), None);
-    assert_eq!(
-        result.finalize.events[0].get_payload("my").unwrap(),
-        "event".to_string()
-    );
+    assert_eq!(result.finalize.events[0].payload().get_str("my"), Some("event"));
 }
 
 #[test]
@@ -86,7 +83,7 @@ fn builtin_vault_events() {
     // The vault is what identifies the transfer; its resource is read off the vault substate.
     assert!(event.substate_id().unwrap().is_vault());
     assert!(event.payload().get("resource_address").is_none());
-    assert_eq!(event.payload().get("amount").unwrap(), amount.to_string());
+    assert_eq!(event.payload().get_as::<Amount>("amount").unwrap(), Some(amount));
 
     // a standard event for the deposit must have been emmitted
     let event = result
@@ -99,5 +96,5 @@ fn builtin_vault_events() {
     // assert_eq!(event.component_address().unwrap(), receiver_address);
     assert!(event.substate_id().unwrap().is_vault());
     assert!(event.payload().get("resource_address").is_none());
-    assert_eq!(event.payload().get("amount").unwrap(), amount.to_string());
+    assert_eq!(event.payload().get_as::<Amount>("amount").unwrap(), Some(amount));
 }

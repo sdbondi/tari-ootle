@@ -3,7 +3,6 @@ import type { BucketId } from "./BucketId";
 import type { ClaimedOutputTombstoneAddress } from "./ClaimedOutputTombstoneAddress";
 import type { ComponentAddress } from "./ComponentAddress";
 import type { ConfidentialOutputAddress } from "./ConfidentialOutputAddress";
-import type { Metadata } from "./Metadata";
 import type { NonFungibleAddress } from "./NonFungibleAddress";
 import type { ProofId } from "./ProofId";
 import type { PublishedTemplateAddress } from "./PublishedTemplateAddress";
@@ -21,7 +20,6 @@ export type IndexedWellKnownTypes = {
   transaction_receipt_addresses: Array<TransactionReceiptAddress>;
   non_fungible_addresses: Array<NonFungibleAddress>;
   vault_ids: Array<VaultId>;
-  metadata: Array<Metadata>;
   unclaimed_confidential_output_address: Array<ClaimedOutputTombstoneAddress>;
   published_template_addresses: Array<PublishedTemplateAddress>;
   validator_node_fee_pools: Array<ValidatorFeePoolAddress>;

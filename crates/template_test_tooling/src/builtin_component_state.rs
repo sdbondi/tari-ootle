@@ -35,7 +35,7 @@ use crate::{template_lib_types::SubstateOwnerRule, template_test::test_nft_fauce
 pub fn add_tari_resources<T: StateWriter>(state_db: &mut T) -> Result<(), StateStoreError> {
     let id = SubstateId::Resource(PUBLIC_IDENTITY_RESOURCE_ADDRESS);
     let mut metadata = Metadata::new();
-    metadata.insert(TOKEN_SYMBOL, "ID".to_string());
+    metadata.insert(TOKEN_SYMBOL, "ID");
     // Create the resource for badges
     state_db.set_state(
         id,
@@ -57,7 +57,7 @@ pub fn add_tari_resources<T: StateWriter>(state_db: &mut T) -> Result<(), StateS
     // Create the second layer tari resource
     let id = SubstateId::Resource(STEALTH_TARI_RESOURCE_ADDRESS);
     let mut metadata = Metadata::new();
-    metadata.insert(TOKEN_SYMBOL, "tTARI".to_string());
+    metadata.insert(TOKEN_SYMBOL, "tTARI");
     state_db.set_state(
         id,
         Substate::new(

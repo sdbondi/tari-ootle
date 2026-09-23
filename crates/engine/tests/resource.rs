@@ -45,8 +45,8 @@ fn update_metadata_succeeds() {
     test.call_method::<()>(component, "set_metadata", args![new_metadata], vec![]);
 
     let resource = test.read_only_state_store().get_resource(&resource_address).unwrap();
-    assert_eq!(resource.metadata().get("description"), Some("A fine token"));
-    assert_eq!(resource.metadata().get("SYMBOL"), Some("FOO"));
+    assert_eq!(resource.metadata().get_str("description"), Some("A fine token"));
+    assert_eq!(resource.metadata().get_str("SYMBOL"), Some("FOO"));
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn update_metadata_can_set_symbol_when_not_previously_set() {
     test.call_method::<()>(component, "set_metadata", args![first], vec![]);
 
     let resource = test.read_only_state_store().get_resource(&resource_address).unwrap();
-    assert_eq!(resource.metadata().get("SYMBOL"), Some("NEW"));
+    assert_eq!(resource.metadata().get_str("SYMBOL"), Some("NEW"));
 
     // Now it's set, further changes must be rejected.
     let mut second = Metadata::new();

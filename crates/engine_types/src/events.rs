@@ -23,15 +23,15 @@
 use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
-use tari_template_lib::types::{Metadata, TemplateAddress};
+use tari_template_lib::types::{Amount, Metadata, TemplateAddress};
 
 use crate::substate::SubstateId;
 
 // Topics for builtin events emitted by the engine
 const STANDARD_TOPIC_PREFIX: &str = "std.";
 
-/// The widest decimal an amount renders to, amounts being `u64` microtari.
-const WIDEST_AMOUNT: &str = "18446744073709551615";
+/// The widest fee amount, fees being `u64` microtari.
+const WIDEST_FEE_AMOUNT: Amount = Amount::new(u64::MAX as u128);
 
 fn std_event(object_name: &str, action_name: &str) -> String {
     format!("{}{}.{}", STANDARD_TOPIC_PREFIX, object_name, action_name)
@@ -112,12 +112,12 @@ impl Event {
     /// The bytes to add to this event's encoded length when pricing the permanent state a
     /// transaction pays for, so that the price cannot depend on the fee being priced.
     ///
-    /// A fee-payment event records the payment as a decimal string, so its length tracks `max_fee`
-    /// digit for digit. Charging that verbatim lets the storage price read back the very amount it
-    /// is pricing: a submission whose `max_fee` is wider than the one a dry run measured costs more
-    /// than that dry run reported, and the transaction is rejected for underpayment. Pricing it at
-    /// its widest breaks the loop — the same stand-in [`crate::fees::FeeReceipt::widest`] gets, for
-    /// the same reason.
+    /// A fee-payment event records the payment as a CBOR integer, whose length grows with its
+    /// magnitude and so tracks `max_fee`. Charging that verbatim lets the storage price read back
+    /// the very amount it is pricing: a submission whose `max_fee` is wider than the one a dry run
+    /// measured costs more than that dry run reported, and the transaction is rejected for
+    /// underpayment. Pricing it at its widest breaks the loop — the same stand-in
+    /// [`crate::fees::FeeReceipt::widest`] gets, for the same reason.
     ///
     /// Only the engine's own fee event is neutralized here. A template that echoes an amount its
     /// caller passed it is priced as written: that coupling is visible to whoever chose both the
@@ -126,8 +126,8 @@ impl Event {
         if !self.is_std("vault", "pay_fee") {
             return 0;
         }
-        self.get_payload("amount").map_or(0, |amount| {
-            minicbor::len(WIDEST_AMOUNT).saturating_sub(minicbor::len(amount))
+        self.payload.get("amount").map_or(0, |amount| {
+            minicbor::len(WIDEST_FEE_AMOUNT).saturating_sub(amount.as_bytes().len())
         })
     }
 
@@ -161,10 +161,6 @@ impl Event {
         &self.topic
     }
 
-    pub fn get_payload(&self, key: &str) -> Option<&str> {
-        self.payload.get(key)
-    }
-
     pub fn payload(&self) -> &Metadata {
         &self.payload
     }
@@ -196,19 +192,19 @@ mod tests {
 
     use super::*;
 
-    fn pay_fee_event(amount: &str) -> Event {
+    fn pay_fee_event(amount: Amount) -> Event {
         Event::std(
             None,
             Hash32::from_array([0u8; Hash32::LENGTH]),
             "vault",
             "pay_fee",
-            Metadata::from_iter([("amount", amount.to_string())]),
+            Metadata::from_iter([("amount", amount)]),
         )
     }
 
     #[test]
     fn is_std_recognises_the_topics_std_event_builds() {
-        let event = pay_fee_event("1000");
+        let event = pay_fee_event(Amount::new(1000));
         assert_eq!(event.topic(), std_event("vault", "pay_fee"));
         assert!(event.is_std("vault", "pay_fee"));
         assert!(!event.is_std("vault", "deposit"));
@@ -225,10 +221,10 @@ mod tests {
 
     #[test]
     fn a_fee_payment_amount_is_priced_at_one_width_whatever_its_value() {
-        let widest = pay_fee_event(WIDEST_AMOUNT);
+        let widest = pay_fee_event(WIDEST_FEE_AMOUNT);
         let expected = minicbor::len(&widest) + widest.charged_size_padding();
-        for amount in ["1", "1000", "398287", "18446744073709551614"] {
-            let event = pay_fee_event(amount);
+        for amount in [0, 1, 23, 24, 1000, 398287, u64::from(u32::MAX) + 1, u64::MAX - 1] {
+            let event = pay_fee_event(Amount::from(amount));
             assert_eq!(
                 minicbor::len(&event) + event.charged_size_padding(),
                 expected,
@@ -243,7 +239,7 @@ mod tests {
             None,
             Hash32::from_array([0u8; Hash32::LENGTH]),
             "mytemplate.paid".to_string(),
-            Metadata::from_iter([("amount", "398287".to_string())]),
+            Metadata::from_iter([("amount", Amount::new(398287))]),
         );
         assert_eq!(event.charged_size_padding(), 0);
     }

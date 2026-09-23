@@ -505,7 +505,7 @@ fn fail_partial_paid_fees() {
 fn underfunded_compute_rejects_as_a_fee_shortfall() {
     // Funding the wasm path and the native path takes different amounts: too little and execution stops inside the
     // first method's wasm, a little more and it reaches a native stealth verification it cannot fund.
-    for fee_paid in [1000u64, 1300] {
+    for fee_paid in [990u64, 1300] {
         let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
 
         let (account, owner_token, private_key) = test.create_funded_account();
@@ -753,8 +753,8 @@ fn dangling_bucket_pay_fees() {
 //
 // - the encoded *width* of the fee literal, through `calc_args_weight`. Live, and the only term that can make a real
 //   run cost more than the dry run said.
-// - the fee amount's *digit count*, through the `std.vault.pay_fee` event the persisted receipt carries. Neutralized —
-//   priced at its widest, so it buys nothing.
+// - the fee amount's *encoded width*, through the `std.vault.pay_fee` event the persisted receipt carries. Neutralized
+//   — priced at its widest, so it buys nothing.
 // - the *residual vault balance*'s width, since the finalization charges run before refunds. Live, and opposed to the
 //   first: a wider `max_fee` leaves a narrower residual. Nothing narrows the `max_fee` a dry run meters at, so a
 //   submission can move either term in either direction and the allowance has to cover both.
@@ -767,17 +767,11 @@ fn dangling_bucket_pay_fees() {
 /// byte counter sees (`FUNDED - max_fee`) is predictable.
 const FUNDED: u64 = 1_000_000_000;
 
-/// `calc_args_weight` prices an instruction's literal args by their encoded bytes, so the weight
-/// charge reads `max_fee` through the width of its encoding.
+/// The encoded width of an amount. `calc_args_weight` prices an instruction's literal args by their
+/// encoded bytes, and the `std.vault.pay_fee` event records the amount in the same encoding, so both
+/// the weight charge and the receipt's size would read `max_fee` through this width.
 fn amount_len(value: u64) -> u64 {
     tari_bor::encode(&Amount::from(value)).unwrap().len() as u64
-}
-
-/// The `std.vault.pay_fee` event records the amount as a decimal string, so the receipt's size — and
-/// with it the storage charge — would read `max_fee` through its digit count if the amount were not
-/// priced at its widest.
-fn digit_count(value: u64) -> u64 {
-    value.to_string().len() as u64
 }
 
 /// Meters `build(max_fee)` once per `max_fee`, from identical state each time.
@@ -824,8 +818,9 @@ fn state_transaction<'a>(
 /// floor for each of its two calls and `max_fee` cannot move it.
 #[test]
 fn transaction_weight_does_not_follow_the_max_fee_literal_width() {
-    // Straddles an encoding-width boundary while keeping the digit count and the residual balance's
-    // width fixed, so the weight charge is the only thing that could move.
+    // Straddles an encoding-width boundary while keeping the residual balance's width fixed, so the
+    // weight charge is the only thing that could move: the `pay_fee` event's amount, which
+    // straddles the same boundary, is priced at its widest.
     const MAX_FEES: [u64; 2] = [65_535, 65_536];
     // `pay_fee_from_component` and the `State::new` call.
     const INVOCATIONS: u64 = 2;
@@ -837,7 +832,7 @@ fn transaction_weight_does_not_follow_the_max_fee_literal_width() {
     let receipts = meter_across_max_fees(&mut test, &MAX_FEES, &[owner_token], build);
 
     assert_ne!(amount_len(MAX_FEES[0]), amount_len(MAX_FEES[1]));
-    assert_eq!(digit_count(MAX_FEES[0]), digit_count(MAX_FEES[1]));
+    assert_eq!(amount_len(FUNDED - MAX_FEES[0]), amount_len(FUNDED - MAX_FEES[1]));
 
     let per_weight = test.fee_table().per_transaction_weight_cost();
     for (max_fee, receipt) in MAX_FEES.iter().zip(&receipts) {
@@ -849,20 +844,19 @@ fn transaction_weight_does_not_follow_the_max_fee_literal_width() {
         assert_eq!(
             receipt.fee_breakdown().get(FeeSource::Storage),
             receipts[0].fee_breakdown().get(FeeSource::Storage),
-            "Storage must not move while the digit count and residual width hold"
+            "Storage must not move while the residual width holds"
         );
     }
 }
 
 /// The transaction receipt is part of the state a transaction pays to persist, and it carries the
-/// `std.vault.pay_fee` event, whose payload records the amount as a decimal string. Charging that
-/// verbatim would price permanent state by the digit count of `max_fee`, so the amount is priced at
-/// its widest instead and the digit count buys nothing.
+/// `std.vault.pay_fee` event, whose payload records the amount as a CBOR integer. Charging that
+/// verbatim would price permanent state by the encoded width of `max_fee`, so the amount is priced
+/// at its widest instead and the width buys nothing.
 #[test]
-fn storage_does_not_follow_the_max_fee_digit_count() {
-    // One encoding width and one residual width throughout, so the digit count is the only thing
-    // that varies.
-    const MAX_FEES: [u64; 4] = [65_536, 1_000_000, 100_000_000, 999_000_000];
+fn storage_does_not_follow_the_max_fee_encoded_width() {
+    // One residual width throughout, so the amount's encoded width is the only thing that varies.
+    const MAX_FEES: [u64; 4] = [2_000, 65_535, 65_536, 999_000_000];
 
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
     let (account, owner_token, key) = test.create_funded_account();
@@ -871,16 +865,11 @@ fn storage_does_not_follow_the_max_fee_digit_count() {
     let receipts = meter_across_max_fees(&mut test, &MAX_FEES, &[owner_token], build);
 
     assert_ne!(
-        digit_count(MAX_FEES[0]),
-        digit_count(MAX_FEES[MAX_FEES.len() - 1]),
-        "the digit count must actually vary for this to prove anything"
+        amount_len(MAX_FEES[0]),
+        amount_len(MAX_FEES[MAX_FEES.len() - 1]),
+        "the encoded width must actually vary for this to prove anything"
     );
     for (max_fee, receipt) in MAX_FEES.iter().zip(&receipts) {
-        assert_eq!(
-            amount_len(*max_fee),
-            amount_len(MAX_FEES[0]),
-            "encoding width must hold"
-        );
         assert_eq!(
             amount_len(FUNDED - max_fee),
             amount_len(FUNDED - MAX_FEES[0]),
@@ -896,11 +885,10 @@ fn storage_does_not_follow_the_max_fee_digit_count() {
 
 /// The finalization charges run before `finalize_fees_and_refunds` returns the unspent payment, so
 /// the fee vault is byte-counted holding `balance - max_fee`. A larger `max_fee` narrows that
-/// residual and makes storage *cheaper* — the opposite direction to the digit-count term above.
+/// residual and makes storage *cheaper* — the opposite direction to the event-width term above.
 #[test]
 fn storage_follows_the_residual_vault_balance_width() {
-    // One encoding width and one digit count throughout, so the residual width is the only thing
-    // that varies.
+    // One encoding width throughout, so the residual width is the only thing that varies.
     const MAX_FEES: [u64; 3] = [999_940_000, 999_999_800, 999_999_990];
 
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
@@ -917,7 +905,6 @@ fn storage_follows_the_residual_vault_balance_width() {
             amount_len(MAX_FEES[0]),
             "encoding width must hold"
         );
-        assert_eq!(digit_count(*max_fee), digit_count(MAX_FEES[0]), "digit count must hold");
         let bytes_saved = amount_len(FUNDED - MAX_FEES[0]) - amount_len(FUNDED - max_fee);
         assert_eq!(
             receipts[0].fee_breakdown().get(FeeSource::Storage) - receipt.fee_breakdown().get(FeeSource::Storage),
@@ -974,8 +961,8 @@ fn a_template_publish_introduces_no_further_max_fee_sensitivity() {
 /// to show that it does not enter the price: the burn is a share of what is paid, not a charge.
 #[test]
 fn required_fees_covers_a_real_run_at_any_max_fee() {
-    // Spans every encoding width a fee above this transaction's cost can take, every residual
-    // width, and digit counts from four to nine.
+    // Spans every encoding width a fee above this transaction's cost can take, and every residual
+    // width.
     const MAX_FEES: [u64; 8] = [
         2_000,
         65_535,
@@ -1056,10 +1043,10 @@ fn assert_only_weight_and_storage_move(max_fees: &[u64], receipts: &[FeeReceipt]
     }
 }
 
-/// The digit-count mechanism traced to its source: the event payload the receipt carries holds
-/// `max_fee` itself, rendered in decimal.
+/// The event-width mechanism traced to its source: the event payload the receipt carries holds
+/// `max_fee` itself.
 #[test]
-fn the_pay_fee_event_records_max_fee_in_decimal() {
+fn the_pay_fee_event_records_max_fee() {
     const MAX_FEE: u64 = 123_456_789;
 
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
@@ -1075,8 +1062,8 @@ fn the_pay_fee_event_records_max_fee_in_decimal() {
         .find(|e| e.topic() == "std.vault.pay_fee")
         .expect("pay_fee event");
     assert_eq!(
-        pay_fee.get_payload("amount"),
-        Some(MAX_FEE.to_string().as_str()),
+        pay_fee.payload().get_as::<Amount>("amount").unwrap(),
+        Some(Amount::from(MAX_FEE)),
         "the event records the payment cap, not the fee actually charged"
     );
 }

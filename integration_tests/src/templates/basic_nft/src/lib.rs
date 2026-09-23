@@ -82,7 +82,7 @@ mod sparkle_nft_template {
             debug!("Minting {}", id);
             // These are characteristic of the NFT and are immutable
             let mut immutable_data = Metadata::new();
-            immutable_data.insert("name", name).insert("image_url", url);
+            immutable_data.insert("name", &name).insert("image_url", &url);
 
             // Mint the NFT, this will fail if the token ID already exists
             let res_manager = ResourceManager::get(self.resource_address);

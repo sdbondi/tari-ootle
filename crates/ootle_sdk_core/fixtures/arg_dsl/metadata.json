@@ -10,8 +10,12 @@
   "input": {
     "arg_value": {
       "Metadata": {
-        "provider_name": "OotleExample",
-        "website": "example.test"
+        "provider_name": {
+          "String": "OotleExample"
+        },
+        "website": {
+          "String": "example.test"
+        }
       }
     }
   },

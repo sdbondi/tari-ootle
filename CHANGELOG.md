@@ -3,6 +3,24 @@
 All notable changes to this project will be documented in this file.
 See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [Unreleased]
+
+### ⚠️ Upgrade notes
+
+- **Metadata values are CBOR, not strings.** `Metadata::get` returns the raw encoding: read a value
+  with `get_as::<T>()` or `get_str()`, and pass `insert` any encodable value by reference. The
+  engine's `std.*` event payloads carry typed amounts and addresses.
+- **SDK `ArgValue::Metadata` maps to `ArgValue`s, and event payload values are JSON.** A text value
+  is written `{"String": ".."}`; `EventSummary::payload` and the indexer's GraphQL event `payload`
+  carry each value's JSON form.
+
+### Engine
+
+- `feat!` — **Metadata values are arbitrary CBOR**, so an address in metadata costs 32 bytes rather
+  than 64 hex characters. Substate hashes change; this ships with the testnet reset.
+- `feat!` — **Metadata is indexed like the rest of a substate**: an address in it counts as a
+  reference, and a bucket or proof in it is rejected as transient.
+
 ## [0.41.2](https://github.com/tari-project/tari-ootle/compare/v0.41.1...v0.41.2) (2026-09-23)
 
 The engine and wallet security review release. It closes the ways a crafted template or payload

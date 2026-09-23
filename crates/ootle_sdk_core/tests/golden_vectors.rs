@@ -1693,11 +1693,14 @@ fn arg_bytes() -> Fixture {
     encode_arg_fixture("arg_dsl/bytes", ArgValue::Bytes(vec![0xde, 0xad, 0xbe, 0xef]))
 }
 
-/// Arg vector — a string→string metadata map (encoded as the engine Metadata, `BorTag<_, 129>`).
+/// Arg vector — a metadata map of strings (encoded as the engine Metadata, `BorTag<_, 129>`).
 fn arg_metadata() -> Fixture {
     let map = std::collections::BTreeMap::from([
-        ("provider_name".to_string(), "OotleExample".to_string()),
-        ("website".to_string(), "example.test".to_string()),
+        (
+            "provider_name".to_string(),
+            ArgValue::String("OotleExample".to_string()),
+        ),
+        ("website".to_string(), ArgValue::String("example.test".to_string())),
     ]);
     encode_arg_fixture("arg_dsl/metadata", ArgValue::Metadata(map))
 }

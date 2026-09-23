@@ -1147,8 +1147,9 @@ fn process_watched_substate_events(
                 if let Some(substate_id) = event.substate_id() {
                     let prev_template = event
                         .payload()
-                        .get("prev_template")
-                        .and_then(|v| TemplateAddress::from_hex(v).ok());
+                        .get_as::<TemplateAddress>("prev_template")
+                        .ok()
+                        .flatten();
 
                     let prev_was_watched = prev_template.as_ref().is_some_and(|t| watched_templates.contains(t));
                     let new_is_watched = watched_templates.contains(event.template_address());

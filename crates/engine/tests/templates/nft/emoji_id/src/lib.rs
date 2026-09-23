@@ -117,7 +117,7 @@ mod emoji_id {
             // We are going with (1) for now
             let id = NonFungibleId::from_string(emoji_id.to_string());
             let mut immutable_data = Metadata::new();
-            immutable_data.insert("emoji id", emoji_id.to_string());
+            immutable_data.insert("emoji id", &emoji_id.to_string());
 
             // if a previous emoji id was minted with the same emojis, the hash will be the same
             // so consensus will fail when running "mint_non_fungible"
