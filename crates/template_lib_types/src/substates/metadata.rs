@@ -269,8 +269,6 @@ macro_rules! try_metadata {
         ::core::result::Result::<$crate::Metadata, $crate::BorError>::Ok($crate::Metadata::new())
     };
     ($($key:expr => $value:expr),+ $(,)?) => {
-        // `break 'try_metadata` leaves this labeled block, which is no loop, with the error. A block
-        // keeps a `?` or `return` inside a value expression acting on the caller's function.
         'try_metadata: {
             let mut metadata = $crate::Metadata::new();
             $(
