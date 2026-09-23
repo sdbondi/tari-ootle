@@ -1634,8 +1634,8 @@ where
                 }
 
                 Self::check_token_symbol_length(&arg.metadata)?;
-                reject_invalid_m_of_n("access_rules", arg.access_rules.find_invalid_m_of_n())?;
-                reject_invalid_m_of_n("owner_rule", owner_rule_m_of_n(&arg.owner_rule))?;
+                reject_invalid_m_of_n("resource_access_rules", arg.access_rules.find_invalid_m_of_n())?;
+                reject_invalid_m_of_n("resource_owner_rule", owner_rule_m_of_n(&arg.owner_rule))?;
 
                 let owner_rule = match arg.owner_rule {
                     OwnerRule::OwnedBySigner => SubstateOwnerRule::ByPublicKey(self.seal_signer_public_key),

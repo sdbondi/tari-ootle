@@ -634,9 +634,9 @@ mod m_of_n_threshold {
         let reason = test.execute_expect_failure(component_rule, vec![badge.clone()]);
         assert_reject_reason(reason, invalid_threshold("access_rules", 0, 1));
         let reason = test.execute_expect_failure(resource_updater, vec![badge.clone()]);
-        assert_reject_reason(reason, invalid_threshold("access_rules", 2, 1));
+        assert_reject_reason(reason, invalid_threshold("resource_access_rules", 2, 1));
         let reason = test.execute_expect_failure(nested_owner_rule, vec![badge]);
-        assert_reject_reason(reason, invalid_threshold("owner_rule", 0, 1));
+        assert_reject_reason(reason, invalid_threshold("resource_owner_rule", 0, 1));
     }
 
     #[test]
