@@ -10,7 +10,7 @@ use crate::{BorError, MAX_DECODE_DEPTH, Value};
 /// Whether `input` is exactly one CBOR item that decodes as a [`Value`], checked without building it.
 ///
 /// Accepts exactly what `decode_exact::<Value>` accepts: the walk reads each item the way
-/// [`decode_value`] does and discards it, so it allocates nothing. A value that passes has a
+/// [`Value`]'s decoder does and discards it, so it allocates nothing. A value that passes has a
 /// [`Value`] form, and with it a serde (JSON) form.
 pub fn check_value_form(input: &[u8]) -> Result<(), BorError> {
     let mut d = Decoder::new(input);
