@@ -401,7 +401,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
     /// [`tari_bor::MAX_DECODE_DEPTH`] — would commit and then fail every reader.
     fn check_metadata_values(argument: &'static str, metadata: &Metadata) -> Result<(), RuntimeError> {
         for (key, value) in metadata {
-            if let Err(e) = value.to_value() {
+            if let Err(e) = tari_bor::check_value_form(value.as_bytes()) {
                 return Err(RuntimeError::InvalidArgument {
                     argument,
                     reason: format!("metadata value \"{key}\" is not a representable CBOR value: {e}"),
