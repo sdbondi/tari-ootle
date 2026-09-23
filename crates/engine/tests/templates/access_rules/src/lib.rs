@@ -19,7 +19,7 @@ pub fn create_badge_resource(recall_rule: AccessRule) -> Bucket {
 
 #[template]
 mod access_rules_template {
-    use tari_template_lib::types::FunctionName;
+    use tari_template_lib::types::{FunctionName, SubstateOwnerRule};
 
     use super::*;
 
@@ -446,6 +446,19 @@ mod access_rules_template {
         pub fn set_component_access_rules(&mut self, access_rules: ComponentAccessRules) {
             let component_addr = CallerContext::current_component_address();
             ComponentManager::get(component_addr).set_access_rules(access_rules);
+        }
+
+        pub fn set_component_owner_rule(&mut self, owner_rule: SubstateOwnerRule) {
+            let component_addr = CallerContext::current_component_address();
+            ComponentManager::get(component_addr).set_owner_rule(owner_rule);
+        }
+
+        pub fn set_component_owner_rule_then_get_owner_proof(&mut self, owner_rule: SubstateOwnerRule) {
+            let manager = ComponentManager::get(CallerContext::current_component_address());
+            manager.set_owner_rule(owner_rule);
+            if let Some(proof) = manager.get_owner_proof() {
+                proof.drop();
+            }
         }
 
         pub fn update_tokens_access_rule(&mut self, action: ResourceAuthAction, new_rule: AccessRule) {
