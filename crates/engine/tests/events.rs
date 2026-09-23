@@ -1,10 +1,11 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
+use tari_bor::RawCbor;
 use tari_engine::runtime::RuntimeError;
 use tari_ootle_transaction::{Epoch, Transaction, args};
 use tari_template_builtin::ACCOUNT_TEMPLATE_ADDRESS;
-use tari_template_lib::types::Amount;
+use tari_template_lib::types::{Amount, Metadata, bytes::Bytes};
 use tari_template_test_tooling::{
     TemplateTest,
     support::assert_error::assert_reject_reason,
@@ -97,4 +98,48 @@ fn builtin_vault_events() {
     assert!(event.substate_id().unwrap().is_vault());
     assert!(event.payload().get("resource_address").is_none());
     assert_eq!(event.payload().get_as::<Amount>("amount").unwrap(), Some(amount));
+}
+
+/// One well-formed CBOR item each, with no `tari_bor::Value` form and so no JSON form: a simple
+/// value, and an array nested past `tari_bor::MAX_DECODE_DEPTH`. A transaction argument cannot carry
+/// either, so the templates build them.
+fn unrepresentable_values() -> Vec<(&'static str, Vec<u8>)> {
+    let mut deep = vec![0x81; tari_bor::MAX_DECODE_DEPTH + 6];
+    deep.push(0x00);
+    let values = vec![("simple", vec![0xe0]), ("deep", deep)];
+    for (name, bytes) in &values {
+        let mut metadata = Metadata::new();
+        metadata.insert_raw("value", tari_bor::decode_exact::<RawCbor>(bytes).unwrap());
+        // Were one of these to commit, every reader serving it as JSON would fail on it.
+        assert!(serde_json::to_value(&metadata).is_err(), "{name} has a JSON form");
+    }
+    values
+}
+
+#[test]
+fn an_event_payload_value_must_be_representable() {
+    let mut test = TemplateTest::new(CRATE_PATH, vec!["tests/templates/events"]);
+    let template = test.get_template_address("EventEmitter");
+    let (_, _, key) = test.create_funded_account();
+
+    for (name, bytes) in unrepresentable_values() {
+        let reason = test.execute_expect_failure(
+            Transaction::builder_localnet(Epoch(1))
+                .call_function(template, "emit_raw_payload_value", args![Bytes::from(bytes)])
+                .build_and_seal(&key),
+            vec![],
+        );
+        assert!(
+            reason.to_string().contains("not a representable CBOR value"),
+            "{name}: {reason}"
+        );
+    }
+
+    let representable = Bytes::from(tari_bor::encode(&1u32).unwrap());
+    test.execute_expect_success(
+        Transaction::builder_localnet(Epoch(1))
+            .call_function(template, "emit_raw_payload_value", args![representable])
+            .build_and_seal(&key),
+        vec![],
+    );
 }

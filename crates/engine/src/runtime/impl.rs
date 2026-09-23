@@ -406,6 +406,22 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         })
     }
 
+    /// Metadata a template supplies is persisted and served as JSON by every node, wallet and indexer
+    /// that reads it. A value's JSON form is that of the [`tari_bor::Value`] it decodes to, so a value
+    /// that does not decode to one — a CBOR simple value, or nesting past
+    /// [`tari_bor::MAX_DECODE_DEPTH`] — would commit and then fail every reader.
+    fn check_metadata_values(argument: &'static str, metadata: &Metadata) -> Result<(), RuntimeError> {
+        for (key, value) in metadata {
+            if let Err(e) = value.to_value() {
+                return Err(RuntimeError::InvalidArgument {
+                    argument,
+                    reason: format!("metadata value \"{key}\" is not a representable CBOR value: {e}"),
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn check_token_symbol(metadata: &Metadata) -> Result<(), RuntimeError> {
         if !metadata.contains_key(TOKEN_SYMBOL) {
             return Ok(());
@@ -1159,6 +1175,7 @@ where
         if let Err(reason) = Event::validate_custom_topic(&topic) {
             return Err(RuntimeError::InvalidEventTopic { topic, reason });
         }
+        Self::check_metadata_values("payload", &payload)?;
 
         self.invoke_modules_on_runtime_call("emit_event")?;
 
@@ -1651,6 +1668,7 @@ where
                     });
                 }
 
+                Self::check_metadata_values("metadata", &arg.metadata)?;
                 Self::check_token_symbol(&arg.metadata)?;
                 reject_invalid_m_of_n("resource_access_rules", arg.access_rules.find_invalid_m_of_n())?;
                 reject_invalid_m_of_n("resource_owner_rule", owner_rule_m_of_n(&arg.owner_rule))?;
@@ -2092,6 +2110,7 @@ where
                         })?;
                 let new_metadata: Metadata = args.assert_one_arg()?;
 
+                Self::check_metadata_values("metadata", &new_metadata)?;
                 Self::check_token_symbol(&new_metadata)?;
 
                 let (maybe_auth_hook, auth_caller) = self.tracker.write_with(|state_mut| {

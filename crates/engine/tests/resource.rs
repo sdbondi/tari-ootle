@@ -2,7 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use tari_ootle_transaction::args;
-use tari_template_lib::types::{ComponentAddress, Metadata, ResourceAddress};
+use tari_template_lib::types::{ComponentAddress, Metadata, ResourceAddress, bytes::Bytes};
 use tari_template_test_tooling::{
     TemplateTest,
     support::{confidential::generate_confidential_output_statement, value_proof::value_proofs_for_commitment},
@@ -109,6 +109,28 @@ fn create_rejects_oversized_token_symbol() {
         reason.to_string().to_lowercase().contains("token symbol"),
         "expected token-symbol-length reason, got: {reason}"
     );
+}
+
+#[test]
+fn update_metadata_rejects_unrepresentable_values() {
+    let mut test = TemplateTest::new(CRATE_PATH, vec!["tests/templates/resource", "tests/templates/metadata"]);
+    let component: ComponentAddress = test.call_function("MetadataTest", "new_without_symbol", args![], vec![]);
+    let key = test.secret_key().clone();
+
+    let mut deep = vec![0x81; tari_bor::MAX_DECODE_DEPTH + 6];
+    deep.push(0x00);
+    for (name, bytes) in [("simple", vec![0xe0]), ("deep", deep)] {
+        let reason = test.execute_expect_failure(
+            test.transaction()
+                .call_method(component, "set_raw_metadata_value", args![Bytes::from(bytes)])
+                .build_and_seal(&key),
+            vec![],
+        );
+        assert!(
+            reason.to_string().contains("not a representable CBOR value"),
+            "{name}: {reason}"
+        );
+    }
 }
 
 #[test]
