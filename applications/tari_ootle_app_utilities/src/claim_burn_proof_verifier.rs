@@ -142,8 +142,8 @@ where
                 claim_proof.encoded_merkle_proof.block_hash, epoch
             );
             format!(
-                "block header not found for hash {}. The claim may be invalid, or the burn may have occurred after \
-                 the current epoch, and therefore is not yet claimable.",
+                "block header not found for hash {}. The claim may be invalid, or the burn may only be claimable in a \
+                 later epoch.",
                 claim_proof.encoded_merkle_proof.block_hash
             )
         })?;

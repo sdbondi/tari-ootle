@@ -46,7 +46,7 @@ const MAX_RETRIES_DEFERRED: u32 = 20;
 /// Marker phrase in the claim-burn verifier's rejection when the burn's L1 block has not yet been
 /// synced by validators into a claimable epoch. Such a claim is valid but must wait, so matching
 /// this phrase lets the service defer rather than drop it. See `TariClaimBurnProofVerifier`.
-const BURN_NOT_YET_CLAIMABLE_MARKER: &str = "not yet claimable";
+const BURN_NOT_YET_CLAIMABLE_MARKER: &str = "claimable in a later epoch";
 
 /// True if a dry-run rejection indicates the burn is valid but its L1 block is not yet synced into a
 /// claimable epoch, as opposed to a genuinely invalid claim.
@@ -587,8 +587,7 @@ mod tests {
     fn defers_burn_not_yet_synced_rejection() {
         // Mirrors the claim-burn verifier's rejection when the L1 block is not yet synced.
         let reason = "Execution failure: At instruction #0: Invalid burn claim proof: block header not found for hash \
-                      0a1b2c. The claim may be invalid, or the burn may have occurred after the current epoch, and \
-                      therefore is not yet claimable.";
+                      0a1b2c. The claim may be invalid, or the burn may only be claimable in a later epoch.";
         assert!(is_burn_not_yet_claimable(reason));
     }
 
