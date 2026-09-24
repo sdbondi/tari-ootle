@@ -1334,15 +1334,15 @@ impl<TStore: StateReader> WorkingState<TStore> {
                 .require_ownership(NativeAction::WithdrawValidatorFunds, fee_pool.as_ownership())?;
         }
 
-        let pool_mut = self
-            .get_locked_substate_mut(&locked_substate)?
-            .as_validator_fee_pool_mut()
-            .ok_or_else(|| RuntimeError::InvariantError {
-                function: "WorkingState::withdraw_fees_from_pool_up_to",
-                details: format!("Expected substate at address {address} to be a ValidatorFeePool"),
-            })?;
-
-        let (amount, resource_container) = pool_mut.withdraw_up_to(max_amount)?;
+        let (amount, resource_container) = self.store.mutate_unpersisted(locked_substate.lock_id(), |value| {
+            let pool = value
+                .as_validator_fee_pool_mut()
+                .ok_or_else(|| RuntimeError::InvariantError {
+                    function: "WorkingState::withdraw_fees_from_pool_up_to",
+                    details: format!("Expected substate at address {address} to be a ValidatorFeePool"),
+                })?;
+            Ok(pool.withdraw_up_to(max_amount)?)
+        })?;
         self.validator_fee_withdrawals
             .push(ValidatorFeeWithdrawal { address, amount });
         self.unlock_substate(locked_substate)?;
@@ -1405,12 +1405,8 @@ impl<TStore: StateReader> WorkingState<TStore> {
         self.store.take_mutated_substates()
     }
 
-    pub fn take_downed_utxos(&mut self) -> IndexSet<UtxoAddress> {
-        self.store.take_downed_utxos()
-    }
-
-    pub fn take_downed_confidential_outputs(&mut self) -> IndexSet<ConfidentialOutputAddress> {
-        self.store.take_downed_confidential_outputs()
+    pub fn take_downed(&mut self) -> IndexSet<SubstateId> {
+        self.store.take_downed()
     }
 
     pub fn mutated_substates(&mut self) -> &IndexMap<SubstateId, SubstateValue> {
@@ -1461,25 +1457,11 @@ impl<TStore: StateReader> WorkingState<TStore> {
     /// here instead. See [`TransactionReceipt::encoded_size_upper_bound`] for what the bound covers.
     pub fn transaction_receipt_size(&mut self) -> Result<usize, RuntimeError> {
         let epoch = self.get_current_epoch()?;
-        let downed = self
-            .store
-            .downed_utxos()
-            .iter()
-            .cloned()
-            .map(SubstateId::Utxo)
-            .chain(
-                self.store
-                    .downed_confidential_outputs()
-                    .iter()
-                    .cloned()
-                    .map(SubstateId::ConfidentialOutput),
-            )
-            .collect::<Vec<_>>();
         Ok(TransactionReceipt::encoded_size_upper_bound(
             &self.events,
             &self.validator_fee_withdrawals,
             self.store.mutated_substates().keys(),
-            downed.iter(),
+            self.store.downed().iter(),
             epoch,
         ))
     }
@@ -2106,8 +2088,7 @@ impl<TStore: StateReader> WorkingState<TStore> {
     pub fn generate_substate_diff(
         &self,
         substates_to_persist: IndexMap<SubstateId, SubstateValue>,
-        downed_utxos: IndexSet<UtxoAddress>,
-        downed_confidential_outputs: IndexSet<ConfidentialOutputAddress>,
+        downed: IndexSet<SubstateId>,
         fee_withdrawals: Vec<ValidatorFeeWithdrawal>,
     ) -> Result<SubstateDiff, RuntimeError> {
         let mut substate_diff = SubstateDiff::new();
@@ -2118,10 +2099,6 @@ impl<TStore: StateReader> WorkingState<TStore> {
             let new_substate = match self.store.get_unmodified_substate(&id).optional()? {
                 Some(existing_state) => {
                     substate_diff.down(id.clone(), existing_state.version());
-                    if substate.as_validator_fee_pool().is_some_and(|fee| fee.amount == 0) {
-                        // If there are no fees left, do not up the fee pool
-                        continue;
-                    }
                     let version =
                         existing_state
                             .version()
@@ -2137,14 +2114,9 @@ impl<TStore: StateReader> WorkingState<TStore> {
             substate_diff.up(id, new_substate);
         }
 
-        for downed_utxo in downed_utxos {
-            let spent_utxo = self.store.get_unmodified_substate(&downed_utxo.clone().into())?;
-            substate_diff.down(SubstateId::Utxo(downed_utxo), spent_utxo.version());
-        }
-
-        for downed_output in downed_confidential_outputs {
-            let spent_output = self.store.get_unmodified_substate(&downed_output.clone().into())?;
-            substate_diff.down(SubstateId::ConfidentialOutput(downed_output), spent_output.version());
+        for id in downed {
+            let version = self.store.get_unmodified_substate(&id)?.version();
+            substate_diff.down(id, version);
         }
 
         Ok(substate_diff)

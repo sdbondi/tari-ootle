@@ -25,6 +25,7 @@ use tari_engine::{
     fees::{FeeModule, FeeTable, WasmMeteringRate},
     runtime::{AuthParams, RuntimeModule},
     state_store::{
+        StateReader,
         StateWriter,
         memory::{MemoryStateStore, ReadOnlyMemoryStateStore},
     },
@@ -35,7 +36,7 @@ use tari_engine::{
 use tari_engine_types::{
     commit_result::{ExecuteResult, RejectReason},
     fees::ExhaustBurnRate,
-    substate::{SubstateDiff, SubstateId},
+    substate::{Substate, SubstateDiff, SubstateId},
     virtual_substate::{VirtualSubstate, VirtualSubstateId},
 };
 use tari_ootle_common_types::{
@@ -482,6 +483,29 @@ impl TemplateTest {
             eprintln!("UP substate: {}", address);
             self.last_outputs.insert(address.clone());
             self.state_store.set_state(address.clone(), substate.clone()).unwrap();
+        }
+
+        // Consensus debits a fee pool in place rather than through the diff, bumping its version once however many
+        // withdrawals touch it; this mirrors it for the transaction as the whole block.
+        let mut debited = HashMap::<SubstateId, Substate>::new();
+        for withdrawal in diff.validator_fee_withdrawals() {
+            let address = SubstateId::ValidatorFeePool(withdrawal.address);
+            eprintln!("WITHDRAW {} from {}", withdrawal.amount, address);
+            let substate = debited.entry(address.clone()).or_insert_with(|| {
+                let current = self.state_store.get_state(&address).unwrap();
+                Substate::new(
+                    current.version().checked_next().unwrap(),
+                    current.substate_value().clone(),
+                )
+            });
+            let pool = substate.substate_value_mut().as_validator_fee_pool_mut().unwrap();
+            assert!(
+                pool.withdraw_direct(withdrawal.amount),
+                "withdrawal overdraws {address}"
+            );
+        }
+        for (address, substate) in debited {
+            self.state_store.set_state(address, substate).unwrap();
         }
         eprintln!();
     }

@@ -58,7 +58,13 @@ impl ExecutionOutput {
                 .into_iter()
                 .map(|(substate_req, substate)| {
                     let requested_specific_version = substate_req.version().is_some();
-                    let lock_flag = if diff.down_iter().any(|(id, _)| id == substate_req.substate_id()) {
+                    let id = substate_req.substate_id();
+                    // A fee pool a transaction withdraws from is written by consensus rather than through the
+                    // diff, so the withdrawal is what marks it written.
+                    let is_withdrawn_from = id
+                        .as_validator_fee_pool_address()
+                        .is_some_and(|address| diff.validator_fee_withdrawals().iter().any(|w| w.address == address));
+                    let lock_flag = if is_withdrawn_from || diff.down_iter().any(|(down_id, _)| down_id == id) {
                         // Update all inputs that were DOWNed to be write locked
                         SubstateLockType::Write
                     } else {
@@ -169,4 +175,59 @@ pub enum TransactionProcessorError {
     TransactionError(#[from] TransactionError),
     #[error(transparent)]
     StateStoreError(#[from] StateStoreError),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tari_engine_types::{
+        ValidatorFeePool,
+        ValidatorFeeWithdrawal,
+        commit_result::{ExecuteResult, FinalizeResult, TransactionResult},
+        fees::FeeReceipt,
+        substate::{SubstateDiff, SubstateId},
+    };
+    use tari_ootle_common_types::{LockIntent, SubstateVersion};
+    use tari_template_lib::types::{Hash32, ValidatorFeePoolAddress};
+
+    use super::*;
+
+    fn output(diff: SubstateDiff) -> ExecutionOutput {
+        ExecutionOutput {
+            result: ExecuteResult {
+                finalize: FinalizeResult::new(
+                    Hash32::default(),
+                    vec![],
+                    vec![],
+                    TransactionResult::Accept(diff),
+                    FeeReceipt::default(),
+                ),
+                execution_time: Duration::default(),
+                execute_epoch: None,
+                wasm_execution_points: 0,
+                native_execution_points: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn a_withdrawn_fee_pool_is_write_locked() {
+        let withdrawn = ValidatorFeePoolAddress::from_array([1; 32]);
+        let untouched = ValidatorFeePoolAddress::from_array([2; 32]);
+        let mut diff = SubstateDiff::new();
+        diff.set_once_fee_withdrawals(vec![ValidatorFeeWithdrawal {
+            address: withdrawn,
+            amount: 10,
+        }]);
+
+        let pool = Substate::new(SubstateVersion::new(3), ValidatorFeePool::new(Default::default(), 100));
+        let withdrawn_req = SubstateRequirement::unversioned(SubstateId::ValidatorFeePool(withdrawn));
+        let untouched_req = SubstateRequirement::unversioned(SubstateId::ValidatorFeePool(untouched));
+
+        let locks = output(diff).resolve_input_locks([(&withdrawn_req, &pool), (&untouched_req, &pool)]);
+
+        assert_eq!(locks[0].lock_type(), SubstateLockType::Write);
+        assert_eq!(locks[1].lock_type(), SubstateLockType::Read);
+    }
 }

@@ -7,7 +7,6 @@ use tari_common_types::types::PrivateKey;
 use tari_consensus_types::Decision;
 use tari_engine_types::{
     Epoch,
-    ValidatorFeePool,
     ValidatorFeeWithdrawal,
     commit_result::{ExecuteResult, FinalizeResult, RejectReason, TransactionResult},
     component::{Component, ComponentBody, ComponentHeader},
@@ -62,7 +61,10 @@ pub fn create_execution_result_for_transaction(
 ) -> ExecuteResult {
     let result = if decision.is_commit() {
         let mut diff = SubstateDiff::new();
-        for input in resolved_inputs.iter().filter(|input| input.lock_type().is_write()) {
+        for input in resolved_inputs
+            .iter()
+            .filter(|input| input.lock_type().is_write() && !input.substate_id().is_validator_fee_pool())
+        {
             diff.down(
                 input.versioned_substate_id().substate_id().clone(),
                 input.versioned_substate_id().version(),
@@ -113,20 +115,10 @@ pub fn create_execution_result_for_transaction(
                         }),
                     );
                 },
-                SubstateId::ValidatorFeePool(_) => {
-                    diff.up(
-                        output.versioned_substate_id().substate_id().clone(),
-                        Substate::new(output.versioned_substate_id().version(), ValidatorFeePool {
-                            // This does not matter in tests
-                            claim_public_key: Default::default(),
-                            amount: 100_000,
-                        }),
-                    );
-                },
                 _ => {
                     panic!(
-                        "create_execution_result_for_transaction: Test harness only supports generating component, vn \
-                         fee, and template outputs. Got {output}"
+                        "create_execution_result_for_transaction: Test harness only supports generating component and \
+                         template outputs. Got {output}"
                     );
                 },
             }
