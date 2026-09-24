@@ -36,8 +36,9 @@ use crate::{
         BlockTransactionExecution,
         Evidence,
         LeaderFee,
+        LocalOnlyAtom,
         LockedEpoch,
-        TransactionAtom,
+        MultiShardAtom,
         TransactionExecution,
         TransactionRecord,
         calculate_leader_fee,
@@ -624,8 +625,8 @@ impl TransactionPoolRecord {
         (*self.id()).into()
     }
 
-    pub fn get_current_transaction_atom(&self) -> TransactionAtom {
-        TransactionAtom {
+    pub fn get_current_multi_shard_atom(&self) -> MultiShardAtom {
+        MultiShardAtom {
             id: self.transaction_id,
             decision: self.current_decision(),
             evidence: self.evidence.clone(),
@@ -634,8 +635,17 @@ impl TransactionPoolRecord {
         }
     }
 
-    pub fn get_local_transaction_atom(&self) -> TransactionAtom {
-        TransactionAtom {
+    pub fn get_local_only_atom(&self) -> LocalOnlyAtom {
+        LocalOnlyAtom {
+            id: self.transaction_id,
+            decision: self.current_decision(),
+            transaction_fee: self.transaction_fee,
+            leader_fee: self.leader_fee().cloned(),
+        }
+    }
+
+    pub fn get_local_multi_shard_atom(&self) -> MultiShardAtom {
+        MultiShardAtom {
             id: self.transaction_id,
             decision: self.current_local_decision(),
             evidence: self.evidence.clone(),
@@ -644,8 +654,8 @@ impl TransactionPoolRecord {
         }
     }
 
-    pub fn into_current_transaction_atom(self) -> TransactionAtom {
-        TransactionAtom {
+    pub fn into_current_multi_shard_atom(self) -> MultiShardAtom {
+        MultiShardAtom {
             id: self.transaction_id,
             decision: self.current_decision(),
             leader_fee: self.leader_fee().cloned(),

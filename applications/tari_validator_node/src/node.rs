@@ -156,7 +156,7 @@ impl ValidatorNode {
             .commands()
             .iter()
             .filter_map(|cmd| cmd.committing())
-            .map(|t| t.id)
+            .map(|t| *t.id())
             .collect::<Vec<_>>();
 
         if committed_transactions.is_empty() {

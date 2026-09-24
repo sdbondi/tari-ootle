@@ -115,11 +115,11 @@ message LeaderFee {
 
 message Command {
   oneof command {
-    TransactionAtom local_only = 1;
-    TransactionAtom local_prepare = 2;
-    TransactionAtom local_accept = 3;
-    TransactionAtom all_accept = 4;
-    TransactionAtom some_accept = 5;
+    LocalOnlyAtom local_only = 1;
+    MultiShardAtom local_prepare = 2;
+    MultiShardAtom local_accept = 3;
+    MultiShardAtom all_accept = 4;
+    MultiShardAtom some_accept = 5;
 
     ForeignProposalAtom foreign_proposal = 6;
     // Reserved: rejected on decode. Do not reuse field 8.
@@ -137,12 +137,19 @@ message ForeignProposalAtom {
   uint32 shard_group = 2;
 }
 
-message TransactionAtom {
+message MultiShardAtom {
   bytes id = 1;
   Decision decision = 3;
   Evidence evidence = 4;
   uint64 fee = 5;
   LeaderFee leader_fee = 6;
+}
+
+message LocalOnlyAtom {
+  bytes id = 1;
+  Decision decision = 2;
+  uint64 fee = 3;
+  LeaderFee leader_fee = 4;
 }
 
 message Decision {

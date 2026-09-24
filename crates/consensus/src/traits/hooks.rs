@@ -3,7 +3,7 @@
 
 use tari_consensus_types::BlockId;
 use tari_ootle_common_types::NodeHeight;
-use tari_ootle_storage::consensus_models::{Block, NoVoteReason, ValidBlock, VoteEquivocation};
+use tari_ootle_storage::consensus_models::{Block, NoVoteReason, TransactionPoolRecord, ValidBlock, VoteEquivocation};
 use tari_ootle_transaction::TransactionId;
 
 use crate::{
@@ -14,8 +14,9 @@ use crate::{
 pub trait ConsensusHooks {
     fn on_local_block_committed(&mut self, block: &ValidBlock);
 
-    /// Called with the ancestor blocks whose substates have just been written to the state store.
-    fn on_blocks_committed(&mut self, _committed_blocks: &[Block]) {}
+    /// Called with the ancestor blocks whose substates have just been written to the state store, and the
+    /// transactions those blocks finalized.
+    fn on_blocks_committed(&mut self, _committed_blocks: &[Block], _finalized_transactions: &[TransactionPoolRecord]) {}
 
     fn on_block_validation_failed<E: ToString>(&mut self, err: &E);
     fn on_message_received(&mut self, message: &HotstuffMessage);
@@ -68,9 +69,9 @@ impl<T: ConsensusHooks> ConsensusHooks for OptionalHooks<T> {
         }
     }
 
-    fn on_blocks_committed(&mut self, committed_blocks: &[Block]) {
+    fn on_blocks_committed(&mut self, committed_blocks: &[Block], finalized_transactions: &[TransactionPoolRecord]) {
         if let Some(inner) = self.inner.as_mut() {
-            inner.on_blocks_committed(committed_blocks);
+            inner.on_blocks_committed(committed_blocks, finalized_transactions);
         }
     }
 
@@ -201,9 +202,10 @@ impl<A: ConsensusHooks, B: ConsensusHooks> ConsensusHooks for CompositeHook<A, B
         self.second.on_local_block_committed(block);
     }
 
-    fn on_blocks_committed(&mut self, committed_blocks: &[Block]) {
-        self.first.on_blocks_committed(committed_blocks);
-        self.second.on_blocks_committed(committed_blocks);
+    fn on_blocks_committed(&mut self, committed_blocks: &[Block], finalized_transactions: &[TransactionPoolRecord]) {
+        self.first.on_blocks_committed(committed_blocks, finalized_transactions);
+        self.second
+            .on_blocks_committed(committed_blocks, finalized_transactions);
     }
 
     fn on_block_validation_failed<E: ToString>(&mut self, err: &E) {

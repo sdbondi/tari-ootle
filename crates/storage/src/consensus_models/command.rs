@@ -29,7 +29,7 @@ use crate::{StateStoreReadTransaction, StorageError, consensus_models::evidence:
     minicbor::CborLen,
 )]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct TransactionAtom {
+pub struct MultiShardAtom {
     #[cfg_attr(feature = "ts", ts(type = "string"))]
     #[n(0)]
     pub id: TransactionId,
@@ -43,7 +43,7 @@ pub struct TransactionAtom {
     pub leader_fee: Option<LeaderFee>,
 }
 
-impl TransactionAtom {
+impl MultiShardAtom {
     pub fn id(&self) -> &TransactionId {
         &self.id
     }
@@ -53,11 +53,11 @@ impl TransactionAtom {
     }
 }
 
-impl Display for TransactionAtom {
+impl Display for MultiShardAtom {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "TransactionAtom({}, {}, {}, ",
+            "MultiShardAtom({}, {}, {}, ",
             self.id, self.decision, self.transaction_fee,
         )?;
         match self.leader_fee {
@@ -65,6 +65,115 @@ impl Display for TransactionAtom {
             None => write!(f, "--")?,
         }
         write!(f, ")")
+    }
+}
+
+/// A local-only transaction as sequenced in a block. Every replica derives the transaction's evidence from its own
+/// execution, so the command carries only the outcome the committee votes on.
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    BorshSerialize,
+    minicbor::Encode,
+    minicbor::Decode,
+    minicbor::CborLen,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct LocalOnlyAtom {
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
+    #[n(0)]
+    pub id: TransactionId,
+    #[n(1)]
+    pub decision: Decision,
+    #[n(2)]
+    pub transaction_fee: u64,
+    #[n(3)]
+    pub leader_fee: Option<LeaderFee>,
+}
+
+impl LocalOnlyAtom {
+    pub fn id(&self) -> &TransactionId {
+        &self.id
+    }
+}
+
+impl Display for LocalOnlyAtom {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        TransactionAtomRef::LocalOnly(self).fmt(f)
+    }
+}
+
+/// A transaction command's atom, whichever form the command carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransactionAtomRef<'a> {
+    LocalOnly(&'a LocalOnlyAtom),
+    MultiShard(&'a MultiShardAtom),
+}
+
+impl<'a> TransactionAtomRef<'a> {
+    pub fn id(&self) -> &'a TransactionId {
+        match self {
+            Self::LocalOnly(atom) => &atom.id,
+            Self::MultiShard(atom) => &atom.id,
+        }
+    }
+
+    pub fn decision(&self) -> Decision {
+        match self {
+            Self::LocalOnly(atom) => atom.decision,
+            Self::MultiShard(atom) => atom.decision,
+        }
+    }
+
+    pub fn transaction_fee(&self) -> u64 {
+        match self {
+            Self::LocalOnly(atom) => atom.transaction_fee,
+            Self::MultiShard(atom) => atom.transaction_fee,
+        }
+    }
+
+    pub fn leader_fee(&self) -> Option<&'a LeaderFee> {
+        match self {
+            Self::LocalOnly(atom) => atom.leader_fee.as_ref(),
+            Self::MultiShard(atom) => atom.leader_fee.as_ref(),
+        }
+    }
+
+    /// The evidence the command carries. A local-only command carries none: its evidence is the local shard group
+    /// alone, derived by each replica from its own execution.
+    pub fn evidence(&self) -> Option<&'a Evidence> {
+        match self {
+            Self::LocalOnly(_) => None,
+            Self::MultiShard(atom) => Some(&atom.evidence),
+        }
+    }
+
+    pub fn get_transaction<TTx: StateStoreReadTransaction>(&self, tx: &TTx) -> Result<TransactionRecord, StorageError> {
+        TransactionRecord::get(tx, self.id())
+    }
+}
+
+impl Display for TransactionAtomRef<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LocalOnly(atom) => {
+                write!(
+                    f,
+                    "LocalOnlyAtom({}, {}, {}, ",
+                    atom.id, atom.decision, atom.transaction_fee,
+                )?;
+                match atom.leader_fee {
+                    Some(ref leader_fee) => write!(f, "{}", leader_fee)?,
+                    None => write!(f, "--")?,
+                }
+                write!(f, ")")
+            },
+            Self::MultiShard(atom) => atom.fmt(f),
+        }
     }
 }
 
@@ -93,21 +202,21 @@ pub enum Command {
     // Transaction Commands
     /// Request validators to prepare a local-only transaction
     #[n(0)]
-    LocalOnly(#[n(0)] TransactionAtom) = 0,
+    LocalOnly(#[n(0)] LocalOnlyAtom) = 0,
     /// Request validators to prepare a transaction.
     #[n(1)]
-    LocalPrepare(#[n(0)] TransactionAtom) = 1,
+    LocalPrepare(#[n(0)] MultiShardAtom) = 1,
     /// Request validators to  agree that all involved shard groups prepared the transaction and
     /// accept (i.e. accept COMMIT/ABORT decision) a transaction. All foreign inputs are received
     /// and the transaction is executed with the same decision.
     #[n(2)]
-    LocalAccept(#[n(0)] TransactionAtom) = 2,
+    LocalAccept(#[n(0)] MultiShardAtom) = 2,
     /// Request validators to agree that all involved shard groups agreed to ACCEPT the transaction.
     #[n(3)]
-    AllAccept(#[n(0)] TransactionAtom) = 3,
+    AllAccept(#[n(0)] MultiShardAtom) = 3,
     /// Request validators to agree that one or more involved shard groups did not agreed to ACCEPT the transaction.
     #[n(4)]
-    SomeAccept(#[n(0)] TransactionAtom) = 4,
+    SomeAccept(#[n(0)] MultiShardAtom) = 4,
     // Validator node commands
     #[n(5)]
     ForeignProposal(#[n(0)] ForeignProposalAtom) = 5,
@@ -125,13 +234,12 @@ enum CommandOrdering<'a> {
 }
 
 impl Command {
-    pub fn transaction(&self) -> Option<&TransactionAtom> {
+    pub fn transaction(&self) -> Option<TransactionAtomRef<'_>> {
         match self {
-            Command::LocalPrepare(tx) |
-            Command::LocalAccept(tx) |
-            Command::AllAccept(tx) |
-            Command::SomeAccept(tx) |
-            Command::LocalOnly(tx) => Some(tx),
+            Command::LocalPrepare(tx) | Command::LocalAccept(tx) | Command::AllAccept(tx) | Command::SomeAccept(tx) => {
+                Some(TransactionAtomRef::MultiShard(tx))
+            },
+            Command::LocalOnly(tx) => Some(TransactionAtomRef::LocalOnly(tx)),
             Command::ForeignProposal(_) | Command::EndEpoch(_) => None,
         }
     }
@@ -152,10 +260,9 @@ impl Command {
 
     fn as_ordering(&self) -> CommandOrdering<'_> {
         match self {
-            Command::LocalPrepare(tx) |
-            Command::LocalAccept(tx) |
-            Command::AllAccept(tx) |
-            Command::SomeAccept(tx) |
+            Command::LocalPrepare(tx) | Command::LocalAccept(tx) | Command::AllAccept(tx) | Command::SomeAccept(tx) => {
+                CommandOrdering::TransactionId(&tx.id)
+            },
             Command::LocalOnly(tx) => CommandOrdering::TransactionId(&tx.id),
             Command::ForeignProposal(foreign_proposal) => {
                 // Order by shard group then by block id
@@ -169,21 +276,21 @@ impl Command {
         command_hasher().chain(self).finalize().into()
     }
 
-    pub fn local_only(&self) -> Option<&TransactionAtom> {
+    pub fn local_only(&self) -> Option<&LocalOnlyAtom> {
         match self {
             Command::LocalOnly(tx) => Some(tx),
             _ => None,
         }
     }
 
-    pub fn local_prepare(&self) -> Option<&TransactionAtom> {
+    pub fn local_prepare(&self) -> Option<&MultiShardAtom> {
         match self {
             Command::LocalPrepare(tx) => Some(tx),
             _ => None,
         }
     }
 
-    pub fn local_accept(&self) -> Option<&TransactionAtom> {
+    pub fn local_accept(&self) -> Option<&MultiShardAtom> {
         match self {
             Command::LocalAccept(tx) => Some(tx),
             _ => None,
@@ -204,14 +311,14 @@ impl Command {
         }
     }
 
-    pub fn all_accept(&self) -> Option<&TransactionAtom> {
+    pub fn all_accept(&self) -> Option<&MultiShardAtom> {
         match self {
             Command::AllAccept(tx) => Some(tx),
             _ => None,
         }
     }
 
-    pub fn some_accept(&self) -> Option<&TransactionAtom> {
+    pub fn some_accept(&self) -> Option<&MultiShardAtom> {
         match self {
             Command::SomeAccept(tx) => Some(tx),
             _ => None,
@@ -219,48 +326,54 @@ impl Command {
     }
 
     /// Returns Some if the command should result in finalising (COMMITing or ABORTing) the transaction, otherwise None.
-    pub fn finalising(&self) -> Option<&TransactionAtom> {
+    pub fn finalising(&self) -> Option<TransactionAtomRef<'_>> {
         self.all_accept()
             .or_else(|| self.some_accept())
-            .or_else(|| self.local_only())
+            .map(TransactionAtomRef::MultiShard)
+            .or_else(|| self.local_only().map(TransactionAtomRef::LocalOnly))
     }
 
     /// Returns Some if the command should result in committing the transaction, otherwise None.
-    pub fn committing(&self) -> Option<&TransactionAtom> {
+    pub fn committing(&self) -> Option<TransactionAtomRef<'_>> {
         self.all_accept()
-            .or_else(|| self.local_only())
-            .filter(|t| t.decision.is_commit())
+            .map(TransactionAtomRef::MultiShard)
+            .or_else(|| self.local_only().map(TransactionAtomRef::LocalOnly))
+            .filter(|t| t.decision().is_commit())
     }
 
     /// Returns `local_shard_group`'s portion of the transaction's exhaust burn for accumulation into the block
     /// header's burn total. Returns 0 if this command does not commit a transaction or carries no leader fee.
     ///
-    /// The burn is split between the shard groups in the atom's evidence — see [Evidence::exhaust_burn_portion].
-    /// A LocalOnly transaction's evidence contains exactly the local shard group (a strict invariant enforced where
-    /// LocalOnly commands are proposed and voted on), so its portion is the entire burn.
+    /// A multi-shard burn is split between the shard groups in the atom's evidence — see
+    /// [Evidence::exhaust_burn_portion]. A LocalOnly transaction involves only the local shard group, so its portion
+    /// is the entire burn.
     ///
     /// Must only be called on locally-constructed commands (e.g. while proposing): the split relies on the locally
     /// maintained evidence key order, which wire-decoded commands do not guarantee.
     ///
-    /// Returns `None` if this is a committing command whose evidence does not include `local_shard_group`.
+    /// Returns `None` if this is a committing multi-shard command whose evidence does not include
+    /// `local_shard_group`.
     pub fn exhaust_burn_portion(&self, local_shard_group: ShardGroup) -> Option<u64> {
         let Some(atom) = self.committing() else {
             return Some(0);
         };
-        let Some(leader_fee) = atom.leader_fee.as_ref() else {
+        let Some(leader_fee) = atom.leader_fee() else {
             return Some(0);
         };
-        atom.evidence
-            .exhaust_burn_portion(leader_fee.exhaust_burn(), local_shard_group)
+        match atom.evidence() {
+            Some(evidence) => evidence.exhaust_burn_portion(leader_fee.exhaust_burn(), local_shard_group),
+            None => Some(leader_fee.exhaust_burn()),
+        }
     }
 
     /// Returns Some if the command **will** result in aborting the transaction, otherwise None.
-    pub fn aborting(&self) -> Option<&TransactionAtom> {
+    pub fn aborting(&self) -> Option<TransactionAtomRef<'_>> {
         self.some_accept()
             .or_else(|| self.local_prepare())
             .or_else(|| self.local_accept())
-            .or_else(|| self.local_only())
-            .filter(|t| t.decision.is_abort())
+            .map(TransactionAtomRef::MultiShard)
+            .or_else(|| self.local_only().map(TransactionAtomRef::LocalOnly))
+            .filter(|t| t.decision().is_abort())
     }
 
     pub fn is_epoch_end(&self) -> bool {
@@ -374,7 +487,7 @@ mod tests {
         let mut set = BTreeSet::new();
         let cmds = [
             Command::EndEpoch(EndEpochAtom::new(FixedHash::zero())),
-            Command::AllAccept(TransactionAtom {
+            Command::AllAccept(MultiShardAtom {
                 id: TransactionId::new([1; 32]),
                 decision: Decision::Commit,
                 evidence: Evidence::default(),
@@ -385,7 +498,7 @@ mod tests {
                 block_id: BlockId::zero(),
                 shard_group: ShardGroup::new(0, 64),
             }),
-            Command::LocalPrepare(TransactionAtom {
+            Command::LocalPrepare(MultiShardAtom {
                 id: TransactionId::default(),
                 decision: Decision::Commit,
                 evidence: Evidence::default(),
@@ -406,15 +519,21 @@ mod tests {
 
     #[test]
     fn execution_weight_percent() {
-        let atom = || TransactionAtom {
+        let atom = || MultiShardAtom {
             id: TransactionId::default(),
             decision: Decision::Commit,
             evidence: Evidence::default(),
             transaction_fee: 0,
             leader_fee: None,
         };
+        let local_only_atom = LocalOnlyAtom {
+            id: TransactionId::default(),
+            decision: Decision::Commit,
+            transaction_fee: 0,
+            leader_fee: None,
+        };
         // Executing phases charge the full transaction weight.
-        assert_eq!(Command::LocalOnly(atom()).execution_weight_percent(), 100);
+        assert_eq!(Command::LocalOnly(local_only_atom).execution_weight_percent(), 100);
         assert_eq!(Command::LocalPrepare(atom()).execution_weight_percent(), 100);
         assert_eq!(Command::LocalAccept(atom()).execution_weight_percent(), 100);
         // Finalisation phases reuse a prior execution and are discounted.
@@ -445,11 +564,20 @@ mod borsh_discriminant_tests {
     /// serialises to must therefore equal the one the sidechain enum serialises to, which is that
     /// enum's declaration order. The explicit discriminants exist to hold that correspondence while
     /// the two enums list different variants.
-    fn transaction_atom() -> TransactionAtom {
-        TransactionAtom {
+    fn multi_shard_atom() -> MultiShardAtom {
+        MultiShardAtom {
             id: TransactionId::default(),
             decision: Decision::Commit,
             evidence: Evidence::default(),
+            transaction_fee: 0,
+            leader_fee: None,
+        }
+    }
+
+    fn local_only_atom() -> LocalOnlyAtom {
+        LocalOnlyAtom {
+            id: TransactionId::default(),
+            decision: Decision::Commit,
             transaction_fee: 0,
             leader_fee: None,
         }
@@ -466,23 +594,23 @@ mod borsh_discriminant_tests {
     fn discriminants_match_the_sidechain_enum() {
         let cases: [(Command, tari_sidechain::Command); 7] = [
             (
-                Command::LocalOnly(transaction_atom()),
+                Command::LocalOnly(local_only_atom()),
                 tari_sidechain::Command::LocalOnly,
             ),
             (
-                Command::LocalPrepare(transaction_atom()),
+                Command::LocalPrepare(multi_shard_atom()),
                 tari_sidechain::Command::LocalPrepare,
             ),
             (
-                Command::LocalAccept(transaction_atom()),
+                Command::LocalAccept(multi_shard_atom()),
                 tari_sidechain::Command::LocalAccept,
             ),
             (
-                Command::AllAccept(transaction_atom()),
+                Command::AllAccept(multi_shard_atom()),
                 tari_sidechain::Command::AllAccept,
             ),
             (
-                Command::SomeAccept(transaction_atom()),
+                Command::SomeAccept(multi_shard_atom()),
                 tari_sidechain::Command::SomeAccept,
             ),
             (

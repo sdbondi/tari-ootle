@@ -26,7 +26,7 @@ use tari_consensus_types::Decision;
 use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_engine_types::substate::SubstateId;
 use tari_ootle_common_types::{NumPreshards, SubstateVersion, VersionedSubstateId};
-use tari_ootle_storage::consensus_models::{Command, Evidence, LeaderFee, TransactionAtom};
+use tari_ootle_storage::consensus_models::{Command, Evidence, LeaderFee, MultiShardAtom};
 use tari_ootle_transaction::{Transaction, args};
 use tari_template_lib::types::{
     ComponentAddress,
@@ -146,7 +146,7 @@ fn command_for(transaction: &Transaction, num_committees: u32) -> Command {
         outputs,
     );
 
-    Command::LocalOnly(TransactionAtom {
+    Command::LocalPrepare(MultiShardAtom {
         id: transaction.calculate_id(),
         decision: Decision::Commit,
         evidence,

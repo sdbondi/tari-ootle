@@ -22,11 +22,12 @@ use tari_ootle_storage::{
         ForeignProposalAtom,
         ForeignProposalStatus,
         InvalidEvidenceReason,
+        LocalOnlyAtom,
         LockedEpoch,
+        MultiShardAtom,
         NoVoteReason,
         PendingShardStateTreeDiff,
         SubstateRecord,
-        TransactionAtom,
         TransactionExecution,
         TransactionPool,
         TransactionPoolRecord,
@@ -143,9 +144,7 @@ where TConsensusSpec: ConsensusSpec
                 if !commit_block.is_dummy() {
                     commit_blocks.push(commit_block);
                 }
-                if !committed.is_empty() {
-                    finalized_transactions.push(committed);
-                }
+                finalized_transactions.extend(committed);
                 Ok(())
             },
         )?;
@@ -533,7 +532,7 @@ where TConsensusSpec: ConsensusSpec
         &self,
         tx: &TTx,
         block: &Block,
-        atom: &TransactionAtom,
+        atom: &LocalOnlyAtom,
         local_committee_info: &CommitteeInfo,
         substate_store: &mut PendingSubstateStore<TTx>,
         proposed_block_change_set: &mut ProposedBlockChangeSet,
@@ -786,7 +785,7 @@ where TConsensusSpec: ConsensusSpec
         &self,
         tx_rec: &mut TransactionPoolRecord,
         block: &Block,
-        atom: &TransactionAtom,
+        atom: &MultiShardAtom,
         local_committee_info: &CommitteeInfo,
         substate_store: &mut PendingSubstateStore<TTx>,
         proposed_block_change_set: &mut ProposedBlockChangeSet,
@@ -944,7 +943,7 @@ where TConsensusSpec: ConsensusSpec
         &self,
         tx: &TTx,
         block: &Block,
-        atom: &TransactionAtom,
+        atom: &MultiShardAtom,
         local_committee_info: &CommitteeInfo,
         substate_store: &mut PendingSubstateStore<TTx>,
         proposed_block_change_set: &mut ProposedBlockChangeSet,
@@ -1027,7 +1026,7 @@ where TConsensusSpec: ConsensusSpec
         &self,
         tx: &TTx,
         block: &Block,
-        atom: &TransactionAtom,
+        atom: &MultiShardAtom,
         local_committee_info: &CommitteeInfo,
         substate_store: &mut PendingSubstateStore<TTx>,
         proposed_block_change_set: &mut ProposedBlockChangeSet,
@@ -1274,7 +1273,7 @@ where TConsensusSpec: ConsensusSpec
         &self,
         tx: &TTx,
         block: &Block,
-        atom: &TransactionAtom,
+        atom: &MultiShardAtom,
         local_committee_info: &CommitteeInfo,
         substate_store: &mut PendingSubstateStore<TTx>,
         proposed_block_change_set: &mut ProposedBlockChangeSet,
@@ -1488,7 +1487,7 @@ where TConsensusSpec: ConsensusSpec
         &self,
         tx: &TTx,
         block: &Block,
-        atom: &TransactionAtom,
+        atom: &MultiShardAtom,
         proposed_block_change_set: &mut ProposedBlockChangeSet,
     ) -> Result<Option<NoVoteReason>, HotStuffError> {
         if atom.decision.is_commit() {

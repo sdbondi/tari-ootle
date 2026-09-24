@@ -21,13 +21,13 @@
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import { Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from "@mui/material";
-import type { TransactionAtom } from "@tari-project/ootle-ts-bindings";
+import type { LocalOnlyAtom, MultiShardAtom } from "@tari-project/ootle-ts-bindings";
 import { Link } from "react-router-dom";
 import CodeBlockDialog from "../../Components/CodeBlock";
 import StatusChip from "../../Components/StatusChip";
 import { renderJson } from "../../utils/helpers";
 
-function Transaction({ transaction }: { transaction: TransactionAtom }) {
+function Transaction({ transaction }: { transaction: MultiShardAtom | LocalOnlyAtom }) {
   const decision = typeof transaction.decision === "object" ? "Abort" : "Commit";
   return (
     <TableRow>
@@ -38,9 +38,11 @@ function Transaction({ transaction }: { transaction: TransactionAtom }) {
         <StatusChip status={decision} />
       </TableCell>
       <TableCell>
-        <CodeBlockDialog title="Evidence" contentsWhenUnexpanded={<></>}>
-          {renderJson(transaction.evidence)}
-        </CodeBlockDialog>
+        {"evidence" in transaction && (
+          <CodeBlockDialog title="Evidence" contentsWhenUnexpanded={<></>}>
+            {renderJson(transaction.evidence)}
+          </CodeBlockDialog>
+        )}
       </TableCell>
       <TableCell>{transaction.leader_fee?.fee}</TableCell>
       <TableCell>{transaction.transaction_fee}</TableCell>
@@ -48,7 +50,7 @@ function Transaction({ transaction }: { transaction: TransactionAtom }) {
   );
 }
 
-export default function Transactions({ transactions }: { transactions: TransactionAtom[] }) {
+export default function Transactions({ transactions }: { transactions: (MultiShardAtom | LocalOnlyAtom)[] }) {
   return (
     <TableContainer>
       <Table>
@@ -62,7 +64,7 @@ export default function Transactions({ transactions }: { transactions: Transacti
           </TableRow>
         </TableHead>
         <TableBody>
-          {transactions.map((tx: TransactionAtom) => (
+          {transactions.map((tx) => (
             <Transaction key={tx.id} transaction={tx} />
           ))}
         </TableBody>
