@@ -177,7 +177,7 @@ use crate::{
     },
     state_store::StateReader,
     template::LoadedTemplate,
-    traits::ClaimProofVerifier,
+    traits::{ClaimProofRejection, ClaimProofVerifier},
     transaction::{ModulesCollection, TransactionProcessor},
 };
 
@@ -546,7 +546,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         .map_err(|e| RuntimeError::CrossTemplateCallMethodError {
             component_address,
             method: method.to_string(),
-            details: e.to_string(),
+            details: Box::new(e),
         })
     }
 
@@ -570,7 +570,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         .map_err(|e| RuntimeError::CrossTemplateCallFunctionError {
             template_address: *template_address,
             function: function.to_string(),
-            details: e.to_string(),
+            details: Box::new(e),
         })
     }
 
@@ -3670,7 +3670,10 @@ where
             .verify_claim_proof(epoch, &self.seal_signer_public_key, &claim)
             .map_err(|e| {
                 warn!(target: LOG_TARGET, "Claim burn failed - proof verification failed: {}", e);
-                RuntimeError::InvalidClaimProof { details: e }
+                match e {
+                    ClaimProofRejection::Invalid(details) => RuntimeError::InvalidClaimProof { details },
+                    ClaimProofRejection::NotYetValid(details) => RuntimeError::ClaimProofNotYetValid { details },
+                }
             })?;
 
         self.tracker.write_with(|state_mut| {
