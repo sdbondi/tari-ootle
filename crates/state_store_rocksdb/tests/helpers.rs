@@ -37,11 +37,11 @@ use tari_ootle_storage::{
         CommandsCommitProof,
         ForeignProposal,
         ForeignProposalRecord,
+        MultiShardAtom,
         SubstateCreated,
         SubstateRecord,
         SubstateUpdateBatch,
         SubstateValueOrHash,
-        TransactionAtom,
     },
 };
 use tari_ootle_transaction::{Network, TransactionId};
@@ -80,10 +80,10 @@ pub fn create_rocksdb_with_opts(opts: DatabaseOptions) -> (RocksDbStateStore<Str
     (RocksDbStateStore::open(db_file, opts).unwrap(), temp_dir)
 }
 
-pub fn create_tx_atom() -> TransactionAtom {
+pub fn create_tx_atom() -> MultiShardAtom {
     let mut bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut bytes);
-    TransactionAtom {
+    MultiShardAtom {
         id: TransactionId::new(bytes),
         decision: Decision::Commit,
         evidence: Default::default(),

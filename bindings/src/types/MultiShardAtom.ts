@@ -3,7 +3,7 @@ import type { Decision } from "./Decision";
 import type { Evidence } from "./Evidence";
 import type { LeaderFee } from "./LeaderFee";
 
-export type TransactionAtom = {
+export type MultiShardAtom = {
   id: string;
   decision: Decision;
   evidence: Evidence;

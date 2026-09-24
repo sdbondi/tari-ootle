@@ -21,7 +21,7 @@ use tari_ootle_storage::{
         Evidence,
         ForeignProposal,
         LockedSubstateValue,
-        TransactionAtom,
+        MultiShardAtom,
         TransactionExecution,
         TransactionPoolRecord,
         TransactionPoolStage,
@@ -587,7 +587,7 @@ pub fn process_foreign_block<TTx: StateStoreReadTransaction>(
 fn add_pledges(
     transaction: &TransactionPoolRecord,
     foreign_block: LeafBlock,
-    atom: &TransactionAtom,
+    atom: &MultiShardAtom,
     block_pledge: &BlockPledge,
     foreign_shard_group: ShardGroup,
     local_shard_group: ShardGroup,

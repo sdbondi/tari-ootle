@@ -46,8 +46,8 @@ use tari_ootle_storage::{
         ForeignProposalRecord,
         ForeignProposalStatus,
         LockedEpoch,
+        MultiShardAtom,
         PendingShardStateTreeDiff,
-        TransactionAtom,
         TransactionExecution,
         TransactionPool,
         TransactionPoolRecord,
@@ -935,7 +935,7 @@ where TConsensusSpec: ConsensusSpec
                 );
 
                 if pool_tx.current_decision().is_abort() {
-                    let atom = pool_tx.get_current_transaction_atom();
+                    let atom = pool_tx.get_current_multi_shard_atom();
                     return Ok(Some(Command::LocalAccept(atom)));
                 }
                 if pool_tx
@@ -950,10 +950,10 @@ where TConsensusSpec: ConsensusSpec
                         pool_tx.id(),
                         local_committee_info.shard_group()
                     );
-                    let atom = pool_tx.get_current_transaction_atom();
+                    let atom = pool_tx.get_current_multi_shard_atom();
                     Ok(Some(Command::LocalAccept(atom)))
                 } else {
-                    let atom = pool_tx.get_current_transaction_atom();
+                    let atom = pool_tx.get_current_multi_shard_atom();
                     Ok(Some(Command::LocalPrepare(atom)))
                 }
             },
@@ -971,7 +971,7 @@ where TConsensusSpec: ConsensusSpec
     ) -> Result<Option<Command>, HotStuffError> {
         // Only set to abort if either the local or one or more foreign shards decided to ABORT
         if tx_rec.current_decision().is_abort() {
-            return Ok(Some(Command::LocalAccept(tx_rec.get_current_transaction_atom())));
+            return Ok(Some(Command::LocalAccept(tx_rec.get_current_multi_shard_atom())));
         }
 
         let locked_epoch = tx_rec.locked_epoch().ok_or_else(|| {
@@ -1008,7 +1008,7 @@ where TConsensusSpec: ConsensusSpec
             );
 
             executed_transactions.insert(*tx_rec.id(), execution);
-            return Ok(Some(Command::LocalAccept(tx_rec.get_current_transaction_atom())));
+            return Ok(Some(Command::LocalAccept(tx_rec.get_current_multi_shard_atom())));
         }
 
         tx_rec.update_from_execution(
@@ -1019,7 +1019,7 @@ where TConsensusSpec: ConsensusSpec
         executed_transactions.insert(*tx_rec.id(), execution);
         // If we locally decided to ABORT, we are still saying that we think all prepared and, after execution decide to
         // ABORT. When we enter the acceptance phase, we will propose SomeAccept for this case.
-        let atom = self.get_transaction_atom_with_leader_fee(&tx_rec)?;
+        let atom = self.get_multi_shard_atom_with_leader_fee(&tx_rec)?;
         Ok(Some(Command::LocalAccept(atom)))
     }
 
@@ -1031,7 +1031,7 @@ where TConsensusSpec: ConsensusSpec
         substate_store: &mut PendingSubstateStore<TTx>,
     ) -> Result<Option<Command>, HotStuffError> {
         if tx_rec.current_decision().is_abort() {
-            return Ok(Some(Command::SomeAccept(tx_rec.get_current_transaction_atom())));
+            return Ok(Some(Command::SomeAccept(tx_rec.get_current_multi_shard_atom())));
         }
 
         let tx = substate_store.read_transaction();
@@ -1063,15 +1063,15 @@ where TConsensusSpec: ConsensusSpec
             );
             return Ok(None);
         }
-        let atom = self.get_transaction_atom_with_leader_fee(tx_rec)?;
+        let atom = self.get_multi_shard_atom_with_leader_fee(tx_rec)?;
         Ok(Some(Command::AllAccept(atom)))
     }
 
-    fn get_transaction_atom_with_leader_fee(
+    fn get_multi_shard_atom_with_leader_fee(
         &self,
         tx_rec: &TransactionPoolRecord,
-    ) -> Result<TransactionAtom, HotStuffError> {
-        let mut atom = tx_rec.get_current_transaction_atom();
+    ) -> Result<MultiShardAtom, HotStuffError> {
+        let mut atom = tx_rec.get_current_multi_shard_atom();
         if tx_rec.current_decision().is_commit() {
             let num_involved_shard_groups = tx_rec.evidence().num_shard_groups();
             let involved = NonZeroU64::new(num_involved_shard_groups as u64).ok_or_else(|| {

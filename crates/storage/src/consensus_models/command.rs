@@ -29,7 +29,7 @@ use crate::{StateStoreReadTransaction, StorageError, consensus_models::evidence:
     minicbor::CborLen,
 )]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-pub struct TransactionAtom {
+pub struct MultiShardAtom {
     #[cfg_attr(feature = "ts", ts(type = "string"))]
     #[n(0)]
     pub id: TransactionId,
@@ -43,7 +43,7 @@ pub struct TransactionAtom {
     pub leader_fee: Option<LeaderFee>,
 }
 
-impl TransactionAtom {
+impl MultiShardAtom {
     pub fn id(&self) -> &TransactionId {
         &self.id
     }
@@ -53,11 +53,11 @@ impl TransactionAtom {
     }
 }
 
-impl Display for TransactionAtom {
+impl Display for MultiShardAtom {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "TransactionAtom({}, {}, {}, ",
+            "MultiShardAtom({}, {}, {}, ",
             self.id, self.decision, self.transaction_fee,
         )?;
         match self.leader_fee {
@@ -111,7 +111,7 @@ impl Display for LocalOnlyAtom {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransactionAtomRef<'a> {
     LocalOnly(&'a LocalOnlyAtom),
-    MultiShard(&'a TransactionAtom),
+    MultiShard(&'a MultiShardAtom),
 }
 
 impl<'a> TransactionAtomRef<'a> {
@@ -205,18 +205,18 @@ pub enum Command {
     LocalOnly(#[n(0)] LocalOnlyAtom) = 0,
     /// Request validators to prepare a transaction.
     #[n(1)]
-    LocalPrepare(#[n(0)] TransactionAtom) = 1,
+    LocalPrepare(#[n(0)] MultiShardAtom) = 1,
     /// Request validators to  agree that all involved shard groups prepared the transaction and
     /// accept (i.e. accept COMMIT/ABORT decision) a transaction. All foreign inputs are received
     /// and the transaction is executed with the same decision.
     #[n(2)]
-    LocalAccept(#[n(0)] TransactionAtom) = 2,
+    LocalAccept(#[n(0)] MultiShardAtom) = 2,
     /// Request validators to agree that all involved shard groups agreed to ACCEPT the transaction.
     #[n(3)]
-    AllAccept(#[n(0)] TransactionAtom) = 3,
+    AllAccept(#[n(0)] MultiShardAtom) = 3,
     /// Request validators to agree that one or more involved shard groups did not agreed to ACCEPT the transaction.
     #[n(4)]
-    SomeAccept(#[n(0)] TransactionAtom) = 4,
+    SomeAccept(#[n(0)] MultiShardAtom) = 4,
     // Validator node commands
     #[n(5)]
     ForeignProposal(#[n(0)] ForeignProposalAtom) = 5,
@@ -283,14 +283,14 @@ impl Command {
         }
     }
 
-    pub fn local_prepare(&self) -> Option<&TransactionAtom> {
+    pub fn local_prepare(&self) -> Option<&MultiShardAtom> {
         match self {
             Command::LocalPrepare(tx) => Some(tx),
             _ => None,
         }
     }
 
-    pub fn local_accept(&self) -> Option<&TransactionAtom> {
+    pub fn local_accept(&self) -> Option<&MultiShardAtom> {
         match self {
             Command::LocalAccept(tx) => Some(tx),
             _ => None,
@@ -311,14 +311,14 @@ impl Command {
         }
     }
 
-    pub fn all_accept(&self) -> Option<&TransactionAtom> {
+    pub fn all_accept(&self) -> Option<&MultiShardAtom> {
         match self {
             Command::AllAccept(tx) => Some(tx),
             _ => None,
         }
     }
 
-    pub fn some_accept(&self) -> Option<&TransactionAtom> {
+    pub fn some_accept(&self) -> Option<&MultiShardAtom> {
         match self {
             Command::SomeAccept(tx) => Some(tx),
             _ => None,
@@ -487,7 +487,7 @@ mod tests {
         let mut set = BTreeSet::new();
         let cmds = [
             Command::EndEpoch(EndEpochAtom::new(FixedHash::zero())),
-            Command::AllAccept(TransactionAtom {
+            Command::AllAccept(MultiShardAtom {
                 id: TransactionId::new([1; 32]),
                 decision: Decision::Commit,
                 evidence: Evidence::default(),
@@ -498,7 +498,7 @@ mod tests {
                 block_id: BlockId::zero(),
                 shard_group: ShardGroup::new(0, 64),
             }),
-            Command::LocalPrepare(TransactionAtom {
+            Command::LocalPrepare(MultiShardAtom {
                 id: TransactionId::default(),
                 decision: Decision::Commit,
                 evidence: Evidence::default(),
@@ -519,7 +519,7 @@ mod tests {
 
     #[test]
     fn execution_weight_percent() {
-        let atom = || TransactionAtom {
+        let atom = || MultiShardAtom {
             id: TransactionId::default(),
             decision: Decision::Commit,
             evidence: Evidence::default(),
@@ -564,8 +564,8 @@ mod borsh_discriminant_tests {
     /// serialises to must therefore equal the one the sidechain enum serialises to, which is that
     /// enum's declaration order. The explicit discriminants exist to hold that correspondence while
     /// the two enums list different variants.
-    fn transaction_atom() -> TransactionAtom {
-        TransactionAtom {
+    fn multi_shard_atom() -> MultiShardAtom {
+        MultiShardAtom {
             id: TransactionId::default(),
             decision: Decision::Commit,
             evidence: Evidence::default(),
@@ -598,19 +598,19 @@ mod borsh_discriminant_tests {
                 tari_sidechain::Command::LocalOnly,
             ),
             (
-                Command::LocalPrepare(transaction_atom()),
+                Command::LocalPrepare(multi_shard_atom()),
                 tari_sidechain::Command::LocalPrepare,
             ),
             (
-                Command::LocalAccept(transaction_atom()),
+                Command::LocalAccept(multi_shard_atom()),
                 tari_sidechain::Command::LocalAccept,
             ),
             (
-                Command::AllAccept(transaction_atom()),
+                Command::AllAccept(multi_shard_atom()),
                 tari_sidechain::Command::AllAccept,
             ),
             (
-                Command::SomeAccept(transaction_atom()),
+                Command::SomeAccept(multi_shard_atom()),
                 tari_sidechain::Command::SomeAccept,
             ),
             (

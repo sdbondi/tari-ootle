@@ -78,10 +78,10 @@ use tari_ootle_storage::{
         ForeignProposalAtom,
         LeaderFee,
         LocalOnlyAtom,
+        MultiShardAtom,
         SubstateCreated,
         SubstateDestroyed,
         SubstateRecord,
-        TransactionAtom,
     },
 };
 use tari_ootle_transaction::TransactionId;
@@ -732,10 +732,10 @@ impl TryFrom<proto::consensus::Command> for Command {
     }
 }
 
-//---------------------------------- TransactionAtom --------------------------------------------//
+//---------------------------------- MultiShardAtom --------------------------------------------//
 
-impl From<&TransactionAtom> for proto::consensus::TransactionAtom {
-    fn from(value: &TransactionAtom) -> Self {
+impl From<&MultiShardAtom> for proto::consensus::MultiShardAtom {
+    fn from(value: &MultiShardAtom) -> Self {
         Self {
             id: value.id.as_bytes().to_vec(),
             decision: Some(proto::consensus::Decision::from(value.decision)),
@@ -746,12 +746,12 @@ impl From<&TransactionAtom> for proto::consensus::TransactionAtom {
     }
 }
 
-impl TryFrom<proto::consensus::TransactionAtom> for TransactionAtom {
+impl TryFrom<proto::consensus::MultiShardAtom> for MultiShardAtom {
     type Error = anyhow::Error;
 
-    fn try_from(value: proto::consensus::TransactionAtom) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::consensus::MultiShardAtom) -> Result<Self, Self::Error> {
         let proto_decision = value.decision.ok_or(anyhow!("Decision is missing!"))?;
-        Ok(TransactionAtom {
+        Ok(MultiShardAtom {
             id: TransactionId::try_from(value.id)?,
             decision: Decision::try_from(proto_decision)?,
             evidence: value

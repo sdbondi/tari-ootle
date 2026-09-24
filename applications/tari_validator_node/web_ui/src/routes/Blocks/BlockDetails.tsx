@@ -42,7 +42,7 @@ import type {
   Command,
   ForeignProposalAtom,
   LocalOnlyAtom,
-  TransactionAtom,
+  MultiShardAtom,
   VNGetIdentityResponse,
 } from "@tari-project/ootle-ts-bindings";
 import { useEffect, useState } from "react";
@@ -129,7 +129,7 @@ export default function BlockDetails() {
   const [error, setError] = useState<String>();
   const [block, setBlock] = useState<Block>();
 
-  const [blockData, setBlockData] = useState<{ [key: string]: (TransactionAtom | LocalOnlyAtom)[] }>({});
+  const [blockData, setBlockData] = useState<{ [key: string]: (MultiShardAtom | LocalOnlyAtom)[] }>({});
   const [otherCommands, setOtherCommands] = useState<OtherCommands>({});
 
   const [epochEvents, setEpochEvents] = useState<string[]>([]);
@@ -175,7 +175,7 @@ export default function BlockDetails() {
           setEpochEvents([]);
           const otherCommands: OtherCommands = {};
           const foreignProposals = [];
-          const data: { [key: string]: (TransactionAtom | LocalOnlyAtom)[] } = {};
+          const data: { [key: string]: (MultiShardAtom | LocalOnlyAtom)[] } = {};
           for (let command of resp.block.commands) {
             if (typeof command === "object") {
               const cmd = Object.keys(command)[0];

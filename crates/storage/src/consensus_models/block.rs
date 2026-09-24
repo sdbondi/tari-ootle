@@ -57,10 +57,10 @@ use super::{
     ForeignProposalRecord,
     LivenessThresholds,
     LockedEpoch,
+    MultiShardAtom,
     PendingShardStateTreeDiff,
     SubstateDestroy,
     SubstateRecord,
-    TransactionAtom,
     ValidatorStatsUpdate,
 };
 use crate::{
@@ -290,7 +290,7 @@ impl Block {
         self.commands.iter().filter_map(|c| c.foreign_proposal())
     }
 
-    pub fn all_local_accept(&self) -> impl Iterator<Item = &TransactionAtom> + '_ {
+    pub fn all_local_accept(&self) -> impl Iterator<Item = &MultiShardAtom> + '_ {
         self.commands.iter().filter_map(|c| c.local_accept())
     }
 
@@ -984,7 +984,7 @@ impl Block {
             );
         }
 
-        let log_bool = |context: &str, atom: &TransactionAtom, val: bool| {
+        let log_bool = |context: &str, atom: &MultiShardAtom, val: bool| {
             if !val {
                 debug!(
                     target: LOG_TARGET,

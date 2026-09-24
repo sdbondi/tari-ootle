@@ -21,13 +21,13 @@
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import { Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from "@mui/material";
-import type { LocalOnlyAtom, TransactionAtom } from "@tari-project/ootle-ts-bindings";
+import type { LocalOnlyAtom, MultiShardAtom } from "@tari-project/ootle-ts-bindings";
 import { Link } from "react-router-dom";
 import CodeBlockDialog from "../../Components/CodeBlock";
 import StatusChip from "../../Components/StatusChip";
 import { renderJson } from "../../utils/helpers";
 
-function Transaction({ transaction }: { transaction: TransactionAtom | LocalOnlyAtom }) {
+function Transaction({ transaction }: { transaction: MultiShardAtom | LocalOnlyAtom }) {
   const decision = typeof transaction.decision === "object" ? "Abort" : "Commit";
   return (
     <TableRow>
@@ -50,7 +50,7 @@ function Transaction({ transaction }: { transaction: TransactionAtom | LocalOnly
   );
 }
 
-export default function Transactions({ transactions }: { transactions: (TransactionAtom | LocalOnlyAtom)[] }) {
+export default function Transactions({ transactions }: { transactions: (MultiShardAtom | LocalOnlyAtom)[] }) {
   return (
     <TableContainer>
       <Table>

@@ -2,13 +2,13 @@
 import type { EndEpochAtom } from "./EndEpochAtom";
 import type { ForeignProposalAtom } from "./ForeignProposalAtom";
 import type { LocalOnlyAtom } from "./LocalOnlyAtom";
-import type { TransactionAtom } from "./TransactionAtom";
+import type { MultiShardAtom } from "./MultiShardAtom";
 
 export type Command =
   | { LocalOnly: LocalOnlyAtom }
-  | { LocalPrepare: TransactionAtom }
-  | { LocalAccept: TransactionAtom }
-  | { AllAccept: TransactionAtom }
-  | { SomeAccept: TransactionAtom }
+  | { LocalPrepare: MultiShardAtom }
+  | { LocalAccept: MultiShardAtom }
+  | { AllAccept: MultiShardAtom }
+  | { SomeAccept: MultiShardAtom }
   | { ForeignProposal: ForeignProposalAtom }
   | { EndEpoch: EndEpochAtom };
