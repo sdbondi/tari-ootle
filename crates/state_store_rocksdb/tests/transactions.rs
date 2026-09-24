@@ -218,6 +218,7 @@ mod confirm_all_transitions {
 }
 
 mod transaction_operations {
+    use tari_ootle_common_types::SubstateVersion;
 
     use super::*;
 
@@ -234,21 +235,30 @@ mod transaction_operations {
         let tx1 = TransactionRecord::new(
             Transaction::builder_localnet(Epoch(1))
                 .add_instruction(Instruction::DropAllProofsInWorkspace)
-                .add_input(SubstateRequirement::new(create_random_substate_id(), Some(0)))
+                .add_input(SubstateRequirement::new(
+                    create_random_substate_id(),
+                    Some(SubstateVersion::ZERO),
+                ))
                 .build_and_seal(&PrivateKey::default()),
         );
         tx.transactions_insert(&tx1).unwrap();
         let tx2 = TransactionRecord::new(
             Transaction::builder_localnet(Epoch(1))
                 .add_instruction(Instruction::DropAllProofsInWorkspace)
-                .add_input(SubstateRequirement::new(create_random_substate_id(), Some(1)))
+                .add_input(SubstateRequirement::new(
+                    create_random_substate_id(),
+                    Some(SubstateVersion::new(1)),
+                ))
                 .build_and_seal(&PrivateKey::default()),
         );
         tx.transactions_insert(&tx2).unwrap();
         let unexisting_tx = TransactionRecord::new(
             Transaction::builder_localnet(Epoch(1))
                 .add_instruction(Instruction::DropAllProofsInWorkspace)
-                .add_input(SubstateRequirement::new(create_random_substate_id(), Some(2)))
+                .add_input(SubstateRequirement::new(
+                    create_random_substate_id(),
+                    Some(SubstateVersion::new(2)),
+                ))
                 .build_and_seal(&PrivateKey::default()),
         );
 
@@ -271,7 +281,10 @@ mod transaction_operations {
         let updated_tx = TransactionRecord::new(
             Transaction::builder_localnet(Epoch(1))
                 .add_instruction(Instruction::DropAllProofsInWorkspace)
-                .add_input(SubstateRequirement::new(create_random_substate_id(), Some(3)))
+                .add_input(SubstateRequirement::new(
+                    create_random_substate_id(),
+                    Some(SubstateVersion::new(3)),
+                ))
                 .build_and_seal(&PrivateKey::default()),
         );
         tx.transactions_insert(&updated_tx).unwrap();
@@ -295,6 +308,7 @@ mod transaction_operations {
 
 mod transaction_execution_operations {
     use tari_engine_types::fees::FeeReceiptBuilder;
+    use tari_ootle_common_types::SubstateVersion;
 
     use super::*;
 
@@ -312,14 +326,20 @@ mod transaction_execution_operations {
         let tx1 = TransactionRecord::new(
             Transaction::builder_localnet(Epoch(1))
                 .add_instruction(Instruction::DropAllProofsInWorkspace)
-                .add_input(SubstateRequirement::new(create_random_substate_id(), Some(0)))
+                .add_input(SubstateRequirement::new(
+                    create_random_substate_id(),
+                    Some(SubstateVersion::ZERO),
+                ))
                 .build_and_seal(&PrivateKey::default()),
         );
         tx.transactions_insert(&tx1).unwrap();
         let tx2 = TransactionRecord::new(
             Transaction::builder_localnet(Epoch(1))
                 .add_instruction(Instruction::DropAllProofsInWorkspace)
-                .add_input(SubstateRequirement::new(create_random_substate_id(), Some(1)))
+                .add_input(SubstateRequirement::new(
+                    create_random_substate_id(),
+                    Some(SubstateVersion::new(1)),
+                ))
                 .build_and_seal(&PrivateKey::default()),
         );
         tx.transactions_insert(&tx2).unwrap();
@@ -468,7 +488,10 @@ mod transaction_execution_operations {
         let tx1 = TransactionRecord::new(
             Transaction::builder_localnet(Epoch(1))
                 .add_instruction(Instruction::DropAllProofsInWorkspace)
-                .add_input(SubstateRequirement::new(create_random_substate_id(), Some(0)))
+                .add_input(SubstateRequirement::new(
+                    create_random_substate_id(),
+                    Some(SubstateVersion::ZERO),
+                ))
                 .build_and_seal(&PrivateKey::default()),
         );
         tx.transactions_insert(&tx1).unwrap();
@@ -522,13 +545,18 @@ mod transaction_execution_operations {
 }
 
 mod finalized_transaction_gc {
+    use tari_ootle_common_types::SubstateVersion;
+
     use super::*;
 
     fn insert_transaction(tx: &mut impl StateStoreWriteTransaction) -> TransactionRecord {
         let rec = TransactionRecord::new(
             Transaction::builder_localnet(Epoch(1))
                 .add_instruction(Instruction::DropAllProofsInWorkspace)
-                .add_input(SubstateRequirement::new(create_random_substate_id(), Some(0)))
+                .add_input(SubstateRequirement::new(
+                    create_random_substate_id(),
+                    Some(SubstateVersion::ZERO),
+                ))
                 .build_and_seal(&PrivateKey::default()),
         );
         tx.transactions_insert(&rec).unwrap();

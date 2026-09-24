@@ -1,7 +1,7 @@
 //   Copyright 2024 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use tari_engine_types::{hashing::substate_value_hasher32, substate::SubstateId};
+use tari_engine_types::{SubstateVersion, hashing::substate_value_hasher32, substate::SubstateId};
 use tari_jellyfish::{LeafKey, TreeHash, TreeStore, Version};
 use tari_ootle_common_types::VersionedSubstateId;
 use tari_state_tree::{
@@ -17,7 +17,7 @@ use tari_template_lib_types::{ComponentAddress, Hash32, ObjectKey};
 pub fn make_value(seed: u8) -> VersionedSubstateId {
     VersionedSubstateId::new(
         SubstateId::Component(ComponentAddress::new(ObjectKey::from_array([seed; ObjectKey::LENGTH]))),
-        u64::from(seed),
+        SubstateVersion::new(u64::from(seed)),
     )
 }
 

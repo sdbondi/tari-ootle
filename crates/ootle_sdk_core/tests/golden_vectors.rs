@@ -88,6 +88,7 @@ use tari_engine_types::{
     substate::{SubstateId, SubstateValue},
     vault::Vault,
 };
+use tari_ootle_common_types::SubstateVersion;
 use tari_template_builtin::ACCOUNT_TEMPLATE_ADDRESS;
 use tari_template_lib_types::{
     Amount,
@@ -445,13 +446,13 @@ fn parse_accept_diff() -> tari_engine_types::substate::SubstateDiff {
     diff.up(
         SubstateId::Component(component),
         Substate::new(
-            0,
+            SubstateVersion::ZERO,
             SubstateValue::Component(parse_sample_component(&[VaultId::new(ObjectKey::from_array(
                 [0x43; ObjectKey::LENGTH],
             ))])),
         ),
     );
-    diff.down(SubstateId::Vault(vault_id), 1);
+    diff.down(SubstateId::Vault(vault_id), SubstateVersion::new(1));
     diff
 }
 

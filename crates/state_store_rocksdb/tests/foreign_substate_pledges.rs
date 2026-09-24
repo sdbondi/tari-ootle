@@ -4,7 +4,7 @@
 pub mod helpers;
 
 use helpers::{build_substate_value, create_random_substate_id, create_rocksdb, transaction_id_from_seed};
-use tari_ootle_common_types::{NumPreshards, ShardGroup, VersionedSubstateId};
+use tari_ootle_common_types::{NumPreshards, ShardGroup, SubstateVersion, VersionedSubstateId};
 use tari_ootle_storage::{
     StateStore,
     StateStoreReadTransaction,
@@ -53,7 +53,7 @@ fn foreign_substate_pledges_rocksdb() {
 
 fn build_substate_pledge() -> SubstatePledge {
     SubstatePledge::Input {
-        substate_id: VersionedSubstateId::new(create_random_substate_id(), 0),
+        substate_id: VersionedSubstateId::new(create_random_substate_id(), SubstateVersion::ZERO),
         is_write: false,
         substate: Box::new(build_substate_value(None)),
     }

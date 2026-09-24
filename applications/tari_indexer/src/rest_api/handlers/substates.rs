@@ -168,6 +168,7 @@ pub async fn fetch_substates(
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
+    use tari_ootle_common_types::SubstateVersion;
     use tari_ootle_storage::StorageError;
 
     use super::*;
@@ -182,7 +183,7 @@ mod tests {
     fn a_spent_version_is_not_found() {
         let e = SubstateManagerError::InputSubstateIsDown {
             substate_id: substate(),
-            version: 0,
+            version: SubstateVersion::ZERO,
         };
         let resp = substate_lookup_error(e);
         assert_eq!(resp.status, StatusCode::NOT_FOUND);

@@ -237,7 +237,7 @@ fn read_substate_batch<TTx: StateStoreReadTransaction>(
             substate_value_proof: value_proof,
             substate: Some(proto::consensus::Substate {
                 substate_id: substate.substate_id().to_bytes(),
-                version: substate.version(),
+                version: substate.version().as_u64(),
                 substate: substate.substate_value().map(|v| v.to_bytes()).unwrap_or_default(),
                 created: Some(substate.created().into()),
                 destroyed: substate.destroyed().map(Into::into),
@@ -379,7 +379,7 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
                 status: SubstateStatus::Down as i32,
                 address: substate.substate_id().to_bytes(),
                 substate: vec![],
-                version: substate.version(),
+                version: substate.version().as_u64(),
                 created_at_state_version: substate.created().at_state_version,
                 destroyed_at_state_version: destroyed.at_state_version,
                 ..Default::default()
@@ -388,7 +388,7 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
             GetSubstateResponse {
                 status: SubstateStatus::Up as i32,
                 address: substate.substate_id().to_bytes(),
-                version: substate.version(),
+                version: substate.version().as_u64(),
                 substate: substate
                     .substate_value()
                     .map(|v| v.to_bytes())

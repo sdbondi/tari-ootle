@@ -38,6 +38,7 @@ use tari_ootle_common_types::{
     NodeHeight,
     StateVersion,
     SubstateAddress,
+    SubstateVersion,
     committee::{Committee, CommitteeInfo},
     diagnostics::{DiagnosticEventFilter, DiagnosticEventRecord, DiagnosticLevel},
     shard::Shard,
@@ -417,8 +418,7 @@ pub struct GetStateResponse {
 )]
 pub struct GetSubstateRequest {
     pub address: SubstateId,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub version: u64,
+    pub version: SubstateVersion,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -27,6 +27,7 @@ use tari_engine_types::{
 use tari_indexer_client::types::WatchedSubstateItem;
 use tari_ootle_common_types::{
     StateVersion,
+    SubstateVersion,
     optional::IsNotFoundError,
     response_status::{ResponseErrorStatus, TransactionStatusResponseError},
     shard::Shard,
@@ -131,7 +132,7 @@ impl WalletNetworkInterface for ScriptedNetwork {
     async fn query_substate(
         &self,
         _address: &SubstateId,
-        _version: Option<u64>,
+        _version: Option<SubstateVersion>,
         _local_search_only: bool,
     ) -> Result<SubstateQueryResult, Self::Error> {
         panic!("ScriptedNetwork::query_substate called")

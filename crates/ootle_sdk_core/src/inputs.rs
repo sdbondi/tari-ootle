@@ -893,6 +893,7 @@ impl FromStrChecked for ResourceAddress {
 mod tests {
     use tari_crypto::{keys::PublicKey as _, ristretto::RistrettoPublicKey, tari_utilities::ByteArray};
     use tari_engine_types::{
+        SubstateVersion,
         component::{Component, ComponentBody, ComponentHeader},
         resource_container::ResourceContainer,
         substate::SubstateValue,
@@ -1234,7 +1235,12 @@ mod tests {
         // An empty fetch batch resolves immediately.
         let partial = unwrap_resolved(apply_fetched_substates(partial, &[]).unwrap());
         let unsigned = partial.into_unsigned();
-        assert!(unsigned.inputs().iter().any(|i| i.version() == Some(0)));
+        assert!(
+            unsigned
+                .inputs()
+                .iter()
+                .any(|i| i.version() == Some(SubstateVersion::ZERO))
+        );
     }
 
     #[test]

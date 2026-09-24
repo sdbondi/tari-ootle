@@ -23,6 +23,7 @@
 
 use std::convert::TryFrom;
 
+use tari_ootle_common_types::SubstateVersion;
 use tari_ootle_storage::{StorageError, time::PrimitiveDateTime};
 
 use crate::{
@@ -57,7 +58,7 @@ impl TryFrom<SubstateRecord> for SubstateResponse {
                 item: "Substate",
                 details: format!("Invalid substate address {}: {}", row.address, e),
             })?,
-            version: row.version as u64,
+            version: SubstateVersion::new(row.version as u64),
             substate: deserialize_json(&row.data)?,
         })
     }

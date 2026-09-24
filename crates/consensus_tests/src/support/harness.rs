@@ -26,6 +26,7 @@ use tari_ootle_common_types::{
     NumPreshards,
     ShardGroup,
     SubstateLockType,
+    SubstateVersion,
     VersionedSubstateId,
     VotePower,
     committee::{Committee, CommitteeMember},
@@ -175,7 +176,7 @@ impl Test {
                 .flat_map(|committee_no| {
                     random_substates_ids_for_committee_generator(committee_no, self.num_committees).take(num)
                 })
-                .map(|id| VersionedSubstateId::new(id, 0))
+                .map(|id| VersionedSubstateId::new(id, SubstateVersion::ZERO))
                 .collect::<Vec<_>>(),
             TestVnDestination::Address(_) => unimplemented!(
                 "Creating substates for a specific validator is not supported as it isn't typically useful"
@@ -183,7 +184,7 @@ impl Test {
             TestVnDestination::Committee(committee_no) => {
                 random_substates_ids_for_committee_generator(committee_no, self.num_committees)
                     .take(num)
-                    .map(|id| VersionedSubstateId::new(id, 0))
+                    .map(|id| VersionedSubstateId::new(id, SubstateVersion::ZERO))
                     .collect::<Vec<_>>()
             },
         };

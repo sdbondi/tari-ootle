@@ -378,7 +378,7 @@ mod tests {
         keys::{PublicKey as PublicKeyT, SecretKey},
         ristretto::{RistrettoPublicKey, RistrettoSecretKey},
     };
-    use tari_engine_types::substate::SubstateId;
+    use tari_engine_types::{SubstateVersion, substate::SubstateId};
     use tari_template_lib_types::ComponentAddress;
 
     use super::*;
@@ -388,7 +388,7 @@ mod tests {
         let mut inputs = IndexSet::new();
         inputs.insert(SubstateRequirement::versioned(
             SubstateId::Component(ComponentAddress::from_array([1; 32])),
-            1,
+            SubstateVersion::new(1),
         ));
         UnsignedTransactionV1 {
             network: 42,

@@ -6,7 +6,7 @@ pub mod helpers;
 use std::collections::HashSet;
 
 use helpers::{PROOF_TEST_TREE_VERSION, build_substate_record, commit_substates, create_rocksdb, num_preshards};
-use tari_ootle_common_types::{ShardGroup, VersionedSubstateId};
+use tari_ootle_common_types::{ShardGroup, SubstateVersion, VersionedSubstateId};
 use tari_ootle_storage::{
     ShardScopedTreeStoreReader,
     StateStore,
@@ -47,7 +47,13 @@ fn substates_spanning_shards(count: u32, min_shards: usize) -> Vec<SubstateRecor
     // A substate's shard is read off the leading byte of its entity id, and `substate_id_seed` writes
     // the seed there big-endian, so the seed has to vary in its top byte to move between shards.
     let substates = (0..count)
-        .map(|seed| build_substate_record(&substate_id_seed(seed << 24), 0, PROOF_TEST_TREE_VERSION))
+        .map(|seed| {
+            build_substate_record(
+                &substate_id_seed(seed << 24),
+                SubstateVersion::ZERO,
+                PROOF_TEST_TREE_VERSION,
+            )
+        })
         .collect::<Vec<_>>();
     let shards = substates.iter().map(|s| s.created().in_shard).collect::<HashSet<_>>();
     assert!(
@@ -119,7 +125,7 @@ fn a_version_that_is_not_up_gets_an_exclusion_proof() {
     let mut generator = SubstateProofGenerator::new(&tx, shard_group, num_preshards()).unwrap();
 
     for substate in &substates {
-        let next_version = VersionedSubstateId::new(substate.substate_id().clone(), substate.version() + 1);
+        let next_version = VersionedSubstateId::new(substate.substate_id().clone(), substate.version().next());
         let proof = generator.generate(&next_version).unwrap().expect("shard has state");
         proof.verify_exclusion(&group_root, &next_version).unwrap();
         proof

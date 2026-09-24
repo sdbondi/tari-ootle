@@ -6,7 +6,7 @@ use std::ops::RangeInclusive;
 use log::info;
 use ootle_byte_type::ToByteType;
 use tari_engine_types::indexed_value::IndexedWellKnownTypes;
-use tari_ootle_common_types::{Epoch, SubstateRequirement};
+use tari_ootle_common_types::{Epoch, SubstateRequirement, SubstateVersion};
 use tari_ootle_transaction::args;
 use tari_ootle_wallet_sdk::{
     apis::accounts::derive_account_address_from_public_key,
@@ -75,7 +75,7 @@ impl Runner {
         self.sdk.accounts_api().add_vault(
             account,
             vault,
-            0,
+            SubstateVersion::ZERO,
             TARI_TOKEN,
             ResourceType::Stealth,
             Some("tTARI".to_string()),
@@ -165,7 +165,7 @@ impl Runner {
             self.sdk.accounts_api().add_vault(
                 account_addr,
                 vault_id,
-                0,
+                SubstateVersion::ZERO,
                 TARI_TOKEN,
                 ResourceType::Stealth,
                 Some("tTARI".to_string()),
@@ -248,7 +248,7 @@ impl Runner {
                     self.sdk.accounts_api().add_vault(
                         account,
                         *vault_id,
-                        0,
+                        SubstateVersion::ZERO,
                         *vault.resource_address(),
                         vault.resource_type(),
                         None,

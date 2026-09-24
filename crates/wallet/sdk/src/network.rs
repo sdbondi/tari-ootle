@@ -7,6 +7,7 @@ use futures::Stream;
 use serde::{Deserialize, Serialize};
 use tari_consensus_types::Decision;
 use tari_engine_types::{
+    SubstateVersion,
     Utxo,
     commit_result::ExecuteResult,
     substate::{Substate, SubstateId, SubstateValue},
@@ -56,7 +57,7 @@ pub trait WalletNetworkInterface {
     fn query_substate(
         &self,
         address: &SubstateId,
-        version: Option<u64>,
+        version: Option<SubstateVersion>,
         local_search_only: bool,
     ) -> impl Future<Output = Result<SubstateQueryResult, Self::Error>> + Send;
 
@@ -122,7 +123,7 @@ pub trait WalletNetworkInterface {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SubstateQueryResult {
-    pub version: u64,
+    pub version: SubstateVersion,
     pub substate: SubstateValue,
 }
 

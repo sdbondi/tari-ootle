@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use tari_engine_types::{Utxo, UtxoOutput};
 use tari_indexer_client::types::{UtxoBurnt, UtxoSpent, UtxoUnspent, WalletUtxoUpdate};
-use tari_ootle_common_types::StateVersion;
+use tari_ootle_common_types::{StateVersion, SubstateVersion};
 use tari_ootle_storage::{StorageError, time::PrimitiveDateTime};
 use tari_template_lib_types::{ResourceAddress, UtxoAddress, UtxoId, crypto::PedersenCommitmentBytes};
 
@@ -69,7 +69,7 @@ impl UtxoRecord {
                         StateVersion::new(self.state_version as u64),
                         WalletUtxoUpdate::Burnt(UtxoBurnt {
                             id,
-                            version: self.version as u64,
+                            version: SubstateVersion::new(self.version as u64),
                         }),
                     ))
                 } else {
@@ -77,7 +77,7 @@ impl UtxoRecord {
                         StateVersion::new(self.state_version as u64),
                         WalletUtxoUpdate::Spent(UtxoSpent {
                             id,
-                            version: self.version as u64,
+                            version: SubstateVersion::new(self.version as u64),
                         }),
                     ))
                 }

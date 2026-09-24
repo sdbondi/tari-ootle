@@ -5,7 +5,7 @@ use std::{cmp, fmt::Display, ops::RangeInclusive};
 
 use rand::seq::{IndexedRandom, SliceRandom};
 use serde::{Deserialize, Serialize};
-use tari_engine_types::substate::SubstateId;
+use tari_engine_types::{SubstateVersion, substate::SubstateId};
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 
 use crate::{Epoch, NumPreshards, ShardGroup, SubstateAddress, VersionedSubstateIdRef, VotePower};
@@ -302,7 +302,7 @@ impl CommitteeInfo {
             return true;
         }
         // version doesnt affect shard
-        let addr = VersionedSubstateIdRef::new(substate_id, 0);
+        let addr = VersionedSubstateIdRef::new(substate_id, SubstateVersion::ZERO);
         let shard = addr.to_shard(self.num_shards);
         self.shard_group.contains(&shard)
     }

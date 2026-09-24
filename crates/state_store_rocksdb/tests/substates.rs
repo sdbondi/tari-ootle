@@ -6,7 +6,7 @@ use std::collections::HashSet;
 
 use helpers::{assert_eq_debug, build_substate_record, create_rocksdb, create_substate_update_batch};
 use tari_engine_types::substate::SubstateId;
-use tari_ootle_common_types::{Epoch, VersionedSubstateId, VersionedSubstateIdRef, shard::Shard};
+use tari_ootle_common_types::{Epoch, SubstateVersion, VersionedSubstateId, VersionedSubstateIdRef, shard::Shard};
 use tari_ootle_storage::{
     ShardScopedTreeStoreWriter,
     StateStore,
@@ -37,14 +37,14 @@ fn basic_operations() {
 
     // substate 1
     let substate1_id = substate_id(1);
-    let substate1 = build_substate_record(&substate1_id, 0, 1);
+    let substate1 = build_substate_record(&substate1_id, SubstateVersion::ZERO, 1);
     let substate1_address = substate1.to_substate_address();
     // substate 1 (version 1)
-    let substate1b = build_substate_record(&substate1_id, 1, 1);
+    let substate1b = build_substate_record(&substate1_id, SubstateVersion::new(1), 1);
     let substate1b_address = substate1b.to_substate_address();
     // substate 2
     let substate2_id = substate_id(2);
-    let substate2 = build_substate_record(&substate2_id, 0, 1);
+    let substate2 = build_substate_record(&substate2_id, SubstateVersion::ZERO, 1);
     let substate2_address = substate2.to_substate_address();
 
     let batch = create_substate_update_batch(Epoch::zero(), [&substate1, &substate1b, &substate2]);
@@ -62,15 +62,15 @@ fn basic_operations() {
 
     // substates_get_any fetches all substates
     let req = [
-        VersionedSubstateIdRef::new(&substate1_id, 0),
-        VersionedSubstateIdRef::new(&substate2_id, 0),
+        VersionedSubstateIdRef::new(&substate1_id, SubstateVersion::ZERO),
+        VersionedSubstateIdRef::new(&substate2_id, SubstateVersion::ZERO),
     ];
     let res = tx.substates_get_any(&req).unwrap();
     assert_eq!(res.len(), 2);
 
     // substates_get_any fetches the last version of a substate
     let mut req = HashSet::new();
-    req.insert(VersionedSubstateIdRef::new(&substate1_id, 0));
+    req.insert(VersionedSubstateIdRef::new(&substate1_id, SubstateVersion::ZERO));
     let res = tx.substates_get_any(&req).unwrap();
     assert_eq!(res.len(), 1);
     // Historical value
@@ -85,19 +85,25 @@ fn basic_operations() {
     let substate_ids = vec![substate1_id.clone(), substate2_id.clone()];
     let res = tx.substates_get_any_max_version(&substate_ids).unwrap();
     assert_eq!(res.len(), 2);
-    assert!(res.iter().any(|s| s.substate_id == substate1_id && s.version == 1));
-    assert!(res.iter().any(|s| s.substate_id == substate2_id && s.version == 0));
+    assert!(
+        res.iter()
+            .any(|s| s.substate_id == substate1_id && s.version == SubstateVersion::new(1))
+    );
+    assert!(
+        res.iter()
+            .any(|s| s.substate_id == substate2_id && s.version == SubstateVersion::ZERO)
+    );
 
     // substates_get_max_version_for_substate
     let res = tx.substates_get_max_version_for_substate(&substate1_id).unwrap();
-    assert_eq!(res, (1, true));
+    assert_eq!(res, (SubstateVersion::new(1), true));
     let res = tx.substates_get_max_version_for_substate(&substate2_id).unwrap();
-    assert_eq!(res, (0, true));
+    assert_eq!(res, (SubstateVersion::ZERO, true));
 
     // substates_any_exist (all exist)
     let substate_ids = [
-        VersionedSubstateId::new(substate1_id.clone(), 0),
-        VersionedSubstateId::new(substate2_id.clone(), 0),
+        VersionedSubstateId::new(substate1_id.clone(), SubstateVersion::ZERO),
+        VersionedSubstateId::new(substate2_id.clone(), SubstateVersion::ZERO),
     ];
     let res = tx
         .substates_any_exist(substate_ids.iter().map(|id| id.as_versioned_ref()))
@@ -106,8 +112,8 @@ fn basic_operations() {
 
     // substates_any_exist (some do not exist)
     let substate_ids = [
-        VersionedSubstateId::new(substate1_id.clone(), 100), // version should not exist
-        VersionedSubstateId::new(substate2_id.clone(), 0),
+        VersionedSubstateId::new(substate1_id.clone(), SubstateVersion::new(100)), // version should not exist
+        VersionedSubstateId::new(substate2_id.clone(), SubstateVersion::ZERO),
     ];
     let res = tx
         .substates_any_exist(substate_ids.iter().map(|id| id.as_versioned_ref()))
@@ -116,8 +122,8 @@ fn basic_operations() {
 
     // substates_any_exist (none exist)
     let substate_ids = [
-        VersionedSubstateId::new(substate1_id, 100), // version should not exist
-        VersionedSubstateId::new(substate2_id, 100), // version should not exist
+        VersionedSubstateId::new(substate1_id, SubstateVersion::new(100)), // version should not exist
+        VersionedSubstateId::new(substate2_id, SubstateVersion::new(100)), // version should not exist
     ];
     let res = tx
         .substates_any_exist(substate_ids.iter().map(|id| id.as_versioned_ref()))
@@ -161,7 +167,7 @@ fn substate_head_iter() {
     let zero_block = Block::zero_block(Network::LocalNet, num_preshards());
     zero_block.insert(&mut tx).unwrap();
 
-    let substates = gen_substates(Epoch::zero(), 1, SHARD, 100, 0).collect::<Vec<_>>();
+    let substates = gen_substates(Epoch::zero(), 1, SHARD, 100, SubstateVersion::ZERO).collect::<Vec<_>>();
 
     let batch = create_substate_update_batch(Epoch::zero(), substates.iter());
     let changes = substates.iter().map(|s| SubstateTreeChange::Up {
@@ -191,7 +197,7 @@ fn substate_head_iter() {
         id: VersionedSubstateId::new(s.substate_id.clone(), s.version),
     });
     let ups = substates_to_update.clone().map(|s| SubstateTreeChange::Up {
-        id: VersionedSubstateId::new(s.substate_id.clone(), s.version + 1),
+        id: VersionedSubstateId::new(s.substate_id.clone(), s.version.next()),
         value_hash: *s.state_hash(),
     });
     {
@@ -212,7 +218,7 @@ fn substate_head_iter() {
         // Create a new version of the substate
         batch.with_transition(SHARD, 2).push(SubstateTransition::Up {
             id: s.substate_id.clone(),
-            version: s.version + 1,
+            version: s.version.next(),
             substate_or_hash: s.clone().into_substate_value_or_hash(),
         });
     }

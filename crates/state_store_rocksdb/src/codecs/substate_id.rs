@@ -88,6 +88,7 @@ impl<'a> DbEncoder<VersionedSubstateIdRef<'a>> for SubstateIdCodec {
 mod tests {
     use tari_common_types::types::FixedHash;
     use tari_consensus_types::BlockId;
+    use tari_ootle_common_types::SubstateVersion;
     use tari_template_lib_types::{ComponentAddress, ObjectKey};
 
     use super::*;
@@ -121,7 +122,7 @@ mod tests {
         let key = BlockDiffKey {
             block_id: new_block_id(1),
             substate_id: new_substate_id(2),
-            version: 3,
+            version: SubstateVersion::new(3),
             is_up: true,
             sequence: 0,
         };

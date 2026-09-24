@@ -6,6 +6,7 @@ use std::{collections::HashSet, fmt::Display};
 use indexmap::IndexSet;
 use ootle_network::Network;
 use tari_engine_types::{
+    SubstateVersion,
     confidential::MinotariBurnClaimProof,
     indexed_value::IndexedValueError,
     published_template::PublishedTemplateAddress,
@@ -252,16 +253,16 @@ impl Transaction {
         let tx_substate_address = self.calculate_id().to_substate_address();
         std::iter::once(tx_substate_address).chain(
             self.claim_burn_outputs_iter()
-                .map(|c| SubstateAddress::from_object_key(c.as_object_key(), 0)),
+                .map(|c| SubstateAddress::from_object_key(c.as_object_key(), SubstateVersion::ZERO)),
         )
     }
 
     pub fn known_outputs_iter(&self) -> impl Iterator<Item = VersionedSubstateId> + '_ {
         let tx_receipt = self.calculate_id().into_receipt_address();
-        std::iter::once(VersionedSubstateId::new(tx_receipt, 0)).chain(
+        std::iter::once(VersionedSubstateId::new(tx_receipt, SubstateVersion::ZERO)).chain(
             self.claim_burn_outputs_iter()
                 .map(SubstateId::from)
-                .map(|s| VersionedSubstateId::new(s, 0)),
+                .map(|s| VersionedSubstateId::new(s, SubstateVersion::ZERO)),
         )
     }
 
@@ -497,6 +498,7 @@ mod tests {
         keys::{PublicKey as _, SecretKey},
         ristretto::{RistrettoPublicKey, RistrettoSecretKey},
     };
+    use tari_engine_types::SubstateVersion;
     use tari_ootle_common_types::crypto::create_key_pair;
     use tari_template_lib_types::{TemplateAddress, bytes::Bytes};
 
@@ -524,7 +526,7 @@ mod tests {
             .publish_template(b"template".to_vec())
             .add_input(SubstateRequirement::versioned(
                 SubstateId::Component(ComponentAddress::from_array([1; 32])),
-                1,
+                SubstateVersion::new(1),
             ))
     }
 

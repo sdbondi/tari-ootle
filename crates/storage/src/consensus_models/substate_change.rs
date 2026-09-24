@@ -6,7 +6,10 @@ use std::fmt::Display;
 use minicbor::{CborLen, Decode, Encode};
 use ootle_network::Network;
 use serde::{Deserialize, Serialize};
-use tari_engine_types::substate::{Substate, SubstateId};
+use tari_engine_types::{
+    SubstateVersion,
+    substate::{Substate, SubstateId},
+};
 use tari_ootle_common_types::{
     Epoch,
     SubstateAddress,
@@ -61,7 +64,7 @@ impl SubstateChange {
         }
     }
 
-    pub fn version(&self) -> u64 {
+    pub fn version(&self) -> SubstateVersion {
         self.versioned_substate_id().version()
     }
 

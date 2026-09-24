@@ -166,11 +166,14 @@ mod tests {
     };
 
     use futures::future::{BoxFuture, FutureExt};
+    use tari_ootle_common_types::SubstateVersion;
 
     use super::*;
 
     fn down(version: u64) -> SubstateResult {
-        SubstateResult::Down { version }
+        SubstateResult::Down {
+            version: SubstateVersion::new(version),
+        }
     }
 
     fn error() -> IndexerError {
@@ -232,7 +235,7 @@ mod tests {
         .await
         .expect("read stalled behind an unresponsive member")
         .unwrap();
-        assert_eq!(result.result.version(), Some(4));
+        assert_eq!(result.result.version(), Some(SubstateVersion::new(4)));
         assert!(result.verified);
     }
 
@@ -258,7 +261,7 @@ mod tests {
         ])
         .await
         .unwrap();
-        assert_eq!(result.result.version(), Some(2));
+        assert_eq!(result.result.version(), Some(SubstateVersion::new(2)));
     }
 
     #[tokio::test]
@@ -279,14 +282,14 @@ mod tests {
         ])
         .await
         .unwrap();
-        assert_eq!(result.result.version(), Some(5));
+        assert_eq!(result.result.version(), Some(SubstateVersion::new(5)));
         assert!(!result.verified);
     }
 
     #[tokio::test]
     async fn an_unproven_answer_settles_the_read_when_proofs_are_not_required() {
         let result = race(2, 1, false, vec![(0, Ok((down(1), false)))]).await.unwrap();
-        assert_eq!(result.result.version(), Some(1));
+        assert_eq!(result.result.version(), Some(SubstateVersion::new(1)));
         assert!(!result.verified);
     }
 
@@ -310,7 +313,7 @@ mod tests {
         ])
         .await
         .unwrap();
-        assert_eq!(result.result.version(), Some(1));
+        assert_eq!(result.result.version(), Some(SubstateVersion::new(1)));
     }
 
     #[tokio::test]

@@ -9,6 +9,7 @@ use tari_engine_types::{
     substate::Substate,
     vault::Vault,
 };
+use tari_ootle_common_types::SubstateVersion;
 use tari_template_builtin::{XTR_FAUCET_TEMPLATE_ADDRESS, XtrFaucetState};
 use tari_template_lib::types::{
     Amount,
@@ -40,7 +41,7 @@ pub fn setup_store() -> MemoryStateStore {
         true,
     );
     state_store
-        .set_state(TARI_TOKEN.into(), Substate::new(0, tari))
+        .set_state(TARI_TOKEN.into(), Substate::new(SubstateVersion::ZERO, tari))
         .unwrap();
 
     let resource_cont = ResourceContainer::Stealth {
@@ -51,7 +52,7 @@ pub fn setup_store() -> MemoryStateStore {
     let vault = Vault::new(resource_cont);
 
     state_store
-        .set_state(FAUCET_VAULT_ID.into(), Substate::new(0, vault))
+        .set_state(FAUCET_VAULT_ID.into(), Substate::new(SubstateVersion::ZERO, vault))
         .unwrap();
 
     // Claim receipt resource: one NFT per claimant public key (minted then burned to record the claim).
@@ -70,7 +71,7 @@ pub fn setup_store() -> MemoryStateStore {
     state_store
         .set_state(
             XTR_FAUCET_CLAIM_RESOURCE_ADDRESS.into(),
-            Substate::new(0, claim_resource),
+            Substate::new(SubstateVersion::ZERO, claim_resource),
         )
         .unwrap();
 
@@ -87,7 +88,10 @@ pub fn setup_store() -> MemoryStateStore {
         ),
     };
     state_store
-        .set_state(FAUCET_COMPONENT_ADDRESS.into(), Substate::new(0, component))
+        .set_state(
+            FAUCET_COMPONENT_ADDRESS.into(),
+            Substate::new(SubstateVersion::ZERO, component),
+        )
         .unwrap();
 
     state_store

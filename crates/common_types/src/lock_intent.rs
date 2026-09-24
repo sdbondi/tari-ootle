@@ -6,15 +6,15 @@ use std::{fmt, str::FromStr};
 use borsh::BorshSerialize;
 use minicbor::{CborLen, Decode, Encode};
 use tari_bor::{Deserialize, Serialize};
-use tari_engine_types::substate::SubstateId;
+use tari_engine_types::{SubstateVersion, substate::SubstateId};
 
 use crate::{SubstateAddress, ToSubstateAddress, VersionedSubstateIdRef};
 
 pub trait LockIntent {
     fn substate_id(&self) -> &SubstateId;
     fn lock_type(&self) -> SubstateLockType;
-    fn version_to_lock(&self) -> u64;
-    fn requested_version(&self) -> Option<u64>;
+    fn version_to_lock(&self) -> SubstateVersion;
+    fn requested_version(&self) -> Option<SubstateVersion>;
 
     fn to_versioned_substate_id_ref(&self) -> VersionedSubstateIdRef<'_> {
         VersionedSubstateIdRef::new(self.substate_id(), self.version_to_lock())

@@ -16,6 +16,7 @@ use tari_ootle_common_types::{
     Epoch,
     ShardGroup,
     SubstateAddress,
+    SubstateVersion,
     ToSubstateAddress,
     VersionedSubstateId,
     VotePower,
@@ -210,7 +211,7 @@ impl TestEpochManager {
         for (shard_group, committee) in committees {
             for member in committee.iter() {
                 let substate_id = random_substate_in_shard_group(shard_group, TEST_NUM_PRESHARDS);
-                let substate_id = VersionedSubstateId::new(substate_id, 0);
+                let substate_id = VersionedSubstateId::new(substate_id, SubstateVersion::ZERO);
                 state.validator_nodes.insert(
                     member.address.clone(),
                     (

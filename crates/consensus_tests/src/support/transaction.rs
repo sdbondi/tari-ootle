@@ -16,7 +16,7 @@ use tari_engine_types::{
     substate::{Substate, SubstateDiff, SubstateId},
     transaction_receipt::{FinalizeOutcome, TransactionReceipt},
 };
-use tari_ootle_common_types::{LockIntent, SubstateRequirement};
+use tari_ootle_common_types::{LockIntent, SubstateRequirement, SubstateVersion};
 use tari_ootle_storage::consensus_models::{TransactionRecord, VersionedSubstateIdLockIntent};
 use tari_ootle_transaction::{Transaction, TransactionIntent, args};
 use tari_template_lib_types::{SubstateOwnerRule, TransactionReceiptAddress};
@@ -134,7 +134,7 @@ pub fn create_execution_result_for_transaction(
         // We MUST create the transaction receipt
         diff.up(
             SubstateId::TransactionReceipt(TransactionReceiptAddress::from(transaction.calculate_id())),
-            Substate::new(0, TransactionReceipt {
+            Substate::new(SubstateVersion::ZERO, TransactionReceipt {
                 outcome: FinalizeOutcome::Commit,
                 diff_summary: Default::default(),
                 fee_withdrawals: Default::default(),

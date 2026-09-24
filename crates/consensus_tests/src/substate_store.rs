@@ -16,6 +16,7 @@ use tari_ootle_common_types::{
     NumPreshards,
     ShardGroup,
     SubstateLockType,
+    SubstateVersion,
     VersionedSubstateId,
     optional::IsNotFoundError,
     shard::Shard,
@@ -56,7 +57,7 @@ fn it_allows_substate_up_for_v0() {
         .put(SubstateChange::Up {
             id: id.clone(),
             shard: Shard::first(),
-            substate: Box::new(Substate::new(1, value.clone())),
+            substate: Box::new(Substate::new(SubstateVersion::new(1), value.clone())),
         })
         .unwrap_err();
 
@@ -64,12 +65,12 @@ fn it_allows_substate_up_for_v0() {
         .put(SubstateChange::Up {
             id: id.clone(),
             shard: Shard::first(),
-            substate: Box::new(Substate::new(0, value)),
+            substate: Box::new(Substate::new(SubstateVersion::ZERO, value)),
         })
         .unwrap();
 
     let s = store.get_latest_change(&id).unwrap().into_up().unwrap();
-    assert_substate_eq(s, new_substate(0, 0));
+    assert_substate_eq(s, new_substate(0, SubstateVersion::ZERO));
 }
 
 #[test]
@@ -77,13 +78,13 @@ fn it_allows_down_then_up() {
     setup_logger();
     let (store, _tmp) = create_store();
 
-    let id = add_substate(&store, 0, 0);
+    let id = add_substate(&store, 0, SubstateVersion::ZERO);
 
     let tx = store.create_read_tx().unwrap();
     let mut store = create_pending_store::<TestStore>(&tx);
 
     let s = store.get_latest_change(id.substate_id()).unwrap().into_up().unwrap();
-    assert_substate_eq(s, new_substate(0, 0));
+    assert_substate_eq(s, new_substate(0, SubstateVersion::ZERO));
 
     store
         .put(SubstateChange::Down {
@@ -102,16 +103,16 @@ fn it_allows_down_then_up() {
         .unwrap();
 
     let s = store.get(id.to_next_version().as_versioned_ref()).unwrap();
-    assert_substate_eq(s, new_substate(1, 1));
+    assert_substate_eq(s, new_substate(1, SubstateVersion::new(1)));
     let s = store.get_latest_change(id.substate_id()).unwrap().into_up().unwrap();
-    assert_substate_eq(s, new_substate(1, 1));
+    assert_substate_eq(s, new_substate(1, SubstateVersion::new(1)));
 }
 
 #[test]
 fn it_fails_if_previous_version_is_not_down() {
     let (store, _tmp) = create_store();
 
-    let id = add_substate(&store, 0, 0);
+    let id = add_substate(&store, 0, SubstateVersion::ZERO);
 
     let tx = store.create_read_tx().unwrap();
     let mut store = create_pending_store::<TestStore>(&tx);
@@ -119,7 +120,7 @@ fn it_fails_if_previous_version_is_not_down() {
         .put(SubstateChange::Up {
             id: id.substate_id().clone(),
             shard: Shard::first(),
-            substate: Box::new(new_substate(1, id.version() + 1)),
+            substate: Box::new(new_substate(1, id.version().next())),
         })
         .unwrap_err();
 
@@ -130,7 +131,7 @@ fn it_fails_if_previous_version_is_not_down() {
 fn it_disallows_more_than_one_write_lock_non_local_only() {
     let (store, _tmp) = create_store();
 
-    let id = add_substate(&store, 0, 0);
+    let id = add_substate(&store, 0, SubstateVersion::ZERO);
 
     let tx = store.create_read_tx().unwrap();
     let mut store = create_pending_store::<TestStore>(&tx);
@@ -138,14 +139,14 @@ fn it_disallows_more_than_one_write_lock_non_local_only() {
     store
         .try_lock(
             tx_id(1),
-            &RequireLockIntentRef::new(id.substate_id(), 0, SubstateLockType::Read),
+            &RequireLockIntentRef::new(id.substate_id(), SubstateVersion::ZERO, SubstateLockType::Read),
             true,
         )
         .unwrap();
     store
         .try_lock(
             tx_id(2),
-            &RequireLockIntentRef::new(id.substate_id(), 0, SubstateLockType::Read),
+            &RequireLockIntentRef::new(id.substate_id(), SubstateVersion::ZERO, SubstateLockType::Read),
             true,
         )
         .unwrap();
@@ -157,7 +158,7 @@ fn it_disallows_more_than_one_write_lock_non_local_only() {
     let err = store
         .try_lock(
             tx_id(3),
-            &RequireLockIntentRef::new(id.substate_id(), 0, SubstateLockType::Write),
+            &RequireLockIntentRef::new(id.substate_id(), SubstateVersion::ZERO, SubstateLockType::Write),
             false,
         )
         .unwrap_err();
@@ -172,7 +173,7 @@ fn it_disallows_more_than_one_write_lock_non_local_only() {
 fn it_allows_an_input_and_an_output_lock_within_one_transaction() {
     let (store, _tmp) = create_store();
 
-    let id = add_substate(&store, 0, 0);
+    let id = add_substate(&store, 0, SubstateVersion::ZERO);
 
     let tx = store.create_read_tx().unwrap();
     let mut store = create_pending_store::<TestStore>(&tx);
@@ -180,7 +181,7 @@ fn it_allows_an_input_and_an_output_lock_within_one_transaction() {
     store
         .try_lock(
             tx_id(1),
-            &RequireLockIntentRef::new(id.substate_id(), 0, SubstateLockType::Write),
+            &RequireLockIntentRef::new(id.substate_id(), SubstateVersion::ZERO, SubstateLockType::Write),
             false,
         )
         .unwrap();
@@ -188,7 +189,7 @@ fn it_allows_an_input_and_an_output_lock_within_one_transaction() {
     let err = store
         .try_lock(
             tx_id(2),
-            &RequireLockIntentRef::new(id.substate_id(), 1, SubstateLockType::Output),
+            &RequireLockIntentRef::new(id.substate_id(), SubstateVersion::new(1), SubstateLockType::Output),
             false,
         )
         .unwrap_err();
@@ -201,7 +202,7 @@ fn it_allows_an_input_and_an_output_lock_within_one_transaction() {
     store
         .try_lock(
             tx_id(1),
-            &RequireLockIntentRef::new(id.substate_id(), 1, SubstateLockType::Output),
+            &RequireLockIntentRef::new(id.substate_id(), SubstateVersion::new(1), SubstateLockType::Output),
             false,
         )
         .unwrap();
@@ -216,7 +217,7 @@ fn an_output_lock_over_a_write_lock_requires_the_version_to_not_exist() {
     // version would let the transaction UP a version that already exists.
     let (store, _tmp) = create_store();
 
-    let id = add_substate(&store, 0, 0);
+    let id = add_substate(&store, 0, SubstateVersion::ZERO);
 
     let tx = store.create_read_tx().unwrap();
     let mut store = create_pending_store::<TestStore>(&tx);
@@ -224,7 +225,7 @@ fn an_output_lock_over_a_write_lock_requires_the_version_to_not_exist() {
     store
         .try_lock(
             tx_id(1),
-            &RequireLockIntentRef::new(id.substate_id(), 0, SubstateLockType::Write),
+            &RequireLockIntentRef::new(id.substate_id(), SubstateVersion::ZERO, SubstateLockType::Write),
             false,
         )
         .unwrap();
@@ -232,7 +233,7 @@ fn an_output_lock_over_a_write_lock_requires_the_version_to_not_exist() {
     let err = store
         .try_lock(
             tx_id(1),
-            &RequireLockIntentRef::new(id.substate_id(), 0, SubstateLockType::Output),
+            &RequireLockIntentRef::new(id.substate_id(), SubstateVersion::ZERO, SubstateLockType::Output),
             false,
         )
         .unwrap_err();
@@ -249,7 +250,7 @@ fn an_output_lock_over_a_read_lock_requires_the_version_to_not_exist() {
     // still not exist, otherwise two transactions in one block UP the same version.
     let (store, _tmp) = create_store();
 
-    let id = add_substate(&store, 0, 0);
+    let id = add_substate(&store, 0, SubstateVersion::ZERO);
 
     let tx = store.create_read_tx().unwrap();
     let mut store = create_pending_store::<TestStore>(&tx);
@@ -257,7 +258,7 @@ fn an_output_lock_over_a_read_lock_requires_the_version_to_not_exist() {
     store
         .try_lock(
             tx_id(1),
-            &RequireLockIntentRef::new(id.substate_id(), 0, SubstateLockType::Read),
+            &RequireLockIntentRef::new(id.substate_id(), SubstateVersion::ZERO, SubstateLockType::Read),
             true,
         )
         .unwrap();
@@ -265,7 +266,7 @@ fn an_output_lock_over_a_read_lock_requires_the_version_to_not_exist() {
     let err = store
         .try_lock(
             tx_id(2),
-            &RequireLockIntentRef::new(id.substate_id(), 0, SubstateLockType::Output),
+            &RequireLockIntentRef::new(id.substate_id(), SubstateVersion::ZERO, SubstateLockType::Output),
             true,
         )
         .unwrap_err();
@@ -279,7 +280,7 @@ fn an_output_lock_over_a_read_lock_requires_the_version_to_not_exist() {
     store
         .try_lock(
             tx_id(2),
-            &RequireLockIntentRef::new(id.substate_id(), 1, SubstateLockType::Output),
+            &RequireLockIntentRef::new(id.substate_id(), SubstateVersion::new(1), SubstateLockType::Output),
             true,
         )
         .unwrap();
@@ -291,7 +292,7 @@ fn an_output_lock_for_a_live_version_is_a_hard_conflict() {
     // to a later block: the version it claims is taken for good.
     let (store, _tmp) = create_store();
 
-    let id = add_substate(&store, 0, 0);
+    let id = add_substate(&store, 0, SubstateVersion::ZERO);
 
     let tx = store.create_read_tx().unwrap();
     let mut store = create_pending_store::<TestStore>(&tx);
@@ -299,7 +300,7 @@ fn an_output_lock_for_a_live_version_is_a_hard_conflict() {
     store
         .try_lock(
             tx_id(1),
-            &RequireLockIntentRef::new(id.substate_id(), 0, SubstateLockType::Read),
+            &RequireLockIntentRef::new(id.substate_id(), SubstateVersion::ZERO, SubstateLockType::Read),
             true,
         )
         .unwrap();
@@ -307,7 +308,11 @@ fn an_output_lock_for_a_live_version_is_a_hard_conflict() {
     let lock_status = store
         .try_lock_all(
             tx_id(2),
-            [RequireLockIntentRef::new(id.substate_id(), 0, SubstateLockType::Output)],
+            [RequireLockIntentRef::new(
+                id.substate_id(),
+                SubstateVersion::ZERO,
+                SubstateLockType::Output,
+            )],
             true,
         )
         .unwrap();
@@ -326,7 +331,7 @@ fn an_unversioned_lock_conflict_is_deferrable() {
     // block that sequences one. Both sides read the same predicate, so it must hold for the contended case.
     let (store, _tmp) = create_store();
 
-    let id = add_substate(&store, 0, 0);
+    let id = add_substate(&store, 0, SubstateVersion::ZERO);
 
     let tx = store.create_read_tx().unwrap();
     let mut store = create_pending_store::<TestStore>(&tx);
@@ -334,7 +339,7 @@ fn an_unversioned_lock_conflict_is_deferrable() {
     store
         .try_lock(
             tx_id(1),
-            &RequireLockIntentRef::new(id.substate_id(), 0, SubstateLockType::Write),
+            &RequireLockIntentRef::new(id.substate_id(), SubstateVersion::ZERO, SubstateLockType::Write),
             false,
         )
         .unwrap();
@@ -352,7 +357,7 @@ fn an_unversioned_lock_conflict_is_deferrable() {
 fn a_versioned_lock_conflict_is_not_deferrable() {
     let (store, _tmp) = create_store();
 
-    let id = add_substate(&store, 0, 0);
+    let id = add_substate(&store, 0, SubstateVersion::ZERO);
 
     let tx = store.create_read_tx().unwrap();
     let mut store = create_pending_store::<TestStore>(&tx);
@@ -360,7 +365,7 @@ fn a_versioned_lock_conflict_is_not_deferrable() {
     store
         .try_lock(
             tx_id(1),
-            &RequireLockIntentRef::new(id.substate_id(), 0, SubstateLockType::Write),
+            &RequireLockIntentRef::new(id.substate_id(), SubstateVersion::ZERO, SubstateLockType::Write),
             false,
         )
         .unwrap();
@@ -376,7 +381,7 @@ fn a_versioned_lock_conflict_is_not_deferrable() {
 fn locking_without_failures_is_not_a_deferrable_conflict() {
     let (store, _tmp) = create_store();
 
-    let id = add_substate(&store, 0, 0);
+    let id = add_substate(&store, 0, SubstateVersion::ZERO);
 
     let tx = store.create_read_tx().unwrap();
     let mut store = create_pending_store::<TestStore>(&tx);
@@ -394,7 +399,7 @@ fn a_substate_with_no_live_version_is_a_skippable_lock_failure() {
     // already spent) must be classified as a recoverable lock failure. The proposer relies on
     // ok_lock_failed() to skip such transactions instead of propagating the error, which would otherwise
     // crash consensus.
-    let id = VersionedSubstateId::new(new_substate_id(0), 0);
+    let id = VersionedSubstateId::new(new_substate_id(0), SubstateVersion::ZERO);
     let err = SubstateStoreError::SubstateNotFound { id };
     assert!(matches!(
         err.ok_lock_failed(),
@@ -407,7 +412,7 @@ fn a_substate_with_no_live_version_is_not_fatal_to_input_resolution() {
     // prepare() treats anything that is not a not-found error as fatal and propagates it out of consensus.
     // Resolving an input whose version was already spent must stay on the recoverable side of that test so
     // the transaction aborts on its own.
-    let id = VersionedSubstateId::new(new_substate_id(0), 0);
+    let id = VersionedSubstateId::new(new_substate_id(0), SubstateVersion::ZERO);
     assert!(SubstateStoreError::SubstateNotFound { id: id.clone() }.is_not_found_error());
     assert!(
         BlockTransactionExecutorError::SubstateStoreError(SubstateStoreError::SubstateNotFound { id })
@@ -421,7 +426,7 @@ fn an_output_lock_for_a_destroyed_version_is_rejected() {
     // destroyed has existed, so claiming it would UP a version that was already spent.
     let (store, _tmp) = create_store();
 
-    let id = add_substate(&store, 0, 0);
+    let id = add_substate(&store, 0, SubstateVersion::ZERO);
 
     let tx = store.create_read_tx().unwrap();
     let mut store = create_pending_store::<TestStore>(&tx);
@@ -429,7 +434,7 @@ fn an_output_lock_for_a_destroyed_version_is_rejected() {
     store
         .try_lock(
             tx_id(1),
-            &RequireLockIntentRef::new(id.substate_id(), 0, SubstateLockType::Write),
+            &RequireLockIntentRef::new(id.substate_id(), SubstateVersion::ZERO, SubstateLockType::Write),
             true,
         )
         .unwrap();
@@ -438,7 +443,7 @@ fn an_output_lock_for_a_destroyed_version_is_rejected() {
     let err = store
         .try_lock(
             tx_id(2),
-            &RequireLockIntentRef::new(id.substate_id(), 0, SubstateLockType::Output),
+            &RequireLockIntentRef::new(id.substate_id(), SubstateVersion::ZERO, SubstateLockType::Output),
             true,
         )
         .unwrap_err();
@@ -455,7 +460,7 @@ fn a_put_diff_over_a_spent_input_is_a_skippable_lock_failure() {
     // sequences one. Both depend on this failure classifying as a lock failure rather than a fatal store error.
     let (store, _tmp) = create_store();
 
-    let id = add_substate(&store, 0, 0);
+    let id = add_substate(&store, 0, SubstateVersion::ZERO);
 
     let tx = store.create_read_tx().unwrap();
     let mut store = create_pending_store::<TestStore>(&tx);
@@ -476,13 +481,13 @@ fn a_put_diff_upping_over_a_live_version_is_fatal() {
     // execution result, and both the proposer and the replica must propagate it.
     let (store, _tmp) = create_store();
 
-    let id = add_substate(&store, 0, 0);
+    let id = add_substate(&store, 0, SubstateVersion::ZERO);
 
     let tx = store.create_read_tx().unwrap();
     let mut store = create_pending_store::<TestStore>(&tx);
 
     let mut diff = SubstateDiff::new();
-    diff.up(id.substate_id().clone(), new_substate(1, id.version() + 1));
+    diff.up(id.substate_id().clone(), new_substate(1, id.version().next()));
 
     let err = store.put_diff(&diff).unwrap_err();
 
@@ -496,11 +501,11 @@ fn a_put_diff_upping_over_a_live_version_is_fatal() {
 fn write_diff(id: &VersionedSubstateId) -> SubstateDiff {
     let mut diff = SubstateDiff::new();
     diff.down(id.substate_id().clone(), id.version());
-    diff.up(id.substate_id().clone(), new_substate(1, id.version() + 1));
+    diff.up(id.substate_id().clone(), new_substate(1, id.version().next()));
     diff
 }
 
-fn add_substate(store: &TestStore, seed: u8, version: u64) -> VersionedSubstateId {
+fn add_substate(store: &TestStore, seed: u8, version: SubstateVersion) -> VersionedSubstateId {
     let id = new_substate_id(seed);
     let value = new_substate_value(seed);
     let mut batch = SubstateUpdateBatch::new(Network::LocalNet, Epoch::zero());
@@ -549,7 +554,7 @@ fn new_substate_id(seed: u8) -> SubstateId {
     ComponentAddress::from_array([seed; ObjectKey::LENGTH]).into()
 }
 
-fn new_substate(seed: u8, version: u64) -> Substate {
+fn new_substate(seed: u8, version: SubstateVersion) -> Substate {
     Substate::new(version, new_substate_value(seed))
 }
 

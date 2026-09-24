@@ -9,7 +9,7 @@ use log::*;
 use minicbor::{CborLen, Decode, Encode};
 use serde::{Deserialize, Serialize};
 use tari_consensus_types::PcId;
-use tari_engine_types::substate::SubstateId;
+use tari_engine_types::{SubstateVersion, substate::SubstateId};
 use tari_ootle_common_types::{
     LockIntent,
     NumPreshards,
@@ -125,7 +125,7 @@ impl Evidence {
                 self.add_shard_group(sg).insert_unpledged_input(substate_id.clone());
             }
         } else {
-            let substate_address = SubstateAddress::from_substate_id(&substate_id, 0);
+            let substate_address = SubstateAddress::from_substate_id(&substate_id, SubstateVersion::ZERO);
             let sg = substate_address.to_shard_group(num_preshards, num_committees);
             self.add_shard_group(sg).insert_unpledged_input(substate_id);
         }
@@ -141,7 +141,7 @@ impl Evidence {
         })
     }
 
-    pub fn all_outputs_iter(&self) -> impl Iterator<Item = (&ShardGroup, &SubstateId, &u64)> {
+    pub fn all_outputs_iter(&self) -> impl Iterator<Item = (&ShardGroup, &SubstateId, &SubstateVersion)> {
         self.evidence.iter().flat_map(|(sg, evidence)| {
             evidence
                 .outputs
@@ -448,7 +448,7 @@ pub struct ShardGroupEvidence {
     #[cfg_attr(feature = "ts", ts(type = "Record<string, number>"))]
     #[n(1)]
     #[cbor(with = "tari_bor::adapters::indexmap_codec")]
-    outputs: IndexMap<SubstateId, u64>,
+    outputs: IndexMap<SubstateId, SubstateVersion>,
     #[cfg_attr(feature = "ts", ts(type = "string | null"))]
     #[n(2)]
     prepare_qc: Option<PcId>,
@@ -462,7 +462,12 @@ impl ShardGroupEvidence {
         self.insert(lock.substate_id().clone(), lock.version_to_lock(), lock.lock_type())
     }
 
-    pub fn insert(&mut self, substate_id: SubstateId, version_to_lock: u64, lock_type: SubstateLockType) -> &mut Self {
+    pub fn insert(
+        &mut self,
+        substate_id: SubstateId,
+        version_to_lock: SubstateVersion,
+        lock_type: SubstateLockType,
+    ) -> &mut Self {
         if lock_type.is_input() {
             self.inputs.insert_sorted(
                 substate_id,
@@ -482,7 +487,7 @@ impl ShardGroupEvidence {
         self
     }
 
-    pub fn insert_output(&mut self, substate_id: SubstateId, version: u64) -> &mut Self {
+    pub fn insert_output(&mut self, substate_id: SubstateId, version: SubstateVersion) -> &mut Self {
         self.outputs.insert_sorted(substate_id, version);
         self
     }
@@ -514,7 +519,7 @@ impl ShardGroupEvidence {
         })
     }
 
-    pub fn outputs(&self) -> &IndexMap<SubstateId, u64> {
+    pub fn outputs(&self) -> &IndexMap<SubstateId, SubstateVersion> {
         &self.outputs
     }
 
@@ -540,7 +545,7 @@ impl ShardGroupEvidence {
         self.outputs.sort_keys();
     }
 
-    pub fn contains_pledge(&self, substate_id: &SubstateId, version: u64, is_input: bool) -> bool {
+    pub fn contains_pledge(&self, substate_id: &SubstateId, version: SubstateVersion, is_input: bool) -> bool {
         if is_input {
             return self
                 .inputs
@@ -640,8 +645,7 @@ pub struct EvidenceInputLockData {
     #[n(0)]
     pub is_write: bool,
     #[n(1)]
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub version: u64,
+    pub version: SubstateVersion,
 }
 
 impl EvidenceInputLockData {
@@ -674,7 +678,7 @@ mod tests {
     }
 
     fn seed_lock_intent(seed: u8, ty: SubstateLockType) -> SubstateRequirementLockIntent {
-        SubstateRequirementLockIntent::new(seed_substate_id(seed), 0, ty)
+        SubstateRequirementLockIntent::new(seed_substate_id(seed), SubstateVersion::ZERO, ty)
     }
 
     mod exhaust_burn_portion {
@@ -806,11 +810,11 @@ mod tests {
         );
         assert_eq!(
             evidence1.get(&sg1).unwrap().outputs.get(&seed_substate_id(2)),
-            Some(&0u64)
+            Some(&SubstateVersion::ZERO)
         );
         assert_eq!(
             evidence1.get(&sg1).unwrap().outputs.get(&seed_substate_id(2)),
-            Some(&0u64)
+            Some(&SubstateVersion::ZERO)
         );
     }
 }

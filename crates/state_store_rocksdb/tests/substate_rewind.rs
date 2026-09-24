@@ -5,7 +5,7 @@ pub mod helpers;
 
 use helpers::{build_substate_record, create_rocksdb, create_substate_update_batch};
 use tari_engine_types::substate::SubstateId;
-use tari_ootle_common_types::{Epoch, VersionedSubstateIdRef, optional::Optional, shard::Shard};
+use tari_ootle_common_types::{Epoch, SubstateVersion, VersionedSubstateIdRef, optional::Optional, shard::Shard};
 use tari_ootle_storage::{
     StateStore,
     StateStoreReadTransaction,
@@ -22,7 +22,7 @@ fn substate_id(seed: u8) -> SubstateId {
     SubstateId::Component(ComponentAddress::from_array([seed; ObjectKey::LENGTH]))
 }
 
-fn shard_for(id: &SubstateId, version: u64) -> Shard {
+fn shard_for(id: &SubstateId, version: SubstateVersion) -> Shard {
     VersionedSubstateIdRef::new(id, version).to_shard(num_preshards())
 }
 
@@ -31,10 +31,10 @@ fn rewind_deletes_upped_records_and_restores_downed() {
     let (db, _tmp) = create_rocksdb();
 
     let a = substate_id(1);
-    let shard = shard_for(&a, 0);
+    let shard = shard_for(&a, SubstateVersion::ZERO);
 
     // Commit #1 (sv=1, epoch 0): create a@v0.
-    let a_v0 = build_substate_record(&a, 0, 1);
+    let a_v0 = build_substate_record(&a, SubstateVersion::ZERO, 1);
     db.with_write_tx(|tx| {
         tx.substates_commit_batch(create_substate_update_batch(Epoch(0), [&a_v0]))
             .unwrap();
@@ -45,7 +45,7 @@ fn rewind_deletes_upped_records_and_restores_downed() {
 
     // Commit #2 (sv=3, epoch 1): down a@v0 and up a@v1 — simulating an update.
     let a_v1 = {
-        let mut r = build_substate_record(&a, 1, 3);
+        let mut r = build_substate_record(&a, SubstateVersion::new(1), 3);
         r.created.at_epoch = Epoch(1);
         r
     };
@@ -56,7 +56,7 @@ fn rewind_deletes_upped_records_and_restores_downed() {
         });
         batch.with_transition(shard, 3).push(SubstateTransition::Up {
             id: a.clone(),
-            version: 1,
+            version: SubstateVersion::new(1),
             substate_or_hash: a_v1
                 .substate_value()
                 .cloned()
@@ -72,7 +72,7 @@ fn rewind_deletes_upped_records_and_restores_downed() {
     // Pre-rewind: head points at v1.
     db.with_read_tx(|tx| {
         let (v, is_up) = tx.substates_get_max_version_for_substate(&a).unwrap();
-        assert_eq!((v, is_up), (1, true), "a head should be v1 up");
+        assert_eq!((v, is_up), (SubstateVersion::new(1), true), "a head should be v1 up");
         Ok::<_, tari_ootle_storage::StorageError>(())
     })
     .unwrap();
@@ -97,7 +97,11 @@ fn rewind_deletes_upped_records_and_restores_downed() {
 
         // Head rebuilt to v0 up.
         let (v, is_up) = tx.substates_get_max_version_for_substate(&a).unwrap();
-        assert_eq!((v, is_up), (0, true), "a head should revert to v0 up");
+        assert_eq!(
+            (v, is_up),
+            (SubstateVersion::ZERO, true),
+            "a head should revert to v0 up"
+        );
         Ok::<_, tari_ootle_storage::StorageError>(())
     })
     .unwrap();
@@ -108,10 +112,10 @@ fn rewind_past_creation_deletes_head() {
     let (db, _tmp) = create_rocksdb();
 
     let a = substate_id(1);
-    let shard = shard_for(&a, 0);
+    let shard = shard_for(&a, SubstateVersion::ZERO);
     // Create a@v0 at state_version 2.
     let a_v0 = {
-        let mut r = build_substate_record(&a, 0, 2);
+        let mut r = build_substate_record(&a, SubstateVersion::ZERO, 2);
         r.created.at_state_version = 2;
         r
     };
@@ -144,8 +148,8 @@ fn rewind_past_creation_deletes_head() {
 fn rewind_noop_when_target_at_or_above_current() {
     let (db, _tmp) = create_rocksdb();
     let a = substate_id(1);
-    let shard = shard_for(&a, 0);
-    let a_v0 = build_substate_record(&a, 0, 1);
+    let shard = shard_for(&a, SubstateVersion::ZERO);
+    let a_v0 = build_substate_record(&a, SubstateVersion::ZERO, 1);
     db.with_write_tx(|tx| {
         tx.substates_commit_batch(create_substate_update_batch(Epoch(0), [&a_v0]))
             .unwrap();
@@ -181,29 +185,29 @@ fn rewind_preserves_other_shards() {
     let mut candidate_b: Option<SubstateId> = None;
     for seed in 1u8..=255u8 {
         let id = substate_id(seed);
-        let s = shard_for(&id, 0);
+        let s = shard_for(&id, SubstateVersion::ZERO);
         if candidate_a.is_none() {
             candidate_a = Some(id);
             continue;
         }
-        if s != shard_for(candidate_a.as_ref().unwrap(), 0) {
+        if s != shard_for(candidate_a.as_ref().unwrap(), SubstateVersion::ZERO) {
             candidate_b = Some(id);
             break;
         }
     }
     let a = candidate_a.expect("could not find substate A");
     let b = candidate_b.expect("could not find a second substate on a different shard");
-    let shard_a = shard_for(&a, 0);
-    let shard_b = shard_for(&b, 0);
+    let shard_a = shard_for(&a, SubstateVersion::ZERO);
+    let shard_b = shard_for(&b, SubstateVersion::ZERO);
     assert_ne!(shard_a, shard_b);
 
     let a_v0 = {
-        let mut r = build_substate_record(&a, 0, 3);
+        let mut r = build_substate_record(&a, SubstateVersion::ZERO, 3);
         r.created.at_state_version = 3;
         r
     };
     let b_v0 = {
-        let mut r = build_substate_record(&b, 0, 3);
+        let mut r = build_substate_record(&b, SubstateVersion::ZERO, 3);
         r.created.at_state_version = 3;
         r
     };
@@ -227,7 +231,7 @@ fn rewind_preserves_other_shards() {
         let got = tx.substates_get(&b_v0.to_substate_address()).unwrap();
         assert!(got.is_up());
         let (v, is_up) = tx.substates_get_max_version_for_substate(&b).unwrap();
-        assert_eq!((v, is_up), (0, true));
+        assert_eq!((v, is_up), (SubstateVersion::ZERO, true));
 
         // a's substate is gone.
         assert!(

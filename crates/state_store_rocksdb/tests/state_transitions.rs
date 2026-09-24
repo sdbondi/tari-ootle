@@ -6,7 +6,7 @@ pub mod helpers;
 use std::collections::{HashMap, HashSet};
 
 use helpers::{create_rocksdb, create_substate_update_batch, gen_substates_for_shards};
-use tari_ootle_common_types::Epoch;
+use tari_ootle_common_types::{Epoch, SubstateVersion};
 use tari_ootle_storage::{
     StateStore,
     StateStoreReadTransaction,
@@ -30,7 +30,7 @@ fn rocksdb() {
     zero_block.insert(&mut tx).unwrap();
 
     let mut shards = HashMap::new();
-    let substates = gen_substates_for_shards(EPOCH, 1, 0..num_transitions, 0).collect::<Vec<_>>();
+    let substates = gen_substates_for_shards(EPOCH, 1, 0..num_transitions, SubstateVersion::ZERO).collect::<Vec<_>>();
     shards.insert(
         1 as Version,
         (
@@ -42,7 +42,8 @@ fn rocksdb() {
     tx.substates_commit_batch(batch).unwrap();
 
     // Add a couple for a different shard
-    let substates = gen_substates_for_shards(EPOCH, 2, num_transitions..num_transitions + 2, 0).collect::<Vec<_>>();
+    let substates = gen_substates_for_shards(EPOCH, 2, num_transitions..num_transitions + 2, SubstateVersion::ZERO)
+        .collect::<Vec<_>>();
     shards.insert(
         2,
         (
@@ -53,7 +54,7 @@ fn rocksdb() {
     let batch = create_substate_update_batch(Epoch::zero(), &substates);
     tx.substates_commit_batch(batch).unwrap();
 
-    let substates = gen_substates_for_shards(EPOCH, 3, 0..num_transitions, 1).collect::<Vec<_>>();
+    let substates = gen_substates_for_shards(EPOCH, 3, 0..num_transitions, SubstateVersion::new(1)).collect::<Vec<_>>();
     shards.insert(
         3,
         (
@@ -89,7 +90,9 @@ fn up_only_skips_an_up_whose_substate_was_since_destroyed() {
         .insert(&mut tx)
         .unwrap();
 
-    let mut substate = gen_substates_for_shards(EPOCH, 1, 0..1, 0).next().unwrap();
+    let mut substate = gen_substates_for_shards(EPOCH, 1, 0..1, SubstateVersion::ZERO)
+        .next()
+        .unwrap();
     let shard = substate.shard();
     tx.substates_commit_batch(create_substate_update_batch(EPOCH, [&substate]))
         .unwrap();
@@ -134,7 +137,9 @@ fn all_hashes_streams_downs_for_filtered_out_substates() {
         .insert(&mut tx)
         .unwrap();
 
-    let mut substate = gen_substates_for_shards(EPOCH, 1, 0..1, 0).next().unwrap();
+    let mut substate = gen_substates_for_shards(EPOCH, 1, 0..1, SubstateVersion::ZERO)
+        .next()
+        .unwrap();
     let shard = substate.shard();
     tx.substates_commit_batch(create_substate_update_batch(EPOCH, [&substate]))
         .unwrap();

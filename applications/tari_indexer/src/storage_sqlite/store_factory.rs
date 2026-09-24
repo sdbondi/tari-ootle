@@ -165,7 +165,7 @@ mod tests {
     };
     use tari_indexer_client::types::TransactionSource;
     use tari_indexer_lib::substate_cache::{FetchWatermark, SubstateCacheEntry, SubstateCacheEntryRef};
-    use tari_ootle_common_types::{Epoch, NodeHeight, ShardGroup, StateVersion};
+    use tari_ootle_common_types::{Epoch, NodeHeight, ShardGroup, StateVersion, SubstateVersion};
     use tari_ootle_transaction::{Transaction, TransactionId};
     use tari_validator_node_rpc::client::SubstateResult;
 
@@ -217,7 +217,7 @@ mod tests {
         let address = tari_template_lib_types::UtxoAddress::new(utxo_resource(), UtxoId::from_array([seq; 32]));
         UtxoUpdateRecord::Unspent(Box::new(UtxoUnspent {
             address,
-            version: 0,
+            version: SubstateVersion::ZERO,
             shard: tari_ootle_common_types::shard::Shard::from(1u32),
             state_version: StateVersion::new(state_version),
             utxo_output: UtxoOutput {
@@ -1063,7 +1063,7 @@ mod tests {
     async fn put_entry(
         store: &SqliteIndexerStore,
         id: &SubstateId,
-        version: u64,
+        version: SubstateVersion,
         verified: bool,
         cached_at: u64,
         watermark: u64,
@@ -1088,13 +1088,13 @@ mod tests {
             .unwrap()
     }
 
-    async fn put(store: &SqliteIndexerStore, id: &SubstateId, version: u64, watermark: u64) -> bool {
+    async fn put(store: &SqliteIndexerStore, id: &SubstateId, version: SubstateVersion, watermark: u64) -> bool {
         put_entry(store, id, version, true, now_secs(), watermark).await
     }
 
     /// A committee member answering that `version` is live, as against the `Down` every other put
     /// helper here records.
-    async fn put_up(store: &SqliteIndexerStore, id: &SubstateId, version: u64, watermark: u64) -> bool {
+    async fn put_up(store: &SqliteIndexerStore, id: &SubstateId, version: SubstateVersion, watermark: u64) -> bool {
         use tari_engine_types::{
             non_fungible::NonFungibleContainer,
             substate::{Substate, SubstateValue},
@@ -1127,7 +1127,7 @@ mod tests {
 
     /// The cached head version. `None` covers both no row at all and a row recording that the
     /// substate does not exist; use [`read_entry`] where the two must be told apart.
-    async fn read(store: &SqliteIndexerStore, id: &SubstateId) -> Option<u64> {
+    async fn read(store: &SqliteIndexerStore, id: &SubstateId) -> Option<SubstateVersion> {
         read_entry(store, id).await.and_then(|entry| entry.version)
     }
 
@@ -1176,13 +1176,18 @@ mod tests {
     async fn a_version_the_stream_has_already_seen_past_is_refused() {
         let (_d, store) = temp_store().await;
         let id = substate(1);
-        assert!(put(&store, &id, 6, 100).await);
+        assert!(put(&store, &id, SubstateVersion::new(6), 100).await);
 
-        invalidate(&store, SubstateCacheInvalidation::created(&id, 7).unwrap(), 105).await;
+        invalidate(
+            &store,
+            SubstateCacheInvalidation::created(&id, SubstateVersion::new(7)).unwrap(),
+            105,
+        )
+        .await;
         assert!(read(&store, &id).await.is_none());
 
         // A fetch that began after the creation committed, answered by a member still on v6.
-        assert!(!put(&store, &id, 6, 110).await);
+        assert!(!put(&store, &id, SubstateVersion::new(6), 110).await);
         assert!(read(&store, &id).await.is_none());
     }
 
@@ -1193,11 +1198,16 @@ mod tests {
         let (_d, store) = temp_store().await;
         let id = substate(1);
 
-        invalidate(&store, SubstateCacheInvalidation::created(&id, 7).unwrap(), 105).await;
-        assert!(put(&store, &id, 7, 110).await);
-        assert_eq!(read(&store, &id).await, Some(7));
-        assert!(put(&store, &id, 9, 110).await);
-        assert_eq!(read(&store, &id).await, Some(9));
+        invalidate(
+            &store,
+            SubstateCacheInvalidation::created(&id, SubstateVersion::new(7)).unwrap(),
+            105,
+        )
+        .await;
+        assert!(put(&store, &id, SubstateVersion::new(7), 110).await);
+        assert_eq!(read(&store, &id).await, Some(SubstateVersion::new(7)));
+        assert!(put(&store, &id, SubstateVersion::new(9), 110).await);
+        assert_eq!(read(&store, &id).await, Some(SubstateVersion::new(9)));
     }
 
     /// A destroy shows the version it names as reached just as a creation does, so a member still
@@ -1207,11 +1217,16 @@ mod tests {
         let (_d, store) = temp_store().await;
         let id = substate(1);
 
-        invalidate(&store, SubstateCacheInvalidation::destroyed(id.clone(), 7), 105).await;
-        assert!(!put(&store, &id, 6, 110).await);
+        invalidate(
+            &store,
+            SubstateCacheInvalidation::destroyed(id.clone(), SubstateVersion::new(7)),
+            105,
+        )
+        .await;
+        assert!(!put(&store, &id, SubstateVersion::new(6), 110).await);
         // The destroyed version is itself a legitimate head: it is down, which is what a lookup for
         // it answers.
-        assert!(put(&store, &id, 7, 110).await);
+        assert!(put(&store, &id, SubstateVersion::new(7), 110).await);
     }
 
     /// A destroy with no successor leaves the version it named as the floor, and that version is
@@ -1222,8 +1237,13 @@ mod tests {
         let (_d, store) = temp_store().await;
         let id = substate(1);
 
-        invalidate(&store, SubstateCacheInvalidation::destroyed(id.clone(), 7), 105).await;
-        assert!(!put_up(&store, &id, 7, 110).await);
+        invalidate(
+            &store,
+            SubstateCacheInvalidation::destroyed(id.clone(), SubstateVersion::new(7)),
+            105,
+        )
+        .await;
+        assert!(!put_up(&store, &id, SubstateVersion::new(7), 110).await);
         assert!(read(&store, &id).await.is_none());
     }
 
@@ -1234,9 +1254,14 @@ mod tests {
         let (_d, store) = temp_store().await;
         let id = substate(1);
 
-        invalidate(&store, SubstateCacheInvalidation::destroyed(id.clone(), 7), 105).await;
-        assert!(put(&store, &id, 7, 110).await);
-        assert_eq!(read(&store, &id).await, Some(7));
+        invalidate(
+            &store,
+            SubstateCacheInvalidation::destroyed(id.clone(), SubstateVersion::new(7)),
+            105,
+        )
+        .await;
+        assert!(put(&store, &id, SubstateVersion::new(7), 110).await);
+        assert_eq!(read(&store, &id).await, Some(SubstateVersion::new(7)));
     }
 
     /// A destroy with a successor is not a spend of the floor: the creation raises it to the version
@@ -1247,8 +1272,8 @@ mod tests {
             let (_d, store) = temp_store().await;
             let id = substate(1);
             let mut batch = vec![
-                SubstateCacheInvalidation::destroyed(id.clone(), 6),
-                SubstateCacheInvalidation::created(&id, 7).unwrap(),
+                SubstateCacheInvalidation::destroyed(id.clone(), SubstateVersion::new(6)),
+                SubstateCacheInvalidation::created(&id, SubstateVersion::new(7)).unwrap(),
             ];
             if reversed {
                 batch.reverse();
@@ -1258,9 +1283,9 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert!(!put_up(&store, &id, 6, 110).await);
-            assert!(put_up(&store, &id, 7, 110).await);
-            assert_eq!(read(&store, &id).await, Some(7));
+            assert!(!put_up(&store, &id, SubstateVersion::new(6), 110).await);
+            assert!(put_up(&store, &id, SubstateVersion::new(7), 110).await);
+            assert_eq!(read(&store, &id).await, Some(SubstateVersion::new(7)));
         }
     }
 
@@ -1273,8 +1298,8 @@ mod tests {
             let (_d, store) = temp_store().await;
             let id = substate(1);
             let mut batch = vec![
-                SubstateCacheInvalidation::created(&id, 7).unwrap(),
-                SubstateCacheInvalidation::destroyed(id.clone(), 7),
+                SubstateCacheInvalidation::created(&id, SubstateVersion::new(7)).unwrap(),
+                SubstateCacheInvalidation::destroyed(id.clone(), SubstateVersion::new(7)),
             ];
             if reversed {
                 batch.reverse();
@@ -1284,8 +1309,8 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert!(!put_up(&store, &id, 7, 110).await);
-            assert!(put(&store, &id, 7, 110).await);
+            assert!(!put_up(&store, &id, SubstateVersion::new(7), 110).await);
+            assert!(put(&store, &id, SubstateVersion::new(7), 110).await);
         }
     }
 
@@ -1297,16 +1322,16 @@ mod tests {
         let id = substate(1);
 
         let batch = [
-            SubstateCacheInvalidation::created(&id, 7).unwrap(),
-            SubstateCacheInvalidation::destroyed(id.clone(), 6),
+            SubstateCacheInvalidation::created(&id, SubstateVersion::new(7)).unwrap(),
+            SubstateCacheInvalidation::destroyed(id.clone(), SubstateVersion::new(6)),
         ];
         store
             .with_write_tx(move |tx| tx.substate_cache_invalidate(batch, StateVersion::new(105)))
             .await
             .unwrap();
 
-        assert!(!put(&store, &id, 6, 110).await);
-        assert!(put(&store, &id, 7, 110).await);
+        assert!(!put(&store, &id, SubstateVersion::new(6), 110).await);
+        assert!(put(&store, &id, SubstateVersion::new(7), 110).await);
     }
 
     /// Nonexistence is settled by f + 1 members rather than one, so a single member being behind
@@ -1316,7 +1341,12 @@ mod tests {
         let (_d, store) = temp_store().await;
         let id = substate(1);
 
-        invalidate(&store, SubstateCacheInvalidation::destroyed(id.clone(), 7), 105).await;
+        invalidate(
+            &store,
+            SubstateCacheInvalidation::destroyed(id.clone(), SubstateVersion::new(7)),
+            105,
+        )
+        .await;
         assert!(put_nonexistent(&store, &id, 110).await);
         assert!(is_nonexistent(&read_entry(&store, &id).await.unwrap()));
     }
@@ -1330,7 +1360,12 @@ mod tests {
         assert!(put_nonexistent(&store, &id, 100).await);
         assert!(is_nonexistent(&read_entry(&store, &id).await.unwrap()));
 
-        invalidate(&store, SubstateCacheInvalidation::created(&id, 0).unwrap(), 105).await;
+        invalidate(
+            &store,
+            SubstateCacheInvalidation::created(&id, SubstateVersion::ZERO).unwrap(),
+            105,
+        )
+        .await;
         assert!(read_entry(&store, &id).await.is_none());
     }
 
@@ -1341,7 +1376,12 @@ mod tests {
         let id = substate(1);
         assert!(put_nonexistent(&store, &id, 100).await);
 
-        invalidate(&store, SubstateCacheInvalidation::created(&id, 6).unwrap(), 105).await;
+        invalidate(
+            &store,
+            SubstateCacheInvalidation::created(&id, SubstateVersion::new(6)).unwrap(),
+            105,
+        )
+        .await;
         assert!(read_entry(&store, &id).await.is_none());
     }
 
@@ -1352,7 +1392,12 @@ mod tests {
         let id = substate(1);
         assert!(put_nonexistent(&store, &id, 100).await);
 
-        invalidate(&store, SubstateCacheInvalidation::destroyed(id.clone(), 6), 105).await;
+        invalidate(
+            &store,
+            SubstateCacheInvalidation::destroyed(id.clone(), SubstateVersion::new(6)),
+            105,
+        )
+        .await;
         assert!(is_nonexistent(&read_entry(&store, &id).await.unwrap()));
     }
 
@@ -1365,7 +1410,12 @@ mod tests {
         let id = substate(1);
 
         // The fetch captured the watermark at 100; the creation commits at 105 while it is in flight.
-        invalidate(&store, SubstateCacheInvalidation::created(&id, 0).unwrap(), 105).await;
+        invalidate(
+            &store,
+            SubstateCacheInvalidation::created(&id, SubstateVersion::ZERO).unwrap(),
+            105,
+        )
+        .await;
         assert!(!put_nonexistent(&store, &id, 100).await);
         assert!(read_entry(&store, &id).await.is_none());
     }
@@ -1386,22 +1436,27 @@ mod tests {
         let (_d, store) = temp_store().await;
         let id = substate(1);
         assert!(put_nonexistent(&store, &id, 100).await);
-        assert!(put(&store, &id, 0, 100).await);
-        assert_eq!(read(&store, &id).await, Some(0));
+        assert!(put(&store, &id, SubstateVersion::ZERO, 100).await);
+        assert_eq!(read(&store, &id).await, Some(SubstateVersion::ZERO));
 
         // ...and cannot displace one that is verified and current.
         assert!(!put_nonexistent(&store, &id, 100).await);
-        assert_eq!(read(&store, &id).await, Some(0));
+        assert_eq!(read(&store, &id).await, Some(SubstateVersion::ZERO));
     }
 
     #[tokio::test]
     async fn a_cached_head_is_held_until_a_transition_retires_it() {
         let (_d, store) = temp_store().await;
         let id = substate(1);
-        assert!(put(&store, &id, 5, 100).await);
-        assert_eq!(read(&store, &id).await, Some(5));
+        assert!(put(&store, &id, SubstateVersion::new(5), 100).await);
+        assert_eq!(read(&store, &id).await, Some(SubstateVersion::new(5)));
 
-        invalidate(&store, SubstateCacheInvalidation::created(&id, 6).unwrap(), 105).await;
+        invalidate(
+            &store,
+            SubstateCacheInvalidation::created(&id, SubstateVersion::new(6)).unwrap(),
+            105,
+        )
+        .await;
         assert_eq!(read(&store, &id).await, None);
     }
 
@@ -1409,9 +1464,14 @@ mod tests {
     async fn a_destroy_retires_the_version_it_names() {
         let (_d, store) = temp_store().await;
         let id = substate(1);
-        assert!(put(&store, &id, 5, 100).await);
+        assert!(put(&store, &id, SubstateVersion::new(5), 100).await);
 
-        invalidate(&store, SubstateCacheInvalidation::destroyed(id.clone(), 5), 105).await;
+        invalidate(
+            &store,
+            SubstateCacheInvalidation::destroyed(id.clone(), SubstateVersion::new(5)),
+            105,
+        )
+        .await;
         assert_eq!(read(&store, &id).await, None);
     }
 
@@ -1422,11 +1482,21 @@ mod tests {
     async fn a_transition_leaves_a_higher_cached_head_alone() {
         let (_d, store) = temp_store().await;
         let id = substate(1);
-        assert!(put(&store, &id, 9, 100).await);
+        assert!(put(&store, &id, SubstateVersion::new(9), 100).await);
 
-        invalidate(&store, SubstateCacheInvalidation::created(&id, 7).unwrap(), 105).await;
-        invalidate(&store, SubstateCacheInvalidation::destroyed(id.clone(), 8), 106).await;
-        assert_eq!(read(&store, &id).await, Some(9));
+        invalidate(
+            &store,
+            SubstateCacheInvalidation::created(&id, SubstateVersion::new(7)).unwrap(),
+            105,
+        )
+        .await;
+        invalidate(
+            &store,
+            SubstateCacheInvalidation::destroyed(id.clone(), SubstateVersion::new(8)),
+            106,
+        )
+        .await;
+        assert_eq!(read(&store, &id).await, Some(SubstateVersion::new(9)));
     }
 
     /// A committee member that is behind answers with a version below the head already held. Taking it
@@ -1435,9 +1505,9 @@ mod tests {
     async fn a_lower_version_does_not_displace_the_cached_head() {
         let (_d, store) = temp_store().await;
         let id = substate(1);
-        assert!(put(&store, &id, 6, 100).await);
-        assert!(!put(&store, &id, 5, 100).await);
-        assert_eq!(read(&store, &id).await, Some(6));
+        assert!(put(&store, &id, SubstateVersion::new(6), 100).await);
+        assert!(!put(&store, &id, SubstateVersion::new(5), 100).await);
+        assert_eq!(read(&store, &id).await, Some(SubstateVersion::new(6)));
     }
 
     /// The batch RPC carries no proofs, so a single validator can park an unverified head above any
@@ -1447,9 +1517,9 @@ mod tests {
     async fn a_verified_result_displaces_an_unverified_head() {
         let (_d, store) = temp_store().await;
         let id = substate(1);
-        assert!(put_entry(&store, &id, 999, false, now_secs(), 100).await);
-        assert!(put_entry(&store, &id, 6, true, now_secs(), 100).await);
-        assert_eq!(read(&store, &id).await, Some(6));
+        assert!(put_entry(&store, &id, SubstateVersion::new(999), false, now_secs(), 100).await);
+        assert!(put_entry(&store, &id, SubstateVersion::new(6), true, now_secs(), 100).await);
+        assert_eq!(read(&store, &id).await, Some(SubstateVersion::new(6)));
     }
 
     /// A committee member that is behind can prove an older version against an older signed root, which
@@ -1460,9 +1530,9 @@ mod tests {
         let (_d, store) = temp_store().await;
         let id = substate(1);
         let aged = now_secs() - HEAD_TTL.as_secs() - 1;
-        assert!(put_entry(&store, &id, 10, true, aged, 100).await);
-        assert!(!put_entry(&store, &id, 6, true, now_secs(), 100).await);
-        assert_eq!(read(&store, &id).await, Some(10));
+        assert!(put_entry(&store, &id, SubstateVersion::new(10), true, aged, 100).await);
+        assert!(!put_entry(&store, &id, SubstateVersion::new(6), true, now_secs(), 100).await);
+        assert_eq!(read(&store, &id).await, Some(SubstateVersion::new(10)));
     }
 
     /// An unverified head is not a lower bound on anything, and with proof verification off nothing
@@ -1472,23 +1542,28 @@ mod tests {
         let (_d, store) = temp_store().await;
         let id = substate(1);
         let stale = now_secs() - HEAD_TTL.as_secs() - 1;
-        assert!(put_entry(&store, &id, 999, false, stale, 100).await);
-        assert!(put_entry(&store, &id, 6, false, now_secs(), 100).await);
-        assert_eq!(read(&store, &id).await, Some(6));
+        assert!(put_entry(&store, &id, SubstateVersion::new(999), false, stale, 100).await);
+        assert!(put_entry(&store, &id, SubstateVersion::new(6), false, now_secs(), 100).await);
+        assert_eq!(read(&store, &id).await, Some(SubstateVersion::new(6)));
     }
 
     #[tokio::test]
     async fn a_write_is_vetoed_by_a_transition_that_landed_during_the_fetch() {
         let (_d, store) = temp_store().await;
         let id = substate(1);
-        invalidate(&store, SubstateCacheInvalidation::created(&id, 6).unwrap(), 105).await;
+        invalidate(
+            &store,
+            SubstateCacheInvalidation::created(&id, SubstateVersion::new(6)).unwrap(),
+            105,
+        )
+        .await;
 
-        assert!(!put(&store, &id, 6, 100).await);
+        assert!(!put(&store, &id, SubstateVersion::new(6), 100).await);
         assert_eq!(read(&store, &id).await, None);
 
         // The same result fetched against a watermark that already covers the transition is current.
-        assert!(put(&store, &id, 6, 105).await);
-        assert_eq!(read(&store, &id).await, Some(6));
+        assert!(put(&store, &id, SubstateVersion::new(6), 105).await);
+        assert_eq!(read(&store, &id).await, Some(SubstateVersion::new(6)));
     }
 
     /// Retirements driven by a finalized result are counted like the stream's own, so the counter
@@ -1499,15 +1574,21 @@ mod tests {
         let held = substate(1);
         let spent = substate(2);
         let untouched = substate(3);
-        assert!(put(&store, &held, 6, 100).await);
-        assert!(put(&store, &spent, 6, 100).await);
-        assert!(put(&store, &untouched, 6, 100).await);
+        assert!(put(&store, &held, SubstateVersion::new(6), 100).await);
+        assert!(put(&store, &spent, SubstateVersion::new(6), 100).await);
+        assert!(put(&store, &untouched, SubstateVersion::new(6), 100).await);
 
         let ahead = StateVersion::new(101);
         let invalidations = vec![
             // Below the cached head, so it retires nothing.
-            (SubstateCacheInvalidation::created(&held, 4).unwrap(), ahead),
-            (SubstateCacheInvalidation::destroyed(spent.clone(), 6), ahead),
+            (
+                SubstateCacheInvalidation::created(&held, SubstateVersion::new(4)).unwrap(),
+                ahead,
+            ),
+            (
+                SubstateCacheInvalidation::destroyed(spent.clone(), SubstateVersion::new(6)),
+                ahead,
+            ),
         ];
         let retired = store
             .with_write_tx(move |tx| tx.substate_cache_retire_ahead(invalidations))
@@ -1515,9 +1596,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(retired, 1);
-        assert_eq!(read(&store, &held).await, Some(6));
+        assert_eq!(read(&store, &held).await, Some(SubstateVersion::new(6)));
         assert_eq!(read(&store, &spent).await, None);
-        assert_eq!(read(&store, &untouched).await, Some(6));
+        assert_eq!(read(&store, &untouched).await, Some(SubstateVersion::new(6)));
     }
 
     #[tokio::test]
@@ -1526,11 +1607,21 @@ mod tests {
         // Descending `cached_at`, so the substates with the lowest n are the oldest and evicted first.
         let now = now_secs();
         for n in 0..5u8 {
-            assert!(put_entry(&store, &substate(n), 1, true, now - u64::from(4 - n), 100).await);
+            assert!(
+                put_entry(
+                    &store,
+                    &substate(n),
+                    SubstateVersion::new(1),
+                    true,
+                    now - u64::from(4 - n),
+                    100
+                )
+                .await
+            );
         }
         invalidate(
             &store,
-            SubstateCacheInvalidation::created(&substate(9), 1).unwrap(),
+            SubstateCacheInvalidation::created(&substate(9), SubstateVersion::new(1)).unwrap(),
             105,
         )
         .await;
@@ -1549,6 +1640,6 @@ mod tests {
         assert_eq!(remaining, vec![3, 4], "eviction did not take the oldest entries");
 
         // With the journal expired, a fetch that started before the transition is no longer vetoed.
-        assert!(put(&store, &substate(9), 1, 100).await);
+        assert!(put(&store, &substate(9), SubstateVersion::new(1), 100).await);
     }
 }

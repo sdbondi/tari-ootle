@@ -34,6 +34,7 @@ use tari_indexer_client::{
 use tari_ootle_common_types::{
     Epoch,
     StateVersion,
+    SubstateVersion,
     array_utils::copy_fixed_checked,
     displayable::Displayable,
     optional::IsNotFoundError,
@@ -98,7 +99,7 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
     async fn query_substate(
         &self,
         substate_id: &SubstateId,
-        version: Option<u64>,
+        version: Option<SubstateVersion>,
         local_search_only: bool,
     ) -> Result<SubstateQueryResult, Self::Error> {
         let client = self.get_client()?;
@@ -293,7 +294,7 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
                             })?;
                             Ok::<_, IndexerRestApiNetworkInterfaceError>(WalletUtxoUpdate::Spent(UtxoSpent {
                                 id: UtxoId::from_array(id_arr),
-                                version: spent.version,
+                                version: SubstateVersion::new(spent.version),
                             }))
                         },
                         protobuf::WalletUtxoUpdate::Burnt(burnt) => {
@@ -304,7 +305,7 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
                             })?;
                             Ok::<_, IndexerRestApiNetworkInterfaceError>(WalletUtxoUpdate::Burnt(UtxoBurnt {
                                 id: UtxoId::from_array(id_arr),
-                                version: burnt.version,
+                                version: SubstateVersion::new(burnt.version),
                             }))
                         },
                     })

@@ -11,7 +11,7 @@ use tari_engine_types::{
     substate::{Substate, SubstateDiff, SubstateId, SubstateValue},
     vault::Vault,
 };
-use tari_ootle_common_types::optional::Optional;
+use tari_ootle_common_types::{SubstateVersion, optional::Optional};
 use tari_ootle_transaction::TransactionId;
 use tari_ootle_wallet_sdk::{
     WalletSdk,
@@ -183,7 +183,7 @@ where TSpec: WalletSdkSpec
         &self,
         account_address: ComponentAddress,
         vault_id: VaultId,
-        vault_version: u64,
+        vault_version: SubstateVersion,
         latest_vault: &Vault,
         updated_nft_data: HashMap<NonFungibleId, NonFungibleContainer>,
         source: BalanceChangeSource,
@@ -729,7 +729,7 @@ where TSpec: WalletSdkSpec
                 .get_substate(&account_addr.into())
                 .optional()?
                 .map(|s| s.substate_id.version())
-                .unwrap_or(0);
+                .unwrap_or(SubstateVersion::ZERO);
 
             self.add_vault_to_account_if_not_exist(&account_addr, vault_id, vault)
                 .await?;
@@ -782,7 +782,7 @@ where TSpec: WalletSdkSpec
                     .get_substate(&account_address.into())
                     .optional()?
                     .map(|s| s.substate_id.version())
-                    .unwrap_or(0);
+                    .unwrap_or(SubstateVersion::ZERO);
                 updated_accounts.insert((account_address, account_version));
             }
         }
@@ -875,7 +875,7 @@ where TSpec: WalletSdkSpec
         accounts_api.add_vault(
             *account_addr,
             vault_id,
-            0,
+            SubstateVersion::ZERO,
             *vault.resource_address(),
             vault.resource_type(),
             token_symbol,

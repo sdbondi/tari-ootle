@@ -9,7 +9,7 @@
 pub mod helpers;
 
 use helpers::{create_rocksdb, create_substate_update_batch, gen_substates_for_shards};
-use tari_ootle_common_types::Epoch;
+use tari_ootle_common_types::{Epoch, SubstateVersion};
 use tari_ootle_storage::{StateStore, StateStoreWriteTransaction, consensus_models::Block};
 use tari_ootle_transaction::Network;
 use tari_state_tree::Version;
@@ -31,7 +31,8 @@ fn collect_substates_yields_reverse_application_order() {
 
     // Seed substate commits across multiple state versions on shard 1.
     for batch_idx in 0..3 {
-        let substates = gen_substates_for_shards(Epoch::zero(), 1, batch_idx..(batch_idx + 2), 0).collect::<Vec<_>>();
+        let substates = gen_substates_for_shards(Epoch::zero(), 1, batch_idx..(batch_idx + 2), SubstateVersion::ZERO)
+            .collect::<Vec<_>>();
         let batch = create_substate_update_batch(Epoch::zero(), &substates);
         tx.substates_commit_batch(batch).unwrap();
     }
@@ -65,7 +66,7 @@ fn collect_substates_empty_when_target_version_above_everything() {
     let mut tx = db.create_write_tx().unwrap();
     let zero_block = Block::zero_block(Network::LocalNet, num_preshards());
     zero_block.insert(&mut tx).unwrap();
-    let substates = gen_substates_for_shards(Epoch::zero(), 1, 0..2, 0).collect::<Vec<_>>();
+    let substates = gen_substates_for_shards(Epoch::zero(), 1, 0..2, SubstateVersion::ZERO).collect::<Vec<_>>();
     let batch = create_substate_update_batch(Epoch::zero(), &substates);
     tx.substates_commit_batch(batch).unwrap();
     tx.commit().unwrap();

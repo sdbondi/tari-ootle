@@ -19,6 +19,7 @@ use tari_ootle_common_types::{
     Epoch,
     NodeAddressable,
     NumPreshards,
+    SubstateVersion,
     VersionedSubstateId,
     VersionedSubstateIdRef,
     shard::Shard,
@@ -60,7 +61,7 @@ pub fn has_bootstrapped<TTx: StateStoreReadTransaction>(tx: &TTx) -> Result<bool
     // Assume that if the public identity resource exists, then the rest of the state has been bootstrapped
     SubstateRecord::exists(
         tx,
-        VersionedSubstateId::new(PUBLIC_IDENTITY_RESOURCE_ADDRESS, 0).as_versioned_ref(),
+        VersionedSubstateId::new(PUBLIC_IDENTITY_RESOURCE_ADDRESS, SubstateVersion::ZERO).as_versioned_ref(),
     )
 }
 
@@ -194,19 +195,19 @@ where
     let mut tree_changes: HashMap<Shard, Vec<SubstateTreeChange>> = HashMap::new();
 
     for (substate_id, value) in substates {
-        let shard = VersionedSubstateIdRef::new(&substate_id, 0).to_shard(num_preshards);
-        let value_hash = hash_substate(network, &value, 0, Epoch::zero());
+        let shard = VersionedSubstateIdRef::new(&substate_id, SubstateVersion::ZERO).to_shard(num_preshards);
+        let value_hash = hash_substate(network, &value, SubstateVersion::ZERO, Epoch::zero());
 
         batch
             .with_transition(shard, GENESIS_STATE_VERSION)
             .push(SubstateTransition::Up {
                 id: substate_id.clone(),
-                version: 0,
+                version: SubstateVersion::ZERO,
                 substate_or_hash: value.into(),
             });
 
         tree_changes.entry(shard).or_default().push(SubstateTreeChange::Up {
-            id: VersionedSubstateId::new(substate_id, 0),
+            id: VersionedSubstateId::new(substate_id, SubstateVersion::ZERO),
             value_hash,
         });
     }

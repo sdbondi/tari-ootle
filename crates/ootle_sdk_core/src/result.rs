@@ -287,10 +287,10 @@ fn diff_summary(diff: &SubstateDiff) -> DiffSummary {
             .up_iter()
             .map(|(id, substate)| UpSubstate {
                 substate_id: id.to_string(),
-                version: substate.version(),
+                version: substate.version().as_u64(),
             })
             .collect(),
-        down: diff.down_iter().map(|(id, v)| (id.to_string(), *v)).collect(),
+        down: diff.down_iter().map(|(id, v)| (id.to_string(), v.as_u64())).collect(),
     }
 }
 
@@ -324,6 +324,7 @@ fn log_summaries(finalize: &FinalizeResult) -> Vec<LogSummary> {
 #[cfg(test)]
 mod tests {
     use tari_engine_types::{
+        SubstateVersion,
         commit_result::{
             AbortReason,
             ExecuteResult,
@@ -380,11 +381,11 @@ mod tests {
         let component = ComponentAddress::new(ObjectKey::from_array([0xaa; ObjectKey::LENGTH]));
         diff.up(
             SubstateId::Component(component),
-            Substate::new(0, SubstateValue::Component(sample_component())),
+            Substate::new(SubstateVersion::ZERO, SubstateValue::Component(sample_component())),
         );
         diff.down(
             SubstateId::Vault(VaultId::new(ObjectKey::from_array([0xbb; ObjectKey::LENGTH]))),
-            3,
+            SubstateVersion::new(3),
         );
         diff
     }

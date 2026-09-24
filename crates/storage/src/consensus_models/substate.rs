@@ -8,6 +8,7 @@ use ootle_network::Network;
 use serde::{Deserialize, Serialize};
 use tari_consensus_types::LeafBlock;
 use tari_engine_types::{
+    SubstateVersion,
     published_template::PublishedTemplateMetadata,
     substate::{Substate, SubstateId, SubstateValue, hash_substate},
 };
@@ -37,8 +38,7 @@ pub struct SubstateRecord {
     #[n(0)]
     pub substate_id: SubstateId,
     #[n(1)]
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub version: u64,
+    pub version: SubstateVersion,
     #[n(2)]
     pub substate_value: Option<SubstateValue>,
     #[cfg_attr(feature = "ts", ts(type = "string"))]
@@ -55,7 +55,7 @@ impl SubstateRecord {
     pub fn new<V: Into<SubstateValueOrHash>>(
         network: Network,
         substate_id: SubstateId,
-        version: u64,
+        version: SubstateVersion,
         value: V,
         created: SubstateCreated,
     ) -> Self {
@@ -112,7 +112,7 @@ impl SubstateRecord {
             .unwrap_or_else(|| self.state_hash.into())
     }
 
-    pub fn version(&self) -> u64 {
+    pub fn version(&self) -> SubstateVersion {
         self.version
     }
 
@@ -263,7 +263,7 @@ impl SubstateRecord {
     pub fn get_latest_version<TTx: StateStoreReadTransaction>(
         tx: &TTx,
         substate_id: &SubstateId,
-    ) -> Result<(u64, bool), StorageError> {
+    ) -> Result<(SubstateVersion, bool), StorageError> {
         tx.substates_get_max_version_for_substate(substate_id)
     }
 
@@ -292,7 +292,7 @@ pub struct SubstateCreate {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubstateDestroy {
     pub substate_id: SubstateId,
-    pub version: u64,
+    pub version: SubstateVersion,
 }
 
 impl SubstateDestroy {
@@ -353,7 +353,7 @@ impl SubstateValueOrHash {
         }
     }
 
-    pub fn to_value_hash(&self, network: Network, version: u64, epoch: Epoch) -> Hash32 {
+    pub fn to_value_hash(&self, network: Network, version: SubstateVersion, epoch: Epoch) -> Hash32 {
         match &self {
             SubstateValueOrHash::Value(v) => hash_substate(network, v, version, epoch),
             SubstateValueOrHash::Hash(hash) => *hash,
@@ -376,7 +376,7 @@ impl From<Hash32> for SubstateValueOrHash {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubstateData {
     pub substate_id: SubstateId,
-    pub version: u64,
+    pub version: SubstateVersion,
     pub value: SubstateValueOrHash,
     #[serde(default)]
     pub template_metadata: Option<PublishedTemplateMetadata>,
@@ -436,7 +436,7 @@ impl SubstateUpdateProof {
         }
     }
 
-    pub fn version(&self) -> u64 {
+    pub fn version(&self) -> SubstateVersion {
         match self {
             Self::Create(create) => create.substate.version,
             Self::Destroy(destroyed) => destroyed.version,

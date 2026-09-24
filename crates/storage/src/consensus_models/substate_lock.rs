@@ -5,7 +5,10 @@ use std::{fmt, fmt::Display};
 
 use minicbor::{CborLen, Decode, Encode};
 use serde::{Deserialize, Serialize};
-use tari_engine_types::substate::{SubstateId, SubstateValue};
+use tari_engine_types::{
+    SubstateVersion,
+    substate::{SubstateId, SubstateValue},
+};
 use tari_ootle_common_types::{
     LockIntent,
     SubstateAddress,
@@ -24,13 +27,18 @@ pub struct SubstateLock {
     #[n(1)]
     transaction_id: TransactionId,
     #[n(2)]
-    version: u64,
+    version: SubstateVersion,
     #[n(3)]
     is_local_only: bool,
 }
 
 impl SubstateLock {
-    pub fn new(transaction_id: TransactionId, version: u64, lock_type: SubstateLockType, is_local_only: bool) -> Self {
+    pub fn new(
+        transaction_id: TransactionId,
+        version: SubstateVersion,
+        lock_type: SubstateLockType,
+        is_local_only: bool,
+    ) -> Self {
         Self {
             transaction_id,
             version,
@@ -47,7 +55,7 @@ impl SubstateLock {
         self.lock_type
     }
 
-    pub fn version(&self) -> u64 {
+    pub fn version(&self) -> SubstateVersion {
         self.version
     }
 

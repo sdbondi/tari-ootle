@@ -4,6 +4,7 @@
 use std::{collections::HashSet, time::Duration};
 
 use tari_engine_types::{
+    SubstateVersion,
     resource::Resource,
     substate::{SubstateDiff, SubstateId},
 };
@@ -130,7 +131,7 @@ pub trait WalletStoreWriter: CommittableStore {
     fn vaults_update(
         &mut self,
         vault_id: VaultId,
-        vault_version: u64,
+        vault_version: SubstateVersion,
         revealed_balance: Amount,
         confidential_balance: Amount,
     ) -> Result<(), WalletStorageError>;
@@ -142,7 +143,7 @@ pub trait WalletStoreWriter: CommittableStore {
     fn balance_changes_attribute_transaction(
         &mut self,
         vault_id: &VaultId,
-        vault_version: u64,
+        vault_version: SubstateVersion,
         transaction_id: TransactionId,
     ) -> Result<bool, WalletStorageError>;
     fn vaults_lock_revealed_funds(

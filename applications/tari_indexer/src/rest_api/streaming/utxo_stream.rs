@@ -207,11 +207,11 @@ fn wallet_utxo_update_to_protobuf(update: &WalletUtxoUpdate) -> protobuf::Wallet
         }),
         WalletUtxoUpdate::Spent(spent) => protobuf::WalletUtxoUpdate::Spent(protobuf::UtxoSpent {
             id: spent.id.as_bytes().to_vec(),
-            version: spent.version,
+            version: spent.version.as_u64(),
         }),
         WalletUtxoUpdate::Burnt(burnt) => protobuf::WalletUtxoUpdate::Burnt(protobuf::UtxoBurnt {
             id: burnt.id.as_bytes().to_vec(),
-            version: burnt.version,
+            version: burnt.version.as_u64(),
         }),
     }
 }

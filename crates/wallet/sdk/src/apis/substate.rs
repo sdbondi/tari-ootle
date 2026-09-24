@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use log::*;
 use tari_engine_types::{
+    SubstateVersion,
     indexed_value::{IndexedValueError, IndexedWellKnownTypes},
     resource::Resource,
     substate::{Substate, SubstateId, SubstateValue},
@@ -163,7 +164,8 @@ where
                                 substate_ids.insert(tx_receipt_addr.into());
                             } else {
                                 // Tx receipts are always v0
-                                substate_ids.insert(SubstateRequirement::versioned(tx_receipt_addr, 0));
+                                substate_ids
+                                    .insert(SubstateRequirement::versioned(tx_receipt_addr, SubstateVersion::ZERO));
                             }
                         },
                         SubstateValue::Vault(vault) => {
@@ -300,7 +302,7 @@ where
     pub async fn fetch_substate_from_network(
         &self,
         address: &SubstateId,
-        version_hint: Option<u64>,
+        version_hint: Option<SubstateVersion>,
     ) -> Result<ValidatorScanResult, SubstateApiError> {
         debug!(
             target: LOG_TARGET,

@@ -62,6 +62,7 @@ use tari_ootle_common_types::{
     ShardGroup,
     ShardStateVersions,
     StateVersion,
+    SubstateVersion,
     ValidatorMetadata,
     shard::Shard,
 };
@@ -967,7 +968,7 @@ impl TryFrom<proto::consensus::Substate> for SubstateRecord {
     fn try_from(value: proto::consensus::Substate) -> Result<Self, Self::Error> {
         Ok(Self {
             substate_id: SubstateId::from_bytes(&value.substate_id)?,
-            version: value.version,
+            version: SubstateVersion::new(value.version),
             substate_value: Some(value.substate.as_slice())
                 .filter(|d| !d.is_empty())
                 .map(SubstateValue::from_bytes)
@@ -988,7 +989,7 @@ impl From<SubstateRecord> for proto::consensus::Substate {
     fn from(value: SubstateRecord) -> Self {
         Self {
             substate_id: value.substate_id.to_bytes(),
-            version: value.version,
+            version: value.version.as_u64(),
             substate: value.substate_value.as_ref().map(|s| s.to_bytes()).unwrap_or_default(),
 
             created: Some(value.created().into()),

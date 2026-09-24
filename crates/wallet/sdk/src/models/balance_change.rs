@@ -3,6 +3,7 @@
 
 use std::str::FromStr;
 
+use tari_engine_types::SubstateVersion;
 use tari_ootle_transaction::TransactionId;
 use tari_template_lib::types::{Amount, ComponentAddress, ResourceAddress, VaultId};
 use time::PrimitiveDateTime;
@@ -104,7 +105,7 @@ pub struct BalanceChange {
 pub struct BalanceChangeSnapshot {
     pub account_address: ComponentAddress,
     pub vault_address: Option<VaultId>,
-    pub vault_version: Option<u64>,
+    pub vault_version: Option<SubstateVersion>,
     pub resource_address: ResourceAddress,
     pub token_symbol: Option<String>,
     pub divisibility: u8,

@@ -33,7 +33,7 @@ pub const MAGIC: u32 = 0x5441_5252;
 
 /// File format version. Increment whenever the record schema changes in a
 /// non-backward-compatible way.
-pub const FORMAT_VERSION: u8 = 1;
+pub const FORMAT_VERSION: u8 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuditError {
@@ -91,9 +91,11 @@ pub struct SubstateSummary {
     pub substate_id: String,
     pub shard: AuditShard,
     pub action: SubstateAction,
-    pub pre_rollback_version: u32,
-    /// `None` when `action == Removed`.
-    pub post_rollback_version: Option<u32>,
+    /// The highest substate version the reverted transitions touched.
+    pub pre_rollback_version: u64,
+    /// The substate version that is live after the rollback: the one that was live at the checkpoint. `None` when
+    /// `action == Removed`.
+    pub post_rollback_version: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, BorshSerialize, BorshDeserialize, Serialize, Deserialize, PartialEq, Eq)]
@@ -103,7 +105,7 @@ pub enum SubstateAction {
     /// version > checkpoint.
     Removed,
     /// Substate existed at checkpoint and had further transitions after. Rolls back
-    /// to its pre-rollback version.
+    /// to the version that was live at the checkpoint.
     Rewound,
 }
 

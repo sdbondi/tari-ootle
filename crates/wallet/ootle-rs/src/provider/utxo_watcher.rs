@@ -11,7 +11,14 @@ use tari_indexer_client::{
     rest_api_client::IndexerRestApiClient,
     types::GetUtxoUpdatesRequest,
 };
-use tari_ootle_common_types::{Epoch, NumPreshards, StateVersion, array_utils::copy_fixed_checked, shard::Shard};
+use tari_ootle_common_types::{
+    Epoch,
+    NumPreshards,
+    StateVersion,
+    SubstateVersion,
+    array_utils::copy_fixed_checked,
+    shard::Shard,
+};
 use tari_template_lib_types::{
     ResourceAddress,
     UtxoId,
@@ -74,11 +81,11 @@ pub enum StealthUtxoFrame {
     },
     Spent {
         id: UtxoId,
-        version: u64,
+        version: SubstateVersion,
     },
     Burnt {
         id: UtxoId,
-        version: u64,
+        version: SubstateVersion,
     },
     /// Terminates a shard's updates. `max_state_version` is the resume point for the shard, chosen
     /// by the indexer: the last delivered state version while the shard has more to drain, and the
@@ -208,7 +215,7 @@ fn convert_update(update: protobuf::WalletUtxoUpdate) -> Result<StealthUtxoFrame
                 .ok_or_else(|| UtxoWatcherError::DecodeError("UTXO id: incorrect length".to_string()))?;
             Ok(StealthUtxoFrame::Spent {
                 id,
-                version: spent.version,
+                version: SubstateVersion::new(spent.version),
             })
         },
         protobuf::WalletUtxoUpdate::Burnt(burnt) => {
@@ -217,7 +224,7 @@ fn convert_update(update: protobuf::WalletUtxoUpdate) -> Result<StealthUtxoFrame
                 .ok_or_else(|| UtxoWatcherError::DecodeError("UTXO id: incorrect length".to_string()))?;
             Ok(StealthUtxoFrame::Burnt {
                 id,
-                version: burnt.version,
+                version: SubstateVersion::new(burnt.version),
             })
         },
     }

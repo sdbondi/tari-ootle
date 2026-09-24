@@ -21,7 +21,7 @@ use tari_engine_types::{
     substate::{Substate, SubstateDiff, SubstateId},
     vault::Vault,
 };
-use tari_ootle_common_types::{Epoch, VersionedSubstateIdRef};
+use tari_ootle_common_types::{Epoch, SubstateVersion, VersionedSubstateIdRef};
 use tari_ootle_transaction::{Transaction, args};
 use tari_ootle_wallet_sdk::{
     models::{
@@ -139,7 +139,7 @@ fn setup_store_at(path: impl AsRef<Path>) -> (SqliteWalletStore, VaultId, VaultI
         tx.vaults_insert(VaultModel {
             account_address,
             id,
-            vault_version: 0,
+            vault_version: SubstateVersion::ZERO,
             resource_address,
             resource_type,
             confidential_balance: Amount::zero(),
@@ -158,7 +158,7 @@ fn setup_store_at(path: impl AsRef<Path>) -> (SqliteWalletStore, VaultId, VaultI
 
 fn balance_change_snapshot(
     current: &VaultModel,
-    vault_version: u64,
+    vault_version: SubstateVersion,
     revealed_after: Amount,
     confidential_after: Amount,
 ) -> BalanceChangeSnapshot {
@@ -187,7 +187,7 @@ fn temporary_database_path() -> std::path::PathBuf {
 fn record_change(
     store: &SqliteWalletStore,
     vault_address: VaultId,
-    vault_version: u64,
+    vault_version: SubstateVersion,
     revealed_after: Amount,
     confidential_after: Amount,
     source: BalanceChangeSource,
@@ -220,7 +220,7 @@ fn records_signed_deltas_metadata_and_filters() {
     record_change(
         &store,
         first_vault,
-        1,
+        SubstateVersion::new(1),
         Amount::from(100u64),
         Amount::from(7u64),
         BalanceChangeSource::Transaction { transaction_id },
@@ -228,7 +228,7 @@ fn records_signed_deltas_metadata_and_filters() {
     record_change(
         &store,
         first_vault,
-        2,
+        SubstateVersion::new(2),
         Amount::from(40u64),
         Amount::from(2u64),
         BalanceChangeSource::Scan,
@@ -236,7 +236,7 @@ fn records_signed_deltas_metadata_and_filters() {
     record_change(
         &store,
         second_vault,
-        1,
+        SubstateVersion::new(1),
         Amount::from(1u64),
         Amount::zero(),
         BalanceChangeSource::Recovery,
@@ -298,7 +298,12 @@ fn rejects_zero_changes_deduplicates_transactions_and_paginates_deterministicall
     let current = tx.vaults_get(&first_vault).unwrap();
     assert!(
         !tx.balance_changes_insert(
-            balance_change_snapshot(&current, 1, current.revealed_balance, current.confidential_balance,),
+            balance_change_snapshot(
+                &current,
+                SubstateVersion::new(1),
+                current.revealed_balance,
+                current.confidential_balance,
+            ),
             BalanceChangeSource::Scan,
         )
         .unwrap()
@@ -309,7 +314,7 @@ fn rejects_zero_changes_deduplicates_transactions_and_paginates_deterministicall
     record_change(
         &store,
         first_vault,
-        1,
+        SubstateVersion::new(1),
         Amount::from(10u64),
         Amount::zero(),
         BalanceChangeSource::Transaction { transaction_id },
@@ -318,7 +323,7 @@ fn rejects_zero_changes_deduplicates_transactions_and_paginates_deterministicall
     let current = tx.vaults_get(&first_vault).unwrap();
     assert!(
         !tx.balance_changes_insert(
-            balance_change_snapshot(&current, 2, Amount::from(11u64), Amount::zero()),
+            balance_change_snapshot(&current, SubstateVersion::new(2), Amount::from(11u64), Amount::zero()),
             BalanceChangeSource::Transaction { transaction_id },
         )
         .unwrap()
@@ -329,7 +334,7 @@ fn rejects_zero_changes_deduplicates_transactions_and_paginates_deterministicall
     record_change(
         &store,
         first_vault,
-        2,
+        SubstateVersion::new(2),
         Amount::from(20u64),
         Amount::zero(),
         BalanceChangeSource::Scan,
@@ -337,7 +342,7 @@ fn rejects_zero_changes_deduplicates_transactions_and_paginates_deterministicall
     record_change(
         &store,
         first_vault,
-        3,
+        SubstateVersion::new(3),
         Amount::from(30u64),
         Amount::zero(),
         BalanceChangeSource::Recovery,
@@ -448,7 +453,7 @@ fn latest_account_resource_history_ignores_vault_backed_rows() {
     record_change(
         &store,
         first_vault,
-        1,
+        SubstateVersion::new(1),
         Amount::from(100u64),
         Amount::zero(),
         BalanceChangeSource::Scan,
@@ -507,7 +512,7 @@ fn attributes_only_the_exact_vault_version_across_round_trips_and_recovery() {
         record_change(
             &store,
             first_vault,
-            version,
+            SubstateVersion::new(version),
             Amount::from(amount),
             Amount::zero(),
             BalanceChangeSource::Scan,
@@ -516,11 +521,11 @@ fn attributes_only_the_exact_vault_version_across_round_trips_and_recovery() {
 
     let mut tx = store.create_write_tx().unwrap();
     assert!(
-        tx.balance_changes_attribute_transaction(&first_vault, 1, first_transaction_id)
+        tx.balance_changes_attribute_transaction(&first_vault, SubstateVersion::new(1), first_transaction_id)
             .unwrap()
     );
     assert!(
-        !tx.balance_changes_attribute_transaction(&first_vault, 99, second_transaction_id)
+        !tx.balance_changes_attribute_transaction(&first_vault, SubstateVersion::new(99), second_transaction_id)
             .unwrap()
     );
     tx.commit().unwrap();
@@ -535,7 +540,7 @@ fn attributes_only_the_exact_vault_version_across_round_trips_and_recovery() {
     record_change(
         &store,
         first_vault,
-        4,
+        SubstateVersion::new(4),
         Amount::from(30u64),
         Amount::zero(),
         BalanceChangeSource::Recovery,
@@ -543,11 +548,11 @@ fn attributes_only_the_exact_vault_version_across_round_trips_and_recovery() {
 
     let mut tx = store.create_write_tx().unwrap();
     assert!(
-        tx.balance_changes_attribute_transaction(&first_vault, 4, second_transaction_id)
+        tx.balance_changes_attribute_transaction(&first_vault, SubstateVersion::new(4), second_transaction_id)
             .unwrap()
     );
     assert!(
-        tx.balance_changes_attribute_transaction(&first_vault, 999, second_transaction_id)
+        tx.balance_changes_attribute_transaction(&first_vault, SubstateVersion::new(999), second_transaction_id)
             .unwrap()
     );
     tx.commit().unwrap();
@@ -570,7 +575,7 @@ fn same_version_scan_updates_after_balance_and_deletes_net_zero_row() {
     record_change(
         &store,
         first_vault,
-        1,
+        SubstateVersion::new(1),
         Amount::zero(),
         Amount::from(10u64),
         BalanceChangeSource::Scan,
@@ -580,13 +585,18 @@ fn same_version_scan_updates_after_balance_and_deletes_net_zero_row() {
     let current = tx.vaults_get(&first_vault).unwrap();
     assert!(
         tx.balance_changes_insert(
-            balance_change_snapshot(&current, 1, Amount::zero(), Amount::from(15u64)),
+            balance_change_snapshot(&current, SubstateVersion::new(1), Amount::zero(), Amount::from(15u64)),
             BalanceChangeSource::Scan,
         )
         .unwrap()
     );
-    tx.vaults_update(first_vault, 1, Amount::zero(), Amount::from(15u64))
-        .unwrap();
+    tx.vaults_update(
+        first_vault,
+        SubstateVersion::new(1),
+        Amount::zero(),
+        Amount::from(15u64),
+    )
+    .unwrap();
     tx.commit().unwrap();
     drop(tx);
 
@@ -599,7 +609,7 @@ fn same_version_scan_updates_after_balance_and_deletes_net_zero_row() {
     assert_eq!(page.changes[0].confidential_after, Amount::from(15u64));
     assert_eq!(page.changes[0].confidential_delta, "15");
     let vault = tx.vaults_get(&first_vault).unwrap();
-    assert_eq!(vault.vault_version, 1);
+    assert_eq!(vault.vault_version, SubstateVersion::new(1));
     assert_eq!(vault.confidential_balance, Amount::from(15u64));
     drop(tx);
 
@@ -607,12 +617,12 @@ fn same_version_scan_updates_after_balance_and_deletes_net_zero_row() {
     let current = tx.vaults_get(&first_vault).unwrap();
     assert!(
         tx.balance_changes_insert(
-            balance_change_snapshot(&current, 1, Amount::zero(), Amount::zero()),
+            balance_change_snapshot(&current, SubstateVersion::new(1), Amount::zero(), Amount::zero()),
             BalanceChangeSource::Scan,
         )
         .unwrap()
     );
-    tx.vaults_update(first_vault, 1, Amount::zero(), Amount::zero())
+    tx.vaults_update(first_vault, SubstateVersion::new(1), Amount::zero(), Amount::zero())
         .unwrap();
     tx.commit().unwrap();
     drop(tx);
@@ -640,7 +650,7 @@ fn same_version_scan_does_not_clobber_transaction_row() {
     record_change(
         &store,
         first_vault,
-        1,
+        SubstateVersion::new(1),
         Amount::from(10u64),
         Amount::zero(),
         BalanceChangeSource::Transaction { transaction_id },
@@ -650,13 +660,18 @@ fn same_version_scan_does_not_clobber_transaction_row() {
     let current = tx.vaults_get(&first_vault).unwrap();
     assert!(
         !tx.balance_changes_insert(
-            balance_change_snapshot(&current, 1, Amount::from(20u64), Amount::zero()),
+            balance_change_snapshot(&current, SubstateVersion::new(1), Amount::from(20u64), Amount::zero()),
             BalanceChangeSource::Scan,
         )
         .unwrap()
     );
-    tx.vaults_update(first_vault, 1, Amount::from(20u64), Amount::zero())
-        .unwrap();
+    tx.vaults_update(
+        first_vault,
+        SubstateVersion::new(1),
+        Amount::from(20u64),
+        Amount::zero(),
+    )
+    .unwrap();
     tx.commit().unwrap();
     drop(tx);
 
@@ -695,7 +710,7 @@ fn same_transaction_merges_revealed_finalize_and_confidential_refresh() {
         BalanceChangeSnapshot {
             account_address: account_address(),
             vault_address: Some(first_vault),
-            vault_version: Some(1),
+            vault_version: Some(SubstateVersion::new(1)),
             resource_address: resource_address(1),
             token_symbol: Some("COIN".to_string()),
             divisibility: 6,
@@ -847,10 +862,10 @@ fn lock_finalize_records_confidential_spend_for_vaultless_account() {
     tx.stealth_outputs_insert(&change).unwrap();
 
     let mut diff = SubstateDiff::new();
-    diff.down(SubstateId::Utxo(spent.to_utxo_address()), 0);
+    diff.down(SubstateId::Utxo(spent.to_utxo_address()), SubstateVersion::ZERO);
     diff.up(
         SubstateId::Utxo(change.to_utxo_address()),
-        Substate::new(0, Utxo {
+        Substate::new(SubstateVersion::ZERO, Utxo {
             output: None,
             is_frozen: false,
         }),
@@ -913,7 +928,7 @@ fn lock_finalize_records_confidential_spend_for_vault_backed_resource() {
     tx.vaults_insert(VaultModel {
         account_address: account,
         id: stealth_vault,
-        vault_version: 0,
+        vault_version: SubstateVersion::ZERO,
         resource_address: stealth_resource,
         resource_type: ResourceType::Stealth,
         confidential_balance: Amount::from(1_000_000u64),
@@ -942,10 +957,10 @@ fn lock_finalize_records_confidential_spend_for_vault_backed_resource() {
     tx.stealth_outputs_insert(&change).unwrap();
 
     let mut diff = SubstateDiff::new();
-    diff.down(SubstateId::Utxo(spent.to_utxo_address()), 0);
+    diff.down(SubstateId::Utxo(spent.to_utxo_address()), SubstateVersion::ZERO);
     diff.up(
         SubstateId::Utxo(change.to_utxo_address()),
-        Substate::new(0, Utxo {
+        Substate::new(SubstateVersion::ZERO, Utxo {
             output: None,
             is_frozen: false,
         }),
@@ -1025,7 +1040,7 @@ fn lock_finalize_records_on_vault_created_by_transaction() {
 
     // The diff commit links the transaction's new vault to the account before locks are finalized.
     tx.substates_upsert_root(
-        VersionedSubstateIdRef::new(&SubstateId::Component(account), 1),
+        VersionedSubstateIdRef::new(&SubstateId::Component(account), SubstateVersion::new(1)),
         HashSet::new(),
         None,
         None,
@@ -1033,16 +1048,16 @@ fn lock_finalize_records_on_vault_created_by_transaction() {
     .unwrap();
     tx.substates_upsert_child(
         &SubstateId::Component(account),
-        VersionedSubstateIdRef::new(&SubstateId::Vault(new_vault), 0),
+        VersionedSubstateIdRef::new(&SubstateId::Vault(new_vault), SubstateVersion::ZERO),
         HashSet::new(),
     )
     .unwrap();
 
     let mut diff = SubstateDiff::new();
-    diff.down(SubstateId::Utxo(spent.to_utxo_address()), 0);
+    diff.down(SubstateId::Utxo(spent.to_utxo_address()), SubstateVersion::ZERO);
     diff.up(
         SubstateId::Utxo(change.to_utxo_address()),
-        Substate::new(0, Utxo {
+        Substate::new(SubstateVersion::ZERO, Utxo {
             output: None,
             is_frozen: false,
         }),
@@ -1050,7 +1065,7 @@ fn lock_finalize_records_on_vault_created_by_transaction() {
     diff.up(
         SubstateId::Vault(new_vault),
         Substate::new(
-            0,
+            SubstateVersion::ZERO,
             Vault::new(ResourceContainer::stealth(stealth_resource, Amount::from(10_000u64))),
         ),
     );
@@ -1063,7 +1078,7 @@ fn lock_finalize_records_on_vault_created_by_transaction() {
             BalanceChangeSnapshot {
                 account_address: account,
                 vault_address: Some(new_vault),
-                vault_version: Some(0),
+                vault_version: Some(SubstateVersion::ZERO),
                 resource_address: stealth_resource,
                 token_symbol: Some("STEALTH".to_string()),
                 divisibility: 6,
@@ -1113,7 +1128,7 @@ fn lock_finalize_records_revealed_movement_from_diff_not_lock_amount() {
     tx.vaults_insert(VaultModel {
         account_address: account,
         id: stealth_vault,
-        vault_version: 1,
+        vault_version: SubstateVersion::new(1),
         resource_address: stealth_resource,
         resource_type: ResourceType::Stealth,
         confidential_balance: Amount::from(5_000_000u64),
@@ -1135,7 +1150,7 @@ fn lock_finalize_records_revealed_movement_from_diff_not_lock_amount() {
     diff.up(
         SubstateId::Vault(stealth_vault),
         Substate::new(
-            2,
+            SubstateVersion::new(2),
             Vault::new(ResourceContainer::stealth(stealth_resource, Amount::from(1_999_745u64))),
         ),
     );
@@ -1156,7 +1171,7 @@ fn lock_finalize_records_revealed_movement_from_diff_not_lock_amount() {
     assert_eq!(change.revealed_delta, "-255");
     let vault = tx.vaults_get(&stealth_vault).unwrap();
     assert_eq!(vault.revealed_balance, Amount::from(1_999_745u64));
-    assert_eq!(vault.vault_version, 2);
+    assert_eq!(vault.vault_version, SubstateVersion::new(2));
 }
 
 // The unique (account, resource, transaction) index spans both key shapes: when a transaction's effect is
@@ -1201,7 +1216,7 @@ fn same_transaction_vault_record_fills_dimension_on_no_vault_row() {
             BalanceChangeSnapshot {
                 account_address: account,
                 vault_address: Some(new_vault),
-                vault_version: Some(0),
+                vault_version: Some(SubstateVersion::ZERO),
                 resource_address: stealth_resource,
                 token_symbol: Some("STEALTH".to_string()),
                 divisibility: 6,
@@ -1220,7 +1235,7 @@ fn same_transaction_vault_record_fills_dimension_on_no_vault_row() {
             BalanceChangeSnapshot {
                 account_address: account,
                 vault_address: Some(new_vault),
-                vault_version: Some(1),
+                vault_version: Some(SubstateVersion::new(1)),
                 resource_address: stealth_resource,
                 token_symbol: Some("STEALTH".to_string()),
                 divisibility: 6,
@@ -1337,7 +1352,7 @@ fn history_keeps_snapshot_metadata_after_live_rows_are_changed_or_deleted() {
     record_change(
         &store,
         first_vault,
-        1,
+        SubstateVersion::new(1),
         Amount::from(100u64),
         Amount::zero(),
         BalanceChangeSource::Scan,

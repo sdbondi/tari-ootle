@@ -2,7 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use tari_engine_types::substate::{Substate, hash_substate};
-use tari_ootle_common_types::{VersionedSubstateId, optional::Optional};
+use tari_ootle_common_types::{SubstateVersion, VersionedSubstateId, optional::Optional};
 use tari_ootle_storage::{
     StateStore,
     StateStoreReadTransaction,
@@ -40,7 +40,7 @@ fn block_diffs_operations(db: impl StateStore) {
     let block9 = chain[9].clone();
     let block_id9 = *block9.id();
     let substate_id = create_random_substate_id();
-    let version = 0;
+    let version = SubstateVersion::ZERO;
     let substate_record = build_substate_record(&substate_id, version, 1);
     let change = SubstateChange::Up {
         id: substate_id.clone(),
@@ -65,7 +65,7 @@ fn block_diffs_operations(db: impl StateStore) {
         SubstateChange::Up {
             id: substate_id.clone(),
             shard: block9.shard_group().end(),
-            substate: Box::new(Substate::new(version + 1, value2.clone())),
+            substate: Box::new(Substate::new(version.next(), value2.clone())),
         },
     ];
     tx.block_diffs_insert(&block_id9, changes).unwrap();
@@ -81,11 +81,11 @@ fn block_diffs_operations(db: impl StateStore) {
         SubstateChange::Up { id, shard, substate } => {
             assert_eq!(id, versioned_substate_id.substate_id());
             assert_eq!(*shard, block9.shard_group().end());
-            assert_eq!(substate.version(), version + 1);
+            assert_eq!(substate.version(), version.next());
             let at_epoch = Epoch::zero();
             assert_eq!(
                 substate.to_value_hash(helpers::NETWORK, at_epoch),
-                hash_substate(helpers::NETWORK, &value2, version + 1, at_epoch)
+                hash_substate(helpers::NETWORK, &value2, version.next(), at_epoch)
             );
         },
         SubstateChange::Down { .. } => panic!("Expected SubstateChange::Up but got {change}"),
@@ -114,7 +114,7 @@ fn block_diffs_are_scoped_to_the_queried_branch() {
     tx.proposal_certificates_save(fork.justify()).unwrap();
 
     let substate_id = create_random_substate_id();
-    let versioned_substate_id = VersionedSubstateId::new(substate_id.clone(), 0);
+    let versioned_substate_id = VersionedSubstateId::new(substate_id.clone(), SubstateVersion::ZERO);
     let value = build_substate_value(None);
     tx.block_diffs_insert(fork.id(), &[
         SubstateChange::Down {
@@ -124,7 +124,7 @@ fn block_diffs_are_scoped_to_the_queried_branch() {
         SubstateChange::Up {
             id: substate_id.clone(),
             shard: fork.shard_group().start(),
-            substate: Box::new(Substate::new(1, value)),
+            substate: Box::new(Substate::new(SubstateVersion::new(1), value)),
         },
     ])
     .unwrap();
@@ -147,13 +147,13 @@ fn block_diffs_are_scoped_to_the_queried_branch() {
     let change = tx
         .block_diffs_get_last_change_for_substate(fork.id(), &substate_id)
         .unwrap();
-    assert_eq!(change.versioned_substate_id().version(), 1);
+    assert_eq!(change.versioned_substate_id().version(), SubstateVersion::new(1));
     assert!(change.is_up());
 
     let change = tx
         .block_diffs_get_change_for_versioned_substate(fork.id(), &versioned_substate_id)
         .unwrap();
-    assert_eq!(change.versioned_substate_id().version(), 0);
+    assert_eq!(change.versioned_substate_id().version(), SubstateVersion::ZERO);
     assert!(!change.is_up());
 
     tx.rollback().unwrap();
@@ -168,12 +168,12 @@ fn block_diffs_last_change_prefers_the_down_of_a_version() {
     commit_chain(&mut tx, &chain);
 
     let substate_id = create_random_substate_id();
-    let versioned_substate_id = VersionedSubstateId::new(substate_id.clone(), 0);
+    let versioned_substate_id = VersionedSubstateId::new(substate_id.clone(), SubstateVersion::ZERO);
     let value = build_substate_value(None);
     tx.block_diffs_insert(chain[8].id(), &[SubstateChange::Up {
         id: substate_id.clone(),
         shard: chain[8].shard_group().start(),
-        substate: Box::new(Substate::new(0, value)),
+        substate: Box::new(Substate::new(SubstateVersion::ZERO, value)),
     }])
     .unwrap();
     tx.block_diffs_insert(chain[9].id(), &[SubstateChange::Down {

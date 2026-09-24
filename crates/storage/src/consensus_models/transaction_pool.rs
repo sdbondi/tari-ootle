@@ -13,7 +13,7 @@ use std::{
 use log::*;
 use serde::{Deserialize, Serialize};
 use tari_consensus_types::{BlockId, Decision, LeafBlock};
-use tari_engine_types::substate::SubstateId;
+use tari_engine_types::{SubstateVersion, substate::SubstateId};
 use tari_ootle_common_types::{
     Epoch,
     NumPreshards,
@@ -954,7 +954,7 @@ impl TransactionPoolRecord {
     ) -> Result<bool, StorageError>
     where
         TTx: StateStoreReadTransaction,
-        TObj: IntoIterator<Item = (&'a SubstateId, Option<(u64, SubstateLockType)>)>,
+        TObj: IntoIterator<Item = (&'a SubstateId, Option<(SubstateVersion, SubstateLockType)>)>,
     {
         for (substate_id, data) in involved_objects {
             let Some((version, lock_type)) = data else {

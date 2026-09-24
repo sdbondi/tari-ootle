@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use diesel::{Identifiable, Queryable};
 use tari_engine_types::substate::SubstateId;
-use tari_ootle_common_types::VersionedSubstateId;
+use tari_ootle_common_types::{SubstateVersion, VersionedSubstateId};
 use tari_ootle_wallet_sdk::{models::SubstateModel, storage::WalletStorageError};
 use tari_template_lib_types::Hash32;
 use time::PrimitiveDateTime;
@@ -29,7 +29,10 @@ impl Substate {
     pub fn try_to_record(&self) -> Result<SubstateModel, WalletStorageError> {
         Ok(SubstateModel {
             module_name: self.module_name.clone(),
-            substate_id: VersionedSubstateId::new(SubstateId::from_str(&self.address).unwrap(), self.version as u64),
+            substate_id: VersionedSubstateId::new(
+                SubstateId::from_str(&self.address).unwrap(),
+                SubstateVersion::new(self.version as u64),
+            ),
             parent_address: self.parent_address.as_ref().map(|s| s.parse().unwrap()),
             referenced_substates: deserialize_json(&self.referenced_substates)?,
             template_address: self

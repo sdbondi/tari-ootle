@@ -34,6 +34,7 @@ use tari_ootle_common_types::{
     NodeHeight,
     SubstateLockType,
     SubstateRequirement,
+    SubstateVersion,
     ToSubstateAddress,
     VersionedSubstateId,
     crypto::{create_key_pair, create_key_pair_from_seed},
@@ -1009,7 +1010,7 @@ async fn single_shard_inputs_from_previous_outputs() {
     let (tx1, _, outputs) = test.send_transaction_to_all(Decision::Commit, 1, 5, 5).await;
     let prev_outputs = outputs
         .iter()
-        .map(|output| SubstateRequirement::versioned(output.clone(), 0))
+        .map(|output| SubstateRequirement::versioned(output.clone(), SubstateVersion::ZERO))
         .collect::<Vec<_>>();
 
     let tx2 = Transaction::builder_localnet(Epoch(1))
@@ -1073,7 +1074,7 @@ async fn multishard_inputs_from_previous_outputs() {
     let (tx1, _, outputs) = test.send_transaction_to_all(Decision::Commit, 1, 5, 2).await;
     let prev_outputs = outputs
         .iter()
-        .map(|output| SubstateRequirement::versioned(output.clone(), 0))
+        .map(|output| SubstateRequirement::versioned(output.clone(), SubstateVersion::ZERO))
         .collect::<Vec<_>>();
 
     let tx2 = Transaction::builder_localnet(Epoch(1))
@@ -1590,7 +1591,7 @@ async fn multishard_publish_template() {
 
     // Assert all have the template
     for (addr, vn) in test.validators() {
-        let substate_addr = VersionedSubstateId::new(template_id, 0).to_substate_address();
+        let substate_addr = VersionedSubstateId::new(template_id, SubstateVersion::ZERO).to_substate_address();
         let template_substate = vn
             .state_store
             .with_read_tx(|tx| SubstateRecord::get(tx, &substate_addr))

@@ -10,6 +10,7 @@ use tari_template_lib::types::Hash32;
 
 use crate::{
     Epoch,
+    SubstateVersion,
     ValidatorFeeWithdrawal,
     events::Event,
     fees::FeeReceipt,
@@ -112,7 +113,7 @@ impl TransactionReceipt {
             upped: upped
                 .map(|substate_id| UpSubstate {
                     substate_id: substate_id.clone(),
-                    version: u64::MAX,
+                    version: SubstateVersion::new(u64::MAX),
                     value_hash: Hash32::from_array([0xff; Hash32::LENGTH]),
                 })
                 .collect(),
@@ -227,8 +228,7 @@ pub struct UpSubstate {
     #[n(0)]
     pub substate_id: SubstateId,
     #[n(1)]
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub version: u64,
+    pub version: SubstateVersion,
     #[n(2)]
     pub value_hash: Hash32,
 }
@@ -286,7 +286,7 @@ mod tests {
                     .iter()
                     .map(|substate_id| UpSubstate {
                         substate_id: substate_id.clone(),
-                        version: 1,
+                        version: SubstateVersion::new(1),
                         value_hash: Hash32::from_array([0x04; Hash32::LENGTH]),
                     })
                     .collect(),

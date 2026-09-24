@@ -15,6 +15,7 @@ use tari_ootle_common_types::{
     LockIntent,
     SubstateRequirement,
     SubstateRequirementRef,
+    SubstateVersion,
     committee::CommitteeInfo,
     optional::{IsNotFoundError, Optional},
 };
@@ -401,7 +402,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         store: &mut PendingSubstateStore<TTx>,
         local_committee_info: &CommitteeInfo,
         transaction: &TransactionRecord,
-        local_versions: IndexMap<SubstateRequirementRef<'_>, u64>,
+        local_versions: IndexMap<SubstateRequirementRef<'_>, SubstateVersion>,
         block: LeafBlock,
         execution_locked_epoch: LockedEpoch,
     ) -> Result<PreparedTransaction, BlockTransactionExecutorError> {
@@ -479,7 +480,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         store: &mut PendingSubstateStore<TTx>,
         local_committee_info: &CommitteeInfo,
         transaction: &TransactionRecord,
-        local_versions: IndexMap<SubstateRequirementRef<'_>, u64>,
+        local_versions: IndexMap<SubstateRequirementRef<'_>, SubstateVersion>,
         non_local_inputs: IndexSet<SubstateRequirementRef<'_>>,
         block: LeafBlock,
     ) -> Result<PreparedTransaction, BlockTransactionExecutorError> {
@@ -545,7 +546,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         store: &mut PendingSubstateStore<TTx>,
         local_committee_info: &CommitteeInfo,
         transaction_id: TransactionId,
-        local_versions: IndexMap<SubstateRequirementRef<'_>, u64>,
+        local_versions: IndexMap<SubstateRequirementRef<'_>, SubstateVersion>,
         non_local_inputs: IndexSet<SubstateRequirementRef<'_>>,
     ) -> Result<PreparedTransaction, BlockTransactionExecutorError> {
         // TODO: We do not know if the inputs locks required are Read/Write. Either we allow the user to
@@ -651,10 +652,10 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
 
 enum ResolvedTransactionInputs<'a> {
     OnlyLocalInputs {
-        local_versions: IndexMap<SubstateRequirementRef<'a>, u64>,
+        local_versions: IndexMap<SubstateRequirementRef<'a>, SubstateVersion>,
     },
     LocalAndForeignInputs {
-        local_versions: IndexMap<SubstateRequirementRef<'a>, u64>,
+        local_versions: IndexMap<SubstateRequirementRef<'a>, SubstateVersion>,
         non_local_inputs: IndexSet<SubstateRequirementRef<'a>>,
     },
     /// Does not involve any local inputs, but involves one or more local tombstone outputs
@@ -670,7 +671,7 @@ enum ResolvedTransactionInputs<'a> {
 }
 
 struct ResolvedInputs<'a> {
-    pub local_inputs: IndexMap<SubstateRequirementRef<'a>, u64>,
+    pub local_inputs: IndexMap<SubstateRequirementRef<'a>, SubstateVersion>,
     pub foreign_inputs: IndexSet<SubstateRequirementRef<'a>>,
     pub num_local_tombstones: usize,
 }

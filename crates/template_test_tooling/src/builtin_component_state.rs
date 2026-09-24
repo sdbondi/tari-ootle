@@ -9,6 +9,7 @@ use tari_engine_types::{
     substate::{Substate, SubstateId},
     vault::Vault,
 };
+use tari_ootle_common_types::SubstateVersion;
 use tari_template_builtin::{NFT_FAUCET_TEMPLATE_ADDRESS, NftFaucetState, XTR_FAUCET_TEMPLATE_ADDRESS, XtrFaucetState};
 use tari_template_lib::types::{
     Amount,
@@ -39,7 +40,7 @@ pub fn add_tari_resources<T: StateWriter>(state_db: &mut T) -> Result<(), StateS
     state_db.set_state(
         id,
         Substate::new(
-            0,
+            SubstateVersion::ZERO,
             Resource::new(
                 ResourceType::NonFungible,
                 SubstateOwnerRule::None,
@@ -60,7 +61,7 @@ pub fn add_tari_resources<T: StateWriter>(state_db: &mut T) -> Result<(), StateS
     state_db.set_state(
         id,
         Substate::new(
-            0,
+            SubstateVersion::ZERO,
             Resource::new(
                 ResourceType::Stealth,
                 SubstateOwnerRule::None,
@@ -85,7 +86,10 @@ pub fn initialize_builtin_faucet_state<TStore: StateWriter>(store: &mut TStore) 
         initial_supply,
     ));
     store
-        .set_state(SubstateId::Vault(XTR_FAUCET_VAULT_ADDRESS), Substate::new(0, vault))
+        .set_state(
+            SubstateId::Vault(XTR_FAUCET_VAULT_ADDRESS),
+            Substate::new(SubstateVersion::ZERO, vault),
+        )
         .unwrap();
 
     let state = tari_bor::to_value(&XtrFaucetState {
@@ -95,7 +99,7 @@ pub fn initialize_builtin_faucet_state<TStore: StateWriter>(store: &mut TStore) 
     store
         .set_state(
             SubstateId::Component(xtr_faucet_component()),
-            Substate::new(0, Component {
+            Substate::new(SubstateVersion::ZERO, Component {
                 header: ComponentHeader {
                     template_address: XTR_FAUCET_TEMPLATE_ADDRESS,
                     owner_rule: SubstateOwnerRule::None,
@@ -123,7 +127,7 @@ pub fn initialize_builtin_faucet_state<TStore: StateWriter>(store: &mut TStore) 
     store
         .set_state(
             SubstateId::Resource(XTR_FAUCET_CLAIM_RESOURCE_ADDRESS),
-            Substate::new(0, claim_resource),
+            Substate::new(SubstateVersion::ZERO, claim_resource),
         )
         .unwrap();
 }
@@ -143,7 +147,7 @@ pub fn initialize_builtin_nft_faucet_state<TStore: StateWriter>(store: &mut TSto
     store
         .set_state(
             SubstateId::Resource(NFT_FAUCET_RESOURCE_ADDRESS),
-            Substate::new(0, resource),
+            Substate::new(SubstateVersion::ZERO, resource),
         )
         .unwrap();
 
@@ -151,7 +155,7 @@ pub fn initialize_builtin_nft_faucet_state<TStore: StateWriter>(store: &mut TSto
     store
         .set_state(
             SubstateId::Component(test_nft_faucet_component()),
-            Substate::new(0, Component {
+            Substate::new(SubstateVersion::ZERO, Component {
                 header: ComponentHeader {
                     template_address: NFT_FAUCET_TEMPLATE_ADDRESS,
                     owner_rule: SubstateOwnerRule::None,

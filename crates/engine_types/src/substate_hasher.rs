@@ -287,6 +287,7 @@ mod tests {
     use super::*;
     use crate::{
         Epoch,
+        SubstateVersion,
         fees::{FeeBreakdown, FeeSource},
         resource_container::ResourceContainer,
         substate::hash_substate,
@@ -353,7 +354,7 @@ mod tests {
         // Esmeralda is the network whose history was hashed under version 0.
         assert_eq!(ProtocolVersion::at(Network::Esmeralda, Epoch(3)), ProtocolVersion::V0);
         assert_eq!(
-            hash_substate(Network::Esmeralda, &receipt(0), 0, Epoch(3)),
+            hash_substate(Network::Esmeralda, &receipt(0), SubstateVersion::ZERO, Epoch(3)),
             hash_at(ProtocolVersion::V0, &receipt(0))
         );
     }
