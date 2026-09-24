@@ -200,8 +200,19 @@ impl TransactionV1 {
 
     pub fn calculate_transaction_weight(&self) -> TransactionWeight {
         const SIGNER_FACTOR: u64 = 5;
-        const INPUT_FACTOR: u64 = 15;
-        let num_inputs = self.inputs().len() as u64;
+        // A shard group that cannot execute locks each input from its declaration, from prepare until
+        // finalisation. A write lock excludes every other transaction naming the substate, a read lock
+        // only its writers, so a write declaration is priced above a read. A read still costs a pledge
+        // and a lock, so it is not free.
+        const WRITE_INPUT_FACTOR: u64 = 15;
+        const READ_INPUT_FACTOR: u64 = 5;
+        let (num_write_inputs, num_read_inputs) = self.inputs().iter().fold((0u64, 0u64), |(writes, reads), input| {
+            if input.is_write() {
+                (writes + 1, reads)
+            } else {
+                (writes, reads + 1)
+            }
+        });
         let num_signers = self.signatures().len() as u64;
         let instruction_weight = self
             .instructions()
@@ -210,7 +221,11 @@ impl TransactionV1 {
             .map(calc_instruction_weight)
             .sum::<TransactionWeight>();
         let blob_weight = calc_blobs_weight(self.body.unsigned_transaction().blobs());
-        instruction_weight + blob_weight + (num_inputs * INPUT_FACTOR) + (num_signers * SIGNER_FACTOR)
+        instruction_weight +
+            blob_weight +
+            (num_write_inputs * WRITE_INPUT_FACTOR) +
+            (num_read_inputs * READ_INPUT_FACTOR) +
+            (num_signers * SIGNER_FACTOR)
     }
 
     pub fn into_unsealed_transaction(self) -> UnsealedTransactionV1 {
@@ -498,12 +513,20 @@ mod blob_validation_tests {
     use crate::{Blob, Blobs, UnsignedTransactionV1, args::InstructionArg, v1::unsealed::UnsealedTransactionV1};
 
     fn build_with_blobs(blobs: Vec<Blob>, instructions: Vec<Instruction>) -> TransactionV1 {
+        build_with_inputs(blobs, instructions, indexmap::IndexSet::new())
+    }
+
+    fn build_with_inputs(
+        blobs: Vec<Blob>,
+        instructions: Vec<Instruction>,
+        inputs: indexmap::IndexSet<InputDeclaration>,
+    ) -> TransactionV1 {
         let blobs = Blobs::from_vec(blobs);
         let unsigned = UnsignedTransactionV1 {
             network: 1,
             fee_instructions: vec![],
             instructions,
-            inputs: indexmap::IndexSet::new(),
+            inputs,
             min_epoch: None,
             max_epoch: Epoch(1),
             is_seal_signer_authorized: true,
@@ -580,6 +603,24 @@ mod blob_validation_tests {
     fn validates_empty_when_no_instructions_and_no_blobs() {
         let tx = build_with_blobs(vec![], vec![]);
         assert!(tx.validate_blob_references().is_ok());
+    }
+
+    #[test]
+    fn a_write_declared_input_weighs_more_than_a_read_declared_one() {
+        let id = SubstateId::Component(ComponentAddress::from_array([1; 32]));
+        let weight_with = |inputs: Vec<InputDeclaration>| {
+            build_with_inputs(vec![], vec![], inputs.into_iter().collect()).calculate_transaction_weight()
+        };
+
+        let none = weight_with(vec![]);
+        let read = weight_with(vec![InputDeclaration::read(id.clone())]);
+        let write = weight_with(vec![InputDeclaration::write(id)]);
+
+        assert!(read > none, "a read-declared input must not be free");
+        assert!(
+            write > read,
+            "a write-declared input must weigh more than a read-declared one"
+        );
     }
 
     #[test]
