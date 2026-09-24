@@ -36,6 +36,7 @@ use crate::{
         BlockTransactionExecution,
         Evidence,
         LeaderFee,
+        LocalOnlyAtom,
         LockedEpoch,
         TransactionAtom,
         TransactionExecution,
@@ -629,6 +630,15 @@ impl TransactionPoolRecord {
             id: self.transaction_id,
             decision: self.current_decision(),
             evidence: self.evidence.clone(),
+            transaction_fee: self.transaction_fee,
+            leader_fee: self.leader_fee().cloned(),
+        }
+    }
+
+    pub fn get_local_only_atom(&self) -> LocalOnlyAtom {
+        LocalOnlyAtom {
+            id: self.transaction_id,
+            decision: self.current_decision(),
             transaction_fee: self.transaction_fee,
             leader_fee: self.leader_fee().cloned(),
         }

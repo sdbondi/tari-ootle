@@ -479,7 +479,10 @@ impl ForeignProposal {
             .iter()
             .filter_map(|cmd| cmd.command())
             .filter_map(|cmd| cmd.transaction())
-            .filter(|t| t.evidence.has_and_not_empty(&committee_info.shard_group()))
+            .filter(|t| {
+                t.evidence()
+                    .is_some_and(|evidence| evidence.has_and_not_empty(&committee_info.shard_group()))
+            })
             .map(|t| t.id())
     }
 

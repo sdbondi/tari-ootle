@@ -9,7 +9,7 @@ use prometheus_client::{
 };
 use tari_consensus::{hotstuff::HotStuffError, messages::HotstuffMessage, traits::hooks::ConsensusHooks};
 use tari_ootle_common_types::NodeHeight;
-use tari_ootle_storage::consensus_models::{Block, ValidBlock, VoteEquivocation};
+use tari_ootle_storage::consensus_models::{Block, TransactionPoolRecord, ValidBlock, VoteEquivocation};
 use tari_ootle_transaction::TransactionId;
 
 use crate::metrics::CollectorRegister;
@@ -126,13 +126,12 @@ impl ConsensusHooks for PrometheusConsensusMetrics {
         self.commands_count.inc_by(block.block().commands().len() as u64);
     }
 
-    fn on_blocks_committed(&mut self, committed_blocks: &[Block]) {
+    fn on_blocks_committed(&mut self, _committed_blocks: &[Block], finalized_transactions: &[TransactionPoolRecord]) {
         // Count the number of template outputs in the committed blocks (substates now in the state store).
-        let num_templates_committed = committed_blocks
+        let num_templates_committed = finalized_transactions
             .iter()
-            .flat_map(|b| b.commands())
-            .filter_map(|c| c.committing())
-            .flat_map(|a| a.evidence.all_outputs_iter())
+            .filter(|t| t.current_decision().is_commit())
+            .flat_map(|t| t.evidence().all_outputs_iter())
             .filter(|(_, id, _)| id.is_template())
             .count();
         self.published_templates_count

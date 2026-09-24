@@ -115,7 +115,7 @@ message LeaderFee {
 
 message Command {
   oneof command {
-    TransactionAtom local_only = 1;
+    LocalOnlyAtom local_only = 1;
     TransactionAtom local_prepare = 2;
     TransactionAtom local_accept = 3;
     TransactionAtom all_accept = 4;
@@ -143,6 +143,13 @@ message TransactionAtom {
   Evidence evidence = 4;
   uint64 fee = 5;
   LeaderFee leader_fee = 6;
+}
+
+message LocalOnlyAtom {
+  bytes id = 1;
+  Decision decision = 2;
+  uint64 fee = 3;
+  LeaderFee leader_fee = 4;
 }
 
 message Decision {

@@ -581,7 +581,7 @@ where TConsensusSpec: ConsensusSpec
                     .checked_add(
                         command
                             .committing()
-                            .and_then(|tx| tx.leader_fee.as_ref())
+                            .and_then(|tx| tx.leader_fee())
                             .map(|f| f.fee)
                             .unwrap_or(0),
                     )
@@ -861,8 +861,7 @@ where TConsensusSpec: ConsensusSpec
 
                     executed_transactions.insert(*pool_tx.id(), execution);
 
-                    let atom = pool_tx.get_current_transaction_atom();
-                    Ok(Some(Command::LocalOnly(atom)))
+                    Ok(Some(Command::LocalOnly(pool_tx.get_local_only_atom())))
                 },
                 LocalPreparedTransaction::EarlyAbort { execution } => {
                     info!(
@@ -881,8 +880,7 @@ where TConsensusSpec: ConsensusSpec
                         ));
 
                     executed_transactions.insert(*pool_tx.id(), execution);
-                    let atom = pool_tx.get_current_transaction_atom();
-                    Ok(Some(Command::LocalOnly(atom)))
+                    Ok(Some(Command::LocalOnly(pool_tx.get_local_only_atom())))
                 },
             },
 

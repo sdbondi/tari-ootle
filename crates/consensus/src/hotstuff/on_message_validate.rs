@@ -413,8 +413,11 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
             .block
             .commands()
             .iter()
-            .filter_map(|cmd| cmd.local_only().or_else(|| cmd.local_prepare()))
-            .map(|atom| atom.id)
+            .filter_map(|cmd| {
+                cmd.local_only()
+                    .map(|atom| atom.id)
+                    .or_else(|| cmd.local_prepare().map(|atom| atom.id))
+            })
             .collect::<Vec<_>>();
 
         if ids.is_empty() {

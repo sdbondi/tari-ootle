@@ -61,7 +61,7 @@ fn withhold_first_command_for(plan: Arc<Mutex<OrphanPlan>>) -> MessageFilter {
             .block
             .commands()
             .iter()
-            .find(|cmd| cmd.transaction().is_some_and(|atom| atom.id == transaction_id))
+            .find(|cmd| cmd.transaction().is_some_and(|atom| *atom.id() == transaction_id))
         else {
             return true;
         };
@@ -219,7 +219,7 @@ async fn dummy_fill_proposes_from_the_justify_block_not_the_orphan() {
     let post_dummy_command = post_dummy
         .commands()
         .iter()
-        .find(|cmd| cmd.transaction().is_some_and(|atom| atom.id == tx_id))
+        .find(|cmd| cmd.transaction().is_some_and(|atom| *atom.id() == tx_id))
         .map(|cmd| cmd.to_string());
 
     assert_eq!(

@@ -14,7 +14,7 @@ use tari_ootle_common_types::{
     diag_event,
     diagnostics::{DiagnosticEvent, DiagnosticLevel},
 };
-use tari_ootle_storage::consensus_models::{Block, NoVoteReason, ValidBlock, VoteEquivocation};
+use tari_ootle_storage::consensus_models::{Block, NoVoteReason, TransactionPoolRecord, ValidBlock, VoteEquivocation};
 use tari_ootle_transaction::TransactionId;
 
 use crate::diagnostics::handle::DiagnosticsHandle;
@@ -68,7 +68,7 @@ impl DiagnosticHooks {
 impl ConsensusHooks for DiagnosticHooks {
     fn on_local_block_committed(&mut self, _block: &ValidBlock) {}
 
-    fn on_blocks_committed(&mut self, _committed_blocks: &[Block]) {}
+    fn on_blocks_committed(&mut self, _committed_blocks: &[Block], _finalized_transactions: &[TransactionPoolRecord]) {}
 
     /// Every error this fires for goes on to reach [`Self::on_error`], which records it with the
     /// full error text, so recording it here as well would write the same row twice. `on_error` also

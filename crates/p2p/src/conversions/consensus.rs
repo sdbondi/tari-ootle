@@ -77,6 +77,7 @@ use tari_ootle_storage::{
         ForeignProposal,
         ForeignProposalAtom,
         LeaderFee,
+        LocalOnlyAtom,
         SubstateCreated,
         SubstateDestroyed,
         SubstateRecord,
@@ -757,6 +758,33 @@ impl TryFrom<proto::consensus::TransactionAtom> for TransactionAtom {
                 .evidence
                 .ok_or_else(|| anyhow!("evidence not provided"))?
                 .try_into()?,
+            transaction_fee: value.fee,
+            leader_fee: value.leader_fee.map(TryInto::try_into).transpose()?,
+        })
+    }
+}
+
+//---------------------------------- LocalOnlyAtom --------------------------------------------//
+
+impl From<&LocalOnlyAtom> for proto::consensus::LocalOnlyAtom {
+    fn from(value: &LocalOnlyAtom) -> Self {
+        Self {
+            id: value.id.as_bytes().to_vec(),
+            decision: Some(proto::consensus::Decision::from(value.decision)),
+            fee: value.transaction_fee,
+            leader_fee: value.leader_fee.as_ref().map(|a| a.into()),
+        }
+    }
+}
+
+impl TryFrom<proto::consensus::LocalOnlyAtom> for LocalOnlyAtom {
+    type Error = anyhow::Error;
+
+    fn try_from(value: proto::consensus::LocalOnlyAtom) -> Result<Self, Self::Error> {
+        let proto_decision = value.decision.ok_or(anyhow!("Decision is missing!"))?;
+        Ok(LocalOnlyAtom {
+            id: TransactionId::try_from(value.id)?,
+            decision: Decision::try_from(proto_decision)?,
             transaction_fee: value.fee,
             leader_fee: value.leader_fee.map(TryInto::try_into).transpose()?,
         })

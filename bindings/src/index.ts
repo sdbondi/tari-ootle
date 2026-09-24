@@ -95,6 +95,7 @@ export * from "./types/Instruction";
 export * from "./types/InstructionArg";
 export * from "./types/InstructionResult";
 export * from "./types/LeaderFee";
+export * from "./types/LocalOnlyAtom";
 export * from "./types/LockedEpoch";
 export * from "./types/LockFlag";
 export * from "./types/LogEntry";

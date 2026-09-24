@@ -57,7 +57,7 @@ pub struct BlockDecision {
     pub local_decision: Option<QuorumDecision>,
     /// Contains newly-committed non-dummy blocks
     pub commit_blocks: Vec<Block>,
-    pub finalized_transactions: Vec<Vec<TransactionPoolRecord>>,
+    pub finalized_transactions: Vec<TransactionPoolRecord>,
     pub high_pc: HighPc,
     pub new_high_tc: Option<HighTc>,
     pub no_vote_reason: Option<NoVoteReason>,

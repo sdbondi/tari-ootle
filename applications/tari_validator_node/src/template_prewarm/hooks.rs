@@ -4,7 +4,7 @@
 use tari_consensus::{hotstuff::HotStuffError, messages::HotstuffMessage, traits::hooks::ConsensusHooks};
 use tari_consensus_types::BlockId;
 use tari_ootle_common_types::NodeHeight;
-use tari_ootle_storage::consensus_models::{Block, NoVoteReason, ValidBlock};
+use tari_ootle_storage::consensus_models::{Block, NoVoteReason, TransactionPoolRecord, ValidBlock};
 use tari_ootle_transaction::TransactionId;
 
 use crate::template_prewarm::TemplatePrewarmer;
@@ -27,12 +27,11 @@ impl TemplatePrewarmHooks {
 }
 
 impl ConsensusHooks for TemplatePrewarmHooks {
-    fn on_blocks_committed(&mut self, committed_blocks: &[Block]) {
-        let templates = committed_blocks
+    fn on_blocks_committed(&mut self, _committed_blocks: &[Block], finalized_transactions: &[TransactionPoolRecord]) {
+        let templates = finalized_transactions
             .iter()
-            .flat_map(|block| block.commands())
-            .filter_map(|command| command.committing())
-            .flat_map(|atom| atom.evidence.all_outputs_iter())
+            .filter(|transaction| transaction.current_decision().is_commit())
+            .flat_map(|transaction| transaction.evidence().all_outputs_iter())
             .filter_map(|(_, substate_id, _)| substate_id.as_template());
 
         for address in templates {

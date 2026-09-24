@@ -459,19 +459,18 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
         }
 
         self.hooks.on_local_block_committed(&valid_block);
-        self.hooks.on_blocks_committed(&block_decision.commit_blocks);
-        let (num_committed, num_aborted) =
-            block_decision
-                .finalized_transactions
-                .iter()
-                .flatten()
-                .fold((0usize, 0), |acc, t| {
-                    let (committed, aborted) = acc;
-                    match t.current_decision() {
-                        Decision::Commit => (committed + 1, aborted),
-                        Decision::Abort(_) => (committed, aborted + 1),
-                    }
-                });
+        self.hooks
+            .on_blocks_committed(&block_decision.commit_blocks, &block_decision.finalized_transactions);
+        let (num_committed, num_aborted) = block_decision
+            .finalized_transactions
+            .iter()
+            .fold((0usize, 0), |acc, t| {
+                let (committed, aborted) = acc;
+                match t.current_decision() {
+                    Decision::Commit => (committed + 1, aborted),
+                    Decision::Abort(_) => (committed, aborted + 1),
+                }
+            });
         self.hooks.on_transaction_batch_finalized(num_committed, num_aborted);
 
         // THere should only be one committed block with end of epoch

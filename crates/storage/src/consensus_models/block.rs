@@ -265,7 +265,12 @@ impl Block {
         self.commands
             .iter()
             .filter_map(|cmd| cmd.transaction())
-            .filter(|t| t.evidence.has_and_not_empty(&committee_info.shard_group()))
+            .filter(|t| {
+                t.evidence()
+                    .map_or(self.shard_group() == committee_info.shard_group(), |evidence| {
+                        evidence.has_and_not_empty(&committee_info.shard_group())
+                    })
+            })
             .map(|t| t.id())
     }
 
@@ -388,7 +393,7 @@ impl Block {
         self.commands
             .iter()
             .filter_map(|c| c.committing())
-            .map(|atom| atom.transaction_fee)
+            .map(|atom| atom.transaction_fee())
             .sum()
     }
 
@@ -818,7 +823,7 @@ impl Block {
             .commands()
             .iter()
             .filter_map(|c| c.committing())
-            .filter(|t| t.decision.is_commit())
+            .filter(|t| t.decision().is_commit())
             .collect::<Vec<_>>();
 
         let mut updates = Vec::with_capacity(committed.len());
@@ -876,10 +881,10 @@ impl Block {
             .commands()
             .iter()
             .filter_map(|c| c.committing())
-            .filter(|t| t.decision.is_commit());
+            .filter(|t| t.decision().is_commit());
 
         let receipt_ids = committed
-            .map(|atom| TransactionReceiptAddress::from_array(atom.id.into_array()))
+            .map(|atom| TransactionReceiptAddress::from_array(atom.id().into_array()))
             .map(VersionedSubstateId::for_tx_receipt)
             .collect::<Vec<_>>();
 

@@ -41,6 +41,7 @@ import type {
   Block,
   Command,
   ForeignProposalAtom,
+  LocalOnlyAtom,
   TransactionAtom,
   VNGetIdentityResponse,
 } from "@tari-project/ootle-ts-bindings";
@@ -128,7 +129,7 @@ export default function BlockDetails() {
   const [error, setError] = useState<String>();
   const [block, setBlock] = useState<Block>();
 
-  const [blockData, setBlockData] = useState<{ [key: string]: TransactionAtom[] }>({});
+  const [blockData, setBlockData] = useState<{ [key: string]: (TransactionAtom | LocalOnlyAtom)[] }>({});
   const [otherCommands, setOtherCommands] = useState<OtherCommands>({});
 
   const [epochEvents, setEpochEvents] = useState<string[]>([]);
@@ -174,7 +175,7 @@ export default function BlockDetails() {
           setEpochEvents([]);
           const otherCommands: OtherCommands = {};
           const foreignProposals = [];
-          const data: { [key: string]: TransactionAtom[] } = {};
+          const data: { [key: string]: (TransactionAtom | LocalOnlyAtom)[] } = {};
           for (let command of resp.block.commands) {
             if (typeof command === "object") {
               const cmd = Object.keys(command)[0];
