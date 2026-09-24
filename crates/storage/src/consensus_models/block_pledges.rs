@@ -6,7 +6,10 @@ use std::{collections::HashMap, fmt::Display, hash::Hash};
 use log::*;
 use minicbor::{CborLen, Decode, Encode};
 use serde::{Deserialize, Serialize};
-use tari_engine_types::substate::{Substate, SubstateId, SubstateValue};
+use tari_engine_types::{
+    SubstateVersion,
+    substate::{Substate, SubstateId, SubstateValue},
+};
 use tari_ootle_common_types::{
     LockIntent,
     SubstateAddress,
@@ -91,7 +94,7 @@ impl BlockPledge {
     pub(crate) fn add_substate_pledge(
         &mut self,
         substate_id: SubstateId,
-        version: u64,
+        version: SubstateVersion,
         substate_value: SubstateValue,
     ) -> &mut Self {
         self.pledges.insert(substate_id, Substate::new(version, substate_value));
@@ -202,7 +205,7 @@ impl SubstatePledge {
             self.substate_id() == req.substate_id()
     }
 
-    pub fn satisfies_substate_and_version(&self, substate_id: &SubstateId, version: u64) -> bool {
+    pub fn satisfies_substate_and_version(&self, substate_id: &SubstateId, version: SubstateVersion) -> bool {
         self.versioned_substate_id().version() == version && self.substate_id() == substate_id
     }
 
@@ -267,14 +270,20 @@ impl Display for SubstatePledge {
 
 #[cfg(test)]
 mod tests {
-    use tari_engine_types::component::{Component, ComponentBody, ComponentHeader};
+    use tari_engine_types::{
+        SubstateVersion,
+        component::{Component, ComponentBody, ComponentHeader},
+    };
     use tari_template_lib::types::{ComponentAddress, EntityId};
     use tari_template_lib_types::{SubstateOwnerRule, access_rules::ComponentAccessRules};
 
     use super::*;
 
     fn create_substate_id(seed: u8) -> VersionedSubstateId {
-        VersionedSubstateId::new(SubstateId::Component(ComponentAddress::from_array([seed; 32])), 0)
+        VersionedSubstateId::new(
+            SubstateId::Component(ComponentAddress::from_array([seed; 32])),
+            SubstateVersion::ZERO,
+        )
     }
 
     fn substate_value(seed: u8) -> SubstateValue {

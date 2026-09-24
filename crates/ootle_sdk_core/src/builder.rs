@@ -138,6 +138,7 @@ pub fn build_public_transfer_unsigned(
 
 #[cfg(test)]
 mod tests {
+    use tari_engine_types::SubstateVersion;
     use tari_template_lib_types::{ComponentAddress, ObjectKey, ResourceAddress};
 
     use super::*;
@@ -185,7 +186,12 @@ mod tests {
         assert_eq!(unsigned.max_epoch(), Epoch(99));
 
         // The explicit input was added.
-        assert!(unsigned.inputs().iter().any(|i| i.version() == Some(0)));
+        assert!(
+            unsigned
+                .inputs()
+                .iter()
+                .any(|i| i.version() == Some(SubstateVersion::ZERO))
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
 
 use std::fmt::Display;
 
-use tari_engine_types::commit_result::FinalizeResult;
+use tari_engine_types::{SubstateVersion, commit_result::FinalizeResult};
 use tari_ootle_transaction::TransactionId;
 use tari_template_lib::types::{ComponentAddress, UtxoAddress};
 
@@ -119,7 +119,7 @@ pub struct AccountCreatedEvent {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AccountChangedEvent {
     pub account_address: ComponentAddress,
-    pub version: u64,
+    pub version: SubstateVersion,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

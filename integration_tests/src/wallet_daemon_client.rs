@@ -26,7 +26,7 @@ use anyhow::{anyhow, bail};
 use serde_json::json;
 use tari_engine_types::substate::SubstateId;
 use tari_ootle_address::OotleAddress;
-use tari_ootle_common_types::{Epoch, SubstateRequirement};
+use tari_ootle_common_types::{Epoch, SubstateRequirement, SubstateVersion};
 use tari_ootle_transaction::UnsignedTransaction;
 use tari_ootle_wallet_sdk::{
     apis::{
@@ -716,7 +716,7 @@ pub fn find_output_version(
     world: &mut TariWorld,
     output_ref: &str,
     output_component_substate_id: SubstateId,
-) -> anyhow::Result<Option<u64>> {
+) -> anyhow::Result<Option<SubstateVersion>> {
     let outputs_name = output_ref.split('/').next().ok_or(anyhow!("Output must have a name"))?;
     Ok(world
         .outputs

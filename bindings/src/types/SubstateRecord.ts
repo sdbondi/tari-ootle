@@ -3,10 +3,11 @@ import type { SubstateCreated } from "./SubstateCreated";
 import type { SubstateDestroyed } from "./SubstateDestroyed";
 import type { SubstateId } from "./SubstateId";
 import type { SubstateValue } from "./SubstateValue";
+import type { SubstateVersion } from "./SubstateVersion";
 
 export type SubstateRecord = {
   substate_id: SubstateId;
-  version: number;
+  version: SubstateVersion;
   substate_value: SubstateValue | null;
   state_hash: string;
   created: SubstateCreated;

@@ -44,7 +44,7 @@ mod tests {
         component::{Component, ComponentBody, ComponentHeader},
         substate::SubstateValue,
     };
-    use tari_ootle_common_types::{Epoch, shard::Shard};
+    use tari_ootle_common_types::{Epoch, SubstateVersion, shard::Shard};
     use tari_ootle_storage::consensus_models::{SubstateCreated, SubstateDestroyed};
     use tari_template_lib_types::{Hash32, SubstateOwnerRule};
 
@@ -58,7 +58,7 @@ mod tests {
             substate_id: "component_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
                 .parse()
                 .unwrap(),
-            version: 0,
+            version: SubstateVersion::ZERO,
             substate_value: Some(SubstateValue::Component(Component {
                 header: ComponentHeader {
                     template_address: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

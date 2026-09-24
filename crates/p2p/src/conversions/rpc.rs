@@ -10,7 +10,7 @@ use tari_engine_types::{
     substate::{SubstateId, SubstateValue},
 };
 use tari_jellyfish::TreeHash;
-use tari_ootle_common_types::shard::Shard;
+use tari_ootle_common_types::{SubstateVersion, shard::Shard};
 use tari_ootle_storage::consensus_models::{
     EpochCheckpoint,
     SubstateCreate,
@@ -59,7 +59,7 @@ impl TryFrom<proto::rpc::SubstateDestroy> for SubstateDestroy {
     fn try_from(value: proto::rpc::SubstateDestroy) -> Result<Self, Self::Error> {
         Ok(Self {
             substate_id: SubstateId::from_bytes(&value.substate_id)?,
-            version: value.version,
+            version: SubstateVersion::new(value.version),
         })
     }
 }
@@ -68,7 +68,7 @@ impl From<SubstateDestroy> for proto::rpc::SubstateDestroy {
     fn from(value: SubstateDestroy) -> Self {
         Self {
             substate_id: value.substate_id.to_bytes(),
-            version: value.version,
+            version: value.version.as_u64(),
         }
     }
 }
@@ -108,7 +108,7 @@ impl TryFrom<proto::rpc::SubstateData> for SubstateData {
 
         Ok(Self {
             substate_id: SubstateId::from_bytes(&value.substate_id)?,
-            version: value.version,
+            version: SubstateVersion::new(value.version),
             value: value
                 .substate_value_or_hash
                 .ok_or_else(|| anyhow!("substate_value_or_hash not provided"))?
@@ -122,7 +122,7 @@ impl From<SubstateData> for proto::rpc::SubstateData {
     fn from(value: SubstateData) -> Self {
         Self {
             substate_id: value.substate_id.to_bytes(),
-            version: value.version,
+            version: value.version.as_u64(),
             substate_value_or_hash: Some(value.value().into()),
             template_metadata: value
                 .template_metadata

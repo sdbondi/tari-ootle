@@ -12,6 +12,7 @@ use bounded_vec::BoundedVec;
 use serde::{Deserialize, Serialize};
 use tari_consensus_types::Decision;
 use tari_engine_types::{
+    SubstateVersion,
     Utxo,
     commit_result::ExecuteResult,
     events::Event,
@@ -43,8 +44,8 @@ pub struct ListSubstateItem {
     pub substate_id: SubstateId,
     #[cfg_attr(feature = "utoipa", schema(value_type = Option<String>))]
     pub module_name: Option<String>,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub version: u64,
+    #[cfg_attr(feature = "utoipa", schema(value_type = u64))]
+    pub version: SubstateVersion,
     #[cfg_attr(feature = "utoipa", schema(value_type = Option<String>))]
     pub template_address: Option<TemplateAddress>,
     #[cfg_attr(feature = "ts", ts(type = "string"))]
@@ -59,8 +60,8 @@ pub struct ListSubstateItem {
 )]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct GetSubstateRequest {
-    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
-    pub version: Option<u64>,
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<u64>))]
+    pub version: Option<SubstateVersion>,
     #[serde(default)]
     pub local_search_only: bool,
 }
@@ -73,8 +74,8 @@ pub struct GetSubstateRequest {
 )]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct GetSubstateResponse {
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub version: u64,
+    #[cfg_attr(feature = "utoipa", schema(value_type = u64))]
+    pub version: SubstateVersion,
     #[cfg_attr(feature = "utoipa", schema(value_type = Object))]
     pub substate: SubstateValue,
     /// True when the indexer verified this substate's value against the shard group committee (via a
@@ -112,16 +113,16 @@ pub struct GetSubstatesResponse {
 pub struct InspectSubstateRequest {
     #[cfg_attr(feature = "utoipa", schema(value_type = String))]
     pub address: SubstateId,
-    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
-    pub version: Option<u64>,
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<u64>))]
+    pub version: Option<SubstateVersion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "tari-indexer-client/"))]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct InspectSubstateResponse {
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub version: u64,
+    #[cfg_attr(feature = "utoipa", schema(value_type = u64))]
+    pub version: SubstateVersion,
     #[cfg_attr(feature = "utoipa", schema(value_type = Object))]
     pub substate: SubstateValue,
 }
@@ -524,8 +525,8 @@ pub struct GetNonFungiblesResponse {
 pub struct NonFungibleSubstate {
     #[cfg_attr(feature = "utoipa", schema(value_type = String))]
     pub address: NonFungibleAddress,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub version: u64,
+    #[cfg_attr(feature = "utoipa", schema(value_type = u64))]
+    pub version: SubstateVersion,
     #[cfg_attr(feature = "utoipa", schema(value_type = Object))]
     pub substate: SubstateValue,
 }
@@ -672,16 +673,14 @@ pub struct UtxoUnspent {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UtxoSpent {
     pub id: UtxoId,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub version: u64,
+    pub version: SubstateVersion,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UtxoBurnt {
     pub id: UtxoId,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub version: u64,
+    pub version: SubstateVersion,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -959,8 +958,8 @@ pub struct GetTransactionReceiptResponse {
 pub struct GetResourceResponse {
     #[cfg_attr(feature = "utoipa", schema(value_type = Object))]
     pub resource: Resource,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub version: u64,
+    #[cfg_attr(feature = "utoipa", schema(value_type = u64))]
+    pub version: SubstateVersion,
     #[cfg_attr(feature = "utoipa", schema(value_type = Option<String>))]
     pub total_supply: Option<Amount>,
 }

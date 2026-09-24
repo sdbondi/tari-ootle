@@ -23,6 +23,7 @@
 use std::future::Future;
 
 use tari_engine_types::substate::SubstateId;
+use tari_ootle_common_types::SubstateVersion;
 use tari_validator_node_rpc::client::SubstateResult;
 
 #[derive(thiserror::Error, Debug)]
@@ -69,7 +70,7 @@ pub fn caches_nonexistence(id: &SubstateId) -> bool {
 #[derive(Debug, Clone)]
 pub struct SubstateCacheEntry {
     /// The substate's head version, or `None` when the substate does not exist.
-    pub version: Option<u64>,
+    pub version: Option<SubstateVersion>,
     pub substate_result: SubstateResult,
     pub cached_at: u64,
     /// True if the value was committee-verified when it was fetched. Never true for a substate that
@@ -86,7 +87,7 @@ impl SubstateCacheEntry {
     /// and upping a substate downs its predecessor - or it is above it, which the cache knows
     /// nothing about. Nonexistence names no version and answers nothing about one: a destroyed
     /// substate whose history has been pruned reports the same thing as one never created.
-    pub fn answer_at(self, version: Option<u64>) -> Option<Self> {
+    pub fn answer_at(self, version: Option<SubstateVersion>) -> Option<Self> {
         let Some(version) = version else {
             return Some(self);
         };
@@ -105,7 +106,7 @@ impl SubstateCacheEntry {
 #[derive(Debug, Clone, Copy)]
 pub struct SubstateCacheEntryRef<'a> {
     /// The substate's head version, or `None` when the substate does not exist.
-    pub version: Option<u64>,
+    pub version: Option<SubstateVersion>,
     pub substate_result: &'a SubstateResult,
     pub cached_at: u64,
     pub verified: bool,
@@ -150,9 +151,11 @@ pub trait SubstateCache: Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    use tari_ootle_common_types::SubstateVersion;
+
     use super::*;
 
-    fn head(version: Option<u64>) -> SubstateCacheEntry {
+    fn head(version: Option<SubstateVersion>) -> SubstateCacheEntry {
         SubstateCacheEntry {
             version,
             substate_result: version.map_or(SubstateResult::DoesNotExist, |version| SubstateResult::Down { version }),
@@ -163,17 +166,30 @@ mod tests {
 
     #[test]
     fn the_head_answers_an_unversioned_read_and_itself() {
-        assert_eq!(head(Some(6)).answer_at(None).unwrap().version, Some(6));
-        assert_eq!(head(Some(6)).answer_at(Some(6)).unwrap().version, Some(6));
+        assert_eq!(
+            head(Some(SubstateVersion::new(6))).answer_at(None).unwrap().version,
+            Some(SubstateVersion::new(6))
+        );
+        assert_eq!(
+            head(Some(SubstateVersion::new(6)))
+                .answer_at(Some(SubstateVersion::new(6)))
+                .unwrap()
+                .version,
+            Some(SubstateVersion::new(6))
+        );
     }
 
     /// The head only has to have been real at some point: the real head is at or above it, so every
     /// version below is down for good. The answer carries the head's age so that it ages out with it.
     #[test]
     fn a_version_below_the_head_is_down() {
-        let answer = head(Some(6)).answer_at(Some(3)).unwrap();
-        assert!(matches!(answer.substate_result, SubstateResult::Down { version: 3 }));
-        assert_eq!(answer.version, Some(3));
+        let answer = head(Some(SubstateVersion::new(6)))
+            .answer_at(Some(SubstateVersion::new(3)))
+            .unwrap();
+        assert!(
+            matches!(answer.substate_result, SubstateResult::Down { version } if version == SubstateVersion::new(3))
+        );
+        assert_eq!(answer.version, Some(SubstateVersion::new(3)));
         assert_eq!(answer.cached_at, 1_000);
         assert!(answer.verified);
     }
@@ -181,13 +197,17 @@ mod tests {
     /// Above the head the cache knows nothing: this indexer is behind, or the substate never got there.
     #[test]
     fn a_version_above_the_head_is_a_miss() {
-        assert!(head(Some(6)).answer_at(Some(7)).is_none());
+        assert!(
+            head(Some(SubstateVersion::new(6)))
+                .answer_at(Some(SubstateVersion::new(7)))
+                .is_none()
+        );
     }
 
     #[test]
     fn nonexistence_answers_an_unversioned_read_only() {
         assert!(head(None).answer_at(None).is_some());
-        assert!(head(None).answer_at(Some(0)).is_none());
-        assert!(head(None).answer_at(Some(3)).is_none());
+        assert!(head(None).answer_at(Some(SubstateVersion::ZERO)).is_none());
+        assert!(head(None).answer_at(Some(SubstateVersion::new(3))).is_none());
     }
 }

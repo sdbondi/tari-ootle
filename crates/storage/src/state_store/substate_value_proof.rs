@@ -6,6 +6,7 @@ use std::collections::{HashMap, hash_map::Entry};
 use ootle_network::Network;
 use tari_common_types::types::FixedHash;
 use tari_engine_types::{
+    SubstateVersion,
     limits::MAX_CBOR_NESTING_DEPTH,
     substate::{SubstateId, SubstateValue, hash_substate},
 };
@@ -140,7 +141,7 @@ impl<'a, TTx: StateStoreReadTransaction> SubstateProofGenerator<'a, TTx> {
 pub fn verify_substate_value_proof_against_root(
     value_proof_bytes: &[u8],
     substate_id: &SubstateId,
-    version: u64,
+    version: SubstateVersion,
     value: Option<&SubstateValue>,
     network: Network,
     proof_epoch: Epoch,

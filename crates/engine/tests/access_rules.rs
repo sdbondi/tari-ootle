@@ -340,6 +340,7 @@ mod component_owner_rule {
     use ootle_byte_type::ToByteType;
     use tari_crypto::ristretto::{RistrettoPublicKey, RistrettoSecretKey};
     use tari_engine_types::{commit_result::RejectReason, substate::SubstateId};
+    use tari_ootle_common_types::SubstateVersion;
     use tari_template_lib::types::{NonFungibleAddress, SubstateOwnerRule};
 
     use super::*;
@@ -418,7 +419,7 @@ mod component_owner_rule {
             .clone()
     }
 
-    fn version_of(test: &TemplateTest, component: ComponentAddress) -> u64 {
+    fn version_of(test: &TemplateTest, component: ComponentAddress) -> SubstateVersion {
         test.read_only_state_store()
             .get_substate(&SubstateId::Component(component))
             .unwrap()

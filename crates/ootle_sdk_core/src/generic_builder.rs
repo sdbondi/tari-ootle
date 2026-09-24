@@ -481,6 +481,7 @@ fn dedup_wants(wants: Vec<WantItem>) -> Vec<WantItem> {
 mod tests {
     use tari_crypto::{keys::PublicKey as _, ristretto::RistrettoPublicKey, tari_utilities::ByteArray};
     use tari_engine_types::{
+        SubstateVersion,
         component::{Component, ComponentBody, ComponentHeader},
         resource_container::ResourceContainer,
         substate::{SubstateId, SubstateValue},
@@ -658,7 +659,12 @@ mod tests {
             Resolution::NeedMore { .. } => panic!("expected Resolved"),
         };
         let unsigned = resolved.into_unsigned();
-        assert!(unsigned.inputs().iter().any(|i| i.version() == Some(0)));
+        assert!(
+            unsigned
+                .inputs()
+                .iter()
+                .any(|i| i.version() == Some(SubstateVersion::ZERO))
+        );
     }
 
     #[test]

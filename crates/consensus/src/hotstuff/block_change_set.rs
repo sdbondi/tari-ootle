@@ -631,7 +631,7 @@ mod tests {
 
     use tari_consensus_types::Decision;
     use tari_engine_types::commit_result::AbortReason;
-    use tari_ootle_common_types::{Epoch, NumPreshards, VersionedSubstateId};
+    use tari_ootle_common_types::{Epoch, NumPreshards, SubstateVersion, VersionedSubstateId};
     use tari_ootle_storage::consensus_models::{SubstatePledge, TransactionPoolStage};
     use tari_template_lib_types::ComponentAddress;
 
@@ -653,7 +653,10 @@ mod tests {
         change_set.set_next_transaction_update(aborted).unwrap();
         change_set.add_foreign_pledges(&transaction_id, ShardGroup::all_shards(NumPreshards::P256), vec![
             SubstatePledge::Output {
-                substate_id: VersionedSubstateId::new(SubstateId::Component(ComponentAddress::from_array([1; 32])), 0),
+                substate_id: VersionedSubstateId::new(
+                    SubstateId::Component(ComponentAddress::from_array([1; 32])),
+                    SubstateVersion::ZERO,
+                ),
             },
         ]);
 

@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use tari_consensus_types::Decision;
 use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_engine_types::substate::SubstateId;
-use tari_ootle_common_types::{NumPreshards, VersionedSubstateId};
+use tari_ootle_common_types::{NumPreshards, SubstateVersion, VersionedSubstateId};
 use tari_ootle_storage::consensus_models::{Command, Evidence, LeaderFee, TransactionAtom};
 use tari_ootle_transaction::{Transaction, args};
 use tari_template_lib::types::{
@@ -163,11 +163,17 @@ fn output_substates() -> Vec<VersionedSubstateId> {
     // Distinct leading bytes so the addresses fall in different preshards, and therefore in
     // different shard groups once the network has more than one committee.
     vec![
-        VersionedSubstateId::new(SubstateId::Vault(VaultId::new(ObjectKey::from_array([0x11; 32]))), 1),
-        VersionedSubstateId::new(SubstateId::Vault(VaultId::new(ObjectKey::from_array([0x88; 32]))), 1),
+        VersionedSubstateId::new(
+            SubstateId::Vault(VaultId::new(ObjectKey::from_array([0x11; 32]))),
+            SubstateVersion::new(1),
+        ),
+        VersionedSubstateId::new(
+            SubstateId::Vault(VaultId::new(ObjectKey::from_array([0x88; 32]))),
+            SubstateVersion::new(1),
+        ),
         VersionedSubstateId::new(
             SubstateId::TransactionReceipt(TransactionReceiptAddress::from_array([0xcc; 32])),
-            0,
+            SubstateVersion::ZERO,
         ),
     ]
 }

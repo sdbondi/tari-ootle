@@ -13,7 +13,14 @@ use integration_tests::{
     indexer::{IndexerProcess, spawn_indexer},
 };
 use libp2p::Multiaddr;
-use tari_ootle_common_types::{Epoch, StateVersion, displayable::Displayable, optional::Optional, shard::Shard};
+use tari_ootle_common_types::{
+    Epoch,
+    StateVersion,
+    SubstateVersion,
+    displayable::Displayable,
+    optional::Optional,
+    shard::Shard,
+};
 
 #[when(expr = "indexer {word} connects to all other validators")]
 async fn given_validator_connects_to_other_vns(world: &mut TariWorld, name: String) {
@@ -255,7 +262,7 @@ async fn indexer_scans_network_events_for_resource(world: &mut TariWorld, indexe
 async fn assert_indexer_substate_version(
     world: &mut TariWorld,
     indexer_name: String,
-    version: u64,
+    version: SubstateVersion,
     output_ref: String,
 ) {
     let indexer = world.indexers.get(&indexer_name).unwrap();

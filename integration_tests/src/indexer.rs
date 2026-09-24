@@ -45,6 +45,7 @@ use tari_indexer_client::{
 };
 use tari_ootle_address::Network;
 use tari_ootle_app_utilities::{epoch_oracle_config::EpochOracleConfig, p2p_config::PeerSeedsConfig};
+use tari_ootle_common_types::SubstateVersion;
 use tari_shutdown::Shutdown;
 use tari_template_lib_types::{TemplateAddress, crypto::RistrettoPublicKeyBytes};
 use tokio::task;
@@ -83,7 +84,7 @@ impl IndexerProcess {
         &self,
         world: &TariWorld,
         output_ref: String,
-        version: u64,
+        version: SubstateVersion,
     ) -> Result<GetSubstateResponse, tari_indexer_client::error::IndexerRestClientError> {
         let address = get_address_from_output(world, output_ref);
         let client = self.get_indexer_client();

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use log::info;
 use ootle_byte_type::ToByteType;
 use tari_engine_types::indexed_value::decode_value_at_path;
-use tari_ootle_common_types::{SubstateRequirement, optional::Optional};
+use tari_ootle_common_types::{SubstateRequirement, SubstateVersion, optional::Optional};
 use tari_ootle_transaction::args;
 use tari_ootle_wallet_sdk::models::Account;
 use tari_template_lib_types::{
@@ -207,7 +207,7 @@ impl Runner {
             self.sdk.accounts_api().add_vault(
                 account,
                 lp_vault,
-                0,
+                SubstateVersion::ZERO,
                 tariswaps[0].lp_resource_address,
                 ResourceType::NonFungible,
                 Some("LP".to_string()),

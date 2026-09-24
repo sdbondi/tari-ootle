@@ -248,7 +248,10 @@ mod tests {
         sync::Weak,
     };
 
-    use tari_ootle_common_types::engine_types::{Utxo, UtxoOutput, crypto::OutputBody, substate::Substate};
+    use tari_ootle_common_types::{
+        SubstateVersion,
+        engine_types::{Utxo, UtxoOutput, crypto::OutputBody, substate::Substate},
+    };
     use tari_ootle_transaction::UnsignedTransaction;
     use tari_template_lib_types::{
         constants::TARI_TOKEN,
@@ -353,7 +356,7 @@ mod tests {
                     auth: SpendAuthorization::Key(*address.account_public_key()),
                     tag: UtxoTag::new(0),
                 });
-                (id, Substate::new(0, utxo))
+                (id, Substate::new(SubstateVersion::ZERO, utxo))
             })
             .collect();
 

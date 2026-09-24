@@ -6,6 +6,7 @@ use std::io;
 use anyhow::anyhow;
 use tari_common_types::types::FixedHash;
 use tari_consensus_types::BlockId;
+use tari_ootle_common_types::SubstateVersion;
 
 use crate::{
     codecs::{DbDecoder, DbEncoder, SubstateIdCodec},
@@ -83,9 +84,9 @@ impl DbDecoder<BlockDiffKey> for BlockDiffKeyCodec<BlockIdSeqSubstateIdVersion> 
         offset += n;
 
         let version_bytes: [u8; 8] = take_fixed(&bytes[offset..]).ok_or_else(|| RocksDbStorageError::DecodeError {
-            source: anyhow!("BlockIdSubstateIdVersionCodec: Invalid bytes for u64"),
+            source: anyhow!("BlockIdSubstateIdVersionCodec: Invalid bytes for SubstateVersion"),
         })?;
-        let version = u64::from_be_bytes(version_bytes);
+        let version = SubstateVersion::from_be_bytes(version_bytes);
         offset += 8;
 
         let is_up_byte = bytes.get(offset).ok_or_else(|| RocksDbStorageError::DecodeError {
@@ -164,9 +165,9 @@ impl DbDecoder<BlockDiffKey> for BlockDiffKeyCodec<SubstateIdBlockIdVersionSeq> 
         offset += HASH_LEN;
 
         let version_bytes: [u8; 8] = take_fixed(&bytes[offset..]).ok_or_else(|| RocksDbStorageError::DecodeError {
-            source: anyhow!("BlockIdSubstateIdVersionCodec: Invalid bytes for u64"),
+            source: anyhow!("BlockIdSubstateIdVersionCodec: Invalid bytes for SubstateVersion"),
         })?;
-        let version = u64::from_be_bytes(version_bytes);
+        let version = SubstateVersion::from_be_bytes(version_bytes);
         offset += 8;
 
         let is_up_byte = bytes.get(offset).ok_or_else(|| RocksDbStorageError::DecodeError {

@@ -45,6 +45,7 @@ use tari_ootle_common_types::{
     ShardGroup,
     StateVersion,
     SubstateRequirementRef,
+    SubstateVersion,
     optional::IsNotFoundError,
     shard::Shard,
     substate_type::SubstateType,
@@ -68,7 +69,7 @@ use crate::{
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SubstateResponse {
     pub id: SubstateId,
-    pub version: u64,
+    pub version: SubstateVersion,
     pub substate: SubstateValue,
 }
 
@@ -375,7 +376,7 @@ impl SubstateManager {
     async fn get_substate_from_db(
         &self,
         substate_address: &SubstateId,
-        version: Option<u64>,
+        version: Option<SubstateVersion>,
     ) -> Result<Option<SubstateResponse>, SubstateManagerError> {
         let substate_address = substate_address.clone();
         let row = self
@@ -409,7 +410,10 @@ pub enum SubstateManagerError {
     #[error("Storage error: {0}")]
     StorageError(#[from] StorageError),
     #[error("Input substate {substate_id} (v{version}) is down")]
-    InputSubstateIsDown { substate_id: SubstateId, version: u64 },
+    InputSubstateIsDown {
+        substate_id: SubstateId,
+        version: SubstateVersion,
+    },
     #[error("Input substate {substate_id} does not exist")]
     InputSubstateDoesNotExist { substate_id: SubstateId },
 }

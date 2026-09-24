@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 use tari_consensus_types::BlockId;
 use tari_engine_types::substate::SubstateId;
+use tari_ootle_common_types::SubstateVersion;
 use tari_ootle_storage::consensus_models::SubstateChange;
 
 use crate::{
@@ -38,7 +39,7 @@ pub struct BlockDiffInsertEntry<'a> {
 pub struct BlockDiffKey {
     pub block_id: BlockId,
     pub substate_id: SubstateId,
-    pub version: u64,
+    pub version: SubstateVersion,
     pub is_up: bool,
     /// Retains the ordering of the substate changes in the block. This limits the maximum number of substate changes
     /// in a block to u32::MAX (4,294,967,295).

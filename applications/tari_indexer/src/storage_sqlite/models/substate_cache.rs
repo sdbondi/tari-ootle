@@ -3,6 +3,7 @@
 
 use tari_engine_types::substate::SubstateId;
 use tari_indexer_lib::substate_cache::caches_nonexistence;
+use tari_ootle_common_types::SubstateVersion;
 
 #[derive(Debug, Clone, Queryable)]
 pub(crate) struct SubstateCacheRow {
@@ -23,9 +24,9 @@ pub(crate) struct SubstateCacheRow {
 #[derive(Debug, Clone)]
 pub struct SubstateCacheInvalidation {
     substate_id: SubstateId,
-    retires_up_to: Option<u64>,
+    retires_up_to: Option<SubstateVersion>,
     retires_nonexistence: bool,
-    observed_version: u64,
+    observed_version: SubstateVersion,
     spent: bool,
 }
 
@@ -37,8 +38,8 @@ impl SubstateCacheInvalidation {
     /// retraction of a cached nonexistence. Where nothing caches that, it carries nothing, and is
     /// not one of these at all: emitting it would put a journal row on the sync path for every
     /// created-once substate in the stream and buy nothing with it.
-    pub fn created(substate_id: &SubstateId, version: u64) -> Option<Self> {
-        let retires_up_to = version.checked_sub(1);
+    pub fn created(substate_id: &SubstateId, version: SubstateVersion) -> Option<Self> {
+        let retires_up_to = version.previous();
         let retires_nonexistence = caches_nonexistence(substate_id);
         if retires_up_to.is_none() && !retires_nonexistence {
             return None;
@@ -56,7 +57,7 @@ impl SubstateCacheInvalidation {
     ///
     /// A destroy leaves a cached nonexistence alone. `DoesNotExist` says the substate has no live
     /// version, which a destroy makes more true rather than less.
-    pub fn destroyed(substate_id: SubstateId, version: u64) -> Self {
+    pub fn destroyed(substate_id: SubstateId, version: SubstateVersion) -> Self {
         Self {
             substate_id,
             retires_up_to: Some(version),
@@ -72,7 +73,7 @@ impl SubstateCacheInvalidation {
 
     /// The version the stream showed the substate at: created at it, or destroyed at it. A head
     /// below this is one the substate has already been watched past, whoever offers it.
-    pub fn observed_version(&self) -> u64 {
+    pub fn observed_version(&self) -> SubstateVersion {
         self.observed_version
     }
 
@@ -85,7 +86,7 @@ impl SubstateCacheInvalidation {
     }
 
     /// The highest cached head version this retires, if any.
-    pub fn retires_up_to(&self) -> Option<u64> {
+    pub fn retires_up_to(&self) -> Option<SubstateVersion> {
         self.retires_up_to
     }
 
@@ -111,7 +112,7 @@ mod tests {
 
     #[test]
     fn a_first_creation_retires_nothing_but_the_nonexistence() {
-        let invalidation = SubstateCacheInvalidation::created(&substate(), 0).unwrap();
+        let invalidation = SubstateCacheInvalidation::created(&substate(), SubstateVersion::ZERO).unwrap();
         assert_eq!(invalidation.retires_up_to(), None);
         assert!(invalidation.retires_nonexistence());
     }
@@ -121,26 +122,26 @@ mod tests {
     #[test]
     fn a_first_creation_is_dropped_where_nonexistence_is_not_cached() {
         assert!(!caches_nonexistence(&receipt()));
-        assert!(SubstateCacheInvalidation::created(&receipt(), 0).is_none());
+        assert!(SubstateCacheInvalidation::created(&receipt(), SubstateVersion::ZERO).is_none());
         // Above the first version it carries a retirement that stands on its own, and does not
         // attempt one that could never match.
-        let above = SubstateCacheInvalidation::created(&receipt(), 1).unwrap();
-        assert_eq!(above.retires_up_to(), Some(0));
+        let above = SubstateCacheInvalidation::created(&receipt(), SubstateVersion::new(1)).unwrap();
+        assert_eq!(above.retires_up_to(), Some(SubstateVersion::ZERO));
         assert!(!above.retires_nonexistence());
     }
 
     #[test]
     fn a_creation_retires_every_version_below_it() {
-        let invalidation = SubstateCacheInvalidation::created(&substate(), 6).unwrap();
-        assert_eq!(invalidation.retires_up_to(), Some(5));
+        let invalidation = SubstateCacheInvalidation::created(&substate(), SubstateVersion::new(6)).unwrap();
+        assert_eq!(invalidation.retires_up_to(), Some(SubstateVersion::new(5)));
         assert!(invalidation.retires_nonexistence());
         assert!(!invalidation.is_observed_version_spent());
     }
 
     #[test]
     fn a_destroy_retires_the_version_it_names_and_no_nonexistence() {
-        let invalidation = SubstateCacheInvalidation::destroyed(substate(), 6);
-        assert_eq!(invalidation.retires_up_to(), Some(6));
+        let invalidation = SubstateCacheInvalidation::destroyed(substate(), SubstateVersion::new(6));
+        assert_eq!(invalidation.retires_up_to(), Some(SubstateVersion::new(6)));
         assert!(!invalidation.retires_nonexistence());
         assert!(invalidation.is_observed_version_spent());
     }

@@ -14,6 +14,7 @@ use ootle_network::Network;
 use tari_bor::encoded_len;
 use tari_crypto::ristretto::RistrettoPublicKey;
 use tari_engine_types::{
+    SubstateVersion,
     Utxo,
     ValidatorFeeWithdrawal,
     bucket::Bucket,
@@ -2109,14 +2110,14 @@ impl<TStore: StateReader> WorkingState<TStore> {
                     let version =
                         existing_state
                             .version()
-                            .checked_add(1)
+                            .checked_next()
                             .ok_or_else(|| RuntimeError::InvariantError {
                                 function: "generate_substate_diff",
                                 details: format!("version of substate {id} overflowed"),
                             })?;
                     Substate::new(version, substate)
                 },
-                None => Substate::new(0, substate),
+                None => Substate::new(SubstateVersion::ZERO, substate),
             };
             substate_diff.up(id, new_substate);
         }

@@ -94,7 +94,7 @@ mod tests {
         keys::{PublicKey as _, SecretKey},
         ristretto::{RistrettoPublicKey, RistrettoSecretKey},
     };
-    use tari_engine_types::{Epoch, substate::SubstateId, transaction_receipt::FinalizeOutcome};
+    use tari_engine_types::{Epoch, SubstateVersion, substate::SubstateId, transaction_receipt::FinalizeOutcome};
     use tari_ootle_common_types::SubstateRequirement;
     use tari_template_lib_types::ComponentAddress;
 
@@ -115,7 +115,7 @@ mod tests {
         let mut inputs = IndexSet::new();
         inputs.insert(SubstateRequirement::versioned(
             SubstateId::Component(ComponentAddress::from_array([1; 32])),
-            1,
+            SubstateVersion::new(1),
         ));
         UnsignedTransactionV1 {
             network: 42,
@@ -220,7 +220,7 @@ mod tests {
         let mut u = base.clone();
         u.inputs.insert(SubstateRequirement::versioned(
             SubstateId::Component(ComponentAddress::from_array([9; 32])),
-            1,
+            SubstateVersion::new(1),
         ));
         assert_ne!(commitment_of(u), base_commitment, "inputs (extra)");
         let mut u = base.clone();
@@ -229,7 +229,7 @@ mod tests {
             .iter()
             .map(|i| SubstateRequirement {
                 substate_id: i.substate_id.clone(),
-                version: i.version.map(|v| v.wrapping_add(1)),
+                version: i.version.map(|v| v.next()),
             })
             .collect();
         assert_ne!(commitment_of(u), base_commitment, "inputs (version changed)");

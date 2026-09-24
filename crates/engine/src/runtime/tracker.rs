@@ -25,6 +25,7 @@ use std::cell::{Cell, RefCell};
 use log::*;
 use ootle_network::Network;
 use tari_engine_types::{
+    SubstateVersion,
     commit_result::{FinalizeResult, RejectReason, TransactionResult},
     component::{Component, ComponentBody, ComponentHeader},
     events::Event,
@@ -548,7 +549,7 @@ impl<TStore: StateReader> StateTracker<TStore> {
         let transaction_receipt = state.finalize_transaction_receipt(outcome, &diff, fee_receipt.clone())?;
         diff.up(
             SubstateId::TransactionReceipt(state.transaction_hash().into()),
-            Substate::new(0, transaction_receipt),
+            Substate::new(SubstateVersion::ZERO, transaction_receipt),
         );
 
         let result = match reason {

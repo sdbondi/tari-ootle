@@ -133,7 +133,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
                             substate_transitions::epoch.eq(epoch.as_u64() as i64),
                             substate_transitions::substate_id.eq(proof.substate_id().to_string()),
                             substate_transitions::substate_type.eq(SubstateType::from(proof.substate_id()).to_string()),
-                            substate_transitions::version.eq(proof.version() as i64),
+                            substate_transitions::version.eq(proof.version().as_u64() as i64),
                             substate_transitions::is_up.eq(proof.is_create()),
                             substate_transitions::value_hash.eq(proof.as_create().map(|v| {
                                 serialize_hex(v.substate.value.to_value_hash(network, proof.version(), epoch))
@@ -165,7 +165,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
                     let insert = UtxoRecordInsert {
                         commitment,
                         public_nonce: serialize_hex(unspent.utxo_output.output.public_nonce),
-                        version: unspent.version as i64,
+                        version: unspent.version.as_u64() as i64,
                         output: Some(serialize_bincode(&unspent.utxo_output)?),
                         shard: unspent.shard.as_u32() as i32,
                         resource_address,
@@ -187,7 +187,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
                     let commitment = spent.address.id().to_commitment_hex_string();
                     let update = UtxoRecordUpdate {
                         epoch: Some(epoch.as_u64() as i64),
-                        version: Some(spent.version as i64),
+                        version: Some(spent.version.as_u64() as i64),
                         // Prune the UTXO data for spent outputs
                         output: Some(None),
                         // Update to deleted state version
@@ -218,7 +218,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
             .map(|c| c.template_address().to_string());
         let new_substate = NewSubstate {
             address: substate.substate_id.to_string(),
-            version: substate.version as i64,
+            version: substate.version.as_u64() as i64,
             data: substate
                 .value
                 .value()
@@ -544,7 +544,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
         use crate::storage_sqlite::schema::{substate_cache, substate_cache_invalidations};
 
         let id = substate_id.to_string();
-        let version = entry.version.map(|v| v as i64);
+        let version = entry.version.map(|v| v.as_u64() as i64);
 
         // Nothing journals a first creation for a substate outside `caches_nonexistence`, so a
         // record here that one does not exist could never be retracted and would stand until it
@@ -822,7 +822,7 @@ impl SqliteStoreWriteTransaction<'_> {
             retired += diesel::delete(
                 substate_cache::table
                     .filter(substate_cache::substate_id.eq(&id))
-                    .filter(substate_cache::version.le(retires_up_to as i64)),
+                    .filter(substate_cache::version.le(retires_up_to.as_u64() as i64)),
             )
             .execute(self.connection())
             .map_err(|e| StorageError::general(OPERATION, e))?;
@@ -842,7 +842,7 @@ impl SqliteStoreWriteTransaction<'_> {
             .values((
                 substate_cache_invalidations::substate_id.eq(&id),
                 substate_cache_invalidations::state_version.eq(state_version.as_u64() as i64),
-                substate_cache_invalidations::substate_version.eq(invalidation.observed_version() as i64),
+                substate_cache_invalidations::substate_version.eq(invalidation.observed_version().as_u64() as i64),
                 substate_cache_invalidations::spent.eq(invalidation.is_observed_version_spent()),
                 substate_cache_invalidations::invalidated_at.eq(now),
             ))

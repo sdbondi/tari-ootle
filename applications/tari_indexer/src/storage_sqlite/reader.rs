@@ -39,6 +39,7 @@ use tari_ootle_common_types::{
     NodeHeight,
     ShardGroup,
     StateVersion,
+    SubstateVersion,
     displayable::Displayable,
     shard::Shard,
     substate_type::SubstateType,
@@ -169,7 +170,7 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
                 Ok(ListSubstateItem {
                     substate_id,
                     module_name: s.module_name,
-                    version,
+                    version: SubstateVersion::new(version),
                     template_address,
                     timestamp,
                 })
@@ -185,7 +186,7 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
     fn get_substate(
         &mut self,
         address: &SubstateId,
-        version: Option<u64>,
+        version: Option<SubstateVersion>,
     ) -> Result<Option<SubstateRecord>, StorageError> {
         use crate::storage_sqlite::schema::substates;
 
@@ -193,7 +194,7 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
             .into_boxed()
             .filter(substates::address.eq(address.to_string()));
         if let Some(version) = version {
-            substate_query = substate_query.filter(substates::version.eq(version as i64));
+            substate_query = substate_query.filter(substates::version.eq(version.as_u64() as i64));
         } else {
             substate_query = substate_query.order_by(substates::version.desc())
         }
@@ -269,8 +270,10 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
                     address: row.address.parse().map_err(|e| StorageError::DataInconsistency {
                         details: format!("Failed to parse address: {}", e),
                     })?,
-                    version: row.version.try_into().map_err(|e| StorageError::DataInconsistency {
-                        details: format!("Version overflow {}", e),
+                    version: u64::try_from(row.version).map(SubstateVersion::new).map_err(|e| {
+                        StorageError::DataInconsistency {
+                            details: format!("Version overflow {}", e),
+                        }
                     })?,
                     substate: value,
                 })
@@ -1178,7 +1181,7 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
 
         row.map(|row| {
             Ok(SubstateCacheEntry {
-                version: row.version.map(|v| v as u64),
+                version: (row.version.map(|v| v as u64)).map(SubstateVersion::new),
                 substate_result: deserialize_bincode(&row.substate_result)?,
                 cached_at: row.cached_at as u64,
                 verified: row.verified,

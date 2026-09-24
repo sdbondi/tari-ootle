@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use indexmap::IndexMap;
 use tari_engine_types::substate::SubstateId;
-use tari_ootle_common_types::{SubstateLockType, optional::Optional};
+use tari_ootle_common_types::{SubstateLockType, SubstateVersion, optional::Optional};
 use tari_ootle_storage::{
     StateStore,
     StateStoreReadTransaction,
@@ -124,7 +124,7 @@ fn run_test(db: impl StateStore) {
 fn gen_locks(transaction_id: TransactionId, num: usize) -> impl Iterator<Item = (SubstateId, SubstateLock)> {
     (0..num as u64).map(move |i| {
         let id = substate_id_tx_seed(transaction_id, i as u32);
-        let lock = SubstateLock::new(transaction_id, i, SubstateLockType::Write, false);
+        let lock = SubstateLock::new(transaction_id, SubstateVersion::new(i), SubstateLockType::Write, false);
         (id, lock)
     })
 }

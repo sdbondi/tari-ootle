@@ -74,6 +74,8 @@ mod tests {
     use super::*;
 
     mod random_substate_address_range {
+        use tari_ootle_common_types::SubstateVersion;
+
         use super::*;
 
         #[test]
@@ -82,21 +84,21 @@ mod tests {
             for _ in 0..100 {
                 let sg = ShardGroup::new(1, 16);
                 let substate = random_substate_in_shard_group(sg, NUM_PRESHARDS);
-                let actual_sg = VersionedSubstateId::new(substate, 0)
+                let actual_sg = VersionedSubstateId::new(substate, SubstateVersion::ZERO)
                     .to_substate_address()
                     .to_shard_group(NUM_PRESHARDS, 4);
                 assert_eq!(sg, actual_sg);
 
                 let sg = ShardGroup::new(2 * 16 + 1, 3 * 16);
                 let substate = random_substate_in_shard_group(sg, NUM_PRESHARDS);
-                let actual_sg = VersionedSubstateId::new(substate, 0)
+                let actual_sg = VersionedSubstateId::new(substate, SubstateVersion::ZERO)
                     .to_substate_address()
                     .to_shard_group(NUM_PRESHARDS, 4);
                 assert_eq!(sg, actual_sg);
 
                 let sg = ShardGroup::new(3 * 16 + 1, 4 * 16);
                 let substate = random_substate_in_shard_group(sg, NUM_PRESHARDS);
-                let actual_sg = VersionedSubstateId::new(substate, 0)
+                let actual_sg = VersionedSubstateId::new(substate, SubstateVersion::ZERO)
                     .to_substate_address()
                     .to_shard_group(NUM_PRESHARDS, 4);
                 assert_eq!(sg, actual_sg);

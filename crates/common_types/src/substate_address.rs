@@ -13,7 +13,7 @@ use borsh::BorshSerialize;
 use minicbor::{CborLen, Decode, Encode};
 use serde::{Deserialize, Serialize};
 use tari_crypto::tari_utilities::hex::Hex;
-use tari_engine_types::substate::SubstateId;
+use tari_engine_types::{SubstateVersion, substate::SubstateId};
 use tari_template_lib_types::{Hash32, ObjectKey, TransactionReceiptAddress, hex::fixed_bytes_from_hex};
 
 use crate::{NumPreshards, ShardGroup, shard::Shard, uint::U256};
@@ -33,18 +33,18 @@ pub struct SubstateAddress(
 );
 
 impl SubstateAddress {
-    pub const LENGTH: usize = ObjectKey::LENGTH + size_of::<u64>();
+    pub const LENGTH: usize = ObjectKey::LENGTH + size_of::<SubstateVersion>();
 
     /// Defines the mapping of SubstateId,version to SubstateAddress
-    pub fn from_substate_id(id: &SubstateId, version: u64) -> Self {
+    pub fn from_substate_id(id: &SubstateId, version: SubstateVersion) -> Self {
         Self::from_object_key(&id.to_object_key(), version)
     }
 
     pub fn for_transaction_receipt(tx_receipt: TransactionReceiptAddress) -> Self {
-        Self::from_substate_id(&tx_receipt.into(), 0)
+        Self::from_substate_id(&tx_receipt.into(), SubstateVersion::ZERO)
     }
 
-    pub fn from_object_key(object_key: &ObjectKey, version: u64) -> Self {
+    pub fn from_object_key(object_key: &ObjectKey, version: SubstateVersion) -> Self {
         // concatenate (entity_id, component_key), and version
         let mut buf = [0u8; SubstateAddress::LENGTH];
         buf[..ObjectKey::LENGTH].copy_from_slice(object_key);
@@ -66,10 +66,10 @@ impl SubstateAddress {
         }
         let obj_key_bytes = bytes.get(..ObjectKey::LENGTH).expect("length checked");
         let key = ObjectKey::try_from(obj_key_bytes).expect("ObjectKey length is correct");
-        let mut v_buf = [0u8; size_of::<u64>()];
+        let mut v_buf = [0u8; size_of::<SubstateVersion>()];
         let version_bytes = bytes.get(ObjectKey::LENGTH..).expect("length checked");
         v_buf.copy_from_slice(version_bytes);
-        let version = u64::from_be_bytes(v_buf);
+        let version = SubstateVersion::from_be_bytes(v_buf);
         Ok(Self::from_object_key(&key, version))
     }
 
@@ -97,7 +97,7 @@ impl SubstateAddress {
         Self([0xffu8; SubstateAddress::LENGTH])
     }
 
-    pub fn from_hash_and_version<T: Into<Hash32>>(hash: T, version: u64) -> Self {
+    pub fn from_hash_and_version<T: Into<Hash32>>(hash: T, version: SubstateVersion) -> Self {
         // This will cause an error at compile-time if ObjectKey::LENGTH != Hash32::LENGTH
         // If ObjectKey should differ in length, then this function should ideally be removed.
         const _: () = [()][1 - (Hash32::LENGTH == ObjectKey::LENGTH) as usize];
@@ -108,10 +108,10 @@ impl SubstateAddress {
     }
 
     pub fn from_u256_zero_version(address: U256) -> Self {
-        Self::from_u256(address, 0)
+        Self::from_u256(address, SubstateVersion::ZERO)
     }
 
-    pub fn from_u256(address: U256, version: u64) -> Self {
+    pub fn from_u256(address: U256, version: SubstateVersion) -> Self {
         let mut buf = [0u8; SubstateAddress::LENGTH];
         buf[..ObjectKey::LENGTH].copy_from_slice(&address.to_be_bytes());
         buf[ObjectKey::LENGTH..].copy_from_slice(&version.to_be_bytes());
@@ -256,7 +256,7 @@ impl ToSubstateAddress for &SubstateAddress {
     }
 }
 
-impl ToSubstateAddress for (&SubstateId, u64) {
+impl ToSubstateAddress for (&SubstateId, SubstateVersion) {
     fn to_substate_address(&self) -> SubstateAddress {
         SubstateAddress::from_substate_id(self.0, self.1)
     }

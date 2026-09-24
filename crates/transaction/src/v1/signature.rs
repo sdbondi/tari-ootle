@@ -688,7 +688,7 @@ impl<'a> From<&'a PrunedUnsignedTransactionV1> for TransactionSignatureFields<'a
 mod tests {
     use borsh::BorshSerialize;
     use tari_crypto::keys::SecretKey;
-    use tari_engine_types::substate::SubstateId;
+    use tari_engine_types::{SubstateVersion, substate::SubstateId};
     use tari_template_lib_types::ComponentAddress;
 
     use super::*;
@@ -701,11 +701,11 @@ mod tests {
         let mut inputs = IndexSet::new();
         inputs.insert(SubstateRequirement::versioned(
             SubstateId::Component(ComponentAddress::from_array([1; 32])),
-            1,
+            SubstateVersion::new(1),
         ));
         inputs.insert(SubstateRequirement::versioned(
             SubstateId::Component(ComponentAddress::from_array([2; 32])),
-            2,
+            SubstateVersion::new(2),
         ));
         UnsignedTransactionV1 {
             network: 42,
@@ -782,7 +782,7 @@ mod tests {
         let mut tx = base.clone();
         tx.inputs.insert(SubstateRequirement::versioned(
             SubstateId::Component(ComponentAddress::from_array([9; 32])),
-            1,
+            SubstateVersion::new(1),
         ));
         assert_ne!(sig_msg(&signer, &tx), base_msg, "inputs (extra)");
 
@@ -796,7 +796,7 @@ mod tests {
             .iter()
             .map(|i| SubstateRequirement {
                 substate_id: i.substate_id.clone(),
-                version: i.version.map(|v| v.wrapping_add(1)),
+                version: i.version.map(|v| v.next()),
             })
             .collect();
         assert_ne!(sig_msg(&signer, &tx), base_msg, "inputs (version changed)");
@@ -908,7 +908,7 @@ mod tests {
         let mut u = base_unsigned.clone();
         u.inputs.insert(SubstateRequirement::versioned(
             SubstateId::Component(ComponentAddress::from_array([9; 32])),
-            1,
+            SubstateVersion::new(1),
         ));
         assert_ne!(seal_msg(&with_body(u)), base_msg, "inputs (extra)");
 
@@ -922,7 +922,7 @@ mod tests {
             .iter()
             .map(|i| SubstateRequirement {
                 substate_id: i.substate_id.clone(),
-                version: i.version.map(|v| v.wrapping_add(1)),
+                version: i.version.map(|v| v.next()),
             })
             .collect();
         assert_ne!(seal_msg(&with_body(u)), base_msg, "inputs (version changed)");

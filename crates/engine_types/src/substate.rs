@@ -51,6 +51,7 @@ use tari_template_lib::types::{
 use crate::{
     Epoch,
     ProtocolVersion,
+    SubstateVersion,
     ValidatorFeePool,
     ValidatorFeeWithdrawal,
     component::Component,
@@ -73,12 +74,11 @@ pub struct Substate {
     #[n(0)]
     substate: SubstateValue,
     #[n(1)]
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    version: u64,
+    version: SubstateVersion,
 }
 
 impl Substate {
-    pub fn new<T: Into<SubstateValue>>(version: u64, substate: T) -> Self {
+    pub fn new<T: Into<SubstateValue>>(version: SubstateVersion, substate: T) -> Self {
         Self {
             substate: substate.into(),
             version,
@@ -97,7 +97,7 @@ impl Substate {
         self.substate
     }
 
-    pub fn version(&self) -> u64 {
+    pub fn version(&self) -> SubstateVersion {
         self.version
     }
 
@@ -113,15 +113,15 @@ impl Substate {
         hash_substate(network, self.substate_value(), self.version, epoch)
     }
 
-    pub fn previous_version(&self) -> Option<u64> {
-        self.version.checked_sub(1)
+    pub fn previous_version(&self) -> Option<SubstateVersion> {
+        self.version.previous()
     }
 }
 
 /// Hashes a substate into its canonical value hash. The `epoch` argument binds the schema version
 /// (derived from `network` and epoch via `ProtocolVersion::at`) into the hash preimage, so substates
 /// produced under different schema versions can never collide in the JMT.
-pub fn hash_substate(network: Network, substate: &SubstateValue, version: u64, epoch: Epoch) -> Hash32 {
+pub fn hash_substate(network: Network, substate: &SubstateValue, version: SubstateVersion, epoch: Epoch) -> Hash32 {
     let proto_version = ProtocolVersion::at(network, epoch);
     substate_value_hasher32()
         .chain(&substate.as_hash_message(proto_version))
@@ -983,8 +983,7 @@ pub struct SubstateDiff {
     #[n(0)]
     up_substates: Vec<(SubstateId, Substate)>,
     #[n(1)]
-    #[cfg_attr(feature = "ts", ts(type = "Array<[string, number]>"))]
-    down_substates: Vec<(SubstateId, u64)>,
+    down_substates: Vec<(SubstateId, SubstateVersion)>,
     #[n(2)]
     fee_withdrawals: Vec<ValidatorFeeWithdrawal>,
 }
@@ -1017,11 +1016,11 @@ impl SubstateDiff {
         self
     }
 
-    pub fn down(&mut self, id: SubstateId, version: u64) {
+    pub fn down(&mut self, id: SubstateId, version: SubstateVersion) {
         self.down_substates.push((id, version));
     }
 
-    pub fn extend_down(&mut self, iter: impl Iterator<Item = (SubstateId, u64)>) -> &mut Self {
+    pub fn extend_down(&mut self, iter: impl Iterator<Item = (SubstateId, SubstateVersion)>) -> &mut Self {
         self.down_substates.extend(iter);
         self
     }
@@ -1034,7 +1033,7 @@ impl SubstateDiff {
         self.up_substates.into_iter()
     }
 
-    pub fn down_iter(&self) -> impl Iterator<Item = &(SubstateId, u64)> + '_ {
+    pub fn down_iter(&self) -> impl Iterator<Item = &(SubstateId, SubstateVersion)> + '_ {
         self.down_substates.iter()
     }
 
@@ -1132,8 +1131,8 @@ mod tests {
         #[test]
         fn different_epochs_yield_different_hashes() {
             let v = sample_value();
-            let h0 = hash_substate(NETWORK, &v, 0, Epoch::zero());
-            let h1 = hash_substate(NETWORK, &v, 0, Epoch(1));
+            let h0 = hash_substate(NETWORK, &v, SubstateVersion::ZERO, Epoch::zero());
+            let h1 = hash_substate(NETWORK, &v, SubstateVersion::ZERO, Epoch(1));
             assert_ne!(h0, h1, "epoch must bind into the hash preimage");
         }
 
@@ -1141,8 +1140,8 @@ mod tests {
         fn same_epoch_same_inputs_stable() {
             let v = sample_value();
             assert_eq!(
-                hash_substate(NETWORK, &v, 0, Epoch(42)),
-                hash_substate(NETWORK, &v, 0, Epoch(42))
+                hash_substate(NETWORK, &v, SubstateVersion::ZERO, Epoch(42)),
+                hash_substate(NETWORK, &v, SubstateVersion::ZERO, Epoch(42))
             );
         }
 
@@ -1150,8 +1149,8 @@ mod tests {
         fn version_still_binds() {
             let v = sample_value();
             assert_ne!(
-                hash_substate(NETWORK, &v, 0, Epoch::zero()),
-                hash_substate(NETWORK, &v, 1, Epoch::zero())
+                hash_substate(NETWORK, &v, SubstateVersion::ZERO, Epoch::zero()),
+                hash_substate(NETWORK, &v, SubstateVersion::new(1), Epoch::zero())
             );
         }
     }

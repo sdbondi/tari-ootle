@@ -31,6 +31,7 @@ use tari_ootle_common_types::{
     Epoch,
     ShardGroup,
     StateVersion,
+    SubstateVersion,
     optional::Optional,
     shard::Shard,
     substate_type::SubstateType,
@@ -104,7 +105,7 @@ pub trait IndexerStoreReadTransaction {
     fn get_substate(
         &mut self,
         address: &SubstateId,
-        version: Option<u64>,
+        version: Option<SubstateVersion>,
     ) -> Result<Option<SubstateRecord>, StorageError>;
 
     fn get_substates(&mut self, ids: &[SubstateId]) -> Result<HashMap<SubstateId, Substate>, StorageError>;

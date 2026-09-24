@@ -6,6 +6,7 @@ use tari_engine_types::{
     ValidatorFeePool,
     substate::{Substate, SubstateId},
 };
+use tari_ootle_common_types::SubstateVersion;
 use tari_ootle_transaction::{Epoch, Transaction, args};
 use tari_template_lib::types::ValidatorFeePoolAddress;
 use tari_template_test_tooling::TemplateTest;
@@ -26,7 +27,10 @@ fn test_claim_validator_fees_up_to() {
     // Setup an initial fee pool with 100 TARI
     let initial_pool = ValidatorFeePool::new(pk, 100);
     test.get_state_store_mut()
-        .set_state(SubstateId::ValidatorFeePool(addr), Substate::new(0, initial_pool))
+        .set_state(
+            SubstateId::ValidatorFeePool(addr),
+            Substate::new(SubstateVersion::ZERO, initial_pool),
+        )
         .unwrap();
 
     // 1. Claim up to 60 TARI
@@ -83,7 +87,7 @@ fn test_two_claims_against_one_pool_in_a_transaction() {
     test.get_state_store_mut()
         .set_state(
             SubstateId::ValidatorFeePool(addr),
-            Substate::new(0, ValidatorFeePool::new(pk, 100)),
+            Substate::new(SubstateVersion::ZERO, ValidatorFeePool::new(pk, 100)),
         )
         .unwrap();
 

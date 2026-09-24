@@ -13,6 +13,7 @@ use tari_ootle_common_types::{
     SubstateAddress,
     SubstateLockType,
     SubstateRequirement,
+    SubstateVersion,
     ToSubstateAddress,
     VersionedSubstateId,
     VersionedSubstateIdRef,
@@ -75,7 +76,7 @@ impl<'a, TTx: StateStoreReadTransaction> PendingSubstateStore<'a, TTx> {
         let substate = SubstateRecord::get_latest(self.read_transaction(), id)
             .optional()?
             .ok_or_else(|| SubstateStoreError::SubstateNotFound {
-                id: VersionedSubstateId::new(id.clone(), 0),
+                id: VersionedSubstateId::new(id.clone(), SubstateVersion::ZERO),
             })?;
         if substate.is_destroyed() {
             return Ok(SubstateChange::Down {
@@ -130,10 +131,10 @@ impl<'a, TTx: StateStoreReadTransaction> PendingSubstateStore<'a, TTx> {
         let Some(change) = self.get_latest_change_from_store(substate_id).optional()? else {
             debug!(target: LOG_TARGET, "Creating substate in place: {} v0", substate_id);
             let value = creator(None)?;
-            let id = VersionedSubstateIdRef::new(substate_id, 0);
+            let id = VersionedSubstateIdRef::new(substate_id, SubstateVersion::ZERO);
             let up = SubstateChange::Up {
                 shard: id.to_shard(num_preshards),
-                substate: Box::new(Substate::new(0, value)),
+                substate: Box::new(Substate::new(SubstateVersion::ZERO, value)),
                 id: substate_id.clone(),
             };
             self.insert(up);
@@ -145,7 +146,7 @@ impl<'a, TTx: StateStoreReadTransaction> PendingSubstateStore<'a, TTx> {
             } => {
                 let version = substate.version();
                 let next_version = version
-                    .checked_add(1)
+                    .checked_next()
                     .ok_or_else(|| SubstateStoreError::InvariantError {
                         details: format!("Substate {id} version {version} cannot be incremented"),
                     })?;
@@ -174,7 +175,7 @@ impl<'a, TTx: StateStoreReadTransaction> PendingSubstateStore<'a, TTx> {
                 let value = creator(Some(id.as_versioned_ref()))?;
                 let next_version = id
                     .version()
-                    .checked_add(1)
+                    .checked_next()
                     .ok_or_else(|| SubstateStoreError::InvariantError {
                         details: format!("Substate {id} cannot be incremented"),
                     })?;
@@ -301,7 +302,7 @@ impl<'a, TTx: StateStoreReadTransaction> WriteableSubstateStore for PendingSubst
                 |maybe_id| match maybe_id {
                     Some(id) => Err(SubstateStoreError::SubstateNotFound { id: id.to_owned() }),
                     None => Err(SubstateStoreError::SubstateNotFound {
-                        id: VersionedSubstateId::new(id.clone(), 0),
+                        id: VersionedSubstateId::new(id.clone(), SubstateVersion::ZERO),
                     }),
                 },
             )?;
@@ -338,7 +339,7 @@ impl<'store, TTx: StateStoreReadTransaction> PendingSubstateStore<'store, TTx> {
         let (version, is_up) = SubstateRecord::get_latest_version(self.read_transaction(), id)
             .optional()?
             .ok_or_else(|| SubstateStoreError::SubstateNotFound {
-                id: VersionedSubstateId::new(id.clone(), 0),
+                id: VersionedSubstateId::new(id.clone(), SubstateVersion::ZERO),
             })?;
 
         Ok(LatestSubstateVersion { version, is_up })
@@ -349,7 +350,7 @@ impl<'store, TTx: StateStoreReadTransaction> PendingSubstateStore<'store, TTx> {
         Ok(latest.is_some())
     }
 
-    pub fn get_many<I: IntoIterator<Item = (SubstateRequirement, u64)> + ExactSizeIterator>(
+    pub fn get_many<I: IntoIterator<Item = (SubstateRequirement, SubstateVersion)> + ExactSizeIterator>(
         &self,
         ids: I,
     ) -> Result<HashMap<SubstateRequirement, Substate>, SubstateStoreError> {
@@ -994,7 +995,7 @@ impl LockStatus {
 
 #[derive(Debug, Clone)]
 pub struct LatestSubstateVersion {
-    version: u64,
+    version: SubstateVersion,
     is_up: bool,
 }
 
@@ -1007,7 +1008,7 @@ impl LatestSubstateVersion {
         self.is_up
     }
 
-    pub fn version(&self) -> u64 {
+    pub fn version(&self) -> SubstateVersion {
         self.version
     }
 }

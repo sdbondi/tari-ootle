@@ -12,7 +12,7 @@ use tari_indexer_lib::substate_cache::{
     SubstateCacheEntryRef,
     SubstateCacheError,
 };
-use tari_ootle_common_types::{NumPreshards, StateVersion, SubstateAddress, shard::Shard};
+use tari_ootle_common_types::{NumPreshards, StateVersion, SubstateAddress, SubstateVersion, shard::Shard};
 use tari_ootle_storage::StorageError;
 use tari_shutdown::ShutdownSignal;
 use tokio::{task, time};
@@ -214,7 +214,7 @@ impl SqliteSubstateCache {
         if id.is_global() {
             return Shard::global();
         }
-        SubstateAddress::from_substate_id(id, 0).to_shard(NumPreshards::current())
+        SubstateAddress::from_substate_id(id, SubstateVersion::ZERO).to_shard(NumPreshards::current())
     }
 }
 
@@ -289,6 +289,7 @@ impl SubstateCache for SqliteSubstateCache {
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use tari_ootle_common_types::SubstateVersion;
     use tari_validator_node_rpc::client::SubstateResult;
 
     use super::*;
@@ -310,7 +311,7 @@ mod tests {
     }
 
     async fn cache_with_head(
-        version: u64,
+        version: SubstateVersion,
         confirm_shard: bool,
     ) -> (tempfile::TempDir, SqliteSubstateCache, SubstateId) {
         let dir = tempfile::tempdir().unwrap();
@@ -348,15 +349,18 @@ mod tests {
 
     #[tokio::test]
     async fn a_head_is_served_while_its_shard_is_kept_up_with() {
-        let (_d, cache, id) = cache_with_head(6, true).await;
-        assert_eq!(cache.read(&id).await.unwrap().unwrap().version, Some(6));
+        let (_d, cache, id) = cache_with_head(SubstateVersion::new(6), true).await;
+        assert_eq!(
+            cache.read(&id).await.unwrap().unwrap().version,
+            Some(SubstateVersion::new(6))
+        );
     }
 
     /// A head is a claim about the substate's current state, which holds only while the shard that
     /// would retire it is being kept up with.
     #[tokio::test]
     async fn a_head_needs_a_watermark() {
-        let (_d, cache, id) = cache_with_head(6, false).await;
+        let (_d, cache, id) = cache_with_head(SubstateVersion::new(6), false).await;
         assert!(cache.read(&id).await.unwrap().is_none());
     }
 
@@ -425,11 +429,11 @@ mod tests {
         assert!(cache.read(&id).await.unwrap().is_none());
 
         // The same shard, at the same age, still answers for a head.
-        let (_d2, head_cache, head_id) = cache_with_head(6, true).await;
+        let (_d2, head_cache, head_id) = cache_with_head(SubstateVersion::new(6), true).await;
         assert!(head_cache.read(&head_id).await.unwrap().is_some());
     }
 
-    async fn write_head(cache: &SqliteSubstateCache, id: &SubstateId, version: u64, watermark: u64) {
+    async fn write_head(cache: &SqliteSubstateCache, id: &SubstateId, version: SubstateVersion, watermark: u64) {
         let result = SubstateResult::Down { version };
         cache
             .write(
@@ -448,7 +452,7 @@ mod tests {
 
     /// A committee member answering that `version` is live, as against the `Down` [`write_head`]
     /// records.
-    async fn write_live_head(cache: &SqliteSubstateCache, id: &SubstateId, version: u64, watermark: u64) {
+    async fn write_live_head(cache: &SqliteSubstateCache, id: &SubstateId, version: SubstateVersion, watermark: u64) {
         use tari_engine_types::{
             non_fungible::NonFungibleContainer,
             substate::{Substate, SubstateValue},
@@ -505,7 +509,10 @@ mod tests {
         let mut diff = SubstateDiff::new();
         diff.up(
             id.clone(),
-            Substate::new(0, SubstateValue::NonFungible(NonFungibleContainer::no_data())),
+            Substate::new(
+                SubstateVersion::ZERO,
+                SubstateValue::NonFungible(NonFungibleContainer::no_data()),
+            ),
         );
         cache.retire_committed(&diff).await.unwrap();
         assert!(cache.read(&id).await.unwrap().is_none());
@@ -530,23 +537,29 @@ mod tests {
             substate::{Substate, SubstateValue},
         };
 
-        let (_d, cache, id) = cache_with_head(6, true).await;
+        let (_d, cache, id) = cache_with_head(SubstateVersion::new(6), true).await;
         let mut diff = SubstateDiff::new();
-        diff.down(id.clone(), 6);
+        diff.down(id.clone(), SubstateVersion::new(6));
         diff.up(
             id.clone(),
-            Substate::new(7, SubstateValue::NonFungible(NonFungibleContainer::no_data())),
+            Substate::new(
+                SubstateVersion::new(7),
+                SubstateValue::NonFungible(NonFungibleContainer::no_data()),
+            ),
         );
         cache.retire_committed(&diff).await.unwrap();
         assert!(cache.read(&id).await.unwrap().is_none());
 
-        write_head(&cache, &id, 6, 100).await;
+        write_head(&cache, &id, SubstateVersion::new(6), 100).await;
         assert!(cache.read(&id).await.unwrap().is_none());
-        write_head(&cache, &id, 6, 101).await;
+        write_head(&cache, &id, SubstateVersion::new(6), 101).await;
         assert!(cache.read(&id).await.unwrap().is_none());
 
-        write_head(&cache, &id, 7, 101).await;
-        assert_eq!(cache.read(&id).await.unwrap().unwrap().version, Some(7));
+        write_head(&cache, &id, SubstateVersion::new(7), 101).await;
+        assert_eq!(
+            cache.read(&id).await.unwrap().unwrap().version,
+            Some(SubstateVersion::new(7))
+        );
     }
 
     /// A destroy the result carries with no successor: the substate is spent and has no live version
@@ -555,16 +568,19 @@ mod tests {
     /// version legitimately returns.
     #[tokio::test]
     async fn a_finalized_result_refuses_a_live_head_at_the_version_it_spent() {
-        let (_d, cache, id) = cache_with_head(6, true).await;
+        let (_d, cache, id) = cache_with_head(SubstateVersion::new(6), true).await;
         let mut diff = SubstateDiff::new();
-        diff.down(id.clone(), 6);
+        diff.down(id.clone(), SubstateVersion::new(6));
         cache.retire_committed(&diff).await.unwrap();
         assert!(cache.read(&id).await.unwrap().is_none());
 
-        write_live_head(&cache, &id, 6, 101).await;
+        write_live_head(&cache, &id, SubstateVersion::new(6), 101).await;
         assert!(cache.read(&id).await.unwrap().is_none());
 
-        write_head(&cache, &id, 6, 101).await;
-        assert_eq!(cache.read(&id).await.unwrap().unwrap().version, Some(6));
+        write_head(&cache, &id, SubstateVersion::new(6), 101).await;
+        assert_eq!(
+            cache.read(&id).await.unwrap().unwrap().version,
+            Some(SubstateVersion::new(6))
+        );
     }
 }

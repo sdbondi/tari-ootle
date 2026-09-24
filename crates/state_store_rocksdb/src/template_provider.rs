@@ -2,7 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use tari_engine_types::published_template::{PublishedTemplate, PublishedTemplateAddress};
-use tari_ootle_common_types::{SubstateAddress, services::template_provider::TemplateProvider};
+use tari_ootle_common_types::{SubstateAddress, SubstateVersion, services::template_provider::TemplateProvider};
 use tari_ootle_storage::StorageError;
 use tari_template_lib_types::TemplateAddress;
 
@@ -42,5 +42,5 @@ impl<TAddr: Send + Sync + 'static> TemplateProvider for RocksDbStateStore<TAddr>
 
 fn template_address_to_substate_address(address: TemplateAddress) -> SubstateAddress {
     let address = PublishedTemplateAddress::from_hash(address);
-    SubstateAddress::from_object_key(address.as_object_key(), 0)
+    SubstateAddress::from_object_key(address.as_object_key(), SubstateVersion::ZERO)
 }

@@ -4,7 +4,11 @@
 use std::collections::HashSet;
 
 use ootle_byte_type::{FromByteType, ToByteType};
-use tari_engine_types::{component::derive_component_address_from_public_key, indexed_value::IndexedWellKnownTypes};
+use tari_engine_types::{
+    SubstateVersion,
+    component::derive_component_address_from_public_key,
+    indexed_value::IndexedWellKnownTypes,
+};
 use tari_ootle_address::{Network, RistrettoOotleAddress};
 use tari_ootle_common_types::{
     Epoch,
@@ -214,7 +218,7 @@ impl<'a, TSpec: WalletSdkSpec> AccountsApi<'a, TSpec> {
     pub fn update_vault_balance_and_record_change(
         &self,
         vault_address: VaultId,
-        vault_version: u64,
+        vault_version: SubstateVersion,
         revealed_balance: Amount,
         confidential_balance: Amount,
         source: BalanceChangeSource,
@@ -341,7 +345,7 @@ impl<'a, TSpec: WalletSdkSpec> AccountsApi<'a, TSpec> {
     pub fn attribute_balance_change_to_transaction(
         &self,
         vault_id: &VaultId,
-        vault_version: u64,
+        vault_version: SubstateVersion,
         transaction_id: TransactionId,
     ) -> Result<bool, AccountsApiError> {
         let attributed = self
@@ -497,7 +501,7 @@ impl<'a, TSpec: WalletSdkSpec> AccountsApi<'a, TSpec> {
         &self,
         account_address: ComponentAddress,
         vault_address: VaultId,
-        vault_version: u64,
+        vault_version: SubstateVersion,
         resource_address: ResourceAddress,
         resource_type: ResourceType,
         token_symbol: Option<String>,

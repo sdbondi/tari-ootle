@@ -17,6 +17,7 @@ use tari_ootle_address::Network;
 use tari_ootle_common_types::{
     Epoch,
     StateVersion,
+    SubstateVersion,
     optional::{IsNotFoundError, Optional},
     response_status::{ResponseErrorStatus, TransactionStatusResponseError},
     shard::Shard,
@@ -135,7 +136,7 @@ impl<TNetwork: WalletNetworkInterface> TestWithNetwork<TNetwork> {
             .add_vault(
                 Test::test_account_address(),
                 Test::test_vault_address(),
-                0,
+                SubstateVersion::ZERO,
                 STEALTH_TARI_RESOURCE_ADDRESS,
                 ResourceType::Stealth,
                 Some("TEST".to_string()),
@@ -229,7 +230,7 @@ impl WalletNetworkInterface for CannedTransactionResultInterface {
     async fn query_substate(
         &self,
         _address: &SubstateId,
-        _version: Option<u64>,
+        _version: Option<SubstateVersion>,
         _local_search_only: bool,
     ) -> Result<SubstateQueryResult, Self::Error> {
         panic!("CannedTransactionResultInterface called")
@@ -321,7 +322,7 @@ impl WalletNetworkInterface for PanicNetworkInterface {
     async fn query_substate(
         &self,
         _address: &SubstateId,
-        _version: Option<u64>,
+        _version: Option<SubstateVersion>,
         _local_search_only: bool,
     ) -> Result<SubstateQueryResult, Self::Error> {
         panic!("PanicNetworkInterface called")

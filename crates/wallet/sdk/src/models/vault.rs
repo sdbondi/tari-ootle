@@ -2,6 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use log::warn;
+use tari_engine_types::SubstateVersion;
 use tari_template_lib::types::{Amount, ComponentAddress, ResourceAddress, ResourceType, VaultId};
 
 const LOG_TARGET: &str = "tari::ootle::wallet_sdk::models::vault";
@@ -10,7 +11,7 @@ const LOG_TARGET: &str = "tari::ootle::wallet_sdk::models::vault";
 pub struct VaultModel {
     pub account_address: ComponentAddress,
     pub id: VaultId,
-    pub vault_version: u64,
+    pub vault_version: SubstateVersion,
     pub resource_address: ResourceAddress,
     pub resource_type: ResourceType,
     pub confidential_balance: Amount,
@@ -62,7 +63,7 @@ mod tests {
             id: "vault_0000000000000000000000000000000000000000000000000000000000000000"
                 .parse()
                 .unwrap(),
-            vault_version: 0,
+            vault_version: SubstateVersion::ZERO,
             resource_address: "resource_0000000000000000000000000000000000000000000000000000000000000000"
                 .parse()
                 .unwrap(),

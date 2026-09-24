@@ -36,6 +36,7 @@ use tari_ootle_common_types::{
     ShardGroup,
     SubstateAddress,
     SubstateRequirement,
+    SubstateVersion,
     shard::Shard,
     substate_type::SubstateType,
 };
@@ -1422,8 +1423,7 @@ pub struct WalletSubstateInfo {
     pub substate_id: SubstateId,
     pub parent_id: Option<SubstateId>,
     pub module_name: Option<String>,
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    pub version: u64,
+    pub version: SubstateVersion,
     pub template_address: Option<TemplateAddress>,
 }
 

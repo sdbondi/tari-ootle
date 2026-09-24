@@ -15,6 +15,7 @@ use tari_ootle_common_types::{
     LockIntent,
     SubstateLockType,
     SubstateRequirement,
+    SubstateVersion,
     VersionedSubstateId,
     displayable::Displayable,
 };
@@ -134,7 +135,7 @@ impl<TStateStore: StateStore> BlockTransactionExecutor<TStateStore> for TestBloc
         let resulting_outputs = spec
             .new_outputs
             .into_iter()
-            .map(|substate_id| VersionedSubstateId::new(substate_id, 0))
+            .map(|substate_id| VersionedSubstateId::new(substate_id, SubstateVersion::ZERO))
             // Generate corresponding up substates to all consumed inputs
             .chain(
                 resolved_inputs.iter().filter(|input| input.lock_type().is_write())
@@ -142,7 +143,7 @@ impl<TStateStore: StateStore> BlockTransactionExecutor<TStateStore> for TestBloc
             )
             .chain(iter::once(VersionedSubstateId::new(
                 SubstateId::TransactionReceipt(TransactionReceiptAddress::from(transaction.calculate_id())),
-                0,
+                SubstateVersion::ZERO,
             )))
             .map(VersionedSubstateIdLockIntent::output)
             .chain(
@@ -150,7 +151,7 @@ impl<TStateStore: StateStore> BlockTransactionExecutor<TStateStore> for TestBloc
                     .iter()
                     .filter_map(|w| {
                         let input = resolved_inputs.iter().find(|i| i.versioned_substate_id().substate_id().as_validator_fee_pool_address() == Some(w.address))?;
-                        Some(VersionedSubstateIdLockIntent::output(VersionedSubstateId::new(w.address, input.version() + 1)))
+                        Some(VersionedSubstateIdLockIntent::output(VersionedSubstateId::new(w.address, input.version().next())))
                     })
             )
             .collect::<Vec<_>>();

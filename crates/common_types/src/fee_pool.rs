@@ -47,13 +47,14 @@ pub struct InvalidFeePoolShard {
 mod tests {
     use ootle_byte_type::ToByteType;
     use tari_crypto::{keys::PublicKey, ristretto::RistrettoPublicKey};
+    use tari_engine_types::SubstateVersion;
 
     use super::*;
     use crate::SubstateAddress;
 
     fn assert_pool_lands_in_shard(pk: &RistrettoPublicKeyBytes, num_preshards: NumPreshards, shard: Shard) {
         let fee_pool_address = derive_fee_pool_address(pk, num_preshards, shard).unwrap();
-        let addr = SubstateAddress::from_substate_id(&fee_pool_address.into(), 0);
+        let addr = SubstateAddress::from_substate_id(&fee_pool_address.into(), SubstateVersion::ZERO);
         assert_eq!(addr.to_shard(num_preshards), shard);
     }
 
@@ -115,7 +116,7 @@ mod tests {
             let addr = derive_fee_pool_address(&pk, NumPreshards::P256, Shard::from(shard)).unwrap();
             // P256 has no finer NumPreshards variant yet, so simulate the split by reading top 9 bits manually:
             // under a hypothetical P512, the shard index would be (byte0 << 1) | (byte1 >> 7).
-            let bytes = SubstateAddress::from_substate_id(&addr.into(), 0).into_array();
+            let bytes = SubstateAddress::from_substate_id(&addr.into(), SubstateVersion::ZERO).into_array();
             let p512_index = (u32::from(bytes[0]) << 1) | u32::from(bytes[1] >> 7);
             assert_eq!(p512_index + 1, 2 * shard - 1, "shard {shard}");
         }

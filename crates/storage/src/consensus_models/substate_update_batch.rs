@@ -3,7 +3,7 @@
 
 use indexmap::IndexMap;
 use ootle_network::Network;
-use tari_engine_types::substate::SubstateId;
+use tari_engine_types::{SubstateVersion, substate::SubstateId};
 use tari_ootle_common_types::{Epoch, VersionedSubstateId, shard::Shard};
 use tari_state_tree::Version;
 
@@ -32,7 +32,7 @@ impl SubstateUpdateBatch {
 pub enum SubstateTransition {
     Up {
         id: SubstateId,
-        version: u64,
+        version: SubstateVersion,
         substate_or_hash: SubstateValueOrHash,
     },
     Down {

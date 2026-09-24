@@ -1811,7 +1811,7 @@ mod balance_change_handler_tests {
     use axum_jrpc::error::{JsonRpcError, JsonRpcErrorReason};
     use tari_engine_types::resource::Resource;
     use tari_ootle_address::Network;
-    use tari_ootle_common_types::Epoch;
+    use tari_ootle_common_types::{Epoch, SubstateVersion};
     use tari_ootle_wallet_sdk::{
         WalletSdkConfig,
         cipher_seed::CipherSeedRestore,
@@ -1917,7 +1917,7 @@ mod balance_change_handler_tests {
                 .add_vault(
                     account,
                     vault,
-                    0,
+                    SubstateVersion::ZERO,
                     resource,
                     ResourceType::Fungible,
                     Some(symbol.to_string()),
@@ -1928,7 +1928,7 @@ mod balance_change_handler_tests {
         accounts
             .update_vault_balance_and_record_change(
                 first_vault,
-                1,
+                SubstateVersion::new(1),
                 Amount::from(100u64),
                 Amount::zero(),
                 BalanceChangeSource::Scan,
@@ -1937,7 +1937,7 @@ mod balance_change_handler_tests {
         accounts
             .update_vault_balance_and_record_change(
                 first_vault,
-                2,
+                SubstateVersion::new(2),
                 Amount::from(150u64),
                 Amount::zero(),
                 BalanceChangeSource::Recovery,
@@ -1946,7 +1946,7 @@ mod balance_change_handler_tests {
         accounts
             .update_vault_balance_and_record_change(
                 second_vault,
-                1,
+                SubstateVersion::new(1),
                 Amount::from(200u64),
                 Amount::zero(),
                 BalanceChangeSource::Scan,
@@ -1963,7 +1963,7 @@ mod balance_change_handler_tests {
                         BalanceChangeSnapshot {
                             account_address: account,
                             vault_address: Some(second_vault),
-                            vault_version: Some(version),
+                            vault_version: Some(SubstateVersion::new(version)),
                             resource_address: second_resource,
                             token_symbol: Some("TWO".to_string()),
                             divisibility: 2,

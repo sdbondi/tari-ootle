@@ -4,7 +4,7 @@
 use std::fmt::Display;
 
 use tari_common_types::types::FixedHash;
-use tari_ootle_common_types::{Epoch, SubstateAddress, displayable::Displayable};
+use tari_ootle_common_types::{Epoch, SubstateAddress, SubstateVersion, displayable::Displayable};
 use tari_template_lib_types::{Hash32, crypto::RistrettoPublicKeyBytes};
 
 #[derive(Debug)]
@@ -119,7 +119,7 @@ impl TryFrom<minotari_app_grpc::tari_rpc::ValidatorNodeChange> for ValidatorNode
                     minimum_value_promise: add.minimum_value_promise,
                     shard_key: {
                         let hash = Hash32::try_from(add.shard_key.as_slice()).context("Invalid shard key hash")?;
-                        SubstateAddress::from_hash_and_version(hash, 0)
+                        SubstateAddress::from_hash_and_version(hash, SubstateVersion::ZERO)
                     },
                 })
             },

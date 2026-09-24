@@ -5,7 +5,7 @@ use std::{borrow::Borrow, fmt::Display, str::FromStr};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
-use tari_engine_types::substate::SubstateId;
+use tari_engine_types::{SubstateVersion, substate::SubstateId};
 use tari_template_lib_types::TransactionReceiptAddress;
 
 use crate::{NumPreshards, ShardGroup, SubstateAddress, ToSubstateAddress, displayable::Displayable, shard::Shard};
@@ -19,12 +19,11 @@ pub struct SubstateRequirement {
     #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub substate_id: SubstateId,
     #[n(1)]
-    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
-    pub version: Option<u64>,
+    pub version: Option<SubstateVersion>,
 }
 
 impl SubstateRequirement {
-    pub const fn new(address: SubstateId, version: Option<u64>) -> Self {
+    pub const fn new(address: SubstateId, version: Option<SubstateVersion>) -> Self {
         Self {
             substate_id: address,
             version,
@@ -38,7 +37,7 @@ impl SubstateRequirement {
         }
     }
 
-    pub fn versioned<T: Into<SubstateId>>(id: T, version: u64) -> Self {
+    pub fn versioned<T: Into<SubstateId>>(id: T, version: SubstateVersion) -> Self {
         Self {
             substate_id: id.into(),
             version: Some(version),
@@ -57,11 +56,11 @@ impl SubstateRequirement {
         Self::unversioned(self.substate_id)
     }
 
-    pub fn version(&self) -> Option<u64> {
+    pub fn version(&self) -> Option<SubstateVersion> {
         self.version
     }
 
-    pub fn with_version(self, version: u64) -> VersionedSubstateId {
+    pub fn with_version(self, version: SubstateVersion) -> VersionedSubstateId {
         VersionedSubstateId::new(self.substate_id, version)
     }
 
@@ -71,7 +70,7 @@ impl SubstateRequirement {
     }
 
     pub fn to_substate_address_zero_version(&self) -> SubstateAddress {
-        SubstateAddress::from_substate_id(self.substate_id(), 0)
+        SubstateAddress::from_substate_id(self.substate_id(), SubstateVersion::ZERO)
     }
 
     /// Calculates and returns the shard number that this SubstateAddress belongs to.
@@ -99,7 +98,7 @@ impl SubstateRequirement {
 
     pub fn or_zero_version(self) -> VersionedSubstateId {
         VersionedSubstateId {
-            version: self.version.unwrap_or(0),
+            version: self.version.unwrap_or(SubstateVersion::ZERO),
             substate_id: self.substate_id,
         }
     }
@@ -192,15 +191,15 @@ impl Borrow<SubstateId> for SubstateRequirement {
 #[derive(Debug, Clone, Copy)]
 pub struct SubstateRequirementRef<'a> {
     pub substate_id: &'a SubstateId,
-    pub version: Option<u64>,
+    pub version: Option<SubstateVersion>,
 }
 
 impl<'a> SubstateRequirementRef<'a> {
-    pub fn new(substate_id: &'a SubstateId, version: Option<u64>) -> Self {
+    pub fn new(substate_id: &'a SubstateId, version: Option<SubstateVersion>) -> Self {
         Self { substate_id, version }
     }
 
-    pub fn versioned(substate_id: &'a SubstateId, version: u64) -> Self {
+    pub fn versioned(substate_id: &'a SubstateId, version: SubstateVersion) -> Self {
         Self::new(substate_id, Some(version))
     }
 
@@ -212,16 +211,16 @@ impl<'a> SubstateRequirementRef<'a> {
         SubstateRequirement::new(self.substate_id.clone(), self.version)
     }
 
-    pub fn with_version(self, version: u64) -> VersionedSubstateIdRef<'a> {
+    pub fn with_version(self, version: SubstateVersion) -> VersionedSubstateIdRef<'a> {
         VersionedSubstateIdRef::new(self.substate_id, version)
     }
 
     pub fn or_zero_version(self) -> VersionedSubstateIdRef<'a> {
-        let v = self.version.unwrap_or(0);
+        let v = self.version.unwrap_or(SubstateVersion::ZERO);
         self.with_version(v)
     }
 
-    pub fn version(&self) -> Option<u64> {
+    pub fn version(&self) -> Option<SubstateVersion> {
         self.version
     }
 
@@ -320,12 +319,11 @@ pub struct VersionedSubstateId {
     #[n(0)]
     substate_id: SubstateId,
     #[n(1)]
-    #[cfg_attr(feature = "ts", ts(type = "number"))]
-    version: u64,
+    version: SubstateVersion,
 }
 
 impl VersionedSubstateId {
-    pub fn new<T: Into<SubstateId>>(substate_id: T, version: u64) -> Self {
+    pub fn new<T: Into<SubstateId>>(substate_id: T, version: SubstateVersion) -> Self {
         Self {
             substate_id: substate_id.into(),
             version,
@@ -333,7 +331,7 @@ impl VersionedSubstateId {
     }
 
     pub fn for_tx_receipt(id: TransactionReceiptAddress) -> Self {
-        Self::new(id, 0)
+        Self::new(id, SubstateVersion::ZERO)
     }
 
     pub fn substate_id(&self) -> &SubstateId {
@@ -344,7 +342,7 @@ impl VersionedSubstateId {
         self.substate_id
     }
 
-    pub fn version(&self) -> u64 {
+    pub fn version(&self) -> SubstateVersion {
         self.version
     }
 
@@ -356,17 +354,15 @@ impl VersionedSubstateId {
     }
 
     pub fn to_previous_version(&self) -> Option<Self> {
-        self.version
-            .checked_sub(1)
-            .map(|v| Self::new(self.substate_id.clone(), v))
+        self.version.previous().map(|v| Self::new(self.substate_id.clone(), v))
     }
 
     pub fn to_next_version(&self) -> Self {
-        Self::new(self.substate_id.clone(), self.version.saturating_add(1))
+        Self::new(self.substate_id.clone(), self.version.next())
     }
 
     pub fn into_next_version(self) -> Self {
-        Self::new(self.substate_id, self.version.saturating_add(1))
+        Self::new(self.substate_id, self.version.next())
     }
 
     pub fn as_versioned_ref(&self) -> VersionedSubstateIdRef<'_> {
@@ -446,11 +442,11 @@ impl AsRef<SubstateId> for VersionedSubstateId {
 #[derive(Debug, Clone, Copy)]
 pub struct VersionedSubstateIdRef<'a> {
     pub substate_id: &'a SubstateId,
-    pub version: u64,
+    pub version: SubstateVersion,
 }
 
 impl<'a> VersionedSubstateIdRef<'a> {
-    pub fn new(substate_id: &'a SubstateId, version: u64) -> Self {
+    pub fn new(substate_id: &'a SubstateId, version: SubstateVersion) -> Self {
         Self { substate_id, version }
     }
 
@@ -465,7 +461,7 @@ impl<'a> VersionedSubstateIdRef<'a> {
         self.substate_id
     }
 
-    pub fn version(&self) -> u64 {
+    pub fn version(&self) -> SubstateVersion {
         self.version
     }
 
@@ -548,9 +544,9 @@ mod tests {
     fn it_hashes_identically_to_a_substate_id() {
         let s1 = SubstateId::Component(ComponentAddress::new(ObjectKey::from_array([1; 32])));
         let ha = hash(&s1);
-        let versioned = VersionedSubstateIdRef::new(&s1, 123);
+        let versioned = VersionedSubstateIdRef::new(&s1, SubstateVersion::new(123));
         let hb = hash(&versioned);
-        let req = SubstateRequirement::versioned(s1.clone(), 0);
+        let req = SubstateRequirement::versioned(s1.clone(), SubstateVersion::ZERO);
         let hc = hash(&req);
         // Ensure the a == b.&& hash(a) == hash(b) property
         assert_eq!(ha, hb);
@@ -563,10 +559,10 @@ mod tests {
         assert_ne!(ha, h);
 
         let mut set = IndexSet::new();
-        set.extend([VersionedSubstateId::new(s1.clone(), 0)]);
+        set.extend([VersionedSubstateId::new(s1.clone(), SubstateVersion::ZERO)]);
         assert!(set.contains(&s1));
         let mut set = IndexSet::new();
-        set.extend([SubstateRequirement::versioned(s1.clone(), 0)]);
+        set.extend([SubstateRequirement::versioned(s1.clone(), SubstateVersion::ZERO)]);
         assert!(set.contains(&s1));
     }
 }

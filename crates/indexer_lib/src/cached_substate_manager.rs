@@ -40,6 +40,7 @@ use tari_ootle_common_types::{
     ShardGroup,
     SubstateAddress,
     SubstateRequirementRef,
+    SubstateVersion,
     ToSubstateAddress,
     VotePower,
     committee::Committee,
@@ -210,7 +211,7 @@ where
     pub async fn get_substate(
         &self,
         substate_id: &SubstateId,
-        specific_version: Option<u64>,
+        specific_version: Option<SubstateVersion>,
     ) -> Result<SubstateLookupResult, IndexerError> {
         debug!(target: LOG_TARGET, "get_substate: {}v{}", substate_id, specific_version.display());
         let cache_res = self
@@ -316,7 +317,7 @@ where
     ) -> Result<HashMap<ShardGroup, (Arc<Committee<TAddr>>, Vec<&'a SubstateId>)>, IndexerError> {
         let mut map = HashMap::<_, (_, Vec<&'a SubstateId>)>::with_capacity(substate_ids.len());
         for substate_id in substate_ids {
-            let shard_group = SubstateAddress::from_substate_id(substate_id, 0)
+            let shard_group = SubstateAddress::from_substate_id(substate_id, SubstateVersion::ZERO)
                 .to_shard_group(NumPreshards::current(), num_committees);
             if let Some((_, substates_mut)) = map.get_mut(&shard_group) {
                 substates_mut.push(substate_id);
@@ -510,7 +511,7 @@ where
     async fn fetch_substate_from_committee(
         &self,
         substate_id: &SubstateId,
-        specific_version: Option<u64>,
+        specific_version: Option<SubstateVersion>,
     ) -> Result<SubstateLookupResult, IndexerError> {
         let requirement = SubstateRequirementRef::new(substate_id, specific_version);
         let lookup_result = self.get_specific_substate_from_committee(requirement).await?;
@@ -632,7 +633,7 @@ where
     async fn verify_substate_proof(
         &self,
         substate_id: &SubstateId,
-        version: u64,
+        version: SubstateVersion,
         value: Option<&SubstateValue>,
         proof: SubstateProofData,
     ) -> Result<(), IndexerError> {

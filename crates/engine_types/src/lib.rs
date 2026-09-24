@@ -45,12 +45,14 @@ mod protocol_version;
 pub mod published_template;
 mod substate_hasher;
 mod substate_serde;
+mod substate_version;
 mod utxo;
 mod validator_fee;
 
 pub use epoch::*;
 pub use hash::*;
 pub use protocol_version::*;
+pub use substate_version::*;
 pub use tari_template_lib::types::parse_template_address;
 pub use template::calculate_template_binary_hash;
 pub use utxo::*;

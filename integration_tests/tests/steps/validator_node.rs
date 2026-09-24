@@ -19,7 +19,7 @@ use libp2p::Multiaddr;
 use minotari_app_grpc::tari_rpc::{RegisterValidatorNodeRequest, Signature};
 use tari_base_node_client::{BaseNodeClient, grpc::GrpcBaseNodeClient};
 use tari_crypto::tari_utilities::ByteArray;
-use tari_ootle_common_types::{Epoch, SubstateAddress, optional::Optional};
+use tari_ootle_common_types::{Epoch, SubstateAddress, SubstateVersion, optional::Optional};
 use tari_ootle_storage::Ordering;
 use tari_transaction_components::transaction_components::{MemoField, memo_field::TxType};
 use tari_validator_node_client::types::{
@@ -374,7 +374,7 @@ async fn then_validator_node_has_state_at(
     integration_tests::cucumber_log!("Waiting for state at address {}", state_address);
     let vn = world.get_validator_node(&vn_name);
     let mut client = vn.create_client();
-    let substate_address = SubstateAddress::from_substate_id(state_address, 0);
+    let substate_address = SubstateAddress::from_substate_id(state_address, SubstateVersion::ZERO);
     let mut attempts = 0;
     loop {
         match client

@@ -4,6 +4,7 @@
 use std::str::FromStr;
 
 use diesel::{Identifiable, Queryable};
+use tari_ootle_common_types::SubstateVersion;
 use tari_ootle_wallet_sdk::storage::WalletStorageError;
 use tari_template_lib_types::{Amount, ComponentAddress, ResourceAddress, ResourceType, VaultId};
 use time::PrimitiveDateTime;
@@ -40,11 +41,13 @@ impl Vault {
                 item: "vault.address",
                 details: e.to_string(),
             })?,
-            vault_version: u64::try_from(self.vault_version).map_err(|e| WalletStorageError::DecodingError {
-                operation: "try_into_vault",
-                item: "vault.vault_version",
-                details: e.to_string(),
-            })?,
+            vault_version: u64::try_from(self.vault_version)
+                .map(SubstateVersion::new)
+                .map_err(|e| WalletStorageError::DecodingError {
+                    operation: "try_into_vault",
+                    item: "vault.vault_version",
+                    details: e.to_string(),
+                })?,
             resource_address: ResourceAddress::from_str(&self.resource_address).map_err(|e| {
                 WalletStorageError::DecodingError {
                     operation: "try_into_vault",

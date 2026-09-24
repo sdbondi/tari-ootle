@@ -15,7 +15,14 @@ use tari_consensus::{
 };
 use tari_crypto::{keys::PublicKey, ristretto::RistrettoPublicKey};
 use tari_engine_types::substate::{SubstateId, SubstateValue};
-use tari_ootle_common_types::{Epoch, NodeAddressable, ShardGroup, SubstateAddress, VersionedSubstateIdRef};
+use tari_ootle_common_types::{
+    Epoch,
+    NodeAddressable,
+    ShardGroup,
+    SubstateAddress,
+    SubstateVersion,
+    VersionedSubstateIdRef,
+};
 use tari_ootle_storage::{
     StateStore,
     StateStoreReadTransaction,
@@ -255,11 +262,11 @@ where
     TVal: Into<SubstateValue>,
 {
     let substate_id = substate_id.into();
-    let shard = VersionedSubstateIdRef::new(&substate_id, 0).to_shard(TEST_NUM_PRESHARDS);
+    let shard = VersionedSubstateIdRef::new(&substate_id, SubstateVersion::ZERO).to_shard(TEST_NUM_PRESHARDS);
     let mut batch = SubstateUpdateBatch::new(Network::LocalNet, Epoch::zero());
     batch.with_transition(shard, 0).push(SubstateTransition::Up {
         id: substate_id,
-        version: 0,
+        version: SubstateVersion::ZERO,
         substate_or_hash: value.into().into(),
     });
 

@@ -12,7 +12,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use tari_engine_types::substate::SubstateId;
-use tari_ootle_common_types::SubstateRequirement;
+use tari_ootle_common_types::{SubstateRequirement, SubstateVersion};
 
 use crate::types::{
     address::{ComponentAddressStr, ResourceAddressStr},
@@ -54,14 +54,14 @@ impl InputRef {
     pub fn to_internal(&self) -> Result<SubstateRequirement, OotleSdkError> {
         let id = SubstateId::from_str(&self.substate_id)
             .map_err(|e| OotleSdkError::Parse(format!("invalid substate id '{}': {e}", self.substate_id)))?;
-        Ok(SubstateRequirement::new(id, self.version))
+        Ok(SubstateRequirement::new(id, self.version.map(SubstateVersion::new)))
     }
 
     /// Builds from an internal [`SubstateRequirement`].
     pub fn from_internal(req: &SubstateRequirement) -> Self {
         Self {
             substate_id: req.substate_id().to_string(),
-            version: req.version(),
+            version: req.version().map(SubstateVersion::as_u64),
         }
     }
 }
@@ -114,6 +114,7 @@ impl PublicTransferIntent {
 
 #[cfg(test)]
 mod tests {
+    use tari_ootle_common_types::SubstateVersion;
     use tari_template_lib_types::{ComponentAddress, ObjectKey, ResourceAddress};
 
     use super::*;
@@ -130,7 +131,7 @@ mod tests {
     fn input_ref_round_trips_through_internal() {
         let r = InputRef::versioned(component_str(), 3);
         let internal = r.to_internal().unwrap();
-        assert_eq!(internal.version(), Some(3));
+        assert_eq!(internal.version(), Some(SubstateVersion::new(3)));
         assert_eq!(InputRef::from_internal(&internal), r);
 
         let u = InputRef::unversioned(resource_str());
@@ -165,7 +166,7 @@ mod tests {
         };
         let reqs = intent.inputs_to_internal().unwrap();
         assert_eq!(reqs.len(), 2);
-        assert_eq!(reqs[0].version(), Some(0));
+        assert_eq!(reqs[0].version(), Some(SubstateVersion::ZERO));
         assert_eq!(reqs[1].version(), None);
         // The amount survives the µTari boundary above 2^53.
         assert_eq!(intent.amount.to_internal().to_u128(), u128::from((1u64 << 53) + 1));

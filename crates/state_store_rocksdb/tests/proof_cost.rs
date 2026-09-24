@@ -6,7 +6,7 @@ pub mod helpers;
 use std::{collections::BTreeMap, time::Instant};
 
 use helpers::{PROOF_TEST_TREE_VERSION, build_substate_record, commit_substates, create_rocksdb, num_preshards};
-use tari_ootle_common_types::{ShardGroup, shard::Shard};
+use tari_ootle_common_types::{ShardGroup, SubstateVersion, shard::Shard};
 use tari_ootle_storage::{StateStore, SubstateProofGenerator, consensus_models::SubstateRecord};
 
 use crate::helpers::substate_id_seed;
@@ -23,7 +23,13 @@ fn proof_cost() {
     let shard_group = ShardGroup::all_shards(num_preshards());
 
     let substates = (0..BATCH)
-        .map(|seed| build_substate_record(&substate_id_seed(seed << 24), 0, PROOF_TEST_TREE_VERSION))
+        .map(|seed| {
+            build_substate_record(
+                &substate_id_seed(seed << 24),
+                SubstateVersion::ZERO,
+                PROOF_TEST_TREE_VERSION,
+            )
+        })
         .collect::<Vec<_>>();
     let mut by_shard: BTreeMap<Shard, Vec<&SubstateRecord>> = BTreeMap::new();
     for s in &substates {

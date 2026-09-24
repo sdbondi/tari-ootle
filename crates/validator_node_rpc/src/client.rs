@@ -20,7 +20,7 @@ use tari_engine_types::{
     substate::{Substate, SubstateId, SubstateValue},
 };
 use tari_networking::{MessageSpec, NetworkingHandle, PeerId};
-use tari_ootle_common_types::{NodeAddressable, SubstateRequirementRef};
+use tari_ootle_common_types::{NodeAddressable, SubstateRequirementRef, SubstateVersion};
 use tari_ootle_p2p::{
     TariMessagingSpec,
     ToPeerId,
@@ -131,12 +131,12 @@ pub enum SubstateResult {
     #[n(2)]
     Down {
         #[n(0)]
-        version: u64,
+        version: SubstateVersion,
     },
 }
 
 impl SubstateResult {
-    pub fn version(&self) -> Option<u64> {
+    pub fn version(&self) -> Option<SubstateVersion> {
         match self {
             SubstateResult::Up { substate, .. } => Some(substate.version()),
             SubstateResult::Down { version, .. } => Some(*version),
@@ -299,10 +299,12 @@ impl<TAddr: NodeAddressable + ToPeerId, TMsg: MessageSpec> ValidatorNodeRpcClien
                 let substate = SubstateValue::from_bytes(&resp.substate)
                     .map_err(|e| ValidatorNodeRpcClientError::InvalidResponse(anyhow!(e)))?;
                 Ok(SubstateResult::Up {
-                    substate: Box::new(Substate::new(resp.version, substate)),
+                    substate: Box::new(Substate::new(SubstateVersion::new(resp.version), substate)),
                 })
             },
-            SubstateStatus::Down => Ok(SubstateResult::Down { version: resp.version }),
+            SubstateStatus::Down => Ok(SubstateResult::Down {
+                version: SubstateVersion::new(resp.version),
+            }),
             SubstateStatus::DoesNotExist => Ok(SubstateResult::DoesNotExist),
         }
     }
@@ -342,10 +344,12 @@ impl<TAddr: NodeAddressable + ToPeerId, TMsg: MessageSpec> ValidatorNodeRpcClien
                 let substate = SubstateValue::from_bytes(&resp.substate)
                     .map_err(|e| ValidatorNodeRpcClientError::InvalidResponse(anyhow!(e)))?;
                 SubstateResult::Up {
-                    substate: Box::new(Substate::new(resp.version, substate)),
+                    substate: Box::new(Substate::new(SubstateVersion::new(resp.version), substate)),
                 }
             },
-            SubstateStatus::Down => SubstateResult::Down { version: resp.version },
+            SubstateStatus::Down => SubstateResult::Down {
+                version: SubstateVersion::new(resp.version),
+            },
             SubstateStatus::DoesNotExist => SubstateResult::DoesNotExist,
         };
 
@@ -436,13 +440,13 @@ fn decode_batched_substate(proven: proto::rpc::ProvenSubstate) -> Result<Batched
     // has been spent. Only an up substate carries a value.
     let result = if substate.destroyed.is_some() {
         SubstateResult::Down {
-            version: substate.version,
+            version: SubstateVersion::new(substate.version),
         }
     } else {
         let value = SubstateValue::from_bytes(&substate.substate)
             .map_err(|e| ValidatorNodeRpcClientError::InvalidResponse(anyhow!("{}", e)))?;
         SubstateResult::Up {
-            substate: Box::new(Substate::new(substate.version, value)),
+            substate: Box::new(Substate::new(SubstateVersion::new(substate.version), value)),
         }
     };
 
