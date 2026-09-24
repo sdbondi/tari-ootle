@@ -203,7 +203,8 @@ impl BlockHeader {
             extra_data,
             timeout_certificate_id,
         };
-        header.id = header.calculate_id();
+        // The header is signed after its id exists, so it hashes as the signed block it becomes.
+        header.id = header.calculate_id_as(false);
 
         Ok(header)
     }
@@ -311,6 +312,10 @@ impl BlockHeader {
     }
 
     pub fn calculate_id(&self) -> BlockId {
+        self.calculate_id_as(self.is_dummy())
+    }
+
+    fn calculate_id_as(&self, is_dummy: bool) -> BlockId {
         // Hash is created from the hash of the "body" and
         // then hashed with the parent, so that you can
         // create a merkle proof of a chain of blocks
@@ -324,7 +329,7 @@ impl BlockHeader {
         // blockbody
         // ```
 
-        let header_hash = self.calculate_hash();
+        let header_hash = self.calculate_hash_as(is_dummy);
         Self::calculate_block_id(&self.parent, &header_hash)
     }
 
@@ -346,19 +351,28 @@ impl BlockHeader {
     /// validity rules read therefore commit here, which keeps the header preimage identical to the one the base
     /// layer verifies while still binding them into the block id.
     pub fn calculate_metadata_hash(&self) -> FixedHash {
+        self.calculate_metadata_hash_as(self.is_dummy())
+    }
+
+    fn calculate_metadata_hash_as(&self, is_dummy: bool) -> FixedHash {
         let fields = MetadataHashFields::V1(MetadataHashFieldsV1 {
             total_leader_fee: self.total_leader_fee,
             timestamp: self.timestamp,
             extra_data: &self.extra_data,
             timeout_certificate_id: self.timeout_certificate_id.as_ref().map(TcId::hash),
+            is_dummy,
         });
         hashing::block_metadata_hasher().chain(&fields).finalize().into()
     }
 
     pub fn calculate_hash(&self) -> FixedHash {
+        self.calculate_hash_as(self.is_dummy())
+    }
+
+    fn calculate_hash_as(&self, is_dummy: bool) -> FixedHash {
         // This hash reduces proof sizes. A proof-of-commit only needs to include this hash and not
         // the data.
-        let metadata_hash = self.calculate_metadata_hash();
+        let metadata_hash = self.calculate_metadata_hash_as(is_dummy);
         let accumulated_data = self.accumulated_data.into();
 
         let shard_group = tari_sidechain::ShardGroup {
@@ -592,6 +606,10 @@ struct MetadataHashFieldsV1<'a> {
     timestamp: u64,
     extra_data: &'a ExtraData,
     timeout_certificate_id: Option<&'a FixedHash>,
+    /// A dummy block and an empty proposal from the same leader can agree on every other field, and the signature
+    /// that tells them apart signs the id. Committing to it here keeps them two blocks, so every node attributes
+    /// the view the same way whichever of the two it holds.
+    is_dummy: bool,
 }
 
 #[cfg(test)]
@@ -694,6 +712,59 @@ mod tests {
             assert_ne!(with.calculate_metadata_hash(), with_other.calculate_metadata_hash());
             assert_ne!(without.id(), with.id());
             assert_ne!(with.id(), with_other.id());
+        }
+    }
+
+    /// An empty proposal made in the same second as its parent matches the dummy block for its view in every
+    /// field but the signature.
+    #[test]
+    fn a_dummy_block_never_shares_an_id_with_an_empty_proposal() {
+        for protocol_version in [ProtocolVersion::V0, ProtocolVersion::V1] {
+            let shard_group = ShardGroup::all_shards(NumPreshards::P64);
+            let parent = BlockId::from([1u8; 32]);
+            let justify_id = ProposalCertificate::genesis(Epoch(1), shard_group).calculate_id();
+            let proposed_by = RistrettoPublicKeyBytes::default();
+            let accumulated_data = ShardGroupAccumulatedData::default();
+            let parent_timestamp = 1234;
+
+            let dummy = BlockHeader::dummy_block(
+                Network::LocalNet,
+                protocol_version,
+                parent,
+                proposed_by,
+                NodeHeight(2),
+                justify_id,
+                Epoch(1),
+                shard_group,
+                FixedHash::zero(),
+                parent_timestamp,
+                FixedHash::zero(),
+                accumulated_data,
+            );
+            let proposal = BlockHeader::create(
+                Network::LocalNet,
+                protocol_version,
+                parent,
+                justify_id,
+                None,
+                NodeHeight(2),
+                Epoch(1),
+                shard_group,
+                proposed_by,
+                FixedHash::zero(),
+                &BTreeSet::new(),
+                0,
+                SchnorrSignatureBytes::zero(),
+                parent_timestamp,
+                FixedHash::zero(),
+                accumulated_data,
+                ExtraData::new(),
+            )
+            .unwrap();
+
+            assert_ne!(dummy.id(), proposal.id());
+            assert_eq!(dummy.calculate_id(), *dummy.id());
+            assert_eq!(proposal.calculate_id(), *proposal.id());
         }
     }
 
