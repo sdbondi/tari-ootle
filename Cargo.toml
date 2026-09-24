@@ -170,7 +170,7 @@ tari_shutdown = "5.7.0-pre.5"
 tari_sidechain = "5.7.0-pre.5"
 tari_transaction_components = "5.7.0-pre.5"
 
-tari_crypto = "0.23"
+tari_crypto = "0.23.4"
 tari_utilities = "0.10"
 tari_hashing = "5.7.0-pre.5"
 
