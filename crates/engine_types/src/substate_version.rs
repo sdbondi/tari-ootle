@@ -97,12 +97,6 @@ impl From<SubstateVersion> for u64 {
     }
 }
 
-impl PartialEq<u64> for SubstateVersion {
-    fn eq(&self, other: &u64) -> bool {
-        self.0 == *other
-    }
-}
-
 impl Display for SubstateVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)

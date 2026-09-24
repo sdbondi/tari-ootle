@@ -85,8 +85,14 @@ fn basic_operations() {
     let substate_ids = vec![substate1_id.clone(), substate2_id.clone()];
     let res = tx.substates_get_any_max_version(&substate_ids).unwrap();
     assert_eq!(res.len(), 2);
-    assert!(res.iter().any(|s| s.substate_id == substate1_id && s.version == 1));
-    assert!(res.iter().any(|s| s.substate_id == substate2_id && s.version == 0));
+    assert!(
+        res.iter()
+            .any(|s| s.substate_id == substate1_id && s.version == SubstateVersion::new(1))
+    );
+    assert!(
+        res.iter()
+            .any(|s| s.substate_id == substate2_id && s.version == SubstateVersion::ZERO)
+    );
 
     // substates_get_max_version_for_substate
     let res = tx.substates_get_max_version_for_substate(&substate1_id).unwrap();

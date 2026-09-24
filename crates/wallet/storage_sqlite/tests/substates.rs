@@ -43,10 +43,10 @@ fn get_and_insert_substates() {
     let returned = tx.substates_get(&address).unwrap();
     assert!(returned.parent_address.is_none());
     assert_eq!(*returned.substate_id.substate_id(), address);
-    assert_eq!(returned.substate_id.version(), 0);
+    assert_eq!(returned.substate_id.version(), SubstateVersion::ZERO);
 
     let returned = tx.substates_get(&child_address).unwrap();
     assert_eq!(returned.parent_address, Some(address));
     assert_eq!(*returned.substate_id.substate_id(), child_address);
-    assert_eq!(returned.substate_id.version(), 0);
+    assert_eq!(returned.substate_id.version(), SubstateVersion::ZERO);
 }

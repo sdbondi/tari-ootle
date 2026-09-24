@@ -609,7 +609,7 @@ fn same_version_scan_updates_after_balance_and_deletes_net_zero_row() {
     assert_eq!(page.changes[0].confidential_after, Amount::from(15u64));
     assert_eq!(page.changes[0].confidential_delta, "15");
     let vault = tx.vaults_get(&first_vault).unwrap();
-    assert_eq!(vault.vault_version, 1);
+    assert_eq!(vault.vault_version, SubstateVersion::new(1));
     assert_eq!(vault.confidential_balance, Amount::from(15u64));
     drop(tx);
 
@@ -1171,7 +1171,7 @@ fn lock_finalize_records_revealed_movement_from_diff_not_lock_amount() {
     assert_eq!(change.revealed_delta, "-255");
     let vault = tx.vaults_get(&stealth_vault).unwrap();
     assert_eq!(vault.revealed_balance, Amount::from(1_999_745u64));
-    assert_eq!(vault.vault_version, 2);
+    assert_eq!(vault.vault_version, SubstateVersion::new(2));
 }
 
 // The unique (account, resource, transaction) index spans both key shapes: when a transaction's effect is
