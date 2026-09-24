@@ -94,13 +94,10 @@ impl TransactionReceipt {
     /// [`Event::charged_size_padding`]. `fee_withdrawals`, `epoch` and `intent_commitment` are
     /// measured as they will actually be encoded.
     ///
-    /// `upped` is the substates the transaction writes, and `downed` the ones it spends without
-    /// writing — the spent UTXOs and confidential outputs. Each gets one [`DiffSummary`] entry.
-    /// Nothing joins either set after the charge is computed: fee settlement only mutates substates
-    /// already in `upped`, and building the diff can only drop an upped entry or move it to
-    /// `downed` (a drained fee pool). A downed entry is narrower than the upped stand-in by its
-    /// 32-byte value hash, which outweighs any growth of the downed array's header. The receipt is
-    /// up'd after its own summary is built, so it is absent from both.
+    /// `upped` is the substates the transaction writes, and `downed` the ones it removes without
+    /// writing a later version. Each gets one [`DiffSummary`] entry. Nothing joins either set after
+    /// the charge is computed: fee settlement only mutates substates already in `upped`. The
+    /// receipt is up'd after its own summary is built, so it is absent from both.
     ///
     /// That holds only when both sets come from the same state the receipt is built from. Spending a
     /// UTXO or confidential output removes it from the state that spent it, so a state which never
@@ -214,7 +211,7 @@ pub struct DiffSummary {
     #[cbor(with = "tari_bor::adapters::boxed_slice")]
     pub upped: Box<[UpSubstate]>,
     /// The substates the transaction downed without upping a later version: spent UTXOs and
-    /// confidential outputs, and a validator fee pool drained to zero.
+    /// confidential outputs.
     ///
     /// A substate that is upped is always downed at its previous version, so those downs are implied
     /// by `upped` and are left out to keep the receipt small.
@@ -364,25 +361,6 @@ mod tests {
             &upped,
             &downed,
         );
-    }
-
-    /// A drained fee pool is priced as upped but finalizes as downed. The bound overshoots by the
-    /// value hash it priced, so only the lower bound is checked. Enough entries move to cross the
-    /// downed array's one-byte header.
-    #[test]
-    fn bound_holds_when_upped_entries_move_to_downed() {
-        let priced_upped = (0..30).map(substate_id).collect::<Vec<_>>();
-        let (downed, upped) = priced_upped.split_at(25);
-        let actual = receipt(vec![], upped, downed);
-
-        let bound = TransactionReceipt::encoded_size_upper_bound(
-            &actual.events,
-            &actual.fee_withdrawals,
-            priced_upped.iter(),
-            [].iter(),
-            actual.epoch,
-        );
-        assert!(bound >= minicbor::len(&actual));
     }
 
     #[test]

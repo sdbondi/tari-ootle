@@ -25,6 +25,7 @@ use tari_engine::{
     fees::{FeeModule, FeeTable, WasmMeteringRate},
     runtime::{AuthParams, RuntimeModule},
     state_store::{
+        StateReader,
         StateWriter,
         memory::{MemoryStateStore, ReadOnlyMemoryStateStore},
     },
@@ -35,7 +36,7 @@ use tari_engine::{
 use tari_engine_types::{
     commit_result::{ExecuteResult, RejectReason},
     fees::ExhaustBurnRate,
-    substate::{SubstateDiff, SubstateId},
+    substate::{Substate, SubstateDiff, SubstateId},
     virtual_substate::{VirtualSubstate, VirtualSubstateId},
 };
 use tari_ootle_common_types::{
@@ -482,6 +483,23 @@ impl TemplateTest {
             eprintln!("UP substate: {}", address);
             self.last_outputs.insert(address.clone());
             self.state_store.set_state(address.clone(), substate.clone()).unwrap();
+        }
+
+        // Consensus debits a fee pool in place rather than through the diff; this mirrors it, bumping the version as
+        // consensus does the first time a block touches the pool.
+        for withdrawal in diff.validator_fee_withdrawals() {
+            let address = SubstateId::ValidatorFeePool(withdrawal.address);
+            eprintln!("WITHDRAW {} from {}", withdrawal.amount, address);
+            let substate = self.state_store.get_state(&address).unwrap();
+            let mut pool = substate.substate_value().as_validator_fee_pool().unwrap().clone();
+            assert!(
+                pool.withdraw_direct(withdrawal.amount),
+                "withdrawal overdraws {address}"
+            );
+            let version = substate.version().checked_next().unwrap();
+            self.state_store
+                .set_state(address, Substate::new(version, pool))
+                .unwrap();
         }
         eprintln!();
     }

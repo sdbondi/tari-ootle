@@ -24,6 +24,9 @@ See [standard-version](https://github.com/conventional-changelog/standard-versio
 - `feat!` — **Metadata is indexed like the rest of a substate**: an address in it counts as a
   reference, and a bucket or proof in it is rejected as transient. (#2679)
 
+- `fix!` — **A fee claim no longer writes the validator fee pool into the transaction diff**: the
+  receipt records the claim only as a fee withdrawal, and the pool is no longer priced as storage.
+
 - `feat!` — **Transaction receipts list the substates a transaction spent**: `DiffSummary::downed`
   records each substate downed without a later version, such as a spent UTXO. Receipt hashes and
   stealth fee estimates change; this ships with the testnet reset.

@@ -6,7 +6,7 @@ export type DiffSummary = {
   upped: Array<UpSubstate>;
   /**
    * The substates the transaction downed without upping a later version: spent UTXOs and
-   * confidential outputs, and a validator fee pool drained to zero.
+   * confidential outputs.
    *
    * A substate that is upped is always downed at its previous version, so those downs are implied
    * by `upped` and are left out to keep the receipt small.

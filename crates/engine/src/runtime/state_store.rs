@@ -13,7 +13,7 @@ use tari_engine_types::{
     vault::Vault,
 };
 use tari_ootle_common_types::optional::Optional;
-use tari_template_lib::types::{ComponentAddress, ConfidentialOutputAddress, UtxoAddress, VaultId};
+use tari_template_lib::types::{ComponentAddress, VaultId};
 
 use crate::{
     runtime::{
@@ -34,8 +34,8 @@ pub struct WorkingStateStore<TStore> {
     /// Tracks the locked substate IDs and their lock states.
     locked_substates: LockedSubstates,
 
-    downed_utxos: IndexSet<UtxoAddress>,
-    downed_confidential_outputs: IndexSet<ConfidentialOutputAddress>,
+    /// Substates this transaction removed from state without writing a later version, in the order they were downed.
+    downed: IndexSet<SubstateId>,
     /// The underlying state store that is used to load substates that are not in the working state maps.
     state_store: TStore,
 }
@@ -46,8 +46,7 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
             new_substates: IndexMap::new(),
             loaded_substates: HashMap::new(),
             locked_substates: LockedSubstates::default(),
-            downed_utxos: IndexSet::default(),
-            downed_confidential_outputs: IndexSet::default(),
+            downed: IndexSet::default(),
             state_store,
         }
     }
@@ -144,16 +143,11 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
         })
     }
 
-    /// Whether `id` names a UTXO or confidential output this transaction has already spent. The backing store is
-    /// untouched until the transaction commits, so `downed_utxos` and `downed_confidential_outputs` are the whole
-    /// record of what this transaction has spent; every presence and load path consults them so that a spent output
-    /// reads as gone for the rest of the transaction.
+    /// Whether `id` names a substate this transaction has already downed. The backing store is untouched until the
+    /// transaction commits, so `downed` is the whole record of what this transaction has removed; every presence and
+    /// load path consults it so that a downed substate reads as gone for the rest of the transaction.
     fn is_spent(&self, id: &SubstateId) -> bool {
-        match id {
-            SubstateId::Utxo(address) => self.downed_utxos.contains(address),
-            SubstateId::ConfidentialOutput(address) => self.downed_confidential_outputs.contains(address),
-            _ => false,
-        }
+        self.downed.contains(id)
     }
 
     pub fn exists(&self, id: &SubstateId) -> Result<bool, RuntimeError> {
@@ -206,98 +200,104 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
         mem::take(&mut self.new_substates)
     }
 
-    pub fn take_downed_utxos(&mut self) -> IndexSet<UtxoAddress> {
-        mem::take(&mut self.downed_utxos)
-    }
-
-    pub fn take_downed_confidential_outputs(&mut self) -> IndexSet<ConfidentialOutputAddress> {
-        mem::take(&mut self.downed_confidential_outputs)
+    pub fn take_downed(&mut self) -> IndexSet<SubstateId> {
+        mem::take(&mut self.downed)
     }
 
     pub fn mutated_substates(&self) -> &IndexMap<SubstateId, SubstateValue> {
         &self.new_substates
     }
 
-    pub fn downed_utxos(&self) -> &IndexSet<UtxoAddress> {
-        &self.downed_utxos
+    pub fn downed(&self) -> &IndexSet<SubstateId> {
+        &self.downed
     }
 
-    pub fn downed_confidential_outputs(&self) -> &IndexSet<ConfidentialOutputAddress> {
-        &self.downed_confidential_outputs
+    /// Mutates a write-locked substate for the rest of the transaction without adding it to the substates the
+    /// transaction persists. For a substate whose writes consensus applies itself: a validator fee pool is credited
+    /// and debited in place per block, so the engine records a withdrawal rather than a new version of the pool.
+    pub fn mutate_unpersisted<R>(
+        &mut self,
+        lock_id: LockId,
+        callback: impl FnOnce(&mut SubstateValue) -> Result<R, RuntimeError>,
+    ) -> Result<R, RuntimeError> {
+        let lock = self.locked_substates.get(lock_id, LockFlag::Write)?;
+        let substate =
+            self.loaded_substates
+                .get_mut(lock.substate_id())
+                .ok_or_else(|| RuntimeError::InvariantError {
+                    function: "mutate_unpersisted",
+                    details: format!(
+                        "Substate {} is not loaded, or is already set to persist",
+                        lock.substate_id()
+                    ),
+                })?;
+        callback(substate.substate_value_mut())
+    }
+
+    /// Removes the write-locked substate from state for the rest of the transaction and returns its value.
+    ///
+    /// `new_substates` holds mutated substates as well as created ones, so presence there does not mean the substate
+    /// is new: one mutated earlier in this transaction (an unfrozen output, say) was moved there from
+    /// `loaded_substates`. Only a substate that did not exist before this transaction may collapse without a down; a
+    /// pre-existing one must still be downed, or it stays live after its value is gone.
+    fn down(&mut self, lock_id: LockId) -> Result<SubstateValue, RuntimeError> {
+        let lock = self.locked_substates.get(lock_id, LockFlag::Write)?;
+        let substate_id = lock.substate_id().clone();
+        if let Some(value) = self.new_substates.shift_remove(&substate_id) {
+            if self.get_unmodified_substate(&substate_id).optional()?.is_some() {
+                self.downed.insert(substate_id);
+            }
+            return Ok(value);
+        }
+        if let Some(substate) = self.loaded_substates.remove(&substate_id) {
+            self.downed.insert(substate_id);
+            return Ok(substate.into_substate_value());
+        }
+
+        Err(RuntimeError::SubstateNotFound { id: substate_id })
     }
 
     pub fn down_utxo(&mut self, lock_id: LockId) -> Result<Utxo, RuntimeError> {
-        let lock = self.locked_substates.get(lock_id, LockFlag::Write)?;
-        let substate_id = lock.substate_id();
-        let address = substate_id
-            .as_utxo_address()
-            .ok_or_else(|| RuntimeError::InvariantError {
+        let substate_id = self
+            .locked_substates
+            .get(lock_id, LockFlag::Write)?
+            .substate_id()
+            .clone();
+        if substate_id.as_utxo_address().is_none() {
+            return Err(RuntimeError::InvariantError {
                 function: "down_utxo",
                 details: format!("Substate at address {} is not a UTXO", substate_id),
-            })?;
-        let mismatch = || RuntimeError::InvariantError {
-            function: "down_utxo",
-            details: format!("Substate at utxo address {} does not hold a UTXO", substate_id),
-        };
-        if let Some(value) = self.new_substates.shift_remove(substate_id) {
-            // `new_substates` holds mutated substates as well as created ones, so presence here does not mean
-            // the UTXO is new: one mutated earlier in this transaction (unfrozen, say) was moved here from
-            // `loaded_substates`. Only a UTXO that did not exist before this transaction may collapse; a
-            // pre-existing one must still be downed, or it stays live while its value is spent.
-            if self.get_unmodified_substate(substate_id).optional()?.is_some() {
-                self.downed_utxos.insert(address);
-            }
-            return value.into_utxo().ok_or_else(mismatch);
+            });
         }
-        if let Some(substate) = self.loaded_substates.remove(substate_id) {
-            self.downed_utxos.insert(address);
-            return substate.into_substate_value().into_utxo().ok_or_else(mismatch);
-        }
-
-        Err(RuntimeError::SubstateNotFound {
-            id: substate_id.clone(),
-        })
+        self.down(lock_id)?
+            .into_utxo()
+            .ok_or_else(|| RuntimeError::InvariantError {
+                function: "down_utxo",
+                details: format!("Substate at utxo address {} does not hold a UTXO", substate_id),
+            })
     }
 
     pub fn down_confidential_output(&mut self, lock_id: LockId) -> Result<ConfidentialOutput, RuntimeError> {
-        let lock = self.locked_substates.get(lock_id, LockFlag::Write)?;
-        let substate_id = lock.substate_id();
-        let address =
-            substate_id
-                .as_confidential_output_address()
-                .cloned()
-                .ok_or_else(|| RuntimeError::InvariantError {
-                    function: "down_confidential_output",
-                    details: format!("Substate at address {} is not a confidential output", substate_id),
-                })?;
-        let mismatch = || RuntimeError::InvariantError {
-            function: "down_confidential_output",
-            details: format!(
-                "Substate at confidential output address {} does not hold a confidential output",
-                substate_id
-            ),
-        };
-        if let Some(value) = self.new_substates.shift_remove(substate_id) {
-            // `new_substates` holds mutated substates as well as created ones, so presence here does not mean
-            // the output is new: an output mutated earlier in this transaction (unfrozen, say) was moved here
-            // from `loaded_substates`. Only an output that did not exist before this transaction may collapse;
-            // a pre-existing one must still be downed, or it stays live while its value is spent.
-            if self.get_unmodified_substate(substate_id).optional()?.is_some() {
-                self.downed_confidential_outputs.insert(address);
-            }
-            return value.into_confidential_output().ok_or_else(mismatch);
+        let substate_id = self
+            .locked_substates
+            .get(lock_id, LockFlag::Write)?
+            .substate_id()
+            .clone();
+        if substate_id.as_confidential_output_address().is_none() {
+            return Err(RuntimeError::InvariantError {
+                function: "down_confidential_output",
+                details: format!("Substate at address {} is not a confidential output", substate_id),
+            });
         }
-        if let Some(substate) = self.loaded_substates.remove(substate_id) {
-            self.downed_confidential_outputs.insert(address);
-            return substate
-                .into_substate_value()
-                .into_confidential_output()
-                .ok_or_else(mismatch);
-        }
-
-        Err(RuntimeError::SubstateNotFound {
-            id: substate_id.clone(),
-        })
+        self.down(lock_id)?
+            .into_confidential_output()
+            .ok_or_else(|| RuntimeError::InvariantError {
+                function: "down_confidential_output",
+                details: format!(
+                    "Substate at confidential output address {} does not hold a confidential output",
+                    substate_id
+                ),
+            })
     }
 
     /// The address kind is the filter; a value that disagrees with it is the invariant break `down_utxo`

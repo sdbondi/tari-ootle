@@ -536,16 +536,10 @@ impl<TStore: StateReader> StateTracker<TStore> {
         let mut substates_to_persist = state.take_mutated_substates();
         let fee_receipt = state.finalize_fees_and_refunds(&mut substates_to_persist)?;
 
-        let downed_utxos = state.take_downed_utxos();
-        let downed_confidential_outputs = state.take_downed_confidential_outputs();
+        let downed = state.take_downed();
         let fee_withdrawals = state.take_validator_fee_withdrawals();
 
-        let mut diff = state.generate_substate_diff(
-            substates_to_persist,
-            downed_utxos,
-            downed_confidential_outputs,
-            fee_withdrawals,
-        )?;
+        let mut diff = state.generate_substate_diff(substates_to_persist, downed, fee_withdrawals)?;
         let transaction_receipt = state.finalize_transaction_receipt(outcome, &diff, fee_receipt.clone())?;
         diff.up(
             SubstateId::TransactionReceipt(state.transaction_hash().into()),
