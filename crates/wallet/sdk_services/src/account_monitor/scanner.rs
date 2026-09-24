@@ -36,7 +36,6 @@ use tari_template_lib_types::{
     NonFungibleId,
     ResourceAddress,
     VaultId,
-    constants::TOKEN_SYMBOL,
 };
 
 use crate::{account_monitor::monitor::AccountMonitorError, notify::Notify};
@@ -863,7 +862,7 @@ where TSpec: WalletSdkSpec
 
         let token_symbol = maybe_resource
             .as_ref()
-            .and_then(|r| r.metadata().get(TOKEN_SYMBOL).map(|s| s.to_string()));
+            .and_then(|r| r.token_symbol().map(|s| s.to_string()));
         let divisibility = maybe_resource.as_ref().map(|r| r.divisibility()).unwrap_or(0);
 
         info!(

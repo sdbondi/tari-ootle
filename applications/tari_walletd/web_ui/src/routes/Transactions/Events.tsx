@@ -38,7 +38,7 @@ import {
   Typography,
 } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
-import { Event, substateIdToString } from "@tari-project/ootle-ts-bindings";
+import { convertCborValue, Event, substateIdToString } from "@tari-project/ootle-ts-bindings";
 import { useState } from "react";
 
 interface RowDataProps extends Event {
@@ -46,13 +46,13 @@ interface RowDataProps extends Event {
 }
 
 function renderPayloadField(key: string, value: any) {
-  if (key === "amount" && typeof value === "string") {
+  if (key === "amount" && (typeof value === "number" || typeof value === "bigint" || typeof value === "string")) {
     return (
       <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
         <Typography variant="body2" color="text.secondary">
           Amount:
         </Typography>
-        <Chip label={value} size="small" color="primary" variant="outlined" />
+        <Chip label={String(value)} size="small" color="primary" variant="outlined" />
       </Box>
     );
   }
@@ -68,7 +68,7 @@ function renderPayloadField(key: string, value: any) {
     );
   }
 
-  if (key === "resource" || key === "resource_address") {
+  if ((key === "resource" || key === "resource_address") && typeof value === "string") {
     return (
       <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
         <Typography variant="body2" color="text.secondary">
@@ -95,7 +95,7 @@ function renderPayloadField(key: string, value: any) {
       <Typography variant="body2" color="text.secondary">
         {key}:
       </Typography>
-      <Typography variant="body2">{String(value)}</Typography>
+      <Typography variant="body2">{typeof value === "object" ? JSON.stringify(value) : String(value)}</Typography>
     </Box>
   );
 }
@@ -107,7 +107,7 @@ function renderPayload(payload: any) {
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-      {Object.entries(payload).map(([key, value]) => (
+      {Object.entries(convertCborValue(payload)).map(([key, value]) => (
         <Box key={key}>{renderPayloadField(key, value)}</Box>
       ))}
     </Box>

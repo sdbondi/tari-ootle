@@ -36,10 +36,17 @@ import {
   Typography,
 } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
-import { Event, substateIdToString } from "@tari-project/ootle-ts-bindings";
+import { convertCborValue, Event, substateIdToString } from "@tari-project/ootle-ts-bindings";
 import { useState } from "react";
 import CopyToClipboard from "../../../Components/CopyToClipboard";
 import { AccordionIconButton, DataTableCell } from "../../../Components/StyledComponents";
+
+function formatPayloadValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "<null>";
+  }
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
+}
 
 function EventRow({ event, index }: { event: Event; index: number }) {
   const [open, setOpen] = useState(false);
@@ -89,8 +96,8 @@ function EventRow({ event, index }: { event: Event; index: number }) {
               </Typography>
               <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
                 {payload && typeof payload === "object" ? (
-                  Object.entries(payload).map(([key, value], i) => (
-                    <Chip key={i} label={`${key}: ${value || "<null>"}`} size="small" variant="outlined" />
+                  Object.entries(convertCborValue(payload)).map(([key, value], i) => (
+                    <Chip key={i} label={`${key}: ${formatPayloadValue(value)}`} size="small" variant="outlined" />
                   ))
                 ) : (
                   <Typography variant="body2">{JSON.stringify(payload)}</Typography>

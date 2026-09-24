@@ -14,7 +14,7 @@ fn main() {
     let sparkle_nft = var!["nft_component"];
 
     // Mint a new NFT with a specific ID
-    let nft_bucket = sparkle_nft.mint_specific(NonFungibleId("SpecialEdition"));
+    let nft_bucket = sparkle_nft.mint_specific(non_fungible_id!("SpecialEdition"));
 
     // Deposit the minted NFT into the account
     account.deposit(nft_bucket);

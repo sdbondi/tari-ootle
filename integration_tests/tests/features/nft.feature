@@ -40,20 +40,20 @@ Feature: NFTs
   acc1.deposit(nft_bucket);
 
   // mint a new nft with specific id
-  let nft_bucket = sparkle_nft.mint_specific(NonFungibleId("SpecialNft"), "NFT2", "http://example.com");
+  let nft_bucket = sparkle_nft.mint_specific(non_fungible_id!("SpecialNft"), "NFT2", "http://example.com");
   acc1.deposit(nft_bucket);
 
   // transfer nft between accounts
-  let acc_bucket = acc1.withdraw_non_fungible(sparkle_res, NonFungibleId("SpecialNft"));
+  let acc_bucket = acc1.withdraw_non_fungible(sparkle_res, non_fungible_id!("SpecialNft"));
   acc2.deposit(acc_bucket);
 
   // mutate a nft
-  sparkle_nft.inc_brightness(NonFungibleId("SpecialNft"), 10u32);
+  sparkle_nft.inc_brightness(non_fungible_id!("SpecialNft"), 10u32);
 
   // burn a nft
-  let nft_bucket = sparkle_nft.mint_specific(NonFungibleId("Burn!"), "NFT3", "http://example.com");
+  let nft_bucket = sparkle_nft.mint_specific(non_fungible_id!("Burn!"), "NFT3", "http://example.com");
   acc1.deposit(nft_bucket);
-  let acc_bucket = acc1.withdraw_non_fungible(sparkle_res, NonFungibleId("Burn!"));
+  let acc_bucket = acc1.withdraw_non_fungible(sparkle_res, non_fungible_id!("Burn!"));
   sparkle_nft.burn(acc_bucket);
   """
 

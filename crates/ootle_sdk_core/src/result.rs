@@ -303,10 +303,23 @@ fn event_summaries(finalize: &FinalizeResult) -> Vec<EventSummary> {
             substate_id: event.substate_id().map(|id| id.to_string()),
             template_address: event.template_address().to_string(),
             topic: event.topic().to_string(),
-            // `Metadata` only exposes a by-value iterator, so clone the payload to read its pairs.
-            payload: event.payload().clone().into_iter().collect(),
+            payload: event
+                .payload()
+                .iter()
+                .map(|(key, value)| (key.clone(), payload_value_json(value)))
+                .collect(),
         })
         .collect()
+}
+
+/// The JSON form of one event payload value, as [`EventSummary::payload`] documents it.
+fn payload_value_json(value: &tari_bor::RawCbor) -> serde_json::Value {
+    serde_json::to_value(value).unwrap_or_else(|_| {
+        serde_json::json!({
+            "@cbor": "raw",
+            "hex": hex::encode(value.as_bytes()),
+        })
+    })
 }
 
 /// Flattens the engine logs to boundary [`LogSummary`] records.
@@ -337,7 +350,7 @@ mod tests {
         logs::LogEntry,
         substate::{Substate, SubstateDiff, SubstateId, SubstateValue},
     };
-    use tari_template_lib_types::{ComponentAddress, Hash32, LogLevel, Metadata, ObjectKey, VaultId};
+    use tari_template_lib_types::{Amount, ComponentAddress, Hash32, LogLevel, Metadata, ObjectKey, VaultId};
 
     use super::*;
 
@@ -354,7 +367,7 @@ mod tests {
             .build();
 
         let mut metadata = Metadata::new();
-        metadata.insert("amount", "100");
+        metadata.insert("amount", &Amount::from(100u64));
         let event = Event::new(None, Hash32::from_array([9u8; 32]), "std.deposit".to_string(), metadata);
 
         let finalize = FinalizeResult {
@@ -459,7 +472,7 @@ mod tests {
         assert_eq!(parsed.events[0].topic, "std.deposit");
         assert_eq!(parsed.events[0].payload, vec![(
             "amount".to_string(),
-            "100".to_string()
+            serde_json::json!(100)
         )]);
         assert_eq!(parsed.logs.len(), 1);
         assert_eq!(parsed.logs[0].level, "INFO");

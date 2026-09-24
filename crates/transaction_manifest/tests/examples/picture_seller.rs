@@ -18,8 +18,8 @@ fn main() {
     let funds = faucet.take_free_coins(1_000);
     account.deposit(funds);
     account.set_public_key(
-        PublicKey("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
-        Address("component_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        public_key!("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        address!("component_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
         cbor!({"some": {"data": [1, 2, 3]}}),
     );
 

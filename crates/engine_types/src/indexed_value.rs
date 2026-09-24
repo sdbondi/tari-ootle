@@ -1,7 +1,7 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::{any::type_name, collections::BTreeMap, ops::ControlFlow};
+use std::{any::type_name, ops::ControlFlow};
 
 use serde::{Deserialize, Serialize};
 use tari_bor::{BorError, FromTagAndValue, ValueVisitor, decode};
@@ -14,7 +14,6 @@ use tari_template_lib::{
         ConfidentialOutputAddress,
         ConfidentialOutputAddressContents,
         Hash32,
-        Metadata,
         NonFungibleAddress,
         NonFungibleAddressContents,
         ObjectKey,
@@ -102,10 +101,6 @@ impl IndexedValue {
         &self.indexed.vault_ids
     }
 
-    pub fn metadata(&self) -> &[Metadata] {
-        &self.indexed.metadata
-    }
-
     pub fn value(&self) -> &tari_bor::Value {
         &self.value
     }
@@ -157,8 +152,6 @@ pub struct IndexedWellKnownTypes {
     non_fungible_addresses: Vec<NonFungibleAddress>,
     #[n(6)]
     vault_ids: Vec<VaultId>,
-    #[n(7)]
-    metadata: Vec<Metadata>,
     #[n(8)]
     unclaimed_confidential_output_address: Vec<ClaimedOutputTombstoneAddress>,
     #[n(9)]
@@ -191,7 +184,6 @@ impl IndexedWellKnownTypes {
             transaction_receipt_addresses: vec![],
             non_fungible_addresses: vec![],
             vault_ids: vec![],
-            metadata: vec![],
             unclaimed_confidential_output_address: vec![],
             published_template_addresses: vec![],
             validator_node_fee_pools: vec![],
@@ -218,7 +210,6 @@ impl IndexedWellKnownTypes {
             transaction_receipt_addresses: visitor.transaction_receipt_addresses,
             non_fungible_addresses: visitor.non_fungible_addresses,
             vault_ids: visitor.vault_ids,
-            metadata: visitor.metadata,
             unclaimed_confidential_output_address: visitor.unclaimed_confidential_output_addresses,
             published_template_addresses: visitor.published_templates,
             validator_node_fee_pools: visitor.validator_node_fee_pools,
@@ -267,7 +258,6 @@ impl IndexedWellKnownTypes {
                         found = *id == addr;
                     },
                     WellKnownTariValue::BucketId(_) |
-                    WellKnownTariValue::Metadata(_) |
                     WellKnownTariValue::ComponentAddressAllocation(_) |
                     WellKnownTariValue::ResourceAddressAllocation(_) |
                     WellKnownTariValue::ProofId(_) => {},
@@ -338,10 +328,6 @@ impl IndexedWellKnownTypes {
         &self.vault_ids
     }
 
-    pub fn metadata(&self) -> &[Metadata] {
-        &self.metadata
-    }
-
     pub fn component_address_allocations(&self) -> &[ComponentAddressAllocation] {
         &self.component_address_allocations
     }
@@ -362,7 +348,6 @@ impl IndexedWellKnownTypes {
             ),
             non_fungible_addresses: diff_vec(&self.non_fungible_addresses, &other.non_fungible_addresses),
             vault_ids: diff_vec(&self.vault_ids, &other.vault_ids),
-            metadata: diff_vec(&self.metadata, &other.metadata),
             unclaimed_confidential_output_address: diff_vec(
                 &self.unclaimed_confidential_output_address,
                 &other.unclaimed_confidential_output_address,
@@ -403,7 +388,6 @@ impl FromIterator<IndexedWellKnownTypes> for IndexedWellKnownTypes {
                 .extend(value.transaction_receipt_addresses);
             indexed.non_fungible_addresses.extend(value.non_fungible_addresses);
             indexed.vault_ids.extend(value.vault_ids);
-            indexed.metadata.extend(value.metadata);
             indexed
                 .unclaimed_confidential_output_address
                 .extend(value.unclaimed_confidential_output_address);
@@ -430,7 +414,6 @@ pub enum WellKnownTariValue {
     TransactionReceiptAddress(TransactionReceiptAddress),
     NonFungibleAddress(NonFungibleAddress),
     BucketId(BucketId),
-    Metadata(Metadata),
     VaultId(VaultId),
     ProofId(ProofId),
     ClaimedOutputTombstoneAddress(ClaimedOutputTombstoneAddress),
@@ -474,10 +457,9 @@ impl FromTagAndValue for WellKnownTariValue {
                 let non_fungible_address: NonFungibleAddressContents = value.decoded()?;
                 Ok(Some(Self::NonFungibleAddress(non_fungible_address.into())))
             },
-            BinaryTag::Metadata => {
-                let metadata: BTreeMap<String, String> = value.decoded()?;
-                Ok(Some(Self::Metadata(metadata.into())))
-            },
+            // Metadata values are arbitrary CBOR that may hold any of the types above, so the walker
+            // descends into it like any other value.
+            BinaryTag::Metadata => Ok(None),
             BinaryTag::VaultId => {
                 let vault_id: ObjectKey = value.decoded()?;
                 Ok(Some(Self::VaultId(vault_id.into())))
@@ -531,7 +513,6 @@ pub struct IndexedValueVisitor {
     transaction_receipt_addresses: Vec<TransactionReceiptAddress>,
     non_fungible_addresses: Vec<NonFungibleAddress>,
     vault_ids: Vec<VaultId>,
-    metadata: Vec<Metadata>,
     unclaimed_confidential_output_addresses: Vec<ClaimedOutputTombstoneAddress>,
     published_templates: Vec<PublishedTemplateAddress>,
     validator_node_fee_pools: Vec<ValidatorFeePoolAddress>,
@@ -551,7 +532,6 @@ impl IndexedValueVisitor {
             transaction_receipt_addresses: vec![],
             non_fungible_addresses: vec![],
             vault_ids: vec![],
-            metadata: vec![],
             unclaimed_confidential_output_addresses: vec![],
             published_templates: vec![],
             validator_node_fee_pools: vec![],
@@ -585,9 +565,6 @@ impl ValueVisitor<WellKnownTariValue> for IndexedValueVisitor {
             },
             WellKnownTariValue::VaultId(vault_id) => {
                 self.vault_ids.push(vault_id);
-            },
-            WellKnownTariValue::Metadata(metadata) => {
-                self.metadata.push(metadata);
             },
             WellKnownTariValue::ProofId(proof_id) => {
                 self.proofs.push(proof_id);
@@ -672,7 +649,7 @@ mod tests {
 
     use rand::Rng;
     use tari_bor::cbor;
-    use tari_template_lib::types::NonFungibleId;
+    use tari_template_lib::types::{Metadata, NonFungibleId, metadata};
 
     use super::*;
     use crate::hashing::{EngineHashDomainLabel, hasher32};
@@ -750,7 +727,7 @@ mod tests {
             ],
             vault_ids: vec![VaultId::new(new_object_key())],
             non_fungible_id: Some(NonFungibleAddress::new(resx_addr, NonFungibleId::Uint64(1))),
-            metadata: Metadata::new(),
+            metadata: metadata!("owner" => addrs[0]),
         };
 
         let value = tari_bor::to_value(&data).unwrap();
@@ -759,12 +736,12 @@ mod tests {
         assert!(indexed.component_addresses().contains(&addrs[0]));
         assert!(indexed.component_addresses().contains(&addrs[1]));
         assert!(indexed.component_addresses().contains(&addrs[2]));
-        assert_eq!(indexed.component_addresses().len(), 3);
+        // addrs[0] a second time, from the metadata
+        assert_eq!(indexed.component_addresses().len(), 4);
         assert_eq!(indexed.resource_addresses().len(), 1);
 
         assert_eq!(indexed.non_fungible_addresses().len(), 1);
         assert_eq!(indexed.vault_ids().len(), 1);
-        assert_eq!(indexed.metadata().len(), 1);
 
         assert!(indexed.bucket_ids().contains(&1.into()));
         assert!(indexed.bucket_ids().contains(&2.into()));
@@ -822,5 +799,23 @@ mod tests {
 
         assert_eq!(diff.bucket_ids, [BucketId::from(2)]);
         assert_eq!(diff.proof_ids, [ProofId::from(3), ProofId::from(4)]);
+    }
+
+    #[test]
+    fn values_inside_metadata_are_indexed() {
+        let vault_id = VaultId::new(new_object_key());
+        let resource = ResourceAddress::new(new_object_key());
+        let metadata = metadata!(
+            "name" => "text is not indexed",
+            "vault" => vault_id,
+            "nested" => vec![resource],
+            "bucket" => BucketId::from(7),
+        );
+
+        let indexed = IndexedValue::from_type(&metadata).unwrap();
+
+        assert_eq!(indexed.vault_ids(), &[vault_id]);
+        assert_eq!(indexed.resource_addresses(), &[resource]);
+        assert_eq!(indexed.bucket_ids(), &[BucketId::from(7)]);
     }
 }

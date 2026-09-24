@@ -291,9 +291,9 @@ mod account_template {
             if amount.is_zero() {
                 let key = (resource, spender_badge);
                 if self.approvals.swap_remove(&key).is_some() {
-                    emit_event("revoke_approval", [
-                        ("resource", key.0.to_string()),
-                        ("spender_badge", key.1.to_string()),
+                    emit_event("revoke_approval", metadata![
+                        "resource" => key.0,
+                        "spender_badge" => key.1,
                     ]);
                 }
                 // Else no-op
@@ -301,9 +301,9 @@ mod account_template {
                 emit_event(
                     "approve",
                     metadata!(
-                        "spender_badge" => spender_badge.to_string(),
-                        "resource" => resource.to_string(),
-                        "amount" => amount.to_string(),
+                        "spender_badge" => spender_badge,
+                        "resource" => resource,
+                        "amount" => amount,
                     ),
                 );
 
@@ -334,10 +334,10 @@ mod account_template {
                 .unwrap_or_else(|| panic!("Amount exceeds approval (max: {}, attempted: {})", approval, amount));
             let is_exhausted = approval.is_zero();
 
-            emit_event("withdraw_approved", [
-                ("spender_badge", badge.to_string()),
-                ("resource", resource.to_string()),
-                ("amount", amount.to_string()),
+            emit_event("withdraw_approved", metadata![
+                "spender_badge" => badge,
+                "resource" => resource,
+                "amount" => amount,
             ]);
 
             // Clean up zero approvals

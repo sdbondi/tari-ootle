@@ -2,7 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use tari_ootle_transaction::args;
-use tari_template_lib_types::constants::TARI_TOKEN;
+use tari_template_lib_types::{Amount, NonFungibleAddress, ResourceAddress, constants::TARI_TOKEN};
 use tari_template_test_tooling::{TemplateTest, support::assert_error::assert_reject_reason};
 
 #[test]
@@ -91,9 +91,13 @@ fn the_withdraw_approved_event_names_the_spending_badge() {
 
     // The badge is the whole non-fungible address, matching what `approve` recorded. Its resource
     // address alone does not identify which badge spent the approval.
-    assert_eq!(event.get_payload("spender_badge").unwrap(), user1_proof.to_string());
-    assert_eq!(event.get_payload("resource").unwrap(), TARI_TOKEN.to_string());
-    assert_eq!(event.get_payload("amount").unwrap(), "1000");
+    let payload = event.payload();
+    assert_eq!(
+        payload.get_as::<NonFungibleAddress>("spender_badge").unwrap(),
+        Some(user1_proof)
+    );
+    assert_eq!(payload.get_as::<ResourceAddress>("resource").unwrap(), Some(TARI_TOKEN));
+    assert_eq!(payload.get_as::<Amount>("amount").unwrap(), Some(Amount::from(1000u64)));
 }
 
 #[test]

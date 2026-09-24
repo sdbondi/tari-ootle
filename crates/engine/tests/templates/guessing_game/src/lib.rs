@@ -75,7 +75,7 @@ mod template {
             // Mine the prize. Each NFT has immutable (cannot be changed) data and mutable (holder can change) data.
             // We pass in the round number as the immutable data to mint this round in NFT history
             // and empty (unit) for the mutable data.
-            let prize = manager.mint_non_fungible(prize, &metadata!["round" => self.round_number.to_string()], &());
+            let prize = manager.mint_non_fungible(prize, &metadata!["round" => self.round_number], &());
             self.prize_vault.deposit(prize);
         }
 
@@ -142,10 +142,10 @@ mod template {
                     // Events are a great way to provide information about what happened during a transaction execution.
                     // They can be indexed and queried by explorers and other tools.
                     emit_event("GameEnded", metadata![
-                        "winner" => player.to_string(),
-                        "winner_account" => guess.payout_to.component_address().to_string(),
-                        "number" => number.to_string(),
-                        "num_participants" => num_participants.to_string(),
+                        "winner" => player,
+                        "winner_account" => guess.payout_to.component_address(),
+                        "number" => number,
+                        "num_participants" => num_participants,
                     ]);
                     return;
                 }
@@ -154,7 +154,7 @@ mod template {
             // No winner, bye bye prize!
             emit_event(
                 "GameEnded",
-                metadata!["number" => number.to_string(), "num_participants"  => num_participants.to_string()],
+                metadata!["number" => number, "num_participants" => num_participants],
             );
             prize.burn();
         }

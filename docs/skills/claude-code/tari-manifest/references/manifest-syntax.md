@@ -149,12 +149,17 @@ false
 b"raw bytes"
 ```
 
+### Typed Values
+
+Typed values are written as macros. The delimiter is free: `amount!(1000)`, `amount![1000]` and
+`amount!{1000}` are the same. The `Amount(1000)` function-call form is not supported.
+
 ### Amount
 
-Wraps an integer as a `tari_template_lib::types::Amount`:
+Wraps an unsigned integer as a `tari_template_lib::types::Amount`:
 
 ```rust
-Amount(1000)
+amount!(1000)
 ```
 
 ### Address and SubstateId
@@ -163,12 +168,12 @@ Reference a substate by its address string. Both accept either a string literal 
 
 ```rust
 // String literal form
-Address("component_0123456789abcdef...")
-SubstateId("vault_0123456789abcdef...")
+address!("component_0123456789abcdef...")
+substate_id!("vault_0123456789abcdef...")
 
 // Variable form (from a prior let binding)
-Address(my_var)
-SubstateId(my_var)
+address!(my_var)
+substate_id!(my_var)
 ```
 
 Address prefixes: `component_`, `resource_`, `vault_`, `nft_`, `txreceipt_`, `template_`, `validatorfeeclaim_`, `utxo_`, `tombstone_`.
@@ -178,9 +183,9 @@ Address prefixes: `component_`, `resource_`, `vault_`, `nft_`, `txreceipt_`, `te
 Three forms:
 
 ```rust
-NonFungibleId("StringId")      // String-based NFT ID
-NonFungibleId(1u32)            // 32-bit integer ID
-NonFungibleId(42u64)           // 64-bit integer ID
+non_fungible_id!("StringId")      // String-based NFT ID
+non_fungible_id!(1u32)            // 32-bit integer ID
+non_fungible_id!(42u64)           // 64-bit integer ID
 // Also: byte string for 256-bit ID
 ```
 
@@ -188,34 +193,46 @@ A suffix is required for integer forms.
 
 ### Metadata
 
-Key-value metadata string:
+An object whose values may be any CBOR value, parsed as `tari_template_lib::types::Metadata`:
 
 ```rust
-Metadata("key=value")
+metadata!({
+    "name": "My NFT",
+    "index": -1,
+    "resource": address!("resource_0123456789abcdef..."),
+    "price": amount!(1000),
+})
 ```
 
-Parsed as `tari_template_lib::types::Metadata`.
+Typed values keep their type: the `resource` entry above is a 32-byte address, not a 64-character
+hex string. `metadata!{"name": "My NFT"}` (brace-delimited) is the same object without the inner
+braces. A single string, `metadata!("name=My NFT,symbol=NFT")`, is read as `key=value` pairs with
+text values, and `metadata!()` is empty.
 
 ### PublicKey and HexBytes
 
 Both parse a hex string into raw bytes:
 
 ```rust
-PublicKey("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
-HexBytes("deadbeef")
+public_key!("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+hex_bytes!("deadbeef")
 ```
 
 ### CBOR Values
 
-Two forms for embedding arbitrary CBOR-encoded data:
+Arbitrary CBOR, written as a JSON-shaped value directly in the manifest:
 
 ```rust
-// Function form: JSON string parsed to CBOR
-Cbor("{\"key\": \"value\"}")
-
-// Macro form: JSON literal parsed to CBOR
-cbor!({"key": {"nested": [1, 2, 3]}})
+cbor!({"key": {"nested": [1, -2, 3]}, "flag": true, "missing": null})
 ```
+
+- Object keys are string literals and must be unique; key order is kept as written.
+- Integers keep their full range (`i64::MIN` to `u64::MAX`); a suffix (`255u8`) is range-checked.
+- Byte strings (`b"raw"`) become CBOR byte strings.
+- Any typed-value macro (`address!`, `amount!`, `non_fungible_id!`, `public_key!`, ...) or `TARI`
+  may appear as a value and is encoded as its type.
+- Floats and workspace variables are rejected: a workspace variable's value is only known when the
+  transaction runs.
 
 ### TARI
 

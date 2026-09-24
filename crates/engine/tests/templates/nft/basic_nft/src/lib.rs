@@ -71,8 +71,8 @@ mod sparkle_nft_template {
             // These are characteristic of the NFT and are immutable
             let mut immutable_data = Metadata::new();
             immutable_data
-                .insert("name", format!("Sparkle{}", id))
-                .insert("image_url", format!("https://nft.storage/sparkle{}.png", id));
+                .insert("name", &format!("Sparkle{}", id))
+                .insert("image_url", &format!("https://nft.storage/sparkle{}.png", id));
 
             // Mint the NFT, this will fail if the token ID already exists
             self.manager

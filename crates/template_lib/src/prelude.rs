@@ -92,6 +92,7 @@ pub use tari_template_lib_types::{
         StealthTransferStatement,
         TemplateFunction,
     },
+    try_metadata,
 };
 #[cfg(all(feature = "macro", target_arch = "wasm32"))]
 pub use tari_template_macros::template;

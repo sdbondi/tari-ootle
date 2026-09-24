@@ -166,8 +166,8 @@ impl StealthResourceBuilder {
     }
 
     /// Adds a new metadata entry to the resource
-    pub fn add_metadata<K: Into<String>, V: Into<String>>(mut self, key: K, value: V) -> Self {
-        self.metadata.insert(key, value);
+    pub fn add_metadata<K: Into<String>, V: tari_bor::Encode<()>>(mut self, key: K, value: V) -> Self {
+        self.metadata.insert(key, &value);
         self
     }
 
@@ -189,7 +189,7 @@ impl StealthResourceBuilder {
     ///    .metadata("CharacterLvl", "99")
     /// .build();
     /// ```
-    pub fn metadata<K: Into<String>, V: Into<String>>(self, key: K, value: V) -> Self {
+    pub fn metadata<K: Into<String>, V: tari_bor::Encode<()>>(self, key: K, value: V) -> Self {
         self.add_metadata(key, value)
     }
 
@@ -310,7 +310,7 @@ impl StealthResourceBuilder {
 
     fn build_internal(mut self, mint_arg: Option<MintArg>) -> (ResourceAddress, Option<Bucket>) {
         if let Some(symbol) = self.token_symbol {
-            self.metadata.insert(TOKEN_SYMBOL, symbol);
+            self.metadata.insert(TOKEN_SYMBOL, &symbol);
         }
         ResourceManager::create(
             ResourceType::Stealth,

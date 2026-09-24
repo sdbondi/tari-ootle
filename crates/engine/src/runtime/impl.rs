@@ -138,7 +138,6 @@ use tari_template_lib::{
         constants::{TARI_TOKEN, TOKEN_SYMBOL},
         crypto::{PedersenCommitmentBytes, RistrettoPublicKeyBytes, UtxoTag},
         engine_args::IntrinsicId,
-        metadata,
         stealth::{
             AtomicCondition,
             BuiltinPredicate,
@@ -152,6 +151,7 @@ use tari_template_lib::{
             StealthTransferStatement,
             TemplateFunction,
         },
+        try_metadata,
     },
 };
 
@@ -395,10 +395,33 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         })
     }
 
-    fn check_token_symbol_length(metadata: &Metadata) -> Result<(), RuntimeError> {
-        if let Some(symbol) = metadata.get(TOKEN_SYMBOL) &&
-            symbol.len() > limits::MAX_TOKEN_SYMBOL_LEN
-        {
+    /// Metadata a template supplies is persisted and served as JSON by every node, wallet and indexer
+    /// that reads it. A value's JSON form is that of the [`tari_bor::Value`] it decodes to, so a value
+    /// that does not decode to one — a CBOR simple value, or nesting past
+    /// [`tari_bor::MAX_DECODE_DEPTH`] — would commit and then fail every reader.
+    fn check_metadata_values(argument: &'static str, metadata: &Metadata) -> Result<(), RuntimeError> {
+        for (key, value) in metadata {
+            if let Err(e) = tari_bor::check_value_form(value.as_bytes()) {
+                return Err(RuntimeError::InvalidArgument {
+                    argument,
+                    reason: format!("metadata value \"{key}\" is not a representable CBOR value: {e}"),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn check_token_symbol(metadata: &Metadata) -> Result<(), RuntimeError> {
+        if !metadata.contains_key(TOKEN_SYMBOL) {
+            return Ok(());
+        }
+        let Some(symbol) = metadata.get_str(TOKEN_SYMBOL) else {
+            return Err(RuntimeError::InvalidArgument {
+                argument: "metadata",
+                reason: "token symbol must be a text string".to_string(),
+            });
+        };
+        if symbol.len() > limits::MAX_TOKEN_SYMBOL_LEN {
             return Err(RuntimeError::InvalidArgument {
                 argument: "metadata",
                 reason: format!(
@@ -1141,6 +1164,7 @@ where
         if let Err(reason) = Event::validate_custom_topic(&topic) {
             return Err(RuntimeError::InvalidEventTopic { topic, reason });
         }
+        Self::check_metadata_values("payload", &payload)?;
 
         self.invoke_modules_on_runtime_call("emit_event")?;
 
@@ -1633,7 +1657,8 @@ where
                     });
                 }
 
-                Self::check_token_symbol_length(&arg.metadata)?;
+                Self::check_metadata_values("metadata", &arg.metadata)?;
+                Self::check_token_symbol(&arg.metadata)?;
                 reject_invalid_m_of_n("resource_access_rules", arg.access_rules.find_invalid_m_of_n())?;
                 reject_invalid_m_of_n("resource_owner_rule", owner_rule_m_of_n(&arg.owner_rule))?;
 
@@ -1799,7 +1824,7 @@ where
                     let resource = state_mut.mint_resource(&resource_lock, mint_arg)?;
                     let bucket_id = state_mut.id_provider()?.new_bucket_id()?;
 
-                    let payload = Metadata::from_iter([("amount", resource.unlocked_amount().to_string())]);
+                    let payload = try_metadata!("amount" => resource.unlocked_amount())?;
                     Self::emit_std_event("resource", "mint", resource_address, payload, state_mut)?;
 
                     state_mut.new_bucket(bucket_id, resource)?;
@@ -1857,10 +1882,10 @@ where
 
                     let resource = state_mut.recall_resource_from_vault(&vault_lock, &arg.resource)?;
 
-                    let payload = Metadata::from_iter([
-                        ("vault_id", arg.vault_id.to_string()),
-                        ("recall_desc", arg.resource.to_string()),
-                    ]);
+                    let payload = try_metadata!(
+                        "vault_id" => arg.vault_id,
+                        "recall_desc" => arg.resource,
+                    )?;
                     Self::emit_std_event("resource", "recall", resource_address, payload, state_mut)?;
 
                     let bucket_id = state_mut.id_provider()?.new_bucket_id()?;
@@ -2003,7 +2028,7 @@ where
                 self.tracker.write_with(|state_mut| {
                     let resource_mut = state_mut.get_resource_mut(&resource_lock)?;
                     resource_mut.update_access_rule(action, new_rule);
-                    let payload = Metadata::from_iter([("action", format!("{:?}", action))]);
+                    let payload = try_metadata!("action" => format!("{:?}", action))?;
                     Self::emit_std_event("resource", "update_access_rule", resource_address, payload, state_mut)?;
 
                     state_mut.unlock_substate(resource_lock)?;
@@ -2054,7 +2079,7 @@ where
                     // fetching the resource.
                     let mut payload = Metadata::new();
                     if let Some(hook) = auth_hook.as_ref() {
-                        payload.insert("auth_hook", hook.to_string());
+                        payload.try_insert("auth_hook", hook)?;
                     }
                     resource_mut.set_auth_hook(auth_hook);
                     Self::emit_std_event("resource", "update_auth_hook", resource_address, payload, state_mut)?;
@@ -2074,7 +2099,8 @@ where
                         })?;
                 let new_metadata: Metadata = args.assert_one_arg()?;
 
-                Self::check_token_symbol_length(&new_metadata)?;
+                Self::check_metadata_values("metadata", &new_metadata)?;
+                Self::check_token_symbol(&new_metadata)?;
 
                 let (maybe_auth_hook, auth_caller) = self.tracker.write_with(|state_mut| {
                     let resource_lock = state_mut.write_lock_substate(SubstateId::Resource(resource_address))?;
@@ -2089,7 +2115,7 @@ where
 
                     // The token symbol is immutable once set.
                     if let Some(existing_symbol) = resource.token_symbol() &&
-                        new_metadata.get(TOKEN_SYMBOL) != Some(existing_symbol)
+                        new_metadata.get_str(TOKEN_SYMBOL) != Some(existing_symbol)
                     {
                         return Err(RuntimeError::InvalidArgument {
                             argument: "metadata",
@@ -2179,8 +2205,7 @@ where
                     }
 
                     state_mut.set_vault_freeze(&vault_lock, arg.flags)?;
-                    let payload =
-                        Metadata::from_iter([("vault_id", arg.vault_id.to_string()), ("flags", arg.flags.to_string())]);
+                    let payload = try_metadata!("vault_id" => arg.vault_id, "flags" => arg.flags.to_string())?;
                     let action = if arg.flags.is_empty() { "unfreeze" } else { "freeze" };
                     Self::emit_std_event("resource", action, resource_address, payload, state_mut)?;
 
@@ -2561,7 +2586,7 @@ where
                     Self::check_bucket_is_unlocked("deposit", bucket_id, &bucket)?;
 
                     // Emit a builtin event for the deposit
-                    let payload = Metadata::from_iter([("amount", bucket.unlocked_amount().to_string())]);
+                    let payload = try_metadata!("amount" => bucket.unlocked_amount())?;
 
                     Self::emit_std_event("vault", "deposit", vault_id, payload, state_mut)?;
 
@@ -2675,7 +2700,7 @@ where
                     }
 
                     // Emit a builtin event for the withdraw
-                    let payload = Metadata::from_iter([("amount", public_amount.to_string())]);
+                    let payload = try_metadata!("amount" => public_amount)?;
 
                     Self::emit_std_event("vault", "withdraw", vault_id, payload, state)?;
 
@@ -2846,7 +2871,7 @@ where
                         "vault",
                         "pay_fee",
                         vault_id,
-                        Metadata::from_iter([("amount", container.unlocked_amount().to_string())]),
+                        try_metadata!("amount" => container.unlocked_amount())?,
                         state_mut,
                     )?;
 
@@ -3971,7 +3996,7 @@ where
                 new_template,
                 "component",
                 "template_update",
-                metadata!["prev_template" => prev_template.to_string()],
+                try_metadata!("prev_template" => prev_template)?,
             ))?;
             Ok(())
         })
@@ -4034,7 +4059,7 @@ where
             scope_mut.move_node_to_owned(&template_address.into())?;
             // Publish template event
             let mut metadata = Metadata::new();
-            metadata.insert("template_byte_size".to_string(), template_byte_size.to_string());
+            metadata.try_insert("template_byte_size", &template_byte_size)?;
             state_mut.push_event(Event::std(
                 Some(template_address.into()),
                 template_address.as_hash(),

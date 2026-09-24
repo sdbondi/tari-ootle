@@ -54,5 +54,12 @@ mod template {
         pub fn set_metadata(&self, metadata: Metadata) {
             ResourceManager::get(self.fungible.resource_address()).set_metadata(metadata);
         }
+
+        /// Sets metadata whose one value is `value`, taken as already-encoded CBOR.
+        pub fn set_raw_metadata_value(&self, value: Bytes) {
+            let mut metadata = Metadata::new();
+            metadata.insert_raw("value", tari_bor::decode_exact(&value).unwrap());
+            ResourceManager::get(self.fungible.resource_address()).set_metadata(metadata);
+        }
     }
 }

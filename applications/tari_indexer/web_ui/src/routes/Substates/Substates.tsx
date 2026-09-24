@@ -209,7 +209,7 @@ function ResourceView({ data }: { data: any }) {
         { label: "Total Supply", value: data.total_supply !== null ? String(data.total_supply) : "Tracking disabled" },
         { label: "Owner Rule", value: <CodeBlock>{renderJson(data.owner_rule)}</CodeBlock> },
         { label: "Access Rules", value: <CodeBlock>{renderJson(data.access_rules)}</CodeBlock> },
-        { label: "Metadata", value: <CodeBlock>{renderJson(data.metadata)}</CodeBlock> },
+        { label: "Metadata", value: <CodeBlock>{renderJson(convertCborValue(data.metadata))}</CodeBlock> },
         ...(data.view_key ? [{ label: "View Key", value: String(data.view_key) }] : []),
         ...(data.auth_hook ? [{ label: "Auth Hook", value: <CodeBlock>{renderJson(data.auth_hook)}</CodeBlock> }] : []),
       ]}

@@ -53,6 +53,23 @@ impl ManifestValue {
     }
 }
 
+/// The CBOR value `address!` writes for `id`: the typed address it holds, which is what a template
+/// parameter of that address type decodes.
+pub(crate) fn address_value(id: &SubstateId) -> Result<tari_bor::Value, BorError> {
+    match id {
+        SubstateId::Component(addr) => tari_bor::to_value(addr),
+        SubstateId::Resource(addr) => tari_bor::to_value(addr),
+        SubstateId::TransactionReceipt(addr) => tari_bor::to_value(addr),
+        SubstateId::Vault(addr) => tari_bor::to_value(addr),
+        SubstateId::NonFungible(addr) => tari_bor::to_value(addr),
+        SubstateId::ClaimedOutputTombstone(addr) => tari_bor::to_value(addr),
+        SubstateId::Template(addr) => tari_bor::to_value(addr),
+        SubstateId::ValidatorFeePool(addr) => tari_bor::to_value(addr),
+        SubstateId::Utxo(addr) => tari_bor::to_value(addr),
+        SubstateId::ConfidentialOutput(addr) => tari_bor::to_value(addr),
+    }
+}
+
 impl<T: Into<SubstateId>> From<T> for ManifestValue {
     fn from(addr: T) -> Self {
         ManifestValue::SubstateId(addr.into())

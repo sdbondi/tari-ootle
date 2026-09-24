@@ -91,7 +91,7 @@ fn max_random_bytes_len_limit() {
 /// topic with the module name and attaches no substate id, the call being a function rather than a method.
 fn event_of_size(template: TemplateAddress, len: usize) -> Event {
     let mut payload = Metadata::new();
-    payload.insert("data", "a".repeat(len));
+    payload.insert("data", &"a".repeat(len));
     Event::custom(None, template, format!("{TEMPLATE_NAME}.big"), payload)
 }
 

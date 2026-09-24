@@ -18,6 +18,7 @@ mod raw;
 pub mod serde_codec;
 mod tag;
 mod value;
+mod value_form;
 #[cfg(feature = "serde")]
 mod value_serde;
 mod walker;
@@ -34,6 +35,7 @@ pub use raw::RawCbor;
 pub use serde::{self, Deserialize, Serialize, de::DeserializeOwned};
 pub use tag::*;
 pub use value::{INTEGER_RANGE, MAX_DECODE_DEPTH, Value};
+pub use value_form::check_value_form;
 pub use walker::*;
 
 /// Encode a value into a freshly allocated `Vec<u8>` using the unit context.

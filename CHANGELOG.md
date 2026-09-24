@@ -3,6 +3,33 @@
 All notable changes to this project will be documented in this file.
 See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [Unreleased]
+
+### ⚠️ Upgrade notes
+
+- **Metadata values are CBOR, not strings.** `Metadata::get` returns the raw encoding: read a value
+  with `get_as::<T>()` or `get_str()`, and pass `insert` any encodable value by reference. The
+  engine's `std.*` event payloads carry typed amounts and addresses. (#2679)
+- **Manifests write typed values as macros only.** `Amount(..)`, `Address(..)`, `SubstateId(..)`,
+  `NonFungibleId(..)`, `Metadata(..)`, `PublicKey(..)`, `HexBytes(..)` and `Cbor(..)` are gone; use
+  `amount!(..)`, `address!(..)` and the rest. (#2679)
+- **SDK `ArgValue::Metadata` maps to `ArgValue`s, and event payload values are JSON.** A text value
+  is written `{"String": ".."}`; `EventSummary::payload` and the indexer's GraphQL event `payload`
+  carry each value's JSON form. (#2679)
+
+### Engine
+
+- `feat!` — **Metadata values are arbitrary CBOR**, so an address in metadata costs 32 bytes rather
+  than 64 hex characters. Substate hashes change; this ships with the testnet reset. (#2679)
+- `feat!` — **Metadata is indexed like the rest of a substate**: an address in it counts as a
+  reference, and a bucket or proof in it is rejected as transient. (#2679)
+
+### Transaction manifest
+
+- `feat!` — **`metadata!` and `cbor!` take a JSON-shaped value with typed values nested in it**, e.g.
+  `metadata!({"resource": address!("resource_..")})`. Negative numbers and the full `u64` range now
+  parse, where the old `cbor!` rejected the first and turned the second into a float. (#2679)
+
 ## [0.41.2](https://github.com/tari-project/tari-ootle/compare/v0.41.1...v0.41.2) (2026-09-23)
 
 The engine and wallet security review release. It closes the ways a crafted template or payload

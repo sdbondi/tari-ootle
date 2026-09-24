@@ -374,7 +374,7 @@ mod tests {
     fn version_0_resource_hash_is_pinned() {
         assert_eq!(
             hex(hash_at(ProtocolVersion::V0, &resource(UpdateRule::Locked))),
-            "65ec63aee1f754f04615e86aa4147632a08abdb8e85055fec8cbbf14dd7a46be"
+            "e34f9346d46318fe8e5e1430009a020371feb9de197ff85e52db8723d832a340"
         );
     }
 

@@ -23,7 +23,13 @@
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import KeyboardArrowUpIcon from "@mui/icons-material/KeyboardArrowUp";
 import { Collapse, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from "@mui/material";
-import { Event, shortenString, shortenSubstateId, substateIdToString } from "@tari-project/ootle-ts-bindings";
+import {
+  convertCborValue,
+  Event,
+  shortenString,
+  shortenSubstateId,
+  substateIdToString,
+} from "@tari-project/ootle-ts-bindings";
 import { useState } from "react";
 import CodeBlockDialog from "../../Components/CodeBlock";
 import CopyToClipboard from "../../Components/CopyToClipboard";
@@ -62,7 +68,7 @@ function RowData({ substate_id, template_address, topic, payload }: Event) {
       <TableRow>
         <DataTableCell style={{ paddingBottom: 0, paddingTop: 0 }} colSpan={5}>
           <Collapse in={open} timeout="auto" unmountOnExit>
-            <CodeBlockDialog title="Payload">{renderJson(payload)}</CodeBlockDialog>
+            <CodeBlockDialog title="Payload">{renderJson(convertCborValue(payload))}</CodeBlockDialog>
           </Collapse>
         </DataTableCell>
       </TableRow>

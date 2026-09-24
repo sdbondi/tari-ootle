@@ -230,8 +230,10 @@ pub struct EventSummary {
     pub template_address: String,
     /// The event topic.
     pub topic: String,
-    /// The event payload as `(key, value)` string pairs (engine `Metadata` is `String -> String`).
-    pub payload: Vec<(String, String)>,
+    /// The event payload as `(key, value)` pairs. Each value is the JSON form of its CBOR: plain JSON
+    /// where the item maps onto it, `{"@cbor": ...}` sentinels for byte strings, tagged values (typed
+    /// addresses) and the like. An item with no JSON form comes back as `{"@cbor": "raw", "hex": ...}`.
+    pub payload: Vec<(String, serde_json::Value)>,
 }
 
 /// A boundary log summary — the engine [`tari_engine_types::logs::LogEntry`] flattened to strings.
@@ -545,7 +547,7 @@ mod tests {
                 substate_id: Some("component_aa".into()),
                 template_address: "tmpl".into(),
                 topic: "std.deposit".into(),
-                payload: vec![("amount".into(), "100".into())],
+                payload: vec![("amount".into(), serde_json::json!(100))],
             }],
             logs: vec![LogSummary {
                 message: "hi".into(),

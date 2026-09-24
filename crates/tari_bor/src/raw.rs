@@ -109,6 +109,15 @@ impl<'de> serde::Deserialize<'de> for RawCbor {
     }
 }
 
+/// Borsh sees the encoding, not the item: the CBOR bytes go out verbatim, so a hash preimage
+/// containing a `RawCbor` commits to exactly what the encoder wrote.
+#[cfg(feature = "borsh")]
+impl borsh::BorshSerialize for RawCbor {
+    fn serialize<W: borsh::io::Write>(&self, writer: &mut W) -> borsh::io::Result<()> {
+        borsh::io::Write::write_all(writer, &self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(not(feature = "std"))]

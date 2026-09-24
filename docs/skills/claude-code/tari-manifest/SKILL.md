@@ -95,14 +95,14 @@ account.deposit(item);
 | String | `"value"` | `"hello"` |
 | Integer | `123u64`, `42i32` | `1_000u64` (unsuffixed defaults to i128) |
 | Boolean | `true` / `false` | `true` |
-| Amount | `Amount(value)` | `Amount(1000)` |
-| Address | `Address("prefix_hex...")` or `Address(var)` | `Address("component_ab12...")` |
-| SubstateId | `SubstateId("prefix_hex...")` | `SubstateId("vault_ab12...")` |
-| NonFungibleId | `NonFungibleId("str")`, `NonFungibleId(1u32)`, `NonFungibleId(1u64)` | `NonFungibleId("MyNFT")` |
-| Metadata | `Metadata("key=value")` | `Metadata("name=Token")` |
-| PublicKey | `PublicKey("hex")` | `PublicKey("ab12...cd34")` |
-| HexBytes | `HexBytes("hex")` | `HexBytes("deadbeef")` |
-| CBOR | `Cbor("{json}")` or `cbor!({json})` | `cbor!({"key": [1, 2]})` |
+| Amount | `amount!(value)` | `amount!(1000)` |
+| Address | `address!("prefix_hex...")` or `address!(var)` | `address!("component_ab12...")` |
+| SubstateId | `substate_id!("prefix_hex...")` | `substate_id!("vault_ab12...")` |
+| NonFungibleId | `non_fungible_id!("str")`, `non_fungible_id!(1u32)`, `non_fungible_id!(1u64)` | `non_fungible_id!("MyNFT")` |
+| Metadata | `metadata!({"key": value, ...})` | `metadata!({"name": "Token", "resource": address!("resource_ab12...")})` |
+| PublicKey | `public_key!("hex")` | `public_key!("ab12...cd34")` |
+| HexBytes | `hex_bytes!("hex")` | `hex_bytes!("deadbeef")` |
+| CBOR | `cbor!(value)` | `cbor!({"key": [1, -2], "owner": address!("component_ab12...")})` |
 | Tari token | `TARI` | `account.withdraw(TARI, 100)` (`XTR` is a deprecated alias that still works but should not be used in new manifests; when describing transactions to users, call the token **tTARI** on testnet or **$TARI** on mainnet) |
 | Workspace var | bare identifier | `bucket` (from prior `let bucket = ...`) |
 

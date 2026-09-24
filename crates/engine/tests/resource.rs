@@ -2,7 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use tari_ootle_transaction::args;
-use tari_template_lib::types::{ComponentAddress, Metadata, ResourceAddress};
+use tari_template_lib::types::{ComponentAddress, Metadata, ResourceAddress, bytes::Bytes};
 use tari_template_test_tooling::{
     TemplateTest,
     support::{confidential::generate_confidential_output_statement, value_proof::value_proofs_for_commitment},
@@ -45,8 +45,8 @@ fn update_metadata_succeeds() {
     test.call_method::<()>(component, "set_metadata", args![new_metadata], vec![]);
 
     let resource = test.read_only_state_store().get_resource(&resource_address).unwrap();
-    assert_eq!(resource.metadata().get("description"), Some("A fine token"));
-    assert_eq!(resource.metadata().get("SYMBOL"), Some("FOO"));
+    assert_eq!(resource.metadata().get_str("description"), Some("A fine token"));
+    assert_eq!(resource.metadata().get_str("SYMBOL"), Some("FOO"));
 }
 
 #[test]
@@ -112,6 +112,28 @@ fn create_rejects_oversized_token_symbol() {
 }
 
 #[test]
+fn update_metadata_rejects_unrepresentable_values() {
+    let mut test = TemplateTest::new(CRATE_PATH, vec!["tests/templates/resource", "tests/templates/metadata"]);
+    let component: ComponentAddress = test.call_function("MetadataTest", "new_without_symbol", args![], vec![]);
+    let key = test.secret_key().clone();
+
+    let mut deep = vec![0x81; tari_bor::MAX_DECODE_DEPTH + 6];
+    deep.push(0x00);
+    for (name, bytes) in [("simple", vec![0xe0]), ("deep", deep)] {
+        let reason = test.execute_expect_failure(
+            test.transaction()
+                .call_method(component, "set_raw_metadata_value", args![Bytes::from(bytes)])
+                .build_and_seal(&key),
+            vec![],
+        );
+        assert!(
+            reason.to_string().contains("not a representable CBOR value"),
+            "{name}: {reason}"
+        );
+    }
+}
+
+#[test]
 fn update_metadata_rejects_oversized_token_symbol() {
     let mut test = TemplateTest::new(CRATE_PATH, vec!["tests/templates/resource", "tests/templates/metadata"]);
     let component: ComponentAddress = test.call_function("MetadataTest", "new_without_symbol", args![], vec![]);
@@ -143,7 +165,7 @@ fn update_metadata_can_set_symbol_when_not_previously_set() {
     test.call_method::<()>(component, "set_metadata", args![first], vec![]);
 
     let resource = test.read_only_state_store().get_resource(&resource_address).unwrap();
-    assert_eq!(resource.metadata().get("SYMBOL"), Some("NEW"));
+    assert_eq!(resource.metadata().get_str("SYMBOL"), Some("NEW"));
 
     // Now it's set, further changes must be rejected.
     let mut second = Metadata::new();

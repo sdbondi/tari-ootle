@@ -383,9 +383,7 @@ impl TrafficSim {
 
         let (admin_badge, _) = finalize
             .created_resources()
-            .find(|(_, res)| {
-                res.resource_type().is_non_fungible() && res.metadata().get("name").is_some_and(|n| n == "Admin")
-            })
+            .find(|(_, res)| res.resource_type().is_non_fungible() && res.metadata().get_str("name") == Some("Admin"))
             .ok_or_else(|| {
                 anyhow::anyhow!("Failed to find stablecoin admin resource in transaction finalize output")
             })?;

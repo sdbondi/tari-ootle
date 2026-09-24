@@ -35,5 +35,12 @@ mod event {
             println!("Emitting a new event");
             emit_event(topic, metadata!("my" => "event"));
         }
+
+        /// Emits a payload whose one value is `value`, taken as already-encoded CBOR.
+        pub fn emit_raw_payload_value(value: Bytes) {
+            let mut payload = Metadata::new();
+            payload.insert_raw("value", tari_bor::decode_exact(&value).unwrap());
+            emit_event("payload", payload);
+        }
     }
 }

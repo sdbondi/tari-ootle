@@ -205,9 +205,11 @@ pub enum ArgValue {
     I64(i64),
     /// Raw bytes literal (lowercase hex in JSON).
     Bytes(#[serde(serialize_with = "blob_hex::serialize", deserialize_with = "blob_hex::deserialize")] Vec<u8>),
-    /// A string→string metadata map, encoded as the engine [`Metadata`] (`BorTag<_, 129>`). Templates
-    /// taking a `Metadata` parameter (resource builders, `stable_coin::instantiate`) expect this.
-    Metadata(BTreeMap<String, String>),
+    /// A metadata map, encoded as the engine [`Metadata`] (`BorTag<_, 129>`) with each value lowered as
+    /// a list element would be. Templates taking a `Metadata` parameter (resource builders,
+    /// `stable_coin::instantiate`) expect this. A nested [`Workspace`](ArgValue::Workspace) ⇒
+    /// `"VALIDATION"`.
+    Metadata(BTreeMap<String, ArgValue>),
     /// A non-fungible id in canonical string form (`uuid_<hex>` | `str_<text>` | `u32_<n>` | `u64_<n>`),
     /// for template parameters taking the id value itself (distinct from an NFT address). Malformed ⇒
     /// `"PARSE"`.
@@ -253,7 +255,7 @@ pub fn encode_arg(arg: &ArgValue) -> Result<InstructionArg, OotleSdkError> {
         // decode from a definite-length byte string. `from_type(&Vec<u8>)` would emit an array.
         ArgValue::Bytes(bytes) => InstructionArg::literal(tari_bor::Value::Bytes(bytes.clone()))
             .map_err(|e| OotleSdkError::Encoding(format!("arg encode failed: {e}"))),
-        ArgValue::Metadata(map) => from_type(&Metadata::from(map.clone())),
+        ArgValue::Metadata(map) => from_type(&metadata_from_args(map, 0)?),
         ArgValue::NonFungibleId(s) => encode_non_fungible_id(s),
         // Containers lower each element to a `tari_bor::Value`, assemble the CBOR array / value-or-null,
         // then encode the assembled value — byte-identical to a native `Vec<T>` / `Option<T>`.
@@ -294,7 +296,7 @@ fn arg_to_value(arg: &ArgValue, depth: usize) -> Result<tari_bor::Value, OotleSd
         ArgValue::U64(n) => to_value(n),
         ArgValue::I64(n) => to_value(n),
         ArgValue::Bytes(bytes) => Ok(tari_bor::Value::Bytes(bytes.clone())),
-        ArgValue::Metadata(map) => to_value(&Metadata::from(map.clone())),
+        ArgValue::Metadata(map) => to_value(&metadata_from_args(map, depth)?),
         ArgValue::NonFungibleId(s) => non_fungible_id_to_value(s),
         ArgValue::List(items) => {
             let values = items
@@ -310,6 +312,19 @@ fn arg_to_value(arg: &ArgValue, depth: usize) -> Result<tari_bor::Value, OotleSd
              builder composition and only resolvable for a top-level arg"
         ))),
     }
+}
+
+/// Builds the engine [`Metadata`] for an [`ArgValue::Metadata`] map at `depth`, each value lowered by
+/// [`arg_to_value`] one level down.
+fn metadata_from_args(map: &BTreeMap<String, ArgValue>, depth: usize) -> Result<Metadata, OotleSdkError> {
+    let mut metadata = Metadata::new();
+    for (key, arg) in map {
+        let value = arg_to_value(arg, depth + 1)?;
+        let raw = tari_bor::RawCbor::from_value(&value)
+            .map_err(|e| OotleSdkError::Encoding(format!("arg encode failed: {e}")))?;
+        metadata.insert_raw(key.clone(), raw);
+    }
+    Ok(metadata)
 }
 
 /// Builds the workspace-reference carrier for a resolved numeric id.

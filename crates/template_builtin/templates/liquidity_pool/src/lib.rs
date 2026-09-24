@@ -65,7 +65,9 @@ mod template {
             Self::check_resource_is_fungible(b_addr);
 
             // Set token symbol to "LP" if not provided
-            metadata.get_or_insert(TOKEN_SYMBOL, "LP");
+            if !metadata.contains_key(TOKEN_SYMBOL) {
+                metadata.insert(TOKEN_SYMBOL, "LP");
+            }
             // create the lp resource
             let lp_resource = ResourceBuilder::public_fungible()
                 .with_divisibility(0)
@@ -219,11 +221,11 @@ mod template {
             self.vault_b.deposit(contributed_b);
 
             emit_event("contribute", metadata![
-                "resource_a" => resource_a.to_string(),
-                "resource_b" => resource_b.to_string(),
-                "minted_lp_tokens" => lp_mint_amount.to_string(),
-                "contributed_a" => a_contribution.to_string(),
-                "contributed_b" => b_contribution.to_string(),
+                "resource_a" => resource_a,
+                "resource_b" => resource_b,
+                "minted_lp_tokens" => lp_mint_amount,
+                "contributed_a" => a_contribution,
+                "contributed_b" => b_contribution,
             ]);
 
             // Return the LP tokens plus the unused remainder of each input bucket as change. `bucket_a`/`bucket_b`
@@ -261,12 +263,12 @@ mod template {
             // burn the redeemed lp tokens
             lp_bucket.burn();
 
-            emit_event("redeem", [
-                ("lp_redeemed", redeem_amount.to_string()),
-                ("resource_a", a_bucket.resource_address().to_string()),
-                ("amount_a", a_amount.to_string()),
-                ("resource_b", b_bucket.resource_address().to_string()),
-                ("amount_b", b_amount.to_string()),
+            emit_event("redeem", metadata![
+                "lp_redeemed" => redeem_amount,
+                "resource_a" => a_bucket.resource_address(),
+                "amount_a" => a_amount,
+                "resource_b" => b_bucket.resource_address(),
+                "amount_b" => b_amount,
             ]);
 
             (a_bucket, b_bucket)
@@ -275,9 +277,9 @@ mod template {
         pub fn protected_add_liquidity(&mut self, bucket: Bucket) {
             // check that the buckets are correct
             let resource = bucket.resource_address();
-            emit_event("add_liquidity", [
-                ("resource_address", resource.to_string()),
-                ("amount", bucket.amount().to_string()),
+            emit_event("add_liquidity", metadata![
+                "resource_address" => resource,
+                "amount" => bucket.amount(),
             ]);
 
             // add the liquidity to the pool
@@ -287,9 +289,9 @@ mod template {
 
         pub fn protected_remove_liquidity(&mut self, resource_address: ResourceAddress, amount: Amount) -> Bucket {
             let pool = self.get_pool_from_resource(resource_address);
-            emit_event("remove_liquidity", [
-                ("resource_address", resource_address.to_string()),
-                ("amount", amount.to_string()),
+            emit_event("remove_liquidity", metadata![
+                "resource_address" => resource_address,
+                "amount" => amount,
             ]);
 
             self.get_pool_vault(pool).withdraw(amount)
@@ -342,11 +344,11 @@ mod template {
             self.get_pool_vault(input_pool).deposit(input_bucket);
             let output_bucket = self.get_pool_vault(output_pool).withdraw(output_amount);
 
-            emit_event("swap", [
-                ("input_resource", input_resource.to_string()),
-                ("input_amount", input_amount.to_string()),
-                ("output_resource", output_bucket.resource_address().to_string()),
-                ("output_amount", output_amount.to_string()),
+            emit_event("swap", metadata![
+                "input_resource" => input_resource,
+                "input_amount" => input_amount,
+                "output_resource" => output_bucket.resource_address(),
+                "output_amount" => output_amount,
             ]);
 
             output_bucket

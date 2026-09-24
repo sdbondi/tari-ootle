@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 
 use proc_macro2::Ident;
-use tari_engine_types::substate::SubstateId;
 use tari_ootle_transaction::{
     Blob,
     BlobIndex,
@@ -22,7 +21,7 @@ use crate::{
     ast::ManifestAst,
     error::ManifestError,
     parser::{InvokeIntent, ManifestIntent, ManifestLiteral, OrVar, OutputBinding, SpecialLiteral},
-    value::lit_to_arg,
+    value::{address_value, lit_to_arg},
 };
 
 const MAX_CALL_DEPTH: usize = 16;
@@ -352,18 +351,7 @@ impl ManifestInstructionGenerator {
                 },
                 ManifestLiteral::Special(SpecialLiteral::Address(var_or_id)) => match var_or_id {
                     OrVar::Var(ident) => self.get_ident(&ident.to_string()),
-                    OrVar::Value(id) => match id {
-                        SubstateId::Component(addr) => Ok(call_arg!(addr)),
-                        SubstateId::Resource(addr) => Ok(call_arg!(addr)),
-                        SubstateId::Vault(addr) => Ok(call_arg!(addr)),
-                        SubstateId::ClaimedOutputTombstone(addr) => Ok(call_arg!(addr)),
-                        SubstateId::NonFungible(addr) => Ok(call_arg!(addr)),
-                        SubstateId::TransactionReceipt(addr) => Ok(call_arg!(addr)),
-                        SubstateId::Template(addr) => Ok(call_arg!(addr)),
-                        SubstateId::ValidatorFeePool(addr) => Ok(call_arg!(addr)),
-                        SubstateId::Utxo(addr) => Ok(call_arg!(addr)),
-                        SubstateId::ConfidentialOutput(addr) => Ok(call_arg!(addr)),
-                    },
+                    OrVar::Value(id) => Ok(InstructionArg::literal(address_value(&id)?)?),
                 },
             })
             .collect()
