@@ -22,7 +22,7 @@ pub struct ValidatorCommitteeRpcPool {
     shard_group: ShardGroup,
     pool: RpcMultiPool<TariMessagingSpec>,
     epoch_manager: EpochManagerHandle<PeerAddress>,
-    past_failed_nodes: FailedPeers,
+    failed_peers: FailedPeers,
 }
 
 impl ValidatorCommitteeRpcPool {
@@ -35,7 +35,7 @@ impl ValidatorCommitteeRpcPool {
             shard_group,
             pool: RpcMultiPool::new(networking),
             epoch_manager,
-            past_failed_nodes: FailedPeers::default(),
+            failed_peers: FailedPeers::default(),
         }
     }
 
@@ -45,15 +45,15 @@ impl ValidatorCommitteeRpcPool {
         loop {
             let member = self
                 .epoch_manager
-                .get_random_committee_member(epoch, Some(self.shard_group), self.past_failed_nodes.at(epoch).clone())
+                .get_random_committee_member(epoch, Some(self.shard_group), self.failed_peers.at(epoch).clone())
                 .await
                 .optional()?;
 
             let Some(member) = member else {
                 // All validators have been attempted and failed - no real choice but to clear the past failed nodes and
                 // try again if this is called again
-                let committee_size = self.past_failed_nodes.at(epoch).len();
-                self.past_failed_nodes.clear();
+                let committee_size = self.failed_peers.at(epoch).len();
+                self.failed_peers.clear();
                 return Err(ValidatorCommitteeClientError::AllValidatorsFailed {
                     committee_size,
                     last_error: last_error.as_ref().map(|e| e.to_string()),
@@ -68,7 +68,7 @@ impl ValidatorCommitteeRpcPool {
                         "Failed to create new session for validator '{}': {}", member, err
                     );
                     last_error = Some(err);
-                    self.past_failed_nodes.at(epoch).insert(member.address);
+                    self.failed_peers.at(epoch).insert(member.address);
                 },
             }
         }
@@ -126,7 +126,7 @@ impl ValidatorCommitteeRpcPool {
                     );
                     last_error = Some(err.to_string());
                     attempted.insert(vn.address);
-                    self.past_failed_nodes.at(epoch).insert(vn.address);
+                    self.failed_peers.at(epoch).insert(vn.address);
                     continue; // Skip this member and try the next one
                 },
             };
