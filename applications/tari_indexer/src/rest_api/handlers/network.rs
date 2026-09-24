@@ -19,6 +19,8 @@ use tari_indexer_client::{
         NetworkDescription,
         SyncProgress,
         ValidatorConsensusState,
+        ValidatorProbeError,
+        ValidatorProbeErrorKind,
         ValidatorStatus,
         ValidatorStatusSnapshot,
     },
@@ -26,7 +28,10 @@ use tari_indexer_client::{
 use tari_ootle_common_types::optional::Optional;
 use tari_template_lib_types::Amount;
 
-use crate::rest_api::{context::HandlerContext, error::ErrorResponse, handlers::HandlerResult};
+use crate::{
+    network_state_sync::ProbeFailure,
+    rest_api::{context::HandlerContext, error::ErrorResponse, handlers::HandlerResult},
+};
 
 #[utoipa::path(get, path = "/network", description = "Get network info")]
 pub async fn get(Extension(context): Extension<HandlerContext>) -> HandlerResult<Json<GetNetworkInfoResponse>> {
@@ -111,7 +116,7 @@ pub async fn get_network_sync_stats(
             peer_id: peer.to_string(),
             shard_group: record.shard_group,
             probed_at_unix_s: to_unix_secs(record.probed_at),
-            probe_error: record.error,
+            probe_error: record.error.map(to_client_probe_error),
             snapshot: record.snapshot.map(|snapshot| ValidatorStatusSnapshot {
                 epoch: snapshot.epoch,
                 height: snapshot.height.as_u64(),
@@ -139,6 +144,19 @@ pub async fn get_network_sync_stats(
         validators,
     };
     Ok(Json(response))
+}
+
+fn to_client_probe_error(failure: ProbeFailure) -> ValidatorProbeError {
+    match failure {
+        ProbeFailure::StatusUnavailable(message) => ValidatorProbeError {
+            kind: ValidatorProbeErrorKind::StatusUnavailable,
+            message,
+        },
+        ProbeFailure::InvalidProof(message) => ValidatorProbeError {
+            kind: ValidatorProbeErrorKind::InvalidProof,
+            message,
+        },
+    }
 }
 
 fn to_unix_secs(time: SystemTime) -> u64 {

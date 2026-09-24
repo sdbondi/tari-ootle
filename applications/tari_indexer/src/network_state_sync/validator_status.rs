@@ -1,7 +1,11 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::{collections::HashMap, sync::Arc, time::SystemTime};
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    sync::Arc,
+    time::SystemTime,
+};
 
 use log::*;
 use tari_consensus::hotstuff::ConsensusCurrentState;
@@ -36,18 +40,26 @@ pub struct ValidatorProbeRecord {
     pub shard_group: ShardGroup,
     pub probed_at: SystemTime,
     /// Why the most recent probe produced no snapshot, or `None` when it produced `snapshot`.
-    pub error: Option<String>,
+    pub error: Option<ProbeFailure>,
     /// The last snapshot a probe produced. It predates `probed_at` whenever `error` is set.
     pub snapshot: Option<ValidatorStatusSnapshot>,
 }
 
 impl ValidatorProbeRecord {
-    fn new(shard_group: ShardGroup, probed_at: SystemTime) -> Self {
+    fn from_outcome(
+        shard_group: ShardGroup,
+        probed_at: SystemTime,
+        outcome: Result<ValidatorStatusSnapshot, ProbeFailure>,
+    ) -> Self {
+        let (snapshot, error) = match outcome {
+            Ok(snapshot) => (Some(snapshot), None),
+            Err(e) => (None, Some(e)),
+        };
         Self {
             shard_group,
             probed_at,
-            error: None,
-            snapshot: None,
+            error,
+            snapshot,
         }
     }
 
@@ -56,7 +68,7 @@ impl ValidatorProbeRecord {
         &mut self,
         shard_group: ShardGroup,
         probed_at: SystemTime,
-        outcome: Result<ValidatorStatusSnapshot, String>,
+        outcome: Result<ValidatorStatusSnapshot, ProbeFailure>,
     ) {
         self.shard_group = shard_group;
         self.probed_at = probed_at;
@@ -68,6 +80,16 @@ impl ValidatorProbeRecord {
             Err(e) => self.error = Some(e),
         }
     }
+}
+
+/// Why a probe of a validator produced no snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeFailure {
+    /// The validator did not return a usable consensus state.
+    StatusUnavailable(String),
+    /// The validator served a committed block proof that failed verification, so it is not
+    /// trusted as a sync source.
+    InvalidProof(String),
 }
 
 /// In-memory, lazily-populated map of the latest probe of each validator the indexer has contacted.
@@ -113,7 +135,8 @@ impl ValidatorStatusMonitor {
             Ok(tip) => Some(tip),
             Err(e) => {
                 if e.is_invalid_proof() {
-                    self.record(peer, shard_group, Err(e.to_string())).await;
+                    self.record(peer, shard_group, Err(ProbeFailure::InvalidProof(e.to_string())))
+                        .await;
                     return Err(e);
                 }
                 debug!(target: LOG_TARGET, "Could not verify committed tip for validator {peer}: {e}");
@@ -132,7 +155,8 @@ impl ValidatorStatusMonitor {
             ),
             Err(e) => warn!(target: LOG_TARGET, "Consensus state probe failed for validator {peer}: {e}"),
         }
-        self.record(peer, shard_group, snapshot).await;
+        self.record(peer, shard_group, snapshot.map_err(ProbeFailure::StatusUnavailable))
+            .await;
         Ok(verified_tip)
     }
 
@@ -163,14 +187,15 @@ impl ValidatorStatusMonitor {
         &self,
         peer: PeerAddress,
         shard_group: ShardGroup,
-        outcome: Result<ValidatorStatusSnapshot, String>,
+        outcome: Result<ValidatorStatusSnapshot, ProbeFailure>,
     ) {
-        let mut guard = self.inner.write().await;
         let now = SystemTime::now();
-        let record = guard
-            .entry(peer)
-            .or_insert_with(|| ValidatorProbeRecord::new(shard_group, now));
-        record.apply(shard_group, now, outcome);
+        match self.inner.write().await.entry(peer) {
+            Entry::Occupied(entry) => entry.into_mut().apply(shard_group, now, outcome),
+            Entry::Vacant(entry) => {
+                entry.insert(ValidatorProbeRecord::from_outcome(shard_group, now, outcome));
+            },
+        }
     }
 
     /// Fetch and verify the validator's latest committed block proof against its shard group
@@ -233,6 +258,10 @@ mod tests {
         ShardGroup::new(1u32, 256u32)
     }
 
+    fn unavailable() -> ProbeFailure {
+        ProbeFailure::StatusUnavailable("consensus state request failed".to_string())
+    }
+
     fn snapshot(height: u64, observed_at: SystemTime) -> ValidatorStatusSnapshot {
         ValidatorStatusSnapshot {
             epoch: Epoch(7),
@@ -246,13 +275,12 @@ mod tests {
     fn a_failed_probe_keeps_the_last_snapshot_and_records_the_error() {
         let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
         let t1 = t0 + Duration::from_secs(60);
-        let mut record = ValidatorProbeRecord::new(shard_group(), t0);
-        record.apply(shard_group(), t0, Ok(snapshot(10, t0)));
+        let mut record = ValidatorProbeRecord::from_outcome(shard_group(), t0, Ok(snapshot(10, t0)));
 
-        record.apply(shard_group(), t1, Err("consensus state request failed".to_string()));
+        record.apply(shard_group(), t1, Err(unavailable()));
 
         assert_eq!(record.probed_at, t1);
-        assert_eq!(record.error.as_deref(), Some("consensus state request failed"));
+        assert_eq!(record.error, Some(unavailable()));
         let snapshot = record.snapshot.as_ref().unwrap();
         assert_eq!(snapshot.height, NodeHeight::from(10));
         assert_eq!(snapshot.observed_at, t0);
@@ -262,8 +290,7 @@ mod tests {
     fn a_successful_probe_clears_the_error() {
         let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
         let t1 = t0 + Duration::from_secs(60);
-        let mut record = ValidatorProbeRecord::new(shard_group(), t0);
-        record.apply(shard_group(), t0, Err("consensus state request failed".to_string()));
+        let mut record = ValidatorProbeRecord::from_outcome(shard_group(), t0, Err(unavailable()));
         assert!(record.snapshot.is_none());
 
         record.apply(shard_group(), t1, Ok(snapshot(11, t1)));

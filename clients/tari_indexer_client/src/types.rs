@@ -815,9 +815,29 @@ pub struct ValidatorStatus {
     pub probed_at_unix_s: u64,
     /// Why the latest probe produced no snapshot, or `None` when it produced `snapshot`. While this
     /// is set, `snapshot` is stale: it is the last one an earlier probe produced.
-    pub probe_error: Option<String>,
+    pub probe_error: Option<ValidatorProbeError>,
     /// The last snapshot any probe of this validator produced, or `None` if none has succeeded.
     pub snapshot: Option<ValidatorStatusSnapshot>,
+}
+
+/// Why a probe of a validator produced no snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "tari-indexer-client/"))]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct ValidatorProbeError {
+    pub kind: ValidatorProbeErrorKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "tari-indexer-client/"))]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub enum ValidatorProbeErrorKind {
+    /// The validator did not return a usable consensus state.
+    StatusUnavailable,
+    /// The validator served a committed block proof that failed verification, so the indexer does
+    /// not sync from it.
+    InvalidProof,
 }
 
 /// A validator's consensus pacemaker state as it reported it to the indexer.

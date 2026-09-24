@@ -110,14 +110,24 @@ function ValidatorCard({ entry, nowSec }: { entry: RosterEntry; nowSec: number }
                 sx={{ fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}
               />
             )}
-            {snapshot && probeError && (
+            {probeError?.kind === "InvalidProof" ? (
               <Chip
-                label="Stale"
-                color="warning"
-                variant="outlined"
+                label="Invalid proof"
+                color="error"
                 size="small"
                 sx={{ fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}
               />
+            ) : (
+              snapshot &&
+              probeError && (
+                <Chip
+                  label="Stale"
+                  color="warning"
+                  variant="outlined"
+                  size="small"
+                  sx={{ fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}
+                />
+              )
             )}
           </Stack>
           {ageSec !== null && (
@@ -129,7 +139,7 @@ function ValidatorCard({ entry, nowSec }: { entry: RosterEntry; nowSec: number }
 
         {status && probeError && (
           <Typography variant="caption" color="error" sx={{ display: "block", mt: 1, wordBreak: "break-word" }}>
-            Probe {formatAge(Math.max(0, nowSec - Number(status.probed_at_unix_s)))} failed: {probeError}
+            Probe {formatAge(Math.max(0, nowSec - Number(status.probed_at_unix_s)))} failed: {probeError.message}
           </Typography>
         )}
 
@@ -269,7 +279,8 @@ function Validators() {
           The full validator roster for the current epoch as tracked by the epoch manager. The indexer also periodically
           syncs state from random validators and records their self-reported (unverified) consensus status; where a
           snapshot exists for a validator, its last known status and the snapshot age are shown. A snapshot is marked
-          stale when the latest probe of that validator failed, and the failure is shown beneath it.
+          stale when the latest probe of that validator failed, and the failure is shown beneath it. A validator that
+          served an invalid commit proof is marked as such, and the indexer does not sync from it.
         </Typography>
       </Grid>
       <Grid size={12}>

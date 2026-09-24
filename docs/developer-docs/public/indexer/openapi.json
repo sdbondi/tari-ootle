@@ -2343,6 +2343,29 @@
           }
         }
       },
+      "ValidatorProbeError": {
+        "type": "object",
+        "description": "Why a probe of a validator produced no snapshot.",
+        "required": [
+          "kind",
+          "message"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ValidatorProbeErrorKind"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "ValidatorProbeErrorKind": {
+        "type": "string",
+        "enum": [
+          "StatusUnavailable",
+          "InvalidProof"
+        ]
+      },
       "ValidatorStatus": {
         "type": "object",
         "description": "The latest probe of one validator's consensus pacemaker state, made by the indexer when it\nopened a sync stream from that validator.",
@@ -2357,11 +2380,15 @@
             "description": "libp2p PeerId of the validator."
           },
           "probe_error": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Why the latest probe produced no snapshot, or `None` when it produced `snapshot`. While this\nis set, `snapshot` is stale: it is the last one an earlier probe produced."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ValidatorProbeError",
+                "description": "Why the latest probe produced no snapshot, or `None` when it produced `snapshot`. While this\nis set, `snapshot` is stale: it is the last one an earlier probe produced."
+              }
+            ]
           },
           "probed_at_unix_s": {
             "type": "integer",

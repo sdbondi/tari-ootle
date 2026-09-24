@@ -20,5 +20,5 @@ pub use event_filter::*;
 pub use metrics::NetworkStateMetrics;
 pub use shard_watermarks::ShardWatermarks;
 pub use sync_progress::*;
-pub use validator_status::ValidatorStatusMonitor;
+pub use validator_status::{ProbeFailure, ValidatorStatusMonitor};
 pub use worker::*;
