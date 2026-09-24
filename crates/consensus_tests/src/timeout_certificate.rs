@@ -80,10 +80,9 @@ fn timeout_vote(height: NodeHeight, high_pc_height: NodeHeight) -> TimeoutVote {
 fn block_justifying(justify_height: NodeHeight, timeout_certificate: TimeoutCertificate) -> Block {
     let justify = proposal_certificate(justify_height);
     let height = timeout_certificate.height() + NodeHeight(1);
-    // V1 is the first version whose block id commits to the timeout certificate.
     let header = BlockHeader::create_unsigned(
         NETWORK,
-        ProtocolVersion::V1,
+        ProtocolVersion::at(NETWORK, TEST_EPOCH),
         BlockId::zero(),
         justify.calculate_id(),
         Some(timeout_certificate.calculate_id()),

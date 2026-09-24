@@ -284,12 +284,12 @@ pub(super) fn check_timeout_certificate<TConsensusSpec: ConsensusSpec>(
 /// arrived over the wire therefore cannot fail here; this guards a locally built block, and it holds the
 /// derivation in place should the id ever be sent on the wire instead.
 pub fn check_block_commits_to_timeout_certificate(block: &Block) -> Result<(), ProposalValidationError> {
-    let header_tc_id = block.header().timeout_certificate_id().copied();
+    let header_tc_id = block.header().timeout_certificate_id();
     let tc_id = block.timeout_certificate().map(|tc| tc.calculate_id());
-    if header_tc_id != tc_id {
+    if header_tc_id != tc_id.as_ref() {
         return Err(ProposalValidationError::TimeoutCertificateIdMismatch {
             block_id: *block.id(),
-            header_tc_id,
+            header_tc_id: header_tc_id.copied(),
             tc_id,
         });
     }

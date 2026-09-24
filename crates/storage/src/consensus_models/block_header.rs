@@ -110,9 +110,9 @@ pub struct BlockHeader {
     #[n(16)]
     #[cbor(default)]
     protocol_version: ProtocolVersion,
-    /// The id of the timeout certificate this block carries, or `None` when it carries none. From
-    /// [`ProtocolVersion::V1`] it is part of the metadata hash and therefore of the signed block id, so a validity
-    /// rule that reads the certificate (`check_justify_reaches_timeout_certificate`) reads data the proposer signed.
+    /// The id of the timeout certificate this block carries, or `None` when it carries none. It is part of the
+    /// metadata hash and therefore of the signed block id, so a validity rule that reads the certificate
+    /// (`check_justify_reaches_timeout_certificate`) reads data the proposer signed.
     #[cfg_attr(feature = "ts", ts(type = "string | null"))]
     #[n(17)]
     timeout_certificate_id: Option<TcId>,
@@ -346,19 +346,12 @@ impl BlockHeader {
     /// validity rules read therefore commit here, which keeps the header preimage identical to the one the base
     /// layer verifies while still binding them into the block id.
     pub fn calculate_metadata_hash(&self) -> FixedHash {
-        let fields = match self.protocol_version {
-            ProtocolVersion::V0 => MetadataHashFields::V1(MetadataHashFieldsV1 {
-                total_leader_fee: self.total_leader_fee,
-                timestamp: self.timestamp,
-                extra_data: &self.extra_data,
-            }),
-            ProtocolVersion::V1 => MetadataHashFields::V2(MetadataHashFieldsV2 {
-                total_leader_fee: self.total_leader_fee,
-                timestamp: self.timestamp,
-                extra_data: &self.extra_data,
-                timeout_certificate_id: self.timeout_certificate_id.as_ref().map(TcId::hash),
-            }),
-        };
+        let fields = MetadataHashFields::V1(MetadataHashFieldsV1 {
+            total_leader_fee: self.total_leader_fee,
+            timestamp: self.timestamp,
+            extra_data: &self.extra_data,
+            timeout_certificate_id: self.timeout_certificate_id.as_ref().map(TcId::hash),
+        });
         hashing::block_metadata_hasher().chain(&fields).finalize().into()
     }
 
@@ -591,18 +584,10 @@ impl SignedMessage for BlockHeader {
 #[derive(Debug, BorshSerialize)]
 enum MetadataHashFields<'a> {
     V1(MetadataHashFieldsV1<'a>),
-    V2(MetadataHashFieldsV2<'a>),
 }
 
 #[derive(Debug, BorshSerialize)]
 struct MetadataHashFieldsV1<'a> {
-    total_leader_fee: u64,
-    timestamp: u64,
-    extra_data: &'a ExtraData,
-}
-
-#[derive(Debug, BorshSerialize)]
-struct MetadataHashFieldsV2<'a> {
     total_leader_fee: u64,
     timestamp: u64,
     extra_data: &'a ExtraData,
@@ -700,21 +685,16 @@ mod tests {
     }
 
     #[test]
-    fn from_v1_the_timeout_certificate_id_is_in_the_block_id() {
-        let without = header(ProtocolVersion::V1);
-        let with = header_with_timeout_certificate(ProtocolVersion::V1, Some(TcId::from([7u8; 32])));
-        let with_other = header_with_timeout_certificate(ProtocolVersion::V1, Some(TcId::from([8u8; 32])));
-        assert_ne!(without.calculate_metadata_hash(), with.calculate_metadata_hash());
-        assert_ne!(with.calculate_metadata_hash(), with_other.calculate_metadata_hash());
-        assert_ne!(without.id(), with.id());
-        assert_ne!(with.id(), with_other.id());
-    }
-
-    #[test]
-    fn v0_block_ids_do_not_commit_to_the_timeout_certificate_id() {
-        let without = header(ProtocolVersion::V0);
-        let with = header_with_timeout_certificate(ProtocolVersion::V0, Some(TcId::from([7u8; 32])));
-        assert_eq!(without.id(), with.id());
+    fn the_timeout_certificate_id_is_in_the_block_id() {
+        for protocol_version in [ProtocolVersion::V0, ProtocolVersion::V1] {
+            let without = header(protocol_version);
+            let with = header_with_timeout_certificate(protocol_version, Some(TcId::from([7u8; 32])));
+            let with_other = header_with_timeout_certificate(protocol_version, Some(TcId::from([8u8; 32])));
+            assert_ne!(without.calculate_metadata_hash(), with.calculate_metadata_hash());
+            assert_ne!(with.calculate_metadata_hash(), with_other.calculate_metadata_hash());
+            assert_ne!(without.id(), with.id());
+            assert_ne!(with.id(), with_other.id());
+        }
     }
 
     #[test]
