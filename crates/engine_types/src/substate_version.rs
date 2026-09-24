@@ -91,18 +91,6 @@ impl From<u64> for SubstateVersion {
     }
 }
 
-impl From<u32> for SubstateVersion {
-    fn from(version: u32) -> Self {
-        Self(version.into())
-    }
-}
-
-impl From<u16> for SubstateVersion {
-    fn from(version: u16) -> Self {
-        Self(version.into())
-    }
-}
-
 impl From<SubstateVersion> for u64 {
     fn from(version: SubstateVersion) -> Self {
         version.0
