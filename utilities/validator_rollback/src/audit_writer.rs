@@ -7,7 +7,7 @@
 
 use tari_consensus_types::BlockId;
 use tari_engine_types::substate::SubstateId;
-use tari_ootle_common_types::{Epoch, ShardGroup, shard::Shard};
+use tari_ootle_common_types::{Epoch, ShardGroup, SubstateVersion, shard::Shard};
 use tari_ootle_transaction::TransactionId;
 
 use crate::{
@@ -102,46 +102,42 @@ pub fn write_substate_plan<W: std::io::Write>(
         counters.substate_transitions += 1;
     }
 
-    // Pass 2: derive per-substate net effect. For each affected substate track:
-    //   - shard (constant for all its rows)
-    //   - kind of its *earliest* post-checkpoint transition (smallest state_version) — if Up, the substate didn't exist
-    //     at checkpoint and will be Removed; otherwise it existed and will be Rewound.
-    //   - lowest + highest state_version touched, for the informational pre/post fields.
+    // Pass 2: derive per-substate net effect from the substate versions the reverted transitions touched. The rewind
+    // deletes every record an Up created and restores every record a Down destroyed, so the version live after it is
+    // the lowest one touched: the version that was live at the checkpoint. If an Up created that lowest version, it
+    // came after the checkpoint too, every record is deleted, and the substate is removed.
     use std::collections::HashMap;
     struct Agg {
         shard: Shard,
-        earliest_version: u64,
-        earliest_kind: RewindTransitionKind,
-        highest_version: u64,
+        lowest: SubstateVersion,
+        lowest_created_after_checkpoint: bool,
+        highest: SubstateVersion,
     }
     let mut by_id: HashMap<&SubstateId, Agg> = HashMap::new();
     for row in rows {
+        let created = row.transition == RewindTransitionKind::UpReverted;
         let entry = by_id.entry(&row.substate_id).or_insert_with(|| Agg {
             shard: row.shard,
-            earliest_version: row.state_version,
-            earliest_kind: row.transition,
-            highest_version: row.state_version,
+            lowest: row.substate_version,
+            lowest_created_after_checkpoint: created,
+            highest: row.substate_version,
         });
-        if row.state_version < entry.earliest_version {
-            entry.earliest_version = row.state_version;
-            entry.earliest_kind = row.transition;
+        match row.substate_version.cmp(&entry.lowest) {
+            std::cmp::Ordering::Less => {
+                entry.lowest = row.substate_version;
+                entry.lowest_created_after_checkpoint = created;
+            },
+            std::cmp::Ordering::Equal => entry.lowest_created_after_checkpoint |= created,
+            std::cmp::Ordering::Greater => {},
         }
-        if row.state_version > entry.highest_version {
-            entry.highest_version = row.state_version;
-        }
+        entry.highest = entry.highest.max(row.substate_version);
     }
 
     for (substate_id, agg) in by_id {
-        let (action, post_rollback_version) = match agg.earliest_kind {
-            RewindTransitionKind::UpReverted => (SubstateAction::Removed, None),
-            // Earliest transition was Down: pre the rollback the substate was at its
-            // highest version; post rollback the rewind restores it to whatever survived
-            // before the earliest post-checkpoint transition, i.e. earliest_version - 1.
-            // Zero is fine as a sentinel for "originally genesis".
-            RewindTransitionKind::DownReverted => {
-                let post = agg.earliest_version.saturating_sub(1);
-                (SubstateAction::Rewound, Some(version_to_u32(post)))
-            },
+        let (action, post_rollback_version) = if agg.lowest_created_after_checkpoint {
+            (SubstateAction::Removed, None)
+        } else {
+            (SubstateAction::Rewound, Some(agg.lowest.as_u64()))
         };
         match action {
             SubstateAction::Removed => counters.substates_removed += 1,
@@ -151,18 +147,12 @@ pub fn write_substate_plan<W: std::io::Write>(
             substate_id: substate_id_display(substate_id),
             shard: shard_to_audit_shard(agg.shard),
             action,
-            pre_rollback_version: version_to_u32(agg.highest_version),
+            pre_rollback_version: agg.highest.as_u64(),
             post_rollback_version,
         }))?;
     }
 
     Ok(())
-}
-
-fn version_to_u32(v: u64) -> u32 {
-    // Substate versions fit well within u32 in practice. Saturating cast keeps the audit
-    // honest for pathological large-version cases without panicking.
-    v.try_into().unwrap_or(u32::MAX)
 }
 
 /// Emit per-block `TransactionUnfinalised` records and bump counters.
@@ -206,4 +196,82 @@ fn substate_id_display(id: &SubstateId) -> String {
 
 fn transaction_id_display(id: &TransactionId) -> String {
     id.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use tari_engine_types::substate::SubstateId;
+    use tari_template_lib_types::{ComponentAddress, ObjectKey};
+
+    use super::*;
+    use crate::audit::AuditReader;
+
+    fn row(seed: u8, state_version: u64, version: u64, transition: RewindTransitionKind) -> SubstateRewindPlanRow {
+        SubstateRewindPlanRow {
+            substate_id: SubstateId::Component(ComponentAddress::new(ObjectKey::from_array([seed; ObjectKey::LENGTH]))),
+            shard: Shard::from(1u32),
+            state_version,
+            substate_version: SubstateVersion::new(version),
+            transition,
+            epoch: Epoch(1),
+        }
+    }
+
+    fn summaries(rows: &[SubstateRewindPlanRow]) -> Vec<SubstateSummary> {
+        let mut buf = Vec::new();
+        let mut writer = AuditWriter::new(&mut buf).unwrap();
+        write_substate_plan(&mut writer, &mut AuditCounters::default(), rows).unwrap();
+        writer.finish().unwrap();
+        let mut out = AuditReader::new(buf.as_slice())
+            .unwrap()
+            .records()
+            .filter_map(|r| match r.unwrap() {
+                AuditRecord::SubstateSummary(s) => Some(s),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        out.sort_by(|a, b| a.substate_id.cmp(&b.substate_id));
+        out
+    }
+
+    #[test]
+    fn a_substate_live_at_the_checkpoint_rewinds_to_that_version() {
+        use RewindTransitionKind::*;
+        // v5 was live at the checkpoint; one block downs it and ups v6, and the next downs v6 and ups v7. The Down and
+        // Up of one write share a state version.
+        let rows = [
+            row(1, 11, 7, UpReverted),
+            row(1, 11, 6, DownReverted),
+            row(1, 10, 6, UpReverted),
+            row(1, 10, 5, DownReverted),
+        ];
+        let [summary] = summaries(&rows).try_into().unwrap();
+        assert_eq!(summary.action, SubstateAction::Rewound);
+        assert_eq!(summary.pre_rollback_version, 7);
+        assert_eq!(summary.post_rollback_version, Some(5));
+    }
+
+    #[test]
+    fn a_substate_created_after_the_checkpoint_is_removed() {
+        use RewindTransitionKind::*;
+        let rows = [
+            row(2, 11, 1, UpReverted),
+            row(2, 11, 0, DownReverted),
+            row(2, 10, 0, UpReverted),
+        ];
+        let [summary] = summaries(&rows).try_into().unwrap();
+        assert_eq!(summary.action, SubstateAction::Removed);
+        assert_eq!(summary.pre_rollback_version, 1);
+        assert_eq!(summary.post_rollback_version, None);
+    }
+
+    #[test]
+    fn a_version_beyond_u32_is_reported_whole() {
+        use RewindTransitionKind::*;
+        let big = u64::from(u32::MAX) + 10;
+        let rows = [row(3, 10, big + 1, UpReverted), row(3, 10, big, DownReverted)];
+        let [summary] = summaries(&rows).try_into().unwrap();
+        assert_eq!(summary.pre_rollback_version, big + 1);
+        assert_eq!(summary.post_rollback_version, Some(big));
+    }
 }

@@ -80,6 +80,7 @@ where
                 substate_id: substate.substate_id,
                 shard,
                 state_version,
+                substate_version: substate.version,
                 transition: kind,
                 epoch: record.epoch,
             });

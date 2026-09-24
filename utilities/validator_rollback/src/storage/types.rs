@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 use tari_consensus_types::BlockId;
 use tari_engine_types::substate::SubstateId;
-use tari_ootle_common_types::{Epoch, shard::Shard};
+use tari_ootle_common_types::{Epoch, SubstateVersion, shard::Shard};
 use tari_ootle_transaction::TransactionId;
 use tari_state_tree::Version;
 
@@ -25,6 +25,8 @@ pub struct SubstateRewindPlanRow {
     pub substate_id: SubstateId,
     pub shard: Shard,
     pub state_version: Version,
+    /// The version of the substate record this transition created or destroyed.
+    pub substate_version: SubstateVersion,
     pub transition: RewindTransitionKind,
     pub epoch: Epoch,
 }
