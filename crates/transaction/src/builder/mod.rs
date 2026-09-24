@@ -561,9 +561,9 @@ impl<D> TransactionBuilder<D> {
     }
 
     fn add_resource_input(&mut self, resource: ResourceAddress) -> &mut Self {
-        // XTR is implicit
+        // XTR is implicit. A stealth transfer reads the resource without altering it.
         if resource != TARI_TOKEN {
-            self.unsigned_transaction.inputs_mut().insert(resource.into());
+            declare_input(self.unsigned_transaction.inputs_mut(), InputDeclaration::read(resource));
         }
         self
     }

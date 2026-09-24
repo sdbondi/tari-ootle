@@ -485,8 +485,8 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
                     reason: format!("Non-canonical owner account address: {e}"),
                 })?;
 
-        // add the input for the resource address to be transferred
-        substate_inputs.push(InputDeclaration::write(params.resource_address));
+        // A transfer reads the resource without altering it.
+        substate_inputs.push(InputDeclaration::read(params.resource_address));
 
         for output in &params.outputs {
             // No revealed outputs, no need to use the account
@@ -679,7 +679,7 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
                     .optional()?
                 {
                     substate_inputs.push(InputDeclaration::write(vault.id));
-                    substate_inputs.push(InputDeclaration::write(vault.resource_address));
+                    substate_inputs.push(InputDeclaration::read(vault.resource_address));
                 }
                 if params.resource_address != TARI_TOKEN &&
                     let Some(vault) = self
@@ -688,7 +688,7 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
                         .optional()?
                 {
                     substate_inputs.push(InputDeclaration::write(vault.id));
-                    substate_inputs.push(InputDeclaration::write(vault.resource_address));
+                    substate_inputs.push(InputDeclaration::read(vault.resource_address));
                 }
             }
 
@@ -791,7 +791,7 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
 
             // Add any swap-related inputs if any
             if let Some(swap) = params.fee_params.pay_fee_with_swap.as_ref() {
-                substate_inputs.push(InputDeclaration::write(swap.input_resource));
+                substate_inputs.push(InputDeclaration::read(swap.input_resource));
                 substate_inputs.push(InputDeclaration::write(swap.pool_address));
                 // Add the pool component's dependent substates (e.g. its vaults)
                 substate_inputs.extend(swap_pool_deps.into_iter().map(InputDeclaration::from));

@@ -59,6 +59,10 @@ use crate::{
 pub enum WantItem {
     /// The vault holding `resource_address` inside `component_address`. The resolver fetches the
     /// component, reads its state for vault ids, then fetches those vaults to find the match.
+    ///
+    /// The vault is declared a write and its resource a read, which covers deposits and withdrawals. A
+    /// transaction that alters the resource itself (a mint or burn on a resource that tracks supply, or a
+    /// change to its rules or metadata) must also want it as a [`WantItem::SpecificSubstate`].
     VaultForResource {
         /// The component whose vaults are searched.
         component_address: String,
@@ -74,7 +78,8 @@ pub enum WantItem {
         /// When `true`, the input is added without verifying the substate exists.
         required: bool,
     },
-    /// Fetch the component state and add **all** vaults found in it as inputs.
+    /// Fetch the component state and add **all** vaults found in it as inputs. The called method may
+    /// alter the vaults' resources, so they are declared as writes.
     AllComponentVaults {
         /// The component whose vaults are all added.
         component_address: String,
@@ -748,7 +753,7 @@ fn resolve_vault(
                 {
                     push_unique(resolved, InputDeclaration::write(vault_id.clone()));
                     if resource != TARI_TOKEN {
-                        push_unique(resolved, InputDeclaration::write(resource));
+                        push_unique(resolved, InputDeclaration::read(resource));
                     }
                     matched = true;
                 }
@@ -852,10 +857,19 @@ fn component_vault_ids(component: &tari_engine_types::component::Component) -> R
     Ok(indexed.vault_ids().iter().map(|v| SubstateId::Vault(*v)).collect())
 }
 
-/// Pushes an input only if not already present (stable `Vec`, `IndexSet`-like de-dup).
+/// Pushes an input only if not already present (stable `Vec`, `IndexSet`-like de-dup). A substate declared both as
+/// a read and as a write is a write, whichever came first.
 fn push_unique(resolved: &mut Vec<InputDeclaration>, req: InputDeclaration) {
-    if !resolved.contains(&req) {
-        resolved.push(req);
+    match resolved
+        .iter_mut()
+        .find(|existing| existing.substate_id() == req.substate_id())
+    {
+        Some(existing) => {
+            if req.is_write() {
+                *existing = existing.clone().with_intent(true);
+            }
+        },
+        None => resolved.push(req),
     }
 }
 
@@ -920,6 +934,23 @@ mod tests {
             numeric::BoundaryAmount,
         },
     };
+
+    #[test]
+    fn a_substate_resolved_as_both_a_read_and_a_write_is_a_write() {
+        let resource = SubstateId::Resource(ResourceAddress::new(ObjectKey::from_array([7; ObjectKey::LENGTH])));
+        let other = SubstateId::Resource(ResourceAddress::new(ObjectKey::from_array([8; ObjectKey::LENGTH])));
+        let mut resolved = Vec::new();
+
+        push_unique(&mut resolved, InputDeclaration::read(resource.clone()));
+        push_unique(&mut resolved, InputDeclaration::read(other.clone()));
+        push_unique(&mut resolved, InputDeclaration::write(resource.clone()));
+        push_unique(&mut resolved, InputDeclaration::read(resource.clone()));
+
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved[0].substate_id(), &resource);
+        assert!(resolved[0].is_write());
+        assert!(resolved[1].is_read());
+    }
 
     // --- Fixtures ---------------------------------------------------------------------------------
 
@@ -1208,12 +1239,12 @@ mod tests {
         let resolved_unsigned = partial.into_unsigned();
 
         // Build the same transfer explicitly with the equivalent input set (same order the resolver
-        // accumulates: from-component, then vault, then resource).
+        // accumulates: from-component, then vault, then resource, which a transfer only reads).
         let mut explicit_intent = intent_resolved();
         explicit_intent.inputs = vec![
             InputRef::unversioned(SubstateId::Component(from_component()).to_string()),
             InputRef::unversioned(SubstateId::Vault(from_vault_id()).to_string()),
-            InputRef::unversioned(SubstateId::Resource(resource()).to_string()),
+            InputRef::unversioned(SubstateId::Resource(resource()).to_string()).read_only(),
         ];
         let explicit_unsigned = build_public_transfer_unsigned(Network::Esmeralda, &explicit_intent).unwrap();
 

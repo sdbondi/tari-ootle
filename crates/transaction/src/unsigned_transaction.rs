@@ -183,6 +183,19 @@ impl UnsignedTransaction {
         self
     }
 
+    /// Sets the read or write intent of every declared input, keeping the declarations and their order.
+    pub fn with_input_intents<F: FnMut(&InputDeclaration) -> bool>(mut self, mut is_write: F) -> Self {
+        let inputs = std::mem::take(self.inputs_mut());
+        *self.inputs_mut() = inputs
+            .into_iter()
+            .map(|decl| {
+                let write = is_write(&decl);
+                decl.with_intent(write)
+            })
+            .collect();
+        self
+    }
+
     pub fn add_signer(
         mut self,
         seal_signer: &RistrettoPublicKeyBytes,

@@ -3,7 +3,7 @@
   "schema_version": 1,
   "provenance": {
     "core_version": "0.41.2",
-    "git_rev": "f1de8633ae83fa2801be7c31c8a53a46cc0cb921",
+    "git_rev": "397cfaae8ea3b09ff5a6dcd8be33d85db8c18235",
     "generated_by": "ootle_sdk_core golden-vector generator"
   },
   "operation": "cosign_seal_with_auth",
@@ -112,7 +112,7 @@
                 "version": null
               },
               {
-                "is_write": true,
+                "is_write": false,
                 "substate_id": "resource_3232323232323232323232323232323232323232323232323232323232323232",
                 "version": null
               },

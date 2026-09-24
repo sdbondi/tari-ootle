@@ -189,7 +189,7 @@ impl TransactionInputResolver {
                                 // Found the vault for the specified resource
                                 tx_mut.add_input(InputDeclaration::write(vault_id));
                                 if *resource_address != TARI_TOKEN {
-                                    tx_mut.add_input(InputDeclaration::write(*resource_address));
+                                    tx_mut.add_input(InputDeclaration::read(*resource_address));
                                 }
                                 is_satisfied = true;
                             }

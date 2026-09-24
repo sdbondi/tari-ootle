@@ -1,6 +1,6 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use anyhow::anyhow;
 use axum_extra::headers::authorization::Bearer;
@@ -16,7 +16,7 @@ use tari_ootle_common_types::{
     optional::Optional,
     response_status::ResponseErrorStatus,
 };
-use tari_ootle_transaction::args;
+use tari_ootle_transaction::{Transaction, UnsignedTransaction, args};
 use tari_ootle_wallet_sdk::{
     apis::transaction::TransactionApiError,
     models::{KeyId, OutputStatus, StealthUtxoSpendKeyId, TransactionContext, WalletEvent, WalletLockId},
@@ -537,27 +537,15 @@ pub async fn handle_submit_manifest(
         .into_iter()
         .map(|input| InputDeclaration::write(input.into_substate_id()));
 
-    let transaction = transaction.with_inputs(inputs);
+    let unsigned = transaction.with_inputs(inputs);
 
-    // Sign with each additional signing key (not the seal signer, which seals the transaction)
-    let mut transaction = transaction.finish();
-    if !req.signing_key_ids.is_empty() {
-        let seal_signer_pk = sdk.key_manager_api().get_public_key(seal_signer_key_id)?;
-        let seal_signer_pk_bytes = seal_signer_pk.public_key.to_byte_type();
-        let signer = sdk.signer_api().with_context(&seal_signer_pk_bytes);
-        for signing_key_id in &req.signing_key_ids {
-            if *signing_key_id != seal_signer_key_id {
-                transaction = signer.sign(*signing_key_id, transaction)?;
-            }
-        }
-    }
-
-    let transaction = sdk.signer_api().sign(seal_signer_key_id, transaction)?;
-
+    let sign = |unsigned: UnsignedTransaction| {
+        sign_manifest_transaction(sdk, unsigned, seal_signer_key_id, &req.signing_key_ids)
+    };
     if req.dry_run {
         let exec_result = context
             .transaction_service()
-            .submit_dry_run_transaction(transaction)
+            .submit_dry_run_transaction(sign(unsigned)?)
             .await?;
 
         if let Some(reject) = exec_result.finalize.any_reject() {
@@ -575,6 +563,8 @@ pub async fn handle_submit_manifest(
             result: Some(exec_result),
         });
     }
+
+    let transaction = declare_written_inputs_only(context, unsigned, sign).await?;
 
     // Link the fee payer and the seal signer's account (when it maps to one of the wallet's
     // accounts). Manifest instructions can touch any account, so this is best-effort.
@@ -806,6 +796,60 @@ pub async fn handle_publish_template(
         transaction_id: resp.transaction_id,
         dry_run_fee: None,
     })
+}
+
+/// Declares as reads the inputs that a dry run of `unsigned` does not write, and signs the result.
+///
+/// Detection cannot tell how a manifest uses each input, so every input starts as a write; the dry run
+/// shows which ones it actually writes, and declaring the rest as reads keeps the transaction from
+/// serialising with others that only read them. A dry run that fails or is not fully accepted says
+/// nothing reliable about the main instructions, so the declarations are then left as writes.
+async fn declare_written_inputs_only<F>(
+    context: &HandlerContext,
+    unsigned: UnsignedTransaction,
+    sign: F,
+) -> Result<Transaction, anyhow::Error>
+where
+    F: Fn(UnsignedTransaction) -> Result<Transaction, anyhow::Error>,
+{
+    let dry_run = context
+        .transaction_service()
+        .submit_dry_run_transaction(sign(unsigned.clone().with_dry_run(true))?)
+        .await;
+    match dry_run {
+        Ok(result) => match result.finalize.accept() {
+            Some(diff) => {
+                let written = diff.down_iter().map(|(id, _)| id).collect::<HashSet<_>>();
+                sign(unsigned.with_input_intents(|decl| written.contains(decl.substate_id())))
+            },
+            None => sign(unsigned),
+        },
+        Err(err) => {
+            warn!(target: LOG_TARGET, "Manifest dry run failed, declaring every input a write: {err}");
+            sign(unsigned)
+        },
+    }
+}
+
+/// Signs with each additional signing key, then seals with the seal signer.
+fn sign_manifest_transaction(
+    sdk: &WalletSdk,
+    unsigned: UnsignedTransaction,
+    seal_signer_key_id: KeyId,
+    signing_key_ids: &[KeyId],
+) -> Result<Transaction, anyhow::Error> {
+    let mut transaction = unsigned.finish();
+    if !signing_key_ids.is_empty() {
+        let seal_signer_pk = sdk.key_manager_api().get_public_key(seal_signer_key_id)?;
+        let seal_signer_pk_bytes = seal_signer_pk.public_key.to_byte_type();
+        let signer = sdk.signer_api().with_context(&seal_signer_pk_bytes);
+        for signing_key_id in signing_key_ids {
+            if *signing_key_id != seal_signer_key_id {
+                transaction = signer.sign(*signing_key_id, transaction)?;
+            }
+        }
+    }
+    Ok(sdk.signer_api().sign(seal_signer_key_id, transaction)?)
 }
 
 /// Turns a detected dependency into a declaration, deferring to what the transaction already said

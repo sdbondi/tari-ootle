@@ -269,14 +269,14 @@ where TSpec: WalletSdkSpec
         let account_substate = self.substate_api.get_substate(&params.from_account.into())?;
         inputs.push(account_substate.substate_id.into_unversioned_declaration());
 
-        // Fees are paid out of this account's TARI vault, so that vault and its resource are mutated too.
+        // Fees are paid out of this account's TARI vault, so that vault is mutated too.
         if let Some(vault) = self
             .accounts_api
             .get_vault_by_resource(from_account.component_address(), &TARI_TOKEN)
             .optional()?
         {
             inputs.push(InputDeclaration::write(vault.id));
-            inputs.push(InputDeclaration::write(vault.resource_address));
+            inputs.push(InputDeclaration::read(vault.resource_address));
         }
 
         let src_vault = self
@@ -294,15 +294,15 @@ where TSpec: WalletSdkSpec
         let src_vault_substate = self.substate_api.get_substate(&src_vault.id.into())?;
         inputs.push(src_vault_substate.substate_id.into_unversioned_declaration());
 
-        // add the input for the resource address to be transferred
-        inputs.push(InputDeclaration::write(params.resource_address));
+        // A transfer reads the resource without altering it.
+        inputs.push(InputDeclaration::read(params.resource_address));
 
         // We need to fetch the resource substate to check if there is a view key present.
         let resource = self.substate_api.fetch_resource(params.resource_address).await?;
 
         // The badge proof is created from the badge's vault in this account, so both are inputs.
         if let Some(ref badge_resource_address) = params.proof_from_resource {
-            inputs.push(InputDeclaration::write(*badge_resource_address));
+            inputs.push(InputDeclaration::read(*badge_resource_address));
             if let Some(badge_vault) = self
                 .accounts_api
                 .get_vault_by_resource(from_account.component_address(), badge_resource_address)
