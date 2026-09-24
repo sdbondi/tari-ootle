@@ -1461,10 +1461,25 @@ impl<TStore: StateReader> WorkingState<TStore> {
     /// here instead. See [`TransactionReceipt::encoded_size_upper_bound`] for what the bound covers.
     pub fn transaction_receipt_size(&mut self) -> Result<usize, RuntimeError> {
         let epoch = self.get_current_epoch()?;
+        let downed = self
+            .store
+            .downed_utxos()
+            .iter()
+            .cloned()
+            .map(SubstateId::Utxo)
+            .chain(
+                self.store
+                    .downed_confidential_outputs()
+                    .iter()
+                    .cloned()
+                    .map(SubstateId::ConfidentialOutput),
+            )
+            .collect::<Vec<_>>();
         Ok(TransactionReceipt::encoded_size_upper_bound(
             &self.events,
             &self.validator_fee_withdrawals,
             self.store.mutated_substates().keys(),
+            downed.iter(),
             epoch,
         ))
     }

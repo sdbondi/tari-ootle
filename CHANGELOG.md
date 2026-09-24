@@ -24,6 +24,10 @@ See [standard-version](https://github.com/conventional-changelog/standard-versio
 - `feat!` — **Metadata is indexed like the rest of a substate**: an address in it counts as a
   reference, and a bucket or proof in it is rejected as transient. (#2679)
 
+- `feat!` — **Transaction receipts list the substates a transaction spent**: `DiffSummary::downed`
+  records each substate downed without a later version, such as a spent UTXO. Receipt hashes and
+  stealth fee estimates change; this ships with the testnet reset.
+
 ### Transaction manifest
 
 - `feat!` — **`metadata!` and `cbor!` take a JSON-shaped value with typed values nested in it**, e.g.

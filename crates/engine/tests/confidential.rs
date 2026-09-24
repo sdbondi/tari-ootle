@@ -697,6 +697,48 @@ fn unfreeze_and_spend_in_one_transaction_downs_the_output() {
     );
 }
 
+/// The receipt records a spent output, which is downed and never upped again, and leaves out the downs of
+/// substates it upped at a later version.
+#[test]
+fn receipt_lists_the_spent_output_as_downed() {
+    let (confidential_proof, mask, value_proofs) = mint_statement(100, None);
+    let (mut test, faucet, faucet_resx) = setup(confidential_proof, value_proofs, None);
+
+    let commitment = commit_amount(&mask, Amount::from(100u64)).unwrap().to_byte_type();
+    let output_address = ConfidentialOutputAddress::new(faucet_resx.as_resource_address().unwrap(), commitment);
+
+    let (user_account, user_proof, user_key) = test.create_empty_account();
+    let withdraw_proof = generate_withdraw_proof(&mask, 100, None, 0u64);
+
+    let result = test.execute_expect_success(
+        Transaction::builder_localnet(Epoch(1))
+            .call_method(faucet, "take_free_coins", args![withdraw_proof.proof])
+            .put_last_instruction_output_on_workspace("coins")
+            .call_method(user_account, "deposit", args![Workspace("coins")])
+            .build_and_seal(&user_key),
+        vec![user_proof],
+    );
+
+    let diff = result.finalize.any_accept().unwrap();
+    let receipt = diff
+        .up_iter()
+        .find_map(|(_, substate)| substate.substate_value().as_transaction_receipt())
+        .expect("the diff ups the transaction receipt");
+    let downed = receipt
+        .diff_summary()
+        .downed
+        .iter()
+        .map(|d| &d.substate_id)
+        .collect::<Vec<_>>();
+
+    assert_eq!(downed, [&SubstateId::ConfidentialOutput(output_address)]);
+    assert!(
+        diff.down_iter()
+            .any(|(id, _)| diff.up_iter().any(|(up_id, _)| up_id == id)),
+        "the transaction must also rewrite a substate for the exclusion to be exercised"
+    );
+}
+
 /// The commitment is the output's identity: minting the same commitment twice must be rejected by the
 /// duplicate-substate guard, which is what provides network-wide commitment uniqueness now that outputs are
 /// no longer keyed by a per-vault map.

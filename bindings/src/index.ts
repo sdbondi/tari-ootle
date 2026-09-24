@@ -64,6 +64,7 @@ export * from "./types/DiagnosticEventFilter";
 export * from "./types/DiagnosticEventRecord";
 export * from "./types/DiagnosticLevel";
 export * from "./types/DiffSummary";
+export * from "./types/DownSubstate";
 export * from "./types/ElgamalVerifiableBalanceBytes";
 export * from "./types/EncodedMerkleProof";
 export * from "./types/EncryptedData";

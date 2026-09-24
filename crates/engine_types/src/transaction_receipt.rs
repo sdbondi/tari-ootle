@@ -1,7 +1,7 @@
 //    Copyright 2023 The Tari Project
 //    SPDX-License-Identifier: BSD-3-Clause
 
-use std::{fmt, fmt::Display, str::FromStr};
+use std::{collections::HashSet, fmt, fmt::Display, str::FromStr};
 
 use ootle_network::Network;
 use serde::{Deserialize, Serialize};
@@ -94,12 +94,15 @@ impl TransactionReceipt {
     /// [`Event::charged_size_padding`]. `fee_withdrawals`, `epoch` and `intent_commitment` are
     /// measured as they will actually be encoded.
     ///
-    /// `upped` is the substates that will appear in the [`DiffSummary`] — one entry each. Nothing
-    /// joins that set after the charge is computed: fee settlement only mutates substates already in
-    /// it, and building the diff can only drop entries, never add them. The receipt is up'd after
-    /// its own summary is built, so it is absent from both.
+    /// `upped` is the substates the transaction writes, and `downed` the ones it spends without
+    /// writing — the spent UTXOs and confidential outputs. Each gets one [`DiffSummary`] entry.
+    /// Nothing joins either set after the charge is computed: fee settlement only mutates substates
+    /// already in `upped`, and building the diff can only drop an upped entry or move it to
+    /// `downed` (a drained fee pool). A downed entry is narrower than the upped stand-in by its
+    /// 32-byte value hash, which outweighs any growth of the downed array's header. The receipt is
+    /// up'd after its own summary is built, so it is absent from both.
     ///
-    /// That holds only when `upped` comes from the same state the receipt is built from. Spending a
+    /// That holds only when both sets come from the same state the receipt is built from. Spending a
     /// UTXO or confidential output removes it from the state that spent it, so a state which never
     /// ran that instruction can carry an entry a later one has dropped — a fee-intent commit is
     /// exactly that case. Callers must bound the state whose receipt they are pricing.
@@ -107,6 +110,7 @@ impl TransactionReceipt {
         events: &[Event],
         fee_withdrawals: &[ValidatorFeeWithdrawal],
         upped: impl Iterator<Item = &'a SubstateId>,
+        downed: impl Iterator<Item = &'a SubstateId>,
         epoch: Epoch,
     ) -> usize {
         let diff_summary = DiffSummary {
@@ -115,6 +119,12 @@ impl TransactionReceipt {
                     substate_id: substate_id.clone(),
                     version: SubstateVersion::new(u64::MAX),
                     value_hash: Hash32::from_array([0xff; Hash32::LENGTH]),
+                })
+                .collect(),
+            downed: downed
+                .map(|substate_id| DownSubstate {
+                    substate_id: substate_id.clone(),
+                    version: SubstateVersion::new(u64::MAX),
                 })
                 .collect(),
         };
@@ -203,10 +213,19 @@ pub struct DiffSummary {
     #[n(0)]
     #[cbor(with = "tari_bor::adapters::boxed_slice")]
     pub upped: Box<[UpSubstate]>,
+    /// The substates the transaction downed without upping a later version: spent UTXOs and
+    /// confidential outputs, and a validator fee pool drained to zero.
+    ///
+    /// A substate that is upped is always downed at its previous version, so those downs are implied
+    /// by `upped` and are left out to keep the receipt small.
+    #[n(1)]
+    #[cbor(with = "tari_bor::adapters::boxed_slice")]
+    pub downed: Box<[DownSubstate]>,
 }
 
 impl DiffSummary {
     pub fn from_diff(network: Network, diff: &SubstateDiff, epoch: Epoch) -> Self {
+        let upped_ids = diff.up_iter().map(|(id, _)| id).collect::<HashSet<_>>();
         Self {
             upped: diff
                 .up_iter()
@@ -214,6 +233,14 @@ impl DiffSummary {
                     substate_id: id.clone(),
                     version: s.version(),
                     value_hash: hash_substate(network, s.substate_value(), s.version(), epoch),
+                })
+                .collect(),
+            downed: diff
+                .down_iter()
+                .filter(|(id, _)| !upped_ids.contains(id))
+                .map(|(id, version)| DownSubstate {
+                    substate_id: id.clone(),
+                    version: *version,
                 })
                 .collect(),
         }
@@ -233,11 +260,23 @@ pub struct UpSubstate {
     pub value_hash: Hash32,
 }
 
+#[derive(
+    Debug, Clone, minicbor::Encode, minicbor::Decode, minicbor::CborLen, Serialize, Deserialize, borsh::BorshSerialize,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct DownSubstate {
+    #[n(0)]
+    pub substate_id: SubstateId,
+    #[n(1)]
+    pub version: SubstateVersion,
+}
+
 #[cfg(test)]
 mod tests {
     use tari_template_lib::types::{ComponentAddress, Metadata, ObjectKey};
 
     use super::*;
+    use crate::substate::Substate;
 
     fn substate_id(seed: u8) -> SubstateId {
         SubstateId::Component(ComponentAddress::new(ObjectKey::from_array([seed; ObjectKey::LENGTH])))
@@ -258,7 +297,7 @@ mod tests {
     /// storage charge would let some of its bytes through unpriced. It must also stay close, or a
     /// transaction pays for space it never uses. Adding a field to `TransactionReceipt` fails to
     /// compile here until the bound accounts for it.
-    fn assert_bounds(receipt: &TransactionReceipt, upped: &[SubstateId]) {
+    fn assert_bounds(receipt: &TransactionReceipt, upped: &[SubstateId], downed: &[SubstateId]) {
         let TransactionReceipt {
             outcome: _,
             diff_summary,
@@ -268,9 +307,14 @@ mod tests {
             epoch,
             intent_commitment: _,
         } = receipt;
-        assert_eq!(diff_summary.upped.len(), upped.len());
+        let DiffSummary {
+            upped: summary_upped,
+            downed: summary_downed,
+        } = diff_summary;
+        assert_eq!(summary_upped.len() + summary_downed.len(), upped.len() + downed.len());
 
-        let bound = TransactionReceipt::encoded_size_upper_bound(events, fee_withdrawals, upped.iter(), *epoch);
+        let bound =
+            TransactionReceipt::encoded_size_upper_bound(events, fee_withdrawals, upped.iter(), downed.iter(), *epoch);
         let actual = minicbor::len(receipt);
 
         assert!(bound >= actual, "bound {bound} is under the actual size {actual}");
@@ -278,7 +322,7 @@ mod tests {
         assert!(bound - actual < 256, "bound {bound} overshoots {actual} by too much");
     }
 
-    fn receipt(events: Vec<Event>, upped: &[SubstateId]) -> TransactionReceipt {
+    fn receipt(events: Vec<Event>, upped: &[SubstateId], downed: &[SubstateId]) -> TransactionReceipt {
         TransactionReceipt {
             outcome: FinalizeOutcome::Commit,
             diff_summary: DiffSummary {
@@ -288,6 +332,13 @@ mod tests {
                         substate_id: substate_id.clone(),
                         version: SubstateVersion::new(1),
                         value_hash: Hash32::from_array([0x04; Hash32::LENGTH]),
+                    })
+                    .collect(),
+                downed: downed
+                    .iter()
+                    .map(|substate_id| DownSubstate {
+                        substate_id: substate_id.clone(),
+                        version: SubstateVersion::new(0),
                     })
                     .collect(),
             },
@@ -301,27 +352,78 @@ mod tests {
 
     #[test]
     fn bound_holds_for_an_empty_receipt() {
-        assert_bounds(&receipt(vec![], &[]), &[]);
+        assert_bounds(&receipt(vec![], &[], &[]), &[], &[]);
     }
 
     #[test]
-    fn bound_holds_with_events_and_upped_substates() {
+    fn bound_holds_with_events_and_upped_and_downed_substates() {
         let upped = [substate_id(0x01), substate_id(0x02), substate_id(0x03)];
+        let downed = [substate_id(0x04), substate_id(0x05)];
         assert_bounds(
-            &receipt(vec![event("std.deposit"), event("custom.thing")], &upped),
+            &receipt(vec![event("std.deposit"), event("custom.thing")], &upped, &downed),
             &upped,
+            &downed,
         );
+    }
+
+    /// A drained fee pool is priced as upped but finalizes as downed. The bound overshoots by the
+    /// value hash it priced, so only the lower bound is checked. Enough entries move to cross the
+    /// downed array's one-byte header.
+    #[test]
+    fn bound_holds_when_upped_entries_move_to_downed() {
+        let priced_upped = (0..30).map(substate_id).collect::<Vec<_>>();
+        let (downed, upped) = priced_upped.split_at(25);
+        let actual = receipt(vec![], upped, downed);
+
+        let bound = TransactionReceipt::encoded_size_upper_bound(
+            &actual.events,
+            &actual.fee_withdrawals,
+            priced_upped.iter(),
+            [].iter(),
+            actual.epoch,
+        );
+        assert!(bound >= minicbor::len(&actual));
     }
 
     #[test]
     fn bound_grows_with_the_event_payload() {
-        let small = receipt(vec![event("a")], &[]);
-        let large = receipt(vec![event(&"a".repeat(4096))], &[]);
+        let small = receipt(vec![event("a")], &[], &[]);
+        let large = receipt(vec![event(&"a".repeat(4096))], &[], &[]);
 
         let bound_of = |r: &TransactionReceipt| {
-            TransactionReceipt::encoded_size_upper_bound(&r.events, &r.fee_withdrawals, [].iter(), r.epoch)
+            TransactionReceipt::encoded_size_upper_bound(&r.events, &r.fee_withdrawals, [].iter(), [].iter(), r.epoch)
         };
         assert!(bound_of(&large) - bound_of(&small) >= 4000);
-        assert_bounds(&large, &[]);
+        assert_bounds(&large, &[], &[]);
+    }
+
+    #[test]
+    fn summary_lists_only_the_downs_that_are_not_upped() {
+        let rewritten = substate_id(0x01);
+        let spent = substate_id(0x02);
+        let drained = substate_id(0x03);
+        let created = substate_id(0x04);
+        let value = || Substate::new(SubstateVersion::new(0), receipt(vec![], &[], &[]));
+
+        let mut diff = SubstateDiff::new();
+        diff.down(rewritten.clone(), SubstateVersion::new(3));
+        diff.up(rewritten.clone(), value());
+        diff.down(drained.clone(), SubstateVersion::new(7));
+        diff.up(created.clone(), value());
+        diff.down(spent.clone(), SubstateVersion::new(0));
+
+        let summary = DiffSummary::from_diff(Network::LocalNet, &diff, Epoch(1));
+
+        let upped = summary.upped.iter().map(|u| &u.substate_id).collect::<Vec<_>>();
+        assert_eq!(upped, [&rewritten, &created]);
+        let downed = summary
+            .downed
+            .iter()
+            .map(|d| (&d.substate_id, d.version))
+            .collect::<Vec<_>>();
+        assert_eq!(downed, [
+            (&drained, SubstateVersion::new(7)),
+            (&spent, SubstateVersion::new(0))
+        ]);
     }
 }

@@ -218,6 +218,14 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
         &self.new_substates
     }
 
+    pub fn downed_utxos(&self) -> &IndexSet<UtxoAddress> {
+        &self.downed_utxos
+    }
+
+    pub fn downed_confidential_outputs(&self) -> &IndexSet<ConfidentialOutputAddress> {
+        &self.downed_confidential_outputs
+    }
+
     pub fn down_utxo(&mut self, lock_id: LockId) -> Result<Utxo, RuntimeError> {
         let lock = self.locked_substates.get(lock_id, LockFlag::Write)?;
         let substate_id = lock.substate_id();
