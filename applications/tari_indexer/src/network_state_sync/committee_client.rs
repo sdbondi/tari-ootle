@@ -11,7 +11,7 @@ use std::{
 use log::*;
 use tari_epoch_manager::{EpochManagerError, EpochManagerReader, service::EpochManagerHandle};
 use tari_networking::NetworkingHandle;
-use tari_ootle_common_types::{ShardGroup, optional::Optional};
+use tari_ootle_common_types::{Epoch, ShardGroup, optional::Optional};
 use tari_ootle_p2p::{PeerAddress, TariMessagingSpec, ToPeerId};
 use tari_validator_node_rpc::{ValidatorNodeRpcClientError, client::RpcMultiPool, rpc_service};
 
@@ -22,7 +22,7 @@ pub struct ValidatorCommitteeRpcPool {
     shard_group: ShardGroup,
     pool: RpcMultiPool<TariMessagingSpec>,
     epoch_manager: EpochManagerHandle<PeerAddress>,
-    past_failed_nodes: HashSet<PeerAddress>,
+    past_failed_nodes: FailedPeers,
 }
 
 impl ValidatorCommitteeRpcPool {
@@ -35,7 +35,7 @@ impl ValidatorCommitteeRpcPool {
             shard_group,
             pool: RpcMultiPool::new(networking),
             epoch_manager,
-            past_failed_nodes: HashSet::new(),
+            past_failed_nodes: FailedPeers::default(),
         }
     }
 
@@ -45,17 +45,15 @@ impl ValidatorCommitteeRpcPool {
         loop {
             let member = self
                 .epoch_manager
-                .get_random_committee_member(epoch, Some(self.shard_group), self.past_failed_nodes.clone())
+                .get_random_committee_member(epoch, Some(self.shard_group), self.past_failed_nodes.at(epoch).clone())
                 .await
                 .optional()?;
 
             let Some(member) = member else {
                 // All validators have been attempted and failed - no real choice but to clear the past failed nodes and
                 // try again if this is called again
-                let committee_size = self.past_failed_nodes.len();
+                let committee_size = self.past_failed_nodes.at(epoch).len();
                 self.past_failed_nodes.clear();
-                // Clamp max mem usage to 7300 bytes (Multihash size x 100) - this is likely to always be a no-op
-                self.past_failed_nodes.shrink_to(100);
                 return Err(ValidatorCommitteeClientError::AllValidatorsFailed {
                     committee_size,
                     last_error: last_error.as_ref().map(|e| e.to_string()),
@@ -70,7 +68,7 @@ impl ValidatorCommitteeRpcPool {
                         "Failed to create new session for validator '{}': {}", member, err
                     );
                     last_error = Some(err);
-                    self.past_failed_nodes.insert(member.address);
+                    self.past_failed_nodes.at(epoch).insert(member.address);
                 },
             }
         }
@@ -128,7 +126,7 @@ impl ValidatorCommitteeRpcPool {
                     );
                     last_error = Some(err.to_string());
                     attempted.insert(vn.address);
-                    self.past_failed_nodes.insert(vn.address);
+                    self.past_failed_nodes.at(epoch).insert(vn.address);
                     continue; // Skip this member and try the next one
                 },
             };
@@ -153,6 +151,32 @@ impl ValidatorCommitteeRpcPool {
             committee_size: attempted.len(),
             last_error,
         })
+    }
+}
+
+/// Committee members that failed to connect, excluded from selection for the rest of the epoch they
+/// failed in. Scoping the exclusion to an epoch lets a validator that was briefly unreachable (e.g.
+/// restarting) back into selection once the epoch moves on.
+#[derive(Debug, Clone, Default)]
+struct FailedPeers {
+    epoch: Epoch,
+    peers: HashSet<PeerAddress>,
+}
+
+impl FailedPeers {
+    /// The peers that have failed during `epoch`, forgetting any that failed in an earlier epoch.
+    fn at(&mut self, epoch: Epoch) -> &mut HashSet<PeerAddress> {
+        if self.epoch != epoch {
+            self.epoch = epoch;
+            self.clear();
+        }
+        &mut self.peers
+    }
+
+    fn clear(&mut self) {
+        self.peers.clear();
+        // Clamp max mem usage to 7300 bytes (Multihash size x 100) - this is likely to always be a no-op
+        self.peers.shrink_to(100);
     }
 }
 
@@ -201,4 +225,37 @@ pub enum ValidatorCommitteeClientError {
         committee_size: usize,
         last_error: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use tari_crypto::{
+        keys::PublicKey,
+        ristretto::{RistrettoPublicKey, RistrettoSecretKey},
+    };
+
+    use super::*;
+
+    fn peer(n: u64) -> PeerAddress {
+        RistrettoPublicKey::from_secret_key(&RistrettoSecretKey::from(n)).into()
+    }
+
+    #[test]
+    fn failed_peers_are_excluded_for_the_rest_of_the_epoch() {
+        let mut failed = FailedPeers::default();
+        failed.at(Epoch(5)).insert(peer(1));
+        failed.at(Epoch(5)).insert(peer(2));
+
+        assert_eq!(*failed.at(Epoch(5)), HashSet::from([peer(1), peer(2)]));
+    }
+
+    #[test]
+    fn failed_peers_are_forgotten_when_the_epoch_moves() {
+        let mut failed = FailedPeers::default();
+        failed.at(Epoch(5)).insert(peer(1));
+
+        assert!(failed.at(Epoch(6)).is_empty());
+        failed.at(Epoch(6)).insert(peer(2));
+        assert_eq!(*failed.at(Epoch(6)), HashSet::from([peer(2)]));
+    }
 }
