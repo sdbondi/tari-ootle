@@ -12603,10 +12603,8 @@ dependencies = [
 name = "tari_ootle_transaction"
 version = "0.41.0"
 dependencies = [
- "blake2 0.10.6",
  "borsh",
  "criterion",
- "digest 0.10.7",
  "hex",
  "indexmap 2.14.2",
  "log",

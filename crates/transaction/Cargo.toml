@@ -20,9 +20,7 @@ ootle_serde = { workspace = true, features = ["std", "base64", "hex"], optional 
 ootle_byte_type = { workspace = true, features = ["crypto"] }
 ootle-network = { workspace = true }
 
-blake2 = { workspace = true }
 borsh = { workspace = true }
-digest = { workspace = true }
 log = { workspace = true }
 rand = { workspace = true }
 indexmap = { workspace = true }
