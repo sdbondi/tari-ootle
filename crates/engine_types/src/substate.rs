@@ -78,10 +78,10 @@ pub struct Substate {
 }
 
 impl Substate {
-    pub fn new<T: Into<SubstateValue>>(version: SubstateVersion, substate: T) -> Self {
+    pub fn new<V: Into<SubstateVersion>, T: Into<SubstateValue>>(version: V, substate: T) -> Self {
         Self {
             substate: substate.into(),
-            version,
+            version: version.into(),
         }
     }
 

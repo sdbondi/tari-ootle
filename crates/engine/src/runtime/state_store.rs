@@ -373,7 +373,7 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
 mod tests {
     use core::slice;
 
-    use tari_engine_types::{SubstateVersion, confidential::ClaimedOutputTombstone};
+    use tari_engine_types::confidential::ClaimedOutputTombstone;
     use tari_template_lib::types::{ClaimedOutputTombstoneAddress, ObjectKey};
 
     use super::*;
@@ -390,7 +390,7 @@ mod tests {
         backing
             .set_many(
                 ids.iter()
-                    .map(|id| (id.clone(), Substate::new(0, ClaimedOutputTombstone { value: 1 }))),
+                    .map(|id| (id.clone(), Substate::new(0u64, ClaimedOutputTombstone { value: 1 }))),
             )
             .unwrap();
         WorkingStateStore::new(backing, read_declared.iter().cloned().collect())
