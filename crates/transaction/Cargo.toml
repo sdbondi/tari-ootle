@@ -22,10 +22,6 @@ ootle-network = { workspace = true }
 
 blake2 = { workspace = true }
 borsh = { workspace = true }
-# Batch signature verification multiplies decompressed points directly. Must stay on the major version
-# tari_crypto builds against, or `RistrettoPublicKey::point()` yields a point of a different `RistrettoPoint` type.
-# Goes away with tari-crypto#249, which moves this verification and the challenge derivation into the library.
-curve25519-dalek = "5.0"
 digest = { workspace = true }
 log = { workspace = true }
 rand = { workspace = true }

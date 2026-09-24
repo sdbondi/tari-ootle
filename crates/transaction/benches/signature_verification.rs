@@ -17,7 +17,6 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use curve25519_dalek::traits::IsIdentity;
 use ootle_byte_type::{ConvertFromByteType, FromByteType, ToByteType};
 use tari_crypto::{
     keys::{PublicKey, SecretKey},
@@ -51,16 +50,12 @@ fn verify_individually(signatures: &[TransactionSignature], message: [u8; 64]) -
 /// A signature reaches a node as bytes, so this cost is unavoidable and cannot be amortised across a
 /// batch — which is what separates the speed-up achievable here from one measured over keys and
 /// nonces that are already decompressed (as `tari_crypto`'s own batch benchmark is).
-fn decode_only(signatures: &[TransactionSignature]) -> usize {
-    signatures
-        .iter()
-        .map(|sig| {
-            let public_key: RistrettoPublicKey = sig.public_key().try_from_byte_type().unwrap();
-            let signature = RistrettoSchnorr::convert_from_byte_type(sig.signature()).unwrap();
-            usize::from(public_key.point().is_identity()) +
-                usize::from(signature.get_public_nonce().point().is_identity())
-        })
-        .sum()
+fn decode_only(signatures: &[TransactionSignature]) {
+    for sig in signatures {
+        let public_key: RistrettoPublicKey = sig.public_key().try_from_byte_type().unwrap();
+        let signature = RistrettoSchnorr::convert_from_byte_type(sig.signature()).unwrap();
+        black_box((public_key, signature));
+    }
 }
 
 /// A seal over `seal_message`, from a key of its own.
@@ -84,7 +79,7 @@ fn bench(c: &mut Criterion) {
         });
 
         g.bench_with_input(BenchmarkId::new("decode", n), &n, |b, _| {
-            b.iter(|| black_box(decode_only(black_box(&sigs))))
+            b.iter(|| decode_only(black_box(&sigs)))
         });
 
         g.bench_with_input(BenchmarkId::new("batch", n), &n, |b, _| {
