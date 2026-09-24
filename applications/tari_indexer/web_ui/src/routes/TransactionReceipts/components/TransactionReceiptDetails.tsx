@@ -133,13 +133,15 @@ function TransactionReceiptDetails({ address }: { address: string }) {
                 </Accordion>
               )}
 
-              {receipt.diff_summary.upped.length > 0 && (
+              {receipt.diff_summary.upped.length + receipt.diff_summary.downed.length > 0 && (
                 <Accordion expanded={expandedPanels.includes("p3")} onChange={handleChange("p3")}>
                   <AccordionSummary>
-                    <Typography variant="h5">Substate Changes ({receipt.diff_summary.upped.length})</Typography>
+                    <Typography variant="h5">
+                      Substate Changes ({receipt.diff_summary.upped.length + receipt.diff_summary.downed.length})
+                    </Typography>
                   </AccordionSummary>
                   <AccordionDetails>
-                    <SubstateChanges upped={receipt.diff_summary.upped} />
+                    <SubstateChanges upped={receipt.diff_summary.upped} downed={receipt.diff_summary.downed} />
                   </AccordionDetails>
                 </Accordion>
               )}

@@ -321,7 +321,10 @@ mod tests {
             .build();
         SubstateValue::TransactionReceipt(TransactionReceipt {
             outcome: FinalizeOutcome::Commit,
-            diff_summary: DiffSummary { upped: Box::new([]) },
+            diff_summary: DiffSummary {
+                upped: Box::new([]),
+                downed: Box::new([]),
+            },
             fee_withdrawals: Box::new([]),
             events: Box::new([]),
             fee_receipt,
@@ -349,7 +352,7 @@ mod tests {
     fn version_0_receipt_hash_is_pinned() {
         assert_eq!(
             hex(hash_at(ProtocolVersion::V0, &receipt(0))),
-            "b0e49359759f3845cfeaec2ddf6aaee6c7c3f1d1abb26524b082ddeb344ad115"
+            "69e78b9cdb50296e66a7c951528c1958b37f03f2a1023340c85c2f87f09f4c20"
         );
         // Esmeralda is the network whose history was hashed under version 0.
         assert_eq!(ProtocolVersion::at(Network::Esmeralda, Epoch(3)), ProtocolVersion::V0);
@@ -364,7 +367,7 @@ mod tests {
     fn version_1_hash_is_pinned() {
         assert_eq!(
             hex(hash_at(ProtocolVersion::V1, &receipt(123))),
-            "1acb3bbf878dedc70e27215a30d597ef45a9adc7b8f587dee8f92f97c69ad676"
+            "9baaaa4e443977af5d248e158d071e8ecfe2db2d9a057b8687ac1ceeaaab4be8"
         );
     }
 

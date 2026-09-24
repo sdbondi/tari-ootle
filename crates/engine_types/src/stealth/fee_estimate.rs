@@ -111,22 +111,22 @@ impl MergedStealthTransferShape {
     /// An upper bound on the bytes of permanent state this shape persists: the UTXOs it creates and
     /// the transaction receipt that records the whole thing.
     ///
-    /// The UTXOs it spends contribute nothing. Spending downs a UTXO — it leaves state rather than
-    /// being rewritten as spent — so it is neither byte-counted nor listed in the receipt's diff
-    /// summary.
+    /// A spent UTXO leaves state rather than being rewritten as spent, so its only footprint is its
+    /// downed entry in the receipt's diff summary.
     fn persisted_bytes_upper_bound(&self) -> usize {
         self.persisted_output_bytes
             .saturating_add(self.receipt_bytes_upper_bound())
     }
 
-    /// An upper bound on the receipt this shape finalizes into. Each created UTXO takes one
-    /// diff-summary entry; the receipt is absent from its own summary, and the transfer emits no
-    /// events and withdraws no validator fees.
+    /// An upper bound on the receipt this shape finalizes into. Each created UTXO takes one upped
+    /// diff-summary entry and each spent one a downed entry; the receipt is absent from its own
+    /// summary, and the transfer emits no events and withdraws no validator fees.
     fn receipt_bytes_upper_bound(&self) -> usize {
         let upped = vec![SubstateId::Utxo(widest_utxo_address()); self.num_outputs];
+        let downed = vec![SubstateId::Utxo(widest_utxo_address()); self.num_inputs];
         // The epoch is measured at its widest rather than taken from the caller: a receipt priced
         // for one epoch would otherwise come in under a transaction that lands in a wider one.
-        TransactionReceipt::encoded_size_upper_bound(&[], &[], upped.iter(), Epoch(u64::MAX))
+        TransactionReceipt::encoded_size_upper_bound(&[], &[], upped.iter(), downed.iter(), Epoch(u64::MAX))
     }
 }
 
@@ -216,12 +216,14 @@ mod tests {
         );
     }
 
-    /// An input aggregates a commitment and then leaves state; an output verifies a range proof and
-    /// occupies a new slot for good. Nothing about the estimate should suggest otherwise.
+    /// An input aggregates a commitment and then leaves state, leaving only its downed entry in the
+    /// receipt; an output verifies a range proof and occupies a new slot for good.
     #[test]
-    fn an_input_costs_only_its_verification() {
+    fn an_input_costs_its_verification_and_its_receipt_entry() {
         let extra_input = shape(2, 1).estimate_fee(&rates()) - shape(1, 1).estimate_fee(&rates());
-        assert_eq!(extra_input, P::PER_INPUT / 1000);
+        let downed_entry = shape(2, 1).receipt_bytes_upper_bound() - shape(1, 1).receipt_bytes_upper_bound();
+        assert!(downed_entry > 0);
+        assert_eq!(extra_input, P::PER_INPUT / 1000 + downed_entry as u64);
 
         let extra_output = shape(1, 2).estimate_fee(&rates()) - shape(1, 1).estimate_fee(&rates());
         assert!(extra_output > extra_input);
