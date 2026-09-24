@@ -112,6 +112,7 @@ fn test_two_claims_against_one_pool_in_a_transaction() {
         .get_substate(&SubstateId::ValidatorFeePool(addr))
         .unwrap();
     assert_eq!(pool_state.substate_value().as_validator_fee_pool().unwrap().amount(), 0);
+    assert_eq!(pool_state.version(), SubstateVersion::new(1));
 }
 
 /// Consensus applies a claim to the pool in place, so the claim appears in the diff and receipt only as withdrawals:

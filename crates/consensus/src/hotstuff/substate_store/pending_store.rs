@@ -246,18 +246,6 @@ impl<'a, TTx: StateStoreReadTransaction> WriteableSubstateStore for PendingSubst
     }
 
     fn put_diff(&mut self, diff: &SubstateDiff) -> Result<(), Self::Error> {
-        // A fee pool is written only through the withdrawals below, never through the diff.
-        if let Some(id) = diff
-            .down_iter()
-            .map(|(id, _)| id)
-            .chain(diff.up_iter().map(|(id, _)| id))
-            .find(|id| id.is_validator_fee_pool())
-        {
-            return Err(SubstateStoreError::InvariantError {
-                details: format!("Transaction diff contains validator fee pool {id}"),
-            });
-        }
-
         for (id, version) in diff.down_iter() {
             let id = VersionedSubstateId::new(id.clone(), *version);
             let shard = id.to_shard(self.num_preshards);
