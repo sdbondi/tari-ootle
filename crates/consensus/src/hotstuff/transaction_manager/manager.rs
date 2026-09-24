@@ -554,16 +554,10 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         non_local_inputs: IndexSet<InputDeclarationRef<'_>>,
     ) -> Result<PreparedTransaction, BlockTransactionExecutorError> {
         // This shard group does not hold every input, so it cannot execute to discover how each one is
-        // used and must lock on what the transaction declared. Writing to a read-declared input aborts in
-        // the engine, so a read lock here cannot be escaped by the transaction that asked for it.
-        let requested_locks = local_versions.iter().map(|(req, version)| {
-            let requirement = req.to_substate_requirement_ref().to_owned();
-            if req.is_write() {
-                SubstateRequirementLockIntent::write(requirement, *version)
-            } else {
-                SubstateRequirementLockIntent::read(requirement, *version)
-            }
-        });
+        // used and must lock on what the transaction declared.
+        let requested_locks = local_versions
+            .iter()
+            .map(|(decl, version)| declared_lock_intent(decl, *version));
 
         let mut evidence = Evidence::from_lock_intents(
             local_committee_info.num_preshards(),
@@ -677,4 +671,52 @@ struct ResolvedInputs<'a> {
     pub local_inputs: IndexMap<InputDeclarationRef<'a>, SubstateVersion>,
     pub foreign_inputs: IndexSet<InputDeclarationRef<'a>>,
     pub num_local_tombstones: usize,
+}
+
+/// The lock a shard group takes on an input it holds but cannot execute against, from the transaction's
+/// declaration alone. Writing to a read-declared input aborts in the engine, so a read lock cannot be escaped by
+/// the transaction that asked for it. A substate that no transaction can write takes a read lock whatever was
+/// declared, so that the default write declaration does not serialise every transaction that uses it.
+fn declared_lock_intent(decl: &InputDeclarationRef<'_>, version: SubstateVersion) -> SubstateRequirementLockIntent {
+    let requirement = decl.to_substate_requirement_ref().to_owned();
+    if decl.is_write() && !decl.substate_id().is_read_only() {
+        SubstateRequirementLockIntent::write(requirement, version)
+    } else {
+        SubstateRequirementLockIntent::read(requirement, version)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tari_engine_types::substate::SubstateId;
+    use tari_ootle_common_types::{InputDeclarationRef, SubstateLockType, SubstateVersion};
+    use tari_template_lib_types::{
+        ComponentAddress,
+        ObjectKey,
+        constants::{PUBLIC_IDENTITY_RESOURCE_ADDRESS, STEALTH_TARI_RESOURCE_ADDRESS},
+    };
+
+    use super::declared_lock_intent;
+
+    fn lock_type(decl: InputDeclarationRef<'_>) -> SubstateLockType {
+        declared_lock_intent(&decl, SubstateVersion::ZERO).lock_type()
+    }
+
+    #[test]
+    fn a_write_declaration_on_a_writable_substate_takes_a_write_lock() {
+        let id = SubstateId::Component(ComponentAddress::new(ObjectKey::from_array([1; 32])));
+        assert_eq!(lock_type(InputDeclarationRef::write(&id)), SubstateLockType::Write);
+        assert_eq!(lock_type(InputDeclarationRef::read(&id)), SubstateLockType::Read);
+    }
+
+    #[test]
+    fn a_write_declaration_on_a_read_only_substate_takes_a_read_lock() {
+        for id in [
+            SubstateId::Resource(STEALTH_TARI_RESOURCE_ADDRESS),
+            SubstateId::Resource(PUBLIC_IDENTITY_RESOURCE_ADDRESS),
+        ] {
+            assert!(id.is_read_only());
+            assert_eq!(lock_type(InputDeclarationRef::write(&id)), SubstateLockType::Read);
+        }
+    }
 }
