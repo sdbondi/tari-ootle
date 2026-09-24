@@ -5,12 +5,13 @@
 //! locks it from that declaration alone, without executing, so the declaration has to be an upper
 //! bound on access rather than a hint: writing to a read-declared input aborts here.
 
+use ootle_byte_type::ToByteType;
 use tari_engine::runtime::RuntimeError;
 use tari_engine_types::substate::SubstateId;
-use tari_ootle_common_types::InputDeclaration;
+use tari_ootle_common_types::{InputDeclaration, substate_type::SubstateType};
 use tari_ootle_transaction::{Epoch, Transaction, args};
-use tari_template_lib::types::ComponentAddress;
-use tari_template_test_tooling::{TemplateTest, support::assert_error::assert_reject_reason};
+use tari_template_lib::types::{Amount, ComponentAddress, constants::XTR_FAUCET_CLAIM_RESOURCE_ADDRESS};
+use tari_template_test_tooling::{TemplateTest, support::assert_error::assert_reject_reason, xtr_faucet_component};
 
 const CRATE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"));
 
@@ -96,4 +97,45 @@ fn a_substate_declared_both_ways_is_a_write() {
 
     let value: u32 = test.call_method(component, "get", args![], vec![]);
     assert_eq!(value, 7);
+}
+
+#[test]
+fn minting_and_burning_leave_a_resource_without_supply_tracking_as_a_read() {
+    let mut test = TemplateTest::new(CRATE_PATH, Vec::<&str>::new());
+    let (owner_proof, public_key, secret_key) = test.create_owner_proof();
+
+    // The faucet claim mints a receipt on the claim resource and burns it straight away. The claim resource does
+    // not track supply, so neither operation alters it.
+    test.execute_expect_success(
+        test.transaction()
+            .add_input(InputDeclaration::read(XTR_FAUCET_CLAIM_RESOURCE_ADDRESS))
+            .create_account(public_key.to_byte_type())
+            .put_last_instruction_output_on_workspace("account")
+            .call_method(xtr_faucet_component(), "take", args![Workspace("account")])
+            .build_and_seal(&secret_key),
+        vec![owner_proof],
+    );
+}
+
+#[test]
+fn burning_from_a_read_declared_resource_that_tracks_supply_aborts() {
+    let mut test = TemplateTest::new(CRATE_PATH, vec!["tests/templates/faucet"]);
+    test.execute_expect_success(
+        test.transaction()
+            .call_function(test.get_template_address("TestFaucet"), "mint", args![Amount::new(1000)])
+            .build_and_seal(test.secret_key()),
+        vec![],
+    );
+    let faucet = test.get_previous_output_address(SubstateType::Component);
+    let resource = test.get_previous_output_address(SubstateType::Resource);
+
+    let reason = test.execute_expect_failure(
+        test.transaction()
+            .add_input(InputDeclaration::read(resource.clone()))
+            .call_method(faucet.as_component_address().unwrap(), "burn_coins", args![Amount::new(10)])
+            .build_and_seal(test.secret_key()),
+        vec![],
+    );
+
+    assert_reject_reason(&reason, RuntimeError::WriteToReadDeclaredInput { id: resource });
 }
