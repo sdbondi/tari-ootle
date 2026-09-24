@@ -1,1 +1,13 @@
--- This file should undo anything in `up.sql`
+drop table substate_cache_invalidations;
+drop table substate_cache;
+drop table verified_state_roots;
+drop table watched_substates;
+drop table template_catalogue;
+drop table utxos;
+drop table epoch_checkpoints;
+drop table key_values;
+drop table transactions;
+drop table transaction_receipts;
+drop table events;
+drop table substate_transitions;
+drop table substates;
