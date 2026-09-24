@@ -177,7 +177,8 @@ where
                 "Adding substate to initial call scope: {}",
                 input
             );
-            if input.is_write() {
+            // Consensus read-locks a read-only substate whatever was declared, so the engine holds it to a read.
+            if input.is_write() && !input.substate_id().is_read_only() {
                 write_declared_inputs.insert(input.substate_id().clone());
             } else {
                 read_declared_inputs.insert(input.substate_id().clone());

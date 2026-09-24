@@ -2015,7 +2015,7 @@ where
                 reject_invalid_m_of_n("new_rule", new_rule.find_invalid_m_of_n())?;
 
                 let resource_lock = self.tracker.write_with(|state_mut| {
-                    let resource_lock = state_mut.write_lock_substate(SubstateId::Resource(resource_address))?;
+                    let resource_lock = state_mut.read_lock_substate(SubstateId::Resource(resource_address))?;
 
                     let resource = state_mut.get_resource(&resource_lock)?;
                     let updater = resource.access_rules().get_updater(&action);
@@ -2032,7 +2032,8 @@ where
                         });
                     }
 
-                    Ok::<_, RuntimeError>(resource_lock)
+                    state_mut.unlock_substate(resource_lock)?;
+                    state_mut.write_lock_substate(SubstateId::Resource(resource_address))
                 })?;
 
                 self.tracker.write_with(|state_mut| {
@@ -2057,7 +2058,7 @@ where
                 let UpdateAuthHookArg { auth_hook } = args.assert_one_arg()?;
 
                 let resource_lock = self.tracker.write_with(|state_mut| {
-                    let resource_lock = state_mut.write_lock_substate(SubstateId::Resource(resource_address))?;
+                    let resource_lock = state_mut.read_lock_substate(SubstateId::Resource(resource_address))?;
 
                     let resource = state_mut.get_resource(&resource_lock)?;
                     let updater = resource.access_rules().auth_hook_updater();
@@ -2074,7 +2075,8 @@ where
                         });
                     }
 
-                    Ok::<_, RuntimeError>(resource_lock)
+                    state_mut.unlock_substate(resource_lock)?;
+                    state_mut.write_lock_substate(SubstateId::Resource(resource_address))
                 })?;
 
                 // The hook being replaced is not invoked: a hook that denies or panics is the failure this

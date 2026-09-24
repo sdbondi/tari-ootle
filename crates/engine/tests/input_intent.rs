@@ -6,11 +6,18 @@
 //! bound on access rather than a hint: writing to a read-declared input aborts here.
 
 use ootle_byte_type::ToByteType;
-use tari_engine::runtime::RuntimeError;
+use tari_engine::runtime::{ActionIdent, NativeAction, RuntimeError};
 use tari_engine_types::substate::SubstateId;
 use tari_ootle_common_types::{InputDeclaration, substate_type::SubstateType};
 use tari_ootle_transaction::{Epoch, Transaction, args};
-use tari_template_lib::types::{Amount, ComponentAddress, constants::XTR_FAUCET_CLAIM_RESOURCE_ADDRESS};
+use tari_template_lib::types::{
+    AccessRule,
+    Amount,
+    ComponentAddress,
+    OwnerRule,
+    access_rules::{ComponentAccessRules, ResourceAccessRules, ResourceAuthAction},
+    constants::XTR_FAUCET_CLAIM_RESOURCE_ADDRESS,
+};
 use tari_template_test_tooling::{TemplateTest, support::assert_error::assert_reject_reason, xtr_faucet_component};
 
 const CRATE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"));
@@ -142,4 +149,49 @@ fn burning_from_a_read_declared_resource_that_tracks_supply_aborts() {
     );
 
     assert_reject_reason(&reason, RuntimeError::WriteToReadDeclaredInput { id: resource });
+}
+
+#[test]
+fn an_unauthorized_access_rule_update_on_a_read_declared_resource_is_denied_access() {
+    let mut test = TemplateTest::new(CRATE_PATH, vec!["tests/templates/access_rules"]);
+    let (owner_proof, _, owner_key) = test.create_owner_proof();
+
+    // The default resource rules lock the mint updater, so not even the owner may change the mint rule.
+    let result = test.execute_expect_success(
+        Transaction::builder_localnet(Epoch(1))
+            .call_function(
+                test.get_template_address("AccessRulesTest"),
+                "with_configured_rules",
+                args![
+                    OwnerRule::OwnedBySigner,
+                    ComponentAccessRules::new().default(AccessRule::AllowAll),
+                    ResourceAccessRules::new(),
+                    AccessRule::DenyAll,
+                ],
+            )
+            .build_and_seal(&owner_key),
+        vec![owner_proof.clone()],
+    );
+    let diff = result.finalize.result.any_accept().unwrap();
+    let component = diff.up_iter().find_map(|(id, _)| id.as_component_address()).unwrap();
+    let resources = diff
+        .up_iter()
+        .filter(|(id, _)| id.is_resource())
+        .map(|(id, _)| InputDeclaration::read(id.clone()))
+        .collect::<Vec<_>>();
+
+    let reason = test.execute_expect_failure(
+        Transaction::builder_localnet(Epoch(1))
+            .with_inputs(resources)
+            .call_method(component, "update_tokens_access_rule", args![
+                ResourceAuthAction::Mint,
+                AccessRule::AllowAll
+            ])
+            .build_and_seal(&owner_key),
+        vec![owner_proof],
+    );
+
+    assert_reject_reason(&reason, RuntimeError::AccessDenied {
+        action_ident: ActionIdent::Native(NativeAction::UpdateResourceAccessRule(ResourceAuthAction::Mint)),
+    });
 }
