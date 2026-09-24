@@ -163,6 +163,8 @@ impl BlockHeader {
         Ok(header)
     }
 
+    /// A header for a proposal, to be signed with [`Self::set_signature`]. Its id is the id of the signed header, so
+    /// [`Self::calculate_id`] matches [`Self::id`] only once the signature is set.
     #[allow(clippy::too_many_arguments)]
     pub fn create_unsigned(
         network: Network,
