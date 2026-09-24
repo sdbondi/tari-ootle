@@ -183,14 +183,15 @@ impl UnsignedTransaction {
         self
     }
 
-    /// Sets the read or write intent of every declared input, keeping the declarations and their order.
-    pub fn with_input_intents<F: FnMut(&InputDeclaration) -> bool>(mut self, mut is_write: F) -> Self {
+    /// Declares as a read each write-declared input for which `is_read` returns true, keeping the
+    /// declarations and their order. A read declaration is left a read.
+    pub fn narrow_to_reads<F: FnMut(&InputDeclaration) -> bool>(mut self, mut is_read: F) -> Self {
         let inputs = std::mem::take(self.inputs_mut());
         *self.inputs_mut() = inputs
             .into_iter()
             .map(|decl| {
-                let write = is_write(&decl);
-                decl.with_intent(write)
+                let narrow = decl.is_write() && is_read(&decl);
+                if narrow { decl.with_intent(false) } else { decl }
             })
             .collect();
         self

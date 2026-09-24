@@ -820,7 +820,7 @@ where
         Ok(result) => match result.finalize.accept() {
             Some(diff) => {
                 let written = diff.down_iter().map(|(id, _)| id).collect::<HashSet<_>>();
-                sign(unsigned.with_input_intents(|decl| written.contains(decl.substate_id())))
+                sign(unsigned.narrow_to_reads(|decl| !written.contains(decl.substate_id())))
             },
             None => sign(unsigned),
         },

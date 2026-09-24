@@ -51,6 +51,10 @@ pub struct PrunedUnsignedTransactionV1 {
     pub instructions: Vec<Instruction>,
     #[n(3)]
     #[cbor(with = "tari_bor::adapters::indexset_codec")]
+    #[cfg_attr(
+        feature = "serde",
+        serde(deserialize_with = "tari_ootle_common_types::deserialize_input_declarations")
+    )]
     pub inputs: IndexSet<InputDeclaration>,
     #[n(4)]
     pub min_epoch: Option<Epoch>,

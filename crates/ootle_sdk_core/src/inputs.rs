@@ -857,18 +857,14 @@ fn component_vault_ids(component: &tari_engine_types::component::Component) -> R
     Ok(indexed.vault_ids().iter().map(|v| SubstateId::Vault(*v)).collect())
 }
 
-/// Pushes an input only if not already present (stable `Vec`, `IndexSet`-like de-dup). A substate declared both as
-/// a read and as a write is a write, whichever came first.
+/// Pushes an input only if not already present (stable `Vec`, `IndexSet`-like de-dup), merging it into an
+/// existing declaration of the same substate as [`tari_ootle_common_types::declare_input`] does.
 fn push_unique(resolved: &mut Vec<InputDeclaration>, req: InputDeclaration) {
     match resolved
         .iter_mut()
         .find(|existing| existing.substate_id() == req.substate_id())
     {
-        Some(existing) => {
-            if req.is_write() {
-                *existing = existing.clone().with_intent(true);
-            }
-        },
+        Some(existing) => *existing = existing.merge(&req),
         None => resolved.push(req),
     }
 }

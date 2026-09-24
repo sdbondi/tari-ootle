@@ -102,6 +102,16 @@ impl InputDeclaration {
         }
     }
 
+    /// The declaration covering both `self` and `other`, which name the same substate: a write if either
+    /// is, pinned to `self`'s version, or to `other`'s if `self` names none.
+    pub fn merge(&self, other: &InputDeclaration) -> InputDeclaration {
+        InputDeclaration::new(
+            self.substate_id.clone(),
+            self.version.or(other.version),
+            self.is_write || other.is_write,
+        )
+    }
+
     pub fn with_intent(mut self, is_write: bool) -> Self {
         self.is_write = is_write;
         self
@@ -254,27 +264,23 @@ impl AsRef<SubstateId> for InputDeclaration {
     }
 }
 
-/// Adds `decl` to a transaction's declarations, widening the intent if the substate is already
-/// declared.
+/// Adds `decl` to a transaction's declarations, merging it into an existing declaration of the same
+/// substate.
 ///
 /// A substate that a transaction both reads and writes must be write-locked, and because a set
 /// keys declarations on the substate id alone, plain insertion would let declaration order decide
-/// that. The version of an existing declaration is left as it is.
+/// that. A merged declaration is a write if either one is, and pins the version of the existing
+/// declaration, or of `decl` if the existing one names none.
 pub fn declare_input(inputs: &mut IndexSet<InputDeclaration>, decl: InputDeclaration) {
-    let widened = match inputs.get(decl.substate_id()) {
-        Some(existing) => {
-            if existing.is_write || decl.is_read() {
-                return;
-            }
-            InputDeclaration::new(existing.substate_id.clone(), existing.version, true)
-        },
+    let merged = match inputs.get(decl.substate_id()) {
+        Some(existing) => existing.merge(&decl),
         None => {
             inputs.insert(decl);
             return;
         },
     };
     // `replace` keeps the declaration at its original position, which the signing preimage depends on.
-    inputs.replace(widened);
+    inputs.replace(merged);
 }
 
 /// [`declare_input`] for each of `decls`.
@@ -282,6 +288,26 @@ pub fn declare_inputs<I: IntoIterator<Item = InputDeclaration>>(inputs: &mut Ind
     for decl in decls {
         declare_input(inputs, decl);
     }
+}
+
+/// Deserializes a transaction's declarations, rejecting a substate declared more than once.
+///
+/// A transaction's declarations are a set keyed on the substate id, so an encoding that names a
+/// substate twice has no single meaning: keeping either one would silently discard the other's intent.
+pub fn deserialize_input_declarations<'de, D>(deserializer: D) -> Result<IndexSet<InputDeclaration>, D::Error>
+where D: serde::Deserializer<'de> {
+    let decls = Vec::<InputDeclaration>::deserialize(deserializer)?;
+    let mut set = IndexSet::<InputDeclaration>::with_capacity(decls.len());
+    for decl in decls {
+        if let Some(existing) = set.get(decl.substate_id()) {
+            return Err(serde::de::Error::custom(format!(
+                "input {} is declared more than once",
+                existing.substate_id()
+            )));
+        }
+        set.insert(decl);
+    }
+    Ok(set)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -496,6 +522,52 @@ mod tests {
             assert_eq!(set.len(), 1);
             assert!(set[0].is_write());
         }
+    }
+
+    #[test]
+    fn widening_a_declaration_keeps_a_version_either_one_pins() {
+        let mut set = IndexSet::new();
+        declare_inputs(&mut set, [
+            InputDeclaration::read(component()),
+            InputDeclaration::write_versioned(component(), SubstateVersion::new(5)),
+        ]);
+        assert!(set[0].is_write());
+        assert_eq!(set[0].version(), Some(SubstateVersion::new(5)));
+
+        let mut set = IndexSet::new();
+        declare_inputs(&mut set, [
+            InputDeclaration::write_versioned(component(), SubstateVersion::new(3)),
+            InputDeclaration::read_versioned(component(), SubstateVersion::new(5)),
+        ]);
+        assert!(set[0].is_write());
+        assert_eq!(set[0].version(), Some(SubstateVersion::new(3)));
+    }
+
+    #[test]
+    fn a_substate_declared_twice_on_the_wire_is_rejected() {
+        #[derive(Deserialize)]
+        struct Inputs {
+            #[serde(deserialize_with = "deserialize_input_declarations")]
+            inputs: IndexSet<InputDeclaration>,
+        }
+
+        let id = component().to_string();
+        let json = format!(
+            r#"{{"inputs":[{{"substate_id":"{id}","version":null,"is_write":false}},{{"substate_id":"{id}","version":null,"is_write":true}}]}}"#
+        );
+        let err = serde_json::from_str::<Inputs>(&json)
+            .err()
+            .expect("duplicate must be rejected");
+        assert!(err.to_string().contains("declared more than once"), "{err}");
+
+        let other = SubstateId::Component(ComponentAddress::from_array([2u8; 32]));
+        let json = format!(
+            r#"{{"inputs":[{{"substate_id":"{id}","version":null,"is_write":false}},{{"substate_id":"{other}","version":null}}]}}"#
+        );
+        let decoded = serde_json::from_str::<Inputs>(&json).unwrap();
+        assert_eq!(decoded.inputs.len(), 2);
+        assert!(decoded.inputs[0].is_read());
+        assert!(decoded.inputs[1].is_write());
     }
 
     #[test]

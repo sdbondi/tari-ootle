@@ -27,6 +27,10 @@ pub struct UnsignedTransactionV1 {
     /// Input objects that may be read/write
     #[n(3)]
     #[cbor(with = "tari_bor::adapters::indexset_codec")]
+    #[cfg_attr(
+        feature = "serde",
+        serde(deserialize_with = "tari_ootle_common_types::deserialize_input_declarations")
+    )]
     pub inputs: IndexSet<InputDeclaration>,
     #[n(4)]
     pub min_epoch: Option<Epoch>,
