@@ -11,9 +11,13 @@ mod dummy_fill_anchor;
 #[cfg(test)]
 mod epoch_change;
 #[cfg(test)]
+mod extends_justify;
+#[cfg(test)]
 mod last_voted_persistence;
 #[cfg(test)]
 mod leader_failure;
+#[cfg(test)]
+mod leader_fast_skip;
 #[cfg(test)]
 mod safe_node_predicate;
 #[cfg(test)]
@@ -24,3 +28,5 @@ mod state_tree;
 mod substate_store;
 #[cfg(test)]
 mod support;
+#[cfg(test)]
+mod vote_equivocation_withholding;

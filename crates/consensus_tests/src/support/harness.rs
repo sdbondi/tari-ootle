@@ -53,6 +53,7 @@ use tokio::{
 
 use super::{
     MessageFilter,
+    NetworkSendObserver,
     TEST_NUM_PRESHARDS,
     TEST_WASM_EXECUTION_POINTS,
     build_substate_id_for_committee,
@@ -663,6 +664,7 @@ pub struct TestBuilder {
     rocks_path: Option<String>,
     timeout: Option<Duration>,
     message_filter: Option<MessageFilter>,
+    send_observer: Option<NetworkSendObserver>,
     failure_nodes: Vec<TestAddress>,
     config: HotstuffConfig,
     claim_keys: Option<(TestVnDestination, RistrettoPublicKey)>,
@@ -678,6 +680,7 @@ impl TestBuilder {
             timeout: Some(DEFAULT_PACEMAKER_BLOCK_TIME + Duration::from_secs(2)),
             rocks_path: None,
             message_filter: None,
+            send_observer: None,
             failure_nodes: Vec::new(),
             claim_keys: None,
             allow_wasm_budget_deferrals: false,
@@ -690,7 +693,9 @@ impl TestBuilder {
                     num_preshards: TEST_NUM_PRESHARDS,
                     pacemaker_block_time: DEFAULT_PACEMAKER_BLOCK_TIME,
                     missed_proposal_suspend_threshold: 5,
-                    missed_proposal_recovery_threshold: 5,
+                    probation_base_votes: 5,
+                    probation_base_blocks: 100,
+                    probation_max_backoff_exp: 6,
                     max_transaction_validity_epochs: 100,
                     // Keep the weight budget effectively unbounded in tests so behaviour stays
                     // count-limited (as before) unless a test specifically exercises the weight budget.
@@ -762,6 +767,13 @@ impl TestBuilder {
         self
     }
 
+    /// Installs an observer called on the sending task, before each outbound message is handed to
+    /// the network, with the sender's address and its own state store.
+    pub fn with_send_observer(mut self, send_observer: NetworkSendObserver) -> Self {
+        self.send_observer = Some(send_observer);
+        self
+    }
+
     pub fn with_message_filter(mut self, message_filter: MessageFilter) -> Self {
         self.message_filter = Some(message_filter);
         self
@@ -786,6 +798,7 @@ impl TestBuilder {
         rocks_path_override: Option<String>,
         config: HotstuffConfig,
         failure_nodes: &[TestAddress],
+        send_observer: Option<NetworkSendObserver>,
         shutdown_signal: ShutdownSignal,
     ) -> (Vec<ValidatorChannels>, HashMap<TestAddress, Validator>) {
         let num_committees = epoch_manager.get_num_committees(Epoch(1)).await.unwrap();
@@ -825,6 +838,7 @@ impl TestBuilder {
                     .with_epoch_manager(epoch_manager.clone_for(vn.address.clone(), pk, vn.shard_key, vn.fee_claim_public_key))
                     .with_leader_strategy(*leader_strategy)
                     .with_num_committees(num_committees)
+                    .with_send_observer(send_observer.clone())
                     .spawn(shutdown_signal.clone());
                 (channels, (vn.address, validator))
             })
@@ -867,6 +881,7 @@ impl TestBuilder {
             self.rocks_path,
             self.config,
             &self.failure_nodes,
+            self.send_observer,
             shutdown.to_signal(),
         )
         .await;

@@ -5,7 +5,10 @@ use std::collections::{HashMap, hash_map::Entry};
 
 use ootle_network::Network;
 use tari_common_types::types::FixedHash;
-use tari_engine_types::substate::{SubstateId, SubstateValue, hash_substate};
+use tari_engine_types::{
+    limits::MAX_CBOR_NESTING_DEPTH,
+    substate::{SubstateId, SubstateValue, hash_substate},
+};
 use tari_ootle_common_types::{Epoch, NumPreshards, ShardGroup, VersionedSubstateId, shard::Shard};
 use tari_state_tree::{
     RootProofTree,
@@ -137,7 +140,7 @@ impl<'a, TTx: StateStoreReadTransaction> SubstateProofGenerator<'a, TTx> {
 pub fn verify_substate_value_proof_against_root(
     value_proof_bytes: &[u8],
     substate_id: &SubstateId,
-    version: u32,
+    version: u64,
     value: Option<&SubstateValue>,
     network: Network,
     proof_epoch: Epoch,
@@ -145,8 +148,9 @@ pub fn verify_substate_value_proof_against_root(
 ) -> Result<(), SubstateProofVerifyError> {
     let group_root = TreeHash::new(trusted_root.into_array());
 
-    let value_proof: SubstateValueProof = tari_bor::serde_codec::from_slice(value_proof_bytes)
-        .map_err(|e| SubstateProofVerifyError::Decode(e.to_string()))?;
+    let value_proof: SubstateValueProof =
+        tari_bor::serde_codec::from_slice_with_max_depth(value_proof_bytes, MAX_CBOR_NESTING_DEPTH)
+            .map_err(|e| SubstateProofVerifyError::Decode(e.to_string()))?;
 
     let versioned_id = VersionedSubstateId::new(substate_id.clone(), version);
     match value {

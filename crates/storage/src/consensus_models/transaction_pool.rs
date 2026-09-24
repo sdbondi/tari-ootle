@@ -65,6 +65,7 @@ impl<TStateStore: StateStore> TransactionPool<TStateStore> {
         Ok(exists)
     }
 
+    #[expect(clippy::too_many_arguments)]
     pub fn insert_new(
         &self,
         tx: &mut TStateStore::WriteTransaction<'_>,
@@ -465,6 +466,7 @@ impl TransactionPoolRecord {
         }
     }
 
+    #[expect(clippy::too_many_arguments)]
     pub fn load(
         id: TransactionId,
         evidence: Evidence,
@@ -952,7 +954,7 @@ impl TransactionPoolRecord {
     ) -> Result<bool, StorageError>
     where
         TTx: StateStoreReadTransaction,
-        TObj: IntoIterator<Item = (&'a SubstateId, Option<(u32, SubstateLockType)>)>,
+        TObj: IntoIterator<Item = (&'a SubstateId, Option<(u64, SubstateLockType)>)>,
     {
         for (substate_id, data) in involved_objects {
             let Some((version, lock_type)) = data else {

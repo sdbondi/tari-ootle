@@ -70,6 +70,7 @@ use tari_ootle_storage::{
         BlockTransactionExecution,
         EpochCheckpoint,
         ForeignProposalRecord,
+        LivenessCounters,
         LockedSubstateValue,
         PendingShardStateTreeDiff,
         StateVersionTransitions,
@@ -145,7 +146,9 @@ use crate::{
         transaction::TransactionCf,
         transaction_pool::TransactionPoolCf,
         transaction_pool_state_update,
+        validator_liveness_log::ValidatorLivenessLogCf,
         validator_node_epoch_stats::ValidatorNodeEpochStatsCf,
+        vote_equivocation,
     },
     error::RocksDbStorageError,
     read_only::ReadOnly,
@@ -356,7 +359,7 @@ impl<'a, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'a, R: RocksRea
         &self,
         end_block: &BlockId,
         substate_id: &SubstateId,
-        version: Option<u32>,
+        version: Option<u64>,
     ) -> Result<Option<BlockDiffKey>, RocksDbStorageError> {
         let applicable_blocks = self.get_pending_chain_until(end_block)?;
 
@@ -1158,6 +1161,34 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         Ok(change)
     }
 
+    fn block_diffs_contains_versioned_substate<'a, T: Into<VersionedSubstateIdRef<'a>>>(
+        &self,
+        block_id: &BlockId,
+        substate_id: T,
+    ) -> Result<bool, StorageError> {
+        const OPERATION: &str = "block_diffs_contains_versioned_substate";
+        if !self.blocks_exists(block_id)? {
+            return Err(StorageError::QueryError {
+                reason: format!("{OPERATION}: Block {} does not exist", block_id),
+            });
+        }
+
+        let versioned = substate_id.into();
+        let applicable_blocks = self.get_pending_chain_until(block_id)?;
+
+        let query = self.db().cf(block_diff::BySubstateIdQuery)?;
+        // Existence only: the first key for this version in the branch answers it, and the change value - which for
+        // an UP is the whole substate - is never read.
+        for result in query.query_prefix_range_key_iterator(Ordering::default(), versioned.substate_id()) {
+            let key = result?;
+            if key.version == versioned.version() && applicable_blocks.contains(&key.block_id) {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
     fn proposal_certificates_get(&self, epoch: Epoch, qc_id: &PcId) -> Result<ProposalCertificate, StorageError> {
         const OPERATION: &str = "proposal_certificates_get";
         let qc = self.db().cf(ProposalCertificateCf)?.get(&(epoch, *qc_id), OPERATION)?;
@@ -1482,7 +1513,7 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         Ok(substates)
     }
 
-    fn substates_get_max_version_for_substate(&self, substate_id: &SubstateId) -> Result<(u32, bool), StorageError> {
+    fn substates_get_max_version_for_substate(&self, substate_id: &SubstateId) -> Result<(u64, bool), StorageError> {
         const OPERATION: &str = "substates_get_max_version_for_substate";
         let index_cf = self.db().cf(substate::HeadIndex)?;
         let data = index_cf.get(substate_id, OPERATION)?;
@@ -2011,10 +2042,63 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         let stats = cf.get(&(epoch, *public_key), OPERATION)?;
         Ok(stats)
     }
+
+    fn validator_liveness_counters_as_of(
+        &self,
+        epoch: Epoch,
+        public_key: &RistrettoPublicKeyBytes,
+        as_of: NodeHeight,
+    ) -> Result<Option<LivenessCounters>, StorageError> {
+        let cf = self.db().cf(ValidatorLivenessLogCf)?;
+        let start = cf.encode_key(&(epoch, *public_key, NodeHeight::zero()));
+        // The upper bound is exclusive and the query is inclusive of `as_of`.
+        let end = cf.encode_key(&(epoch, *public_key, as_of.saturating_add(NodeHeight(1))));
+        let counters = cf
+            .range_iterator(Ordering::Descending, start..end)
+            .next()
+            .transpose()?
+            .map(|(_, counters)| counters);
+        Ok(counters)
+    }
+
+    fn vote_equivocation_exists(
+        &self,
+        epoch: Epoch,
+        height: NodeHeight,
+        public_key: &RistrettoPublicKeyBytes,
+    ) -> Result<bool, StorageError> {
+        const OPERATION: &str = "vote_equivocation_exists";
+        let exists = self
+            .db()
+            .cf(vote_equivocation::VoteEquivocationCf)?
+            .exists(&(epoch, height, *public_key), OPERATION)?;
+        Ok(exists)
+    }
+
+    fn vote_equivocation_exists_for_validator(
+        &self,
+        epoch: Epoch,
+        public_key: &RistrettoPublicKeyBytes,
+    ) -> Result<bool, StorageError> {
+        // The evidence is keyed by view before signer, so this scans the epoch. Only one record per
+        // view and signer is kept and equivocation is rare, so there is normally nothing to scan.
+        for key in self
+            .db()
+            .cf(vote_equivocation::ByEpochQuery)?
+            .query_prefix_range_key_iterator(Ordering::Ascending, &epoch)
+        {
+            let (_, _, signer) = key?;
+            if signer == *public_key {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
 }
 
 /// Orders two changes for the same substate within a branch. A substate version is only ever DOWNed after it is UPed,
 /// so a DOWN supersedes the UP of the same version.
-fn block_diff_change_order(key: &BlockDiffKey) -> (u32, bool) {
+fn block_diff_change_order(key: &BlockDiffKey) -> (u64, bool) {
     (key.version, !key.is_up)
 }

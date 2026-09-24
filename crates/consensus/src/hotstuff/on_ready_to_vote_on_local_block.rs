@@ -8,7 +8,7 @@ use tari_common_types::types::FixedHash;
 use tari_consensus_types::{Decision, LastVoted, LeafBlock, PcId};
 use tari_crypto::ristretto::RistrettoPublicKey;
 use tari_engine_types::commit_result::{AbortReason, RejectReason};
-use tari_ootle_common_types::{ShardGroup, committee::CommitteeInfo, optional::Optional};
+use tari_ootle_common_types::{ShardGroup, committee::CommitteeInfo, displayable::Displayable, optional::Optional};
 use tari_ootle_storage::{
     StateStore,
     StateStoreReadTransaction,
@@ -582,6 +582,19 @@ where TConsensusSpec: ConsensusSpec
             )
             .map_err(|e| HotStuffError::TransactionExecutorError(e.to_string()))?;
 
+        if prepared.lock_status().is_deferrable_conflict() {
+            warn!(
+                target: LOG_TARGET,
+                "❌ LocalOnly transaction {} in block {} has lock conflicts that an honest proposer defers: {}. Not voting on block.",
+                pool_tx.id(),
+                block,
+                prepared.lock_status().failures().display(),
+            );
+            return Ok(Some(NoVoteReason::DeferrableLockConflict {
+                transaction_id: *pool_tx.id(),
+            }));
+        }
+
         match prepared {
             PreparedTransaction::LocalOnly(local) => {
                 match *local {
@@ -632,8 +645,24 @@ where TConsensusSpec: ConsensusSpec
                         }
 
                         if pool_tx.current_decision().is_commit() {
-                            if let Some(diff) = execution.result().finalize.any_accept() {
-                                substate_store.put_diff(diff)?;
+                            if let Some(diff) = execution.result().finalize.any_accept() &&
+                                let Err(err) = substate_store.put_diff(diff)
+                            {
+                                // An honest proposer skips a transaction whose diff fails to apply with a lock
+                                // failure, so a block that sequences one must not be voted for. Any other store
+                                // error is fatal.
+                                let lock_err = err.ok_lock_failed()?;
+                                warn!(
+                                    target: LOG_TARGET,
+                                    "❌ LocalOnly transaction {} in block {} has a state diff that does not apply, which an honest proposer skips: {}. Not voting on block.",
+                                    pool_tx.id(),
+                                    block,
+                                    lock_err,
+                                );
+                                return Ok(Some(NoVoteReason::ConflictingTransactionProposed {
+                                    transaction_id: *pool_tx.id(),
+                                    details: lock_err.to_string(),
+                                }));
                             }
 
                             if atom.leader_fee.is_none() {
@@ -810,6 +839,19 @@ where TConsensusSpec: ConsensusSpec
                 )
                 .map_err(|e| HotStuffError::TransactionExecutorError(e.to_string()))?
         };
+
+        if prepared.lock_status().is_deferrable_conflict() {
+            warn!(
+                target: LOG_TARGET,
+                "❌ Prepare transaction {} in block {} has lock conflicts that an honest proposer defers: {}. Not voting on block.",
+                tx_rec.id(),
+                block,
+                prepared.lock_status().failures().display(),
+            );
+            return Ok(Some(NoVoteReason::DeferrableLockConflict {
+                transaction_id: *tx_rec.id(),
+            }));
+        }
 
         match prepared {
             PreparedTransaction::LocalOnly(_) => {
@@ -1419,7 +1461,22 @@ where TConsensusSpec: ConsensusSpec
         };
         *total_exhaust_burn += u128::from(exhaust_burn_portion);
 
-        substate_store.put_diff(&filter_diff_for_committee(local_committee_info, diff))?;
+        if let Err(err) = substate_store.put_diff(&filter_diff_for_committee(local_committee_info, diff)) {
+            // An honest proposer skips a transaction whose diff fails to apply with a lock failure, so a block that
+            // sequences one must not be voted for. Any other store error is fatal.
+            let lock_err = err.ok_lock_failed()?;
+            warn!(
+                target: LOG_TARGET,
+                "❌ AllAccept transaction {} in block {} has a state diff that does not apply, which an honest proposer skips: {}. Not voting on block.",
+                tx_rec.id(),
+                block,
+                lock_err,
+            );
+            return Ok(Some(NoVoteReason::ConflictingTransactionProposed {
+                transaction_id: *tx_rec.id(),
+                details: lock_err.to_string(),
+            }));
+        }
 
         tx_rec.set_next_stage_and_readiness(TransactionPoolStage::AllAccepted, block.shard_group())?;
         proposed_block_change_set.set_next_transaction_update(tx_rec)?;
@@ -1672,10 +1729,7 @@ where TConsensusSpec: ConsensusSpec
         block: &Block,
     ) -> Result<Vec<TransactionPoolRecord>, HotStuffError> {
         if block.is_dummy() {
-            block.increment_leader_failure_count(
-                tx,
-                self.config.consensus_constants.missed_proposal_recovery_threshold,
-            )?;
+            block.increment_leader_failure_count(tx, self.config.consensus_constants.liveness_thresholds())?;
 
             // Nothing to do here for empty dummy blocks. Just mark the block as committed.
             block.commit_block_without_state_changes(tx, commit_qc_id)?;
@@ -1739,15 +1793,18 @@ where TConsensusSpec: ConsensusSpec
             );
         }
 
+        let thresholds = self.config.consensus_constants.liveness_thresholds();
         tx.validator_epoch_stats_updates(
             block.justify().epoch(),
-            block.justify().signatures().iter().map(|s| s.public_key()).map(|pk| {
-                ValidatorStatsUpdate::new(pk)
-                    .increment_participation_share()
-                    .decrement_missed_proposal()
-            }),
+            block.height(),
+            block
+                .justify()
+                .signatures()
+                .iter()
+                .map(|s| s.public_key())
+                .map(|pk| ValidatorStatsUpdate::new(pk, thresholds).record_vote()),
         )?;
-        block.clear_leader_failure_count(tx)?;
+        block.clear_leader_failure_count(tx, thresholds)?;
 
         Ok(finalized_transactions)
     }

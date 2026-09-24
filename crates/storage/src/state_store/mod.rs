@@ -57,6 +57,7 @@ use crate::{
         ForeignProposal,
         ForeignProposalRecord,
         ForeignProposalStatus,
+        LivenessCounters,
         LockConflict,
         LockedSubstateValue,
         NoVoteReason,
@@ -75,6 +76,7 @@ use crate::{
         TransactionRecord,
         ValidatorConsensusStats,
         ValidatorStatsUpdate,
+        VoteEquivocation,
     },
 };
 
@@ -223,6 +225,15 @@ pub trait StateStoreReadTransaction: Sized {
         block_id: &BlockId,
         substate_id: T,
     ) -> Result<SubstateChange, StorageError>;
+    /// Returns whether the branch ending at `block_id` records any change for the given substate version. Selection
+    /// follows the same branch rules as [`Self::block_diffs_get_last_change_for_substate`].
+    ///
+    /// Implementations must answer without reading the change itself - an UP carries the whole substate value.
+    fn block_diffs_contains_versioned_substate<'a, T: Into<VersionedSubstateIdRef<'a>>>(
+        &self,
+        block_id: &BlockId,
+        substate_id: T,
+    ) -> Result<bool, StorageError>;
 
     // -------------------------------- ProposalCertificate -------------------------------- //
     fn proposal_certificates_get(&self, epoch: Epoch, qc_id: &PcId) -> Result<ProposalCertificate, StorageError>;
@@ -273,7 +284,7 @@ pub trait StateStoreReadTransaction: Sized {
         I: IntoIterator<Item = &'a SubstateId>,
         I::IntoIter: ExactSizeIterator;
     /// Returns (version, is_up)
-    fn substates_get_max_version_for_substate(&self, substate_id: &SubstateId) -> Result<(u32, bool), StorageError>;
+    fn substates_get_max_version_for_substate(&self, substate_id: &SubstateId) -> Result<(u64, bool), StorageError>;
     fn substates_any_exist<'a, I>(&self, substates: I) -> Result<bool, StorageError>
     where I: IntoIterator<Item = VersionedSubstateIdRef<'a>>;
 
@@ -382,6 +393,36 @@ pub trait StateStoreReadTransaction: Sized {
         epoch: Epoch,
         public_key: &RistrettoPublicKeyBytes,
     ) -> Result<ValidatorConsensusStats, StorageError>;
+
+    /// The liveness counters of `public_key` after the block at the highest committed height at or
+    /// below `as_of` committed. `None` when no counter of theirs had moved by that height.
+    ///
+    /// Leader selection reads the state at a height that every node acting on a view has committed,
+    /// so this must answer for a past height and not only for the latest one.
+    fn validator_liveness_counters_as_of(
+        &self,
+        epoch: Epoch,
+        public_key: &RistrettoPublicKeyBytes,
+        as_of: NodeHeight,
+    ) -> Result<Option<LivenessCounters>, StorageError>;
+
+    fn vote_equivocation_exists(
+        &self,
+        epoch: Epoch,
+        height: NodeHeight,
+        public_key: &RistrettoPublicKeyBytes,
+    ) -> Result<bool, StorageError>;
+
+    /// Whether this node holds evidence that `public_key` equivocated at any view of `epoch`.
+    ///
+    /// Evidence is what this node saw: only the leader of a view receives votes for it, and nothing
+    /// shares what it found. Two nodes can therefore disagree on this, so it may only drive
+    /// decisions that are this node's alone to make.
+    fn vote_equivocation_exists_for_validator(
+        &self,
+        epoch: Epoch,
+        public_key: &RistrettoPublicKeyBytes,
+    ) -> Result<bool, StorageError>;
 }
 
 pub trait StateStoreWriteTransaction {
@@ -599,14 +640,24 @@ pub trait StateStoreWriteTransaction {
     fn lock_conflicts_remove_by_block_id(&mut self, block_id: &BlockId) -> Result<(), StorageError>;
 
     // -------------------------------- ParticipationShares -------------------------------- //
+    /// Applies stats updates caused by the commit of the block at `committed_height`, and records a
+    /// liveness log entry at that height for each validator whose liveness counters moved.
     fn validator_epoch_stats_updates<'a, I: IntoIterator<Item = ValidatorStatsUpdate<'a>>>(
         &mut self,
         epoch: Epoch,
+        committed_height: NodeHeight,
         updates: I,
     ) -> Result<(), StorageError>;
 
     // -------------------------------- Epoch cleanup -------------------------------- //
     fn epoch_cleanup(&mut self, epoch: Epoch) -> Result<(), StorageError>;
+
+    // -------------------------------- Vote equivocation -------------------------------- //
+    /// Records evidence that a validator signed two conflicting votes for one view. Returns whether
+    /// this was the first evidence for that (epoch, height, signer): later pairs from the same
+    /// equivocator at the same view prove nothing the first does not, and keeping the first bounds
+    /// what an equivocator can make this node write.
+    fn vote_equivocation_record(&mut self, evidence: &VoteEquivocation) -> Result<bool, StorageError>;
 
     // -------------------------------- Diagnotics -------------------------------- //
     fn diagnostics_add_no_vote(&mut self, block_id: BlockId, reason: NoVoteReason) -> Result<(), StorageError>;

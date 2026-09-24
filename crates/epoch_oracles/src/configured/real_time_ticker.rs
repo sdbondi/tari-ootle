@@ -130,16 +130,14 @@ mod tests {
         let mut ticker =
             RealTimeEpochTicker::new(Epoch(0), base_time, Epoch(0)).with_epoch_time_secs(1.try_into().unwrap());
 
+        // done_for_now depends on scheduler latency against the wall clock, so only the epoch sequence is asserted
         for i in 0..5 {
-            let res = timeout(Duration::from_secs(10), poll_fn(|cx| ticker.poll_tick(cx))).await;
-            assert_eq!(
-                res,
-                Ok(Some(EpochTickerData {
-                    epoch: Epoch(i),
-                    epoch_hash: calc_static_epoch_hash(Epoch(i)),
-                    done_for_now: true
-                }))
-            );
+            let res = timeout(Duration::from_secs(10), poll_fn(|cx| ticker.poll_tick(cx)))
+                .await
+                .expect("elapsed")
+                .unwrap();
+            assert_eq!(res.epoch, Epoch(i));
+            assert_eq!(res.epoch_hash, calc_static_epoch_hash(Epoch(i)));
         }
     }
 

@@ -3,6 +3,171 @@
 All notable changes to this project will be documented in this file.
 See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [0.41.2](https://github.com/tari-project/tari-ootle/compare/v0.41.1...v0.41.2) (2026-09-23)
+
+The engine and wallet security review release. It closes the ways a crafted template or payload
+could crash a validator, a wallet daemon that let anyone enrol an admin credential, and a module
+cache that trusted what it read from disk. Also: validators that stop proposing are skipped instead
+of costing the network a timeout, and templates compile before the transaction that needs them.
+
+### ⚠️ Upgrade notes
+
+- **Coordinated upgrade required.** Leader selection and execution change in ways that cannot be
+  epoch-gated, so every validator and indexer restarts on the new binary together. No reset.
+- **Operators — every cached template recompiles once.** The on-disk module cache is keyed to the
+  new engine fingerprint, so existing artifacts are ignored after the upgrade.
+- **Wallet — a WebAuthn wallet accepts no second enrolment.** Once one credential is registered,
+  `webauthn.reg_start` and `reg_finish` refuse, and the requested permissions are no longer taken
+  from the caller.
+- **A client holding only `settings:update` can no longer change the indexer URL.** That one field of
+  `settings.set` now needs `admin`; the remaining fields are unchanged, and the web UI already holds
+  `admin`.
+- **`ConfidentialViewVaultBalanceResponse` and `StealthUtxosDecryptValueResponse` carry a new
+  `searched` field.** Additive on the wire; Rust callers that construct either response must set it.
+- **Rust API** — `WalletStoreReader::webauthn_is_user_registered` is now
+  `webauthn_has_any_registration`; `WebauthnAlreadyRegisteredRequest` drops `username` and
+  `WebauthnFinishRegisterRequest` drops `requested_permissions`.
+
+### Consensus
+
+- `feat!` — **A validator that stops proposing is skipped as leader** instead of costing the network
+  a timeout each time its slot comes round. Its votes keep counting, and it gets its slot back once
+  it is seen participating again. (#2652)
+- `feat` — **A node withholds its vote from a proposer it caught equivocating.** (#2652)
+
+### Wallet
+
+- `fix!` — **Any process that could reach a WebAuthn wallet's RPC port could enrol itself as an
+  admin.** Enrolment is now refused once the wallet has a credential. (#2671)
+- `fix!` — **Choosing which indexer the wallet trusts now takes an administrative token.** A
+  preference-level permission could decide which server the wallet believes is the chain, and the URL
+  itself was unchecked. (#2673)
+- `fix` — **JSON-RPC parameters are no longer written to the log.** Under the shipped log config an
+  imported spending key was left in plaintext in `json_rpc.log`. (#2673)
+- `fix` — **One balance-recovery request can no longer occupy a thread indefinitely.** The
+  brute-force value scan is bounded whatever the caller asks for, a vault's proof count is bounded,
+  and the work no longer runs on a runtime worker thread. (#2673)
+- `feat!` — **A balance recovery now reports which values it searched**, so an undecryptable balance
+  can be told apart from one the search never reached. `confidential.view_vault_balance` and
+  `stealth_utxos.decrypt_value` both gain a `searched` field. (#2673)
+
+### Engine
+
+- `feat!` — **A component's owner can now replace its owner rule**, including handing ownership to
+  someone else or setting it to `None`, which is final. (#2677)
+- `fix!` — **`ComponentManager::get_owner_proof` returns `Option<Proof>`** and no longer panics for a
+  component whose owner is not a single public key. (#2677)
+- `fix!` — **An `m_of_n` rule must require between 1 and all of its requirements.** A zero threshold
+  used to admit everyone and one above the count admitted no one; both are now rejected. (#2678)
+- `fix!` — **A deeply nested CBOR payload can no longer crash a validator**, including one hidden in
+  a published template's definition. (#2666)
+- `fix!` — **CBOR integers the encoder cannot produce are rejected on decode.** (#2666)
+- `fix!` — **Removes undefined behaviour in how nested calls share the runtime.** (#2667)
+- `fix!` — **A corrupted or stale module cache file is recompiled instead of loaded.** (#2668)
+- `fix!` — **Closes the rest of the engine review**: a multi-scalar multiplication priced by only
+  one of its arguments, amount arithmetic that could wrap, and four panic sites beside the
+  execution path. (#2672)
+- `feat` — **Templates compile in the background** as soon as a node learns it will need them,
+  instead of inside the block that first calls them. (#2660)
+- `perf` — **Writing a compiled template to the disk cache no longer blocks execution.** (#2661)
+- `fix` — **Module cache and engine log lines reach the engine log** instead of being dropped.
+  (#2663)
+
+### Other
+
+- `chore` — **All open dependency advisories are closed**, and advisories now fail CI. (#2670)
+- `docs` — **New guide: burning Minotari and claiming TARI.** (#2680)
+
+## [0.41.1](https://github.com/tari-project/tari-ootle/compare/v0.41.0...v0.41.1) (2026-09-21)
+
+The consensus audit release. It closes the ways a byzantine leader could fork a committee, stall it
+or crash its replicas, and stops a peer deciding how much work a node does for it. Also: a wallet
+send that could hang the daemon, a disk cache that only ever grew, and a queryable log of what a
+validator saw go wrong.
+
+### ⚠️ Upgrade notes
+
+- **Coordinated upgrade required.** Consensus and execution both change in ways that cannot be
+  epoch-gated, so every validator and indexer restarts on the new binary together. No reset.
+- **Operators — the memory budget rises.** The in-memory module cache default moves from 200 MiB to
+  1 GiB, taking the node's enforced budget to roughly 2.3 GiB and the RAM it asks of the machine
+  from \~2.3 GiB to \~3.5 GiB.
+- **Operators — two new config sections**: `templates.max_disk_cache_size_bytes`
+  (default 10 GiB, and the indexer gains a `templates` section of its own) and
+  `[validator_node.diagnostics]`.
+- **Template authors** — a non-fungible's `data` or `mutable_data` can no longer hold a `BucketId`,
+  `ProofId` or address allocation.
+- **Rust API** — `WasmModuleCache::open` takes a `cap_bytes` argument,
+  `RuntimeError::transient_in_component_state` is now `transient_value_in_substate`, and
+  `TemplateBlob` is `MaxBytes<MAX_TEMPLATE_BLOB_WIRE_BYTES>`.
+
+### Consensus
+
+- `fix!` — **Fixes a possible committee split**, where a byzantine leader could get two conflicting
+  branches of the chain committed. (#2635)
+- `fix!` — **A byzantine leader can no longer make replicas vote for a transaction an honest leader
+  would have deferred.** (#2650)
+- `fix!` — **A byzantine leader can no longer crash every replica's consensus worker**, repeatedly.
+  (#2651)
+- `fix!` — **Substate lock checks are tightened**, closing a gap the audit found in how output
+  locks are granted. (#2650)
+- `fix` — **A committee member can no longer take back a vote it has already cast** to break a
+  quorum that is forming. (#2649)
+- `feat` — **Equivocation is recorded as evidence** when a committee member votes two ways, visible
+  as a diagnostic event, a Prometheus counter and in db-inspector. Nothing acts on it yet. (#2649)
+- `fix` — **A node that crashes just after voting can no longer vote again at that height.** (#2649)
+- `fix` — **Only committee members can feed a node's consensus**, and a response is accepted only
+  from the peer that was asked. (#2646)
+- `fix` — **A peer can no longer decide how much memory and work a node spends on it** — catch-up
+  responses, buffered messages and stored votes are all bounded. (#2647)
+- `fix` — **A leader that is ahead of the committee can still end its view**, where it previously
+  had to wait one out. (#2638)
+- `refactor` — **A commit proof is now a fixed size**, small enough that a long stall cannot push it
+  past what the base layer will verify. (#2643)
+
+### Engine
+
+- `fix!` — **Transaction-scoped ids can no longer be stored in non-fungible data**, where they would
+  outlive the transaction that named them. (#2634)
+- `fix!` — **Anyone may call `deposit_with_auth`**, which is the point of the method — it was locked
+  to the account owner, the one caller who never needs it. (#2627)
+- `feat!` — **The compiled-template caches are bounded.** The on-disk one only ever grew, and would
+  have reached about 29 GiB at 10,000 templates. (#2619)
+- `perf` — **Templates are compiled before they are needed**, and a cached artifact is written
+  off the execution path, so a transaction no longer waits on a cold compile or a disk flush.
+  (#2660, #2661)
+- `refactor` — **The maximum published-template size can now be changed** without making larger
+  already-published templates unreadable. (#2629)
+
+### Wallet
+
+- `fix` — **A wallet holding many equal-valued outputs could hang the whole daemon** while selecting
+  inputs for a send. The search is now capped. (#2639)
+
+### Validator observability
+
+- `feat` — **A validator records its own abnormal moments** — leader failures, no-votes, consensus
+  errors, sync transitions, panics — in a bounded event log, queryable over JSON-RPC and in the web
+  UI. (#2644)
+
+### Release tooling and CI
+
+- `feat` — **Release checklists, plus a pre-tag gate and a post-tag dashboard**
+  (`scripts/release_check.py`, `scripts/release_status.py`). (#2630)
+- `fix` — **The release build selects packages**, which is why v0.41.0 shipped no Windows binaries.
+  (#2631)
+- `fix` — **A failed required build leg turns the tag run red** instead of reporting green over an
+  incomplete draft. Tag builds also restore the cargo cache, riscv64 is dropped, and windows-arm64
+  links again. (#2632, #2633)
+- `fix` — **The swarm burns funds into the wallet daemon**, not the console wallet. (#2628)
+- `fix` — **The tariswap bench stamps a distinct nonce per transaction**, so identical calls no
+  longer collide on one id. (#2626)
+
+### Tests
+
+- `test` — **Within-epoch catch-up sync has a cucumber scenario**, covering over real networking
+  what only the in-process harness covered. (#2648)
+
 ## [0.41.0](https://github.com/tari-project/tari-ootle/compare/v0.40.2...v0.41.0) (2026-09-16)
 
 The security release. Four waves of an execution-engine audit close every fund-theft and

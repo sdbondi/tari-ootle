@@ -42,6 +42,8 @@ use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 use crate::{
     hotstuff::{
         HotStuffError,
+        LeaderSkipSet,
+        ProposalValidationError,
         block_change_set::ProposedBlockChangeSet,
         commit_proofs::generate_end_of_epoch_commit_proof,
         substate_store::{PendingSubstateStore, ShardedStateTree},
@@ -65,6 +67,7 @@ pub fn calculate_last_dummy_block<TAddr: NodeAddressable, TLeaderStrategy: Leade
     parent_merkle_root: FixedHash,
     leader_strategy: &TLeaderStrategy,
     local_committee: &Committee<TAddr>,
+    skip_set: &LeaderSkipSet,
     parent_timestamp: u64,
     parent_accumulated_data: ShardGroupAccumulatedData,
     parent_epoch_hash: FixedHash,
@@ -81,6 +84,7 @@ pub fn calculate_last_dummy_block<TAddr: NodeAddressable, TLeaderStrategy: Leade
         parent_merkle_root,
         leader_strategy,
         local_committee,
+        skip_set,
         parent_timestamp,
         parent_accumulated_data,
         parent_epoch_hash,
@@ -105,6 +109,7 @@ pub fn calculate_dummy_blocks<TAddr: NodeAddressable, TLeaderStrategy: LeaderStr
     parent_merkle_root: FixedHash,
     leader_strategy: &TLeaderStrategy,
     local_committee: &Committee<TAddr>,
+    skip_set: &LeaderSkipSet,
     parent_timestamp: u64,
     parent_accumulated_data: ShardGroupAccumulatedData,
     parent_epoch_hash: FixedHash,
@@ -121,6 +126,7 @@ pub fn calculate_dummy_blocks<TAddr: NodeAddressable, TLeaderStrategy: LeaderStr
         parent_merkle_root,
         leader_strategy,
         local_committee,
+        skip_set,
         parent_timestamp,
         parent_accumulated_data,
         parent_epoch_hash,
@@ -144,6 +150,7 @@ pub fn calculate_dummy_blocks_from_justify<TAddr: NodeAddressable, TLeaderStrate
     justify_block: &Block,
     leader_strategy: &TLeaderStrategy,
     local_committee: &Committee<TAddr>,
+    skip_set: &LeaderSkipSet,
 ) -> Vec<Block> {
     calculate_dummy_blocks(
         justify_block.height(),
@@ -157,10 +164,95 @@ pub fn calculate_dummy_blocks_from_justify<TAddr: NodeAddressable, TLeaderStrate
         *justify_block.state_merkle_root(),
         leader_strategy,
         local_committee,
+        skip_set,
         justify_block.timestamp(),
         *justify_block.header().accumulated_data(),
         *justify_block.epoch_hash(),
     )
+}
+
+/// Returns the dummy blocks that link `candidate_block` to `justify_block`, or an error if the candidate does not
+/// extend it.
+///
+/// A candidate must extend the block that its justify certifies: directly, or - when a leader failure left a gap in
+/// the view sequence - through the chain of dummy blocks that every replica recomputes from the justify block. A
+/// candidate that extends anything else is on a branch that its own justify does not certify, so that branch and the
+/// justify's branch can both reach a quorum and both commit.
+pub fn check_extends_justify<TAddr: NodeAddressable, TLeaderStrategy: LeaderStrategy<TAddr>>(
+    candidate_block: &Block,
+    justify_block: &Block,
+    leader_strategy: &TLeaderStrategy,
+    local_committee: &Committee<TAddr>,
+    skip_set: &LeaderSkipSet,
+) -> Result<Vec<Block>, ProposalValidationError> {
+    let does_not_extend = |details: String| ProposalValidationError::CandidateBlockDoesNotExtendJustify {
+        justify_block_height: justify_block.height(),
+        candidate_block_height: candidate_block.height(),
+        details,
+    };
+
+    // The pair is checked here on its own, without relying on the stateless certificate checks having run first.
+    if candidate_block.height() <= justify_block.height() {
+        return Err(ProposalValidationError::CandidateBlockNotHigherThanJustify {
+            justify_block_height: justify_block.height(),
+            candidate_block_height: candidate_block.height(),
+        });
+    }
+
+    let num_dummies = candidate_block
+        .height()
+        .as_u64()
+        .saturating_sub(justify_block.height().as_u64())
+        .saturating_sub(1);
+
+    if num_dummies == 0 {
+        if candidate_block.parent() != justify_block.id() {
+            return Err(does_not_extend(format!(
+                "parent {} is not the justify block {}",
+                candidate_block.parent(),
+                justify_block.id()
+            )));
+        }
+        return Ok(Vec::new());
+    }
+
+    // Only a timeout certificate proves that the views between the justify block and the candidate failed, and that
+    // is what entitles a proposer to fill them with dummy blocks.
+    if candidate_block.timeout_certificate().is_none() {
+        return Err(does_not_extend(format!(
+            "{num_dummies} view(s) are skipped without a timeout certificate"
+        )));
+    }
+
+    let dummy_blocks = calculate_dummy_blocks_from_justify(
+        candidate_block,
+        justify_block,
+        leader_strategy,
+        local_committee,
+        skip_set,
+    );
+
+    // Every skipped view must be filled: a shorter chain reaches the candidate's parent from a height the candidate
+    // does not claim to extend from.
+    if dummy_blocks.len() as u64 != num_dummies {
+        return Err(does_not_extend(format!(
+            "dummy chain is {} block(s) long, expected {num_dummies}",
+            dummy_blocks.len()
+        )));
+    }
+
+    let last_dummy = dummy_blocks
+        .last()
+        .expect("dummy chain is not empty because num_dummies > 0");
+    if candidate_block.parent() != last_dummy.id() {
+        return Err(does_not_extend(format!(
+            "parent {} is not the last dummy block {}",
+            candidate_block.parent(),
+            last_dummy.id()
+        )));
+    }
+
+    Ok(dummy_blocks)
 }
 
 fn with_dummy_blocks<TAddr, TLeaderStrategy, F>(
@@ -174,6 +266,7 @@ fn with_dummy_blocks<TAddr, TLeaderStrategy, F>(
     parent_merkle_root: FixedHash,
     leader_strategy: &TLeaderStrategy,
     local_committee: &Committee<TAddr>,
+    skip_set: &LeaderSkipSet,
     parent_timestamp: u64,
     parent_accumulated_data: ShardGroupAccumulatedData,
     parent_epoch_hash: FixedHash,
@@ -208,7 +301,9 @@ fn with_dummy_blocks<TAddr, TLeaderStrategy, F>(
             break;
         }
         let view_height = current_block_height - NodeHeight(1);
-        let (_, leader) = leader_strategy.get_leader(local_committee, view_height);
+        // The dummy block stands for the view its effective leader missed, and is charged to it when
+        // it commits. Its id covers the proposer, so every replica must derive the same one.
+        let (_, leader) = skip_set.effective_leader(leader_strategy, local_committee, view_height);
         let dummy_header = BlockHeader::dummy_block(
             network,
             ProtocolVersion::at(network, epoch),

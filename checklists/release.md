@@ -9,7 +9,8 @@ Shared reference — what a tag sets off, the command index, recovery: [README.m
 
 ## 1. Pre-flight (before the tag) ← the part that must not be skipped
 
-- [ ] **Scope is frozen.** No more merges into `development` for this release. **(human)**
+- [ ] **Scope is frozen.** No merges into `development` other than the version bump PR until the
+      tag is pushed — the tag names the tip of `development`. **(human)**
 - [ ] **Version number decided.** Breaking changes → minor (`0.y` → `0.(y+1)`); otherwise patch.
       Also run [release-breaking.md](release-breaking.md) if anything there applies. **(human)**
 - [ ] **CI is green** on the tip of `development`.
@@ -38,15 +39,13 @@ Shared reference — what a tag sets off, the command index, recovery: [README.m
       pin resolves; npm packages that changed are bumped; and it flags a touched activation
       schedule.
 - [ ] Read the warnings it printed. Each one is a decision, not noise. **(human)**
-- [ ] **Merge `development` → `main`** (PR, or a merge commit titled
-      `chore: merge development into main for the <version> release line`) and wait for CI on `main`.
 
 ## 2. Cut the tag
 
-- [ ] Tag the merge commit on `main` with a **signed, annotated** tag:
+- [ ] Tag the version bump PR's merge commit on `development` with a **signed, annotated** tag:
       ```sh
-      git checkout main && git pull
-      ./scripts/release_check.py           # again, from main — it is cheap and this is the last gate
+      git checkout development && git pull
+      ./scripts/release_check.py           # again, on the commit you tag — it is the last gate
       git tag -s v0.42.0 -m "v0.42.0 — <one-line headline>"
       git push origin v0.42.0              # or upstream_mut, whichever remote is the canonical repo
       ```

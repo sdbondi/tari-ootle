@@ -20,11 +20,9 @@
 //  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import type { GetFilteredBlocksCountRequest } from "@tari-project/ootle-ts-bindings";
 import type {
-  VNAddPeerRequest,
-  VNGetAllVnsRequest,
-  VNGetAllVnsResponse,
+  ClearDiagnosticEventsRequest,
+  ClearDiagnosticEventsResponse,
   GetBlockRequest,
   GetBlockResponse,
   GetBlocksCountResponse,
@@ -32,31 +30,38 @@ import type {
   GetBlocksResponse,
   GetCommitteeRequest,
   GetCommitteeResponse,
-  VNGetConnectionsResponse,
+  GetDiagnosticEventsRequest,
+  GetDiagnosticEventsResponse,
   GetEpochManagerStatsResponse,
-  VNGetIdentityResponse,
+  GetFilteredBlocksCountRequest,
   GetMempoolStatsResponse,
   GetShardKeyRequest,
   GetShardKeyResponse,
   GetStateRequest,
   GetStateResponse,
-  VNGetSubstateRequest,
-  VNGetSubstateResponse,
   GetTemplateRequest,
   GetTemplateResponse,
   GetTransactionRequest,
   GetTransactionResponse,
-  VNGetTransactionResultRequest,
-  VNGetTransactionResultResponse,
   GetTxPoolResponse,
   ListBlocksRequest,
   ListBlocksResponse,
+  VNAddPeerRequest,
+  VNGetAllVnsRequest,
+  VNGetAllVnsResponse,
+  VNGetConnectionsResponse,
+  VNGetIdentityResponse,
+  VNGetSubstateRequest,
+  VNGetSubstateResponse,
+  VNGetTransactionResultRequest,
+  VNGetTransactionResultResponse,
   VNSubmitTransactionRequest,
   VNSubmitTransactionResponse,
 } from "@tari-project/ootle-ts-bindings";
 
-
-const DEFAULT_ADDRESS = new URL(import.meta.env.VITE_JRPC_ADDRESS || import.meta.env.VITE_JSON_RPC_ADDRESS || "http://localhost:18200");
+const DEFAULT_ADDRESS = new URL(
+  import.meta.env.VITE_JRPC_ADDRESS || import.meta.env.VITE_JSON_RPC_ADDRESS || "http://localhost:18200",
+);
 
 export async function getClientAddress(): Promise<URL> {
   try {
@@ -122,6 +127,12 @@ export const getTemplate = (request: GetTemplateRequest): Promise<GetTemplateRes
 
 // Validator Node
 export const getIdentity = (): Promise<VNGetIdentityResponse> => jsonRpc("get_identity");
+
+// Diagnostics
+export const getDiagnosticEvents = (request: GetDiagnosticEventsRequest): Promise<GetDiagnosticEventsResponse> =>
+  jsonRpc("get_diagnostic_events", request);
+export const clearDiagnosticEvents = (request: ClearDiagnosticEventsRequest): Promise<ClearDiagnosticEventsResponse> =>
+  jsonRpc("clear_diagnostic_events", request);
 
 export const getMempoolStats = (): Promise<GetMempoolStatsResponse> => jsonRpc("get_mempool_stats");
 export const getEpochManagerStats = (): Promise<GetEpochManagerStatsResponse> => jsonRpc("get_epoch_manager_stats");

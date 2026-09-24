@@ -12,10 +12,11 @@ use std::{
 use anyhow::anyhow;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use tari_bor::decode;
+use tari_bor::decode_with_max_depth;
 use tari_consensus_types::Decision;
 use tari_engine_types::{
     commit_result::ExecuteResult,
+    limits::MAX_CBOR_NESTING_DEPTH,
     substate::{Substate, SubstateId, SubstateValue},
 };
 use tari_networking::{MessageSpec, NetworkingHandle, PeerId};
@@ -130,12 +131,12 @@ pub enum SubstateResult {
     #[n(2)]
     Down {
         #[n(0)]
-        version: u32,
+        version: u64,
     },
 }
 
 impl SubstateResult {
-    pub fn version(&self) -> Option<u32> {
+    pub fn version(&self) -> Option<u64> {
         match self {
             SubstateResult::Up { substate, .. } => Some(substate.version()),
             SubstateResult::Down { version, .. } => Some(*version),
@@ -237,7 +238,8 @@ impl<TAddr: NodeAddressable + ToPeerId, TMsg: MessageSpec> ValidatorNodeRpcClien
                     .map_err(ValidatorNodeRpcClientError::InvalidResponse)?;
                 let execution_result = Some(response.execution_result)
                     .filter(|r| !r.is_empty())
-                    .map(|r| decode(&r))
+                    // A peer's bytes, decoded before any content validation runs over them.
+                    .map(|r| decode_with_max_depth(&r, MAX_CBOR_NESTING_DEPTH))
                     .transpose()
                     .map_err(|_| {
                         ValidatorNodeRpcClientError::InvalidResponse(anyhow!(

@@ -57,6 +57,9 @@ pub enum KeyPrefix {
     ValidatorNodeEpochStats = 43,
     RollbackHistory = 44,
     FinalizedTransactionEpochIndex = 45,
+    DiagnosticEvents = 46,
+    VoteEquivocations = 47,
+    ValidatorLivenessLog = 48,
 }
 
 impl KeyPrefix {

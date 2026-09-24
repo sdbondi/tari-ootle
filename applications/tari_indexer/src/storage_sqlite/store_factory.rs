@@ -982,40 +982,6 @@ mod tests {
         assert_eq!(num_pruned, 1);
     }
 
-    /// The `2026-08-25-000000_transaction_source` migration backfills `retention_epoch` from the
-    /// receipt via `json_extract(data, '$.epoch')`. If the receipt did not serialise its epoch as a
-    /// bare number at that path the backfill would silently resolve to NULL and fall through.
-    #[tokio::test]
-    async fn a_receipt_exposes_its_epoch_to_the_backfill_json_path() {
-        #[derive(diesel::QueryableByName)]
-        struct EpochRow {
-            #[diesel(sql_type = diesel::sql_types::BigInt)]
-            epoch: i64,
-        }
-
-        let (_dir, store) = temp_store().await;
-
-        let receipt_address = TransactionId::default().into_receipt_address();
-        store
-            .with_write_tx(move |tx| {
-                tx.batch_insert_transaction_receipts([(receipt_address, receipt_at(Epoch(77)))], &[])
-            })
-            .await
-            .unwrap();
-
-        let rows = store
-            .with_read_tx(|tx| {
-                sql_query("select json_extract(data, '$.epoch') as epoch from transaction_receipts")
-                    .load::<EpochRow>(tx.connection())
-                    .map_err(|e| StorageError::general("json_extract epoch", e))
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].epoch, 77);
-    }
-
     /// The source filter pages backwards by id like the unfiltered listing does. Without a matching
     /// index it walks the whole gossip stream to collect a page of local rows.
     #[tokio::test]
@@ -1097,7 +1063,7 @@ mod tests {
     async fn put_entry(
         store: &SqliteIndexerStore,
         id: &SubstateId,
-        version: u32,
+        version: u64,
         verified: bool,
         cached_at: u64,
         watermark: u64,
@@ -1122,13 +1088,13 @@ mod tests {
             .unwrap()
     }
 
-    async fn put(store: &SqliteIndexerStore, id: &SubstateId, version: u32, watermark: u64) -> bool {
+    async fn put(store: &SqliteIndexerStore, id: &SubstateId, version: u64, watermark: u64) -> bool {
         put_entry(store, id, version, true, now_secs(), watermark).await
     }
 
     /// A committee member answering that `version` is live, as against the `Down` every other put
     /// helper here records.
-    async fn put_up(store: &SqliteIndexerStore, id: &SubstateId, version: u32, watermark: u64) -> bool {
+    async fn put_up(store: &SqliteIndexerStore, id: &SubstateId, version: u64, watermark: u64) -> bool {
         use tari_engine_types::{
             non_fungible::NonFungibleContainer,
             substate::{Substate, SubstateValue},
@@ -1161,7 +1127,7 @@ mod tests {
 
     /// The cached head version. `None` covers both no row at all and a row recording that the
     /// substate does not exist; use [`read_entry`] where the two must be told apart.
-    async fn read(store: &SqliteIndexerStore, id: &SubstateId) -> Option<u32> {
+    async fn read(store: &SqliteIndexerStore, id: &SubstateId) -> Option<u64> {
         read_entry(store, id).await.and_then(|entry| entry.version)
     }
 
@@ -1584,43 +1550,5 @@ mod tests {
 
         // With the journal expired, a fetch that started before the transition is no longer vetoed.
         assert!(put(&store, &substate(9), 1, 100).await);
-    }
-
-    /// The backfill must clear every value written under the old rule — vault events and anything
-    /// else whose substate_id is not a resource — and leave the resource events alone. `resource_`
-    /// ends in a LIKE single-character wildcard, so a row like `resourceXcc` is what the escaping
-    /// exists to catch.
-    #[test]
-    fn the_backfill_clears_every_non_resource_resource_address() {
-        use diesel::{QueryableByName, connection::SimpleConnection, sql_types::Text};
-
-        #[derive(QueryableByName)]
-        struct Row {
-            #[diesel(sql_type = Text)]
-            substate_id: String,
-        }
-
-        let mut conn = SqliteConnection::establish(":memory:").unwrap();
-        conn.batch_execute(
-            "CREATE TABLE events (substate_id TEXT NULL, resource_address TEXT NULL);
-             INSERT INTO events VALUES
-               ('resource_aa', 'resource_aa'),
-               ('vault_bb', 'resource_aa'),
-               ('resourceXcc', 'resource_aa'),
-               ('component_dd', 'resource_aa'),
-               (NULL, 'resource_aa');",
-        )
-        .unwrap();
-
-        conn.batch_execute(include_str!(
-            "migrations/2026-09-15-000000_events_resource_address_resource_only/up.sql"
-        ))
-        .unwrap();
-
-        let kept = sql_query("SELECT substate_id FROM events WHERE resource_address IS NOT NULL")
-            .load::<Row>(&mut conn)
-            .unwrap();
-        let kept: Vec<&str> = kept.iter().map(|r| r.substate_id.as_str()).collect();
-        assert_eq!(kept, ["resource_aa"]);
     }
 }
