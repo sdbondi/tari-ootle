@@ -1,7 +1,10 @@
 //   Copyright 2025 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::{ops::Deref, time::UNIX_EPOCH};
+use std::{
+    ops::Deref,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use axum::{Extension, Json, response::Response};
 use tari_consensus::hotstuff::ConsensusCurrentState;
@@ -17,6 +20,7 @@ use tari_indexer_client::{
         SyncProgress,
         ValidatorConsensusState,
         ValidatorStatus,
+        ValidatorStatusSnapshot,
     },
 };
 use tari_ootle_common_types::optional::Optional;
@@ -100,23 +104,20 @@ pub async fn get_network_sync_stats(
 
     let validators = context
         .validator_status()
-        .snapshots()
+        .records()
         .await
         .into_iter()
-        .map(|(peer, snapshot)| {
-            let observed_at_unix_s = snapshot
-                .observed_at
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or_default();
-            ValidatorStatus {
-                peer_id: peer.to_string(),
-                shard_group: snapshot.shard_group,
+        .map(|(peer, record)| ValidatorStatus {
+            peer_id: peer.to_string(),
+            shard_group: record.shard_group,
+            probed_at_unix_s: to_unix_secs(record.probed_at),
+            probe_error: record.error,
+            snapshot: record.snapshot.map(|snapshot| ValidatorStatusSnapshot {
                 epoch: snapshot.epoch,
                 height: snapshot.height.as_u64(),
                 state: to_client_consensus_state(snapshot.state),
-                observed_at_unix_s,
-            }
+                observed_at_unix_s: to_unix_secs(snapshot.observed_at),
+            }),
         })
         .collect();
 
@@ -138,6 +139,10 @@ pub async fn get_network_sync_stats(
         validators,
     };
     Ok(Json(response))
+}
+
+fn to_unix_secs(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default()
 }
 
 fn to_client_consensus_state(state: ConsensusCurrentState) -> ValidatorConsensusState {

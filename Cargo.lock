@@ -8152,7 +8152,7 @@ dependencies = [
 
 [[package]]
 name = "ootle-rs"
-version = "0.23.0"
+version = "0.24.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -12204,7 +12204,7 @@ dependencies = [
 
 [[package]]
 name = "tari_indexer_client"
-version = "0.42.0"
+version = "0.43.0"
 dependencies = [
  "anyhow",
  "bounded-vec",
@@ -12694,7 +12694,7 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_wallet_sdk"
-version = "0.43.2"
+version = "0.44.0"
 dependencies = [
  "anyhow",
  "futures 0.3.34",
@@ -12787,7 +12787,7 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_wallet_storage_sqlite"
-version = "0.43.1"
+version = "0.44.0"
 dependencies = [
  "diesel",
  "diesel_migrations",
@@ -12882,7 +12882,7 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_walletd_client"
-version = "0.43.1"
+version = "0.44.0"
 dependencies = [
  "hex",
  "ootle_serde",

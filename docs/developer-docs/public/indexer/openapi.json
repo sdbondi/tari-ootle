@@ -10,7 +10,7 @@
       "name": "BSD-3-Clause",
       "identifier": "BSD-3-Clause"
     },
-    "version": "0.41.0"
+    "version": "0.41.2"
   },
   "paths": {
     "/epoch-checkpoints": {
@@ -542,7 +542,7 @@
             "required": false,
             "schema": {
               "type": "integer",
-              "format": "int32",
+              "format": "int64",
               "minimum": 0
             }
           }
@@ -1608,7 +1608,7 @@
             "items": {
               "$ref": "#/components/schemas/ValidatorStatus"
             },
-            "description": "Per-validator consensus state as last observed by this indexer while\nsyncing from the network. Populated lazily, so validators that have\nnever been contacted for a sync will not appear here. Each entry\ncarries an `observed_at_unix_s` timestamp so callers can judge whether\nthe reading is fresh."
+            "description": "The latest probe of each validator this indexer has synced from. Populated lazily, so\nvalidators that have never been contacted for a sync will not appear here."
           }
         }
       },
@@ -1667,7 +1667,7 @@
           },
           "version": {
             "type": "integer",
-            "format": "int32",
+            "format": "int64",
             "minimum": 0
           }
         }
@@ -1689,7 +1689,7 @@
           },
           "version": {
             "type": "integer",
-            "format": "int32",
+            "format": "int64",
             "minimum": 0
           }
         }
@@ -2035,7 +2035,7 @@
           },
           "version": {
             "type": "integer",
-            "format": "int32",
+            "format": "int64",
             "minimum": 0
           }
         }
@@ -2345,10 +2345,50 @@
       },
       "ValidatorStatus": {
         "type": "object",
-        "description": "A snapshot of one validator's consensus pacemaker state as observed by the\nindexer during a recent sync round.",
+        "description": "The latest probe of one validator's consensus pacemaker state, made by the indexer when it\nopened a sync stream from that validator.",
         "required": [
           "peer_id",
           "shard_group",
+          "probed_at_unix_s"
+        ],
+        "properties": {
+          "peer_id": {
+            "type": "string",
+            "description": "libp2p PeerId of the validator."
+          },
+          "probe_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the latest probe produced no snapshot, or `None` when it produced `snapshot`. While this\nis set, `snapshot` is stale: it is the last one an earlier probe produced."
+          },
+          "probed_at_unix_s": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp (seconds) of the latest probe.",
+            "minimum": 0
+          },
+          "shard_group": {
+            "type": "object"
+          },
+          "snapshot": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ValidatorStatusSnapshot",
+                "description": "The last snapshot any probe of this validator produced, or `None` if none has succeeded."
+              }
+            ]
+          }
+        }
+      },
+      "ValidatorStatusSnapshot": {
+        "type": "object",
+        "description": "A validator's consensus pacemaker state as it reported it to the indexer.",
+        "required": [
           "epoch",
           "height",
           "state",
@@ -2368,15 +2408,8 @@
           "observed_at_unix_s": {
             "type": "integer",
             "format": "int64",
-            "description": "Unix timestamp (seconds) at which this snapshot was captured. Clients\ncan derive the freshness of the snapshot by comparing this to the\ncurrent wall-clock time.",
+            "description": "Unix timestamp (seconds) at which this snapshot was captured.",
             "minimum": 0
-          },
-          "peer_id": {
-            "type": "string",
-            "description": "libp2p PeerId of the validator."
-          },
-          "shard_group": {
-            "type": "object"
           },
           "state": {
             "$ref": "#/components/schemas/ValidatorConsensusState",

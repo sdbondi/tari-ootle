@@ -66,5 +66,6 @@ export * from "./types/tari-indexer-client/TransactionSource";
 export * from "./types/tari-indexer-client/ValidatorConsensusState";
 export * from "./types/tari-indexer-client/ValidatorInfo";
 export * from "./types/tari-indexer-client/ValidatorStatus";
+export * from "./types/tari-indexer-client/ValidatorStatusSnapshot";
 export * from "./types/tari-indexer-client/WatchedSubstateItem";
 export * from "./types/tari-indexer-client/WatchedTemplateItem";

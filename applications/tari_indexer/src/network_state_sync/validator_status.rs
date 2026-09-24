@@ -23,19 +23,58 @@ const LOG_TARGET: &str = "tari::indexer::network_state_sync::validator_status";
 /// committed block proof (see [`ValidatorStatusMonitor::probe`]).
 #[derive(Debug, Clone)]
 pub struct ValidatorStatusSnapshot {
-    pub shard_group: ShardGroup,
     pub epoch: Epoch,
     pub height: NodeHeight,
     pub state: ConsensusCurrentState,
     pub observed_at: SystemTime,
 }
 
-/// In-memory, lazily-populated map of the last observed consensus state of each validator the
-/// indexer has contacted. Entries are timestamped so callers can decide whether the data is fresh.
+/// The outcome of the most recent probe of one validator, alongside the last snapshot any probe of
+/// it produced.
+#[derive(Debug, Clone)]
+pub struct ValidatorProbeRecord {
+    pub shard_group: ShardGroup,
+    pub probed_at: SystemTime,
+    /// Why the most recent probe produced no snapshot, or `None` when it produced `snapshot`.
+    pub error: Option<String>,
+    /// The last snapshot a probe produced. It predates `probed_at` whenever `error` is set.
+    pub snapshot: Option<ValidatorStatusSnapshot>,
+}
+
+impl ValidatorProbeRecord {
+    fn new(shard_group: ShardGroup, probed_at: SystemTime) -> Self {
+        Self {
+            shard_group,
+            probed_at,
+            error: None,
+            snapshot: None,
+        }
+    }
+
+    /// Records a probe's outcome. A failed probe keeps the previous snapshot, now stale.
+    fn apply(
+        &mut self,
+        shard_group: ShardGroup,
+        probed_at: SystemTime,
+        outcome: Result<ValidatorStatusSnapshot, String>,
+    ) {
+        self.shard_group = shard_group;
+        self.probed_at = probed_at;
+        match outcome {
+            Ok(snapshot) => {
+                self.error = None;
+                self.snapshot = Some(snapshot);
+            },
+            Err(e) => self.error = Some(e),
+        }
+    }
+}
+
+/// In-memory, lazily-populated map of the latest probe of each validator the indexer has contacted.
 #[derive(Clone)]
 pub struct ValidatorStatusMonitor {
     epoch_manager: EpochManagerHandle<PeerAddress>,
-    inner: Arc<RwLock<HashMap<PeerAddress, ValidatorStatusSnapshot>>>,
+    inner: Arc<RwLock<HashMap<PeerAddress, ValidatorProbeRecord>>>,
 }
 
 impl ValidatorStatusMonitor {
@@ -46,7 +85,7 @@ impl ValidatorStatusMonitor {
         }
     }
 
-    pub async fn snapshots(&self) -> Vec<(PeerAddress, ValidatorStatusSnapshot)> {
+    pub async fn records(&self) -> Vec<(PeerAddress, ValidatorProbeRecord)> {
         let guard = self.inner.read().await;
         guard.iter().map(|(k, v)| (*k, v.clone())).collect()
     }
@@ -74,6 +113,7 @@ impl ValidatorStatusMonitor {
             Ok(tip) => Some(tip),
             Err(e) => {
                 if e.is_invalid_proof() {
+                    self.record(peer, shard_group, Err(e.to_string())).await;
                     return Err(e);
                 }
                 debug!(target: LOG_TARGET, "Could not verify committed tip for validator {peer}: {e}");
@@ -82,48 +122,55 @@ impl ValidatorStatusMonitor {
         };
 
         // Unverified consensus status for diagnostics. A failure here does not disqualify the peer;
-        // it just means we have no fresh diagnostic snapshot to show.
-        let resp = match session.get_consensus_state(rpc::GetConsensusStateRequest {}).await {
-            Ok(r) => r,
-            Err(e) => {
-                debug!(target: LOG_TARGET, "Consensus state probe failed for validator {peer}: {e}");
-                return Ok(verified_tip);
-            },
-        };
+        // it is recorded against the peer so the Validators page can show why its snapshot is stale.
+        let snapshot = Self::fetch_consensus_state(session).await;
+        match &snapshot {
+            Ok(snapshot) => debug!(
+                target: LOG_TARGET,
+                "Observed validator {peer} in {shard_group}: epoch={}, height={}, state={}",
+                snapshot.epoch, snapshot.height, snapshot.state
+            ),
+            Err(e) => warn!(target: LOG_TARGET, "Consensus state probe failed for validator {peer}: {e}"),
+        }
+        self.record(peer, shard_group, snapshot).await;
+        Ok(verified_tip)
+    }
 
-        let Some(epoch) = resp.epoch.map(Epoch::from) else {
-            warn!(target: LOG_TARGET, "Consensus state response from validator {peer} is missing epoch");
-            return Ok(verified_tip);
-        };
-
-        let state = match rpc::ConsensusState::try_from(resp.state) {
-            Ok(s) => ConsensusCurrentState::from(s),
-            Err(e) => {
-                warn!(
-                    target: LOG_TARGET,
-                    "Consensus state response from validator {peer} has invalid state discriminant ({}): {e}",
-                    resp.state
-                );
-                return Ok(verified_tip);
-            },
-        };
-
-        let snapshot = ValidatorStatusSnapshot {
-            shard_group,
+    async fn fetch_consensus_state(session: &mut ValidatorRpcSession) -> Result<ValidatorStatusSnapshot, String> {
+        let resp = session
+            .get_consensus_state(rpc::GetConsensusStateRequest {})
+            .await
+            .map_err(|e| format!("consensus state request failed: {e}"))?;
+        let epoch = resp
+            .epoch
+            .map(Epoch::from)
+            .ok_or_else(|| "consensus state response is missing epoch".to_string())?;
+        let state = rpc::ConsensusState::try_from(resp.state).map_err(|e| {
+            format!(
+                "consensus state response has invalid state discriminant ({}): {e}",
+                resp.state
+            )
+        })?;
+        Ok(ValidatorStatusSnapshot {
             epoch,
             height: NodeHeight::from(resp.height),
-            state,
+            state: ConsensusCurrentState::from(state),
             observed_at: SystemTime::now(),
-        };
+        })
+    }
 
-        debug!(
-            target: LOG_TARGET,
-            "Observed validator {peer} in {shard_group}: epoch={}, height={}, state={}",
-            snapshot.epoch, snapshot.height, snapshot.state
-        );
-
-        self.inner.write().await.insert(peer, snapshot);
-        Ok(verified_tip)
+    async fn record(
+        &self,
+        peer: PeerAddress,
+        shard_group: ShardGroup,
+        outcome: Result<ValidatorStatusSnapshot, String>,
+    ) {
+        let mut guard = self.inner.write().await;
+        let now = SystemTime::now();
+        let record = guard
+            .entry(peer)
+            .or_insert_with(|| ValidatorProbeRecord::new(shard_group, now));
+        record.apply(shard_group, now, outcome);
     }
 
     /// Fetch and verify the validator's latest committed block proof against its shard group
@@ -173,5 +220,55 @@ impl ProbeError {
     /// opposed to merely being unreachable or not yet having anything committed.
     pub fn is_invalid_proof(&self) -> bool {
         matches!(self, ProbeError::InvalidProof(_))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    fn shard_group() -> ShardGroup {
+        ShardGroup::new(1u32, 256u32)
+    }
+
+    fn snapshot(height: u64, observed_at: SystemTime) -> ValidatorStatusSnapshot {
+        ValidatorStatusSnapshot {
+            epoch: Epoch(7),
+            height: NodeHeight::from(height),
+            state: ConsensusCurrentState::Running,
+            observed_at,
+        }
+    }
+
+    #[test]
+    fn a_failed_probe_keeps_the_last_snapshot_and_records_the_error() {
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let t1 = t0 + Duration::from_secs(60);
+        let mut record = ValidatorProbeRecord::new(shard_group(), t0);
+        record.apply(shard_group(), t0, Ok(snapshot(10, t0)));
+
+        record.apply(shard_group(), t1, Err("consensus state request failed".to_string()));
+
+        assert_eq!(record.probed_at, t1);
+        assert_eq!(record.error.as_deref(), Some("consensus state request failed"));
+        let snapshot = record.snapshot.as_ref().unwrap();
+        assert_eq!(snapshot.height, NodeHeight::from(10));
+        assert_eq!(snapshot.observed_at, t0);
+    }
+
+    #[test]
+    fn a_successful_probe_clears_the_error() {
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let t1 = t0 + Duration::from_secs(60);
+        let mut record = ValidatorProbeRecord::new(shard_group(), t0);
+        record.apply(shard_group(), t0, Err("consensus state request failed".to_string()));
+        assert!(record.snapshot.is_none());
+
+        record.apply(shard_group(), t1, Ok(snapshot(11, t1)));
+
+        assert_eq!(record.error, None);
+        assert_eq!(record.snapshot.as_ref().unwrap().height, NodeHeight::from(11));
     }
 }

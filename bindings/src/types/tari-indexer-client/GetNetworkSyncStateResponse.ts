@@ -7,11 +7,8 @@ export type GetNetworkSyncStateResponse = {
   network_desc: NetworkDescription;
   sync_progress: SyncProgress | null;
   /**
-   * Per-validator consensus state as last observed by this indexer while
-   * syncing from the network. Populated lazily, so validators that have
-   * never been contacted for a sync will not appear here. Each entry
-   * carries an `observed_at_unix_s` timestamp so callers can judge whether
-   * the reading is fresh.
+   * The latest probe of each validator this indexer has synced from. Populated lazily, so
+   * validators that have never been contacted for a sync will not appear here.
    */
   validators: Array<ValidatorStatus>;
 };

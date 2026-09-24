@@ -30,6 +30,12 @@ See [standard-version](https://github.com/conventional-changelog/standard-versio
   `metadata!({"resource": address!("resource_..")})`. Negative numbers and the full `u64` range now
   parse, where the old `cbor!` rejected the first and turned the second into a float. (#2679)
 
+### Indexer
+
+- `feat!` — **The Validators page marks a snapshot stale when the latest probe failed, and shows the
+  failure.** `/network/stats` nests each validator's snapshot under `snapshot`, beside
+  `probed_at_unix_s` and `probe_error`. (#PR)
+
 ## [0.41.2](https://github.com/tari-project/tari-ootle/compare/v0.41.1...v0.41.2) (2026-09-23)
 
 The engine and wallet security review release. It closes the ways a crafted template or payload
