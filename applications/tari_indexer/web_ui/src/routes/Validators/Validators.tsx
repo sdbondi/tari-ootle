@@ -80,7 +80,9 @@ interface RosterEntry {
 
 function ValidatorCard({ entry, nowSec }: { entry: RosterEntry; nowSec: number }) {
   const { validator, status } = entry;
-  const ageSec = status ? Math.max(0, nowSec - Number(status.observed_at_unix_s)) : null;
+  const snapshot = status?.snapshot ?? null;
+  const ageSec = snapshot ? Math.max(0, nowSec - Number(snapshot.observed_at_unix_s)) : null;
+  const probeError = status?.probe_error ?? null;
 
   return (
     <Card
@@ -93,26 +95,53 @@ function ValidatorCard({ entry, nowSec }: { entry: RosterEntry; nowSec: number }
     >
       <CardContent>
         <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
-          {status ? (
-            <Chip
-              label={status.state}
-              color={stateColour(status.state)}
-              size="small"
-              sx={{ fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}
-            />
-          ) : (
-            <Chip
-              label="Not observed"
-              size="small"
-              sx={{ fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}
-            />
-          )}
+          <Stack direction="row" spacing={0.5}>
+            {snapshot ? (
+              <Chip
+                label={snapshot.state}
+                color={stateColour(snapshot.state)}
+                size="small"
+                sx={{ fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}
+              />
+            ) : (
+              <Chip
+                label="Not observed"
+                size="small"
+                sx={{ fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}
+              />
+            )}
+            {probeError?.kind === "InvalidProof" ? (
+              <Chip
+                label="Invalid proof"
+                color="error"
+                size="small"
+                sx={{ fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}
+              />
+            ) : (
+              snapshot &&
+              probeError && (
+                <Chip
+                  label="Stale"
+                  color="warning"
+                  variant="outlined"
+                  size="small"
+                  sx={{ fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}
+                />
+              )
+            )}
+          </Stack>
           {ageSec !== null && (
             <Typography variant="caption" color="text.secondary">
               {formatAge(ageSec)}
             </Typography>
           )}
         </Stack>
+
+        {status && probeError && (
+          <Typography variant="caption" color="error" sx={{ display: "block", mt: 1, wordBreak: "break-word" }}>
+            Probe {formatAge(Math.max(0, nowSec - Number(status.probed_at_unix_s)))} failed: {probeError.message}
+          </Typography>
+        )}
 
         <Box mt={2}>
           <Typography variant="overline" color="text.secondary">
@@ -157,12 +186,12 @@ function ValidatorCard({ entry, nowSec }: { entry: RosterEntry; nowSec: number }
             </Typography>
             <Typography variant="h6">{String(validator.vote_power)}</Typography>
           </Box>
-          {status && (
+          {snapshot && (
             <Box>
               <Typography variant="caption" color="text.secondary">
                 Height
               </Typography>
-              <Typography variant="h6">{String(status.height)}</Typography>
+              <Typography variant="h6">{String(snapshot.height)}</Typography>
             </Box>
           )}
         </Stack>
@@ -249,7 +278,9 @@ function Validators() {
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           The full validator roster for the current epoch as tracked by the epoch manager. The indexer also periodically
           syncs state from random validators and records their self-reported (unverified) consensus status; where a
-          snapshot exists for a validator, its last known status and the snapshot age are shown.
+          snapshot exists for a validator, its last known status and the snapshot age are shown. A snapshot is marked
+          stale when the latest probe of that validator failed, and the failure is shown beneath it. A validator that
+          served an invalid commit proof is marked as such, and the indexer does not sync from it.
         </Typography>
       </Grid>
       <Grid size={12}>

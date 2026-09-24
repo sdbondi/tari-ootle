@@ -795,17 +795,14 @@ pub struct GetIndexerInfoResponse {
 pub struct GetNetworkSyncStateResponse {
     pub network_desc: NetworkDescription,
     pub sync_progress: Option<SyncProgress>,
-    /// Per-validator consensus state as last observed by this indexer while
-    /// syncing from the network. Populated lazily, so validators that have
-    /// never been contacted for a sync will not appear here. Each entry
-    /// carries an `observed_at_unix_s` timestamp so callers can judge whether
-    /// the reading is fresh.
+    /// The latest probe of each validator this indexer has synced from. Populated lazily, so
+    /// validators that have never been contacted for a sync will not appear here.
     #[serde(default)]
     pub validators: Vec<ValidatorStatus>,
 }
 
-/// A snapshot of one validator's consensus pacemaker state as observed by the
-/// indexer during a recent sync round.
+/// The latest probe of one validator's consensus pacemaker state, made by the indexer when it
+/// opened a sync stream from that validator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "tari-indexer-client/"))]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
@@ -814,6 +811,40 @@ pub struct ValidatorStatus {
     pub peer_id: String,
     #[cfg_attr(feature = "utoipa", schema(value_type = Object))]
     pub shard_group: ShardGroup,
+    /// Unix timestamp (seconds) of the latest probe.
+    pub probed_at_unix_s: u64,
+    /// Why the latest probe produced no snapshot, or `None` when it produced `snapshot`. While this
+    /// is set, `snapshot` is stale: it is the last one an earlier probe produced.
+    pub probe_error: Option<ValidatorProbeError>,
+    /// The last snapshot any probe of this validator produced, or `None` if none has succeeded.
+    pub snapshot: Option<ValidatorStatusSnapshot>,
+}
+
+/// Why a probe of a validator produced no snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "tari-indexer-client/"))]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct ValidatorProbeError {
+    pub kind: ValidatorProbeErrorKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "tari-indexer-client/"))]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub enum ValidatorProbeErrorKind {
+    /// The validator did not return a usable consensus state.
+    StatusUnavailable,
+    /// The validator served a committed block proof that failed verification, so the indexer does
+    /// not sync from it.
+    InvalidProof,
+}
+
+/// A validator's consensus pacemaker state as it reported it to the indexer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "tari-indexer-client/"))]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct ValidatorStatusSnapshot {
     #[cfg_attr(feature = "utoipa", schema(value_type = u64))]
     pub epoch: Epoch,
     #[cfg_attr(feature = "utoipa", schema(value_type = u64))]
@@ -821,9 +852,7 @@ pub struct ValidatorStatus {
     /// The validator's self-reported consensus pacemaker state. Diagnostic only - this is not
     /// verified, so it should not be relied upon for anything but display.
     pub state: ValidatorConsensusState,
-    /// Unix timestamp (seconds) at which this snapshot was captured. Clients
-    /// can derive the freshness of the snapshot by comparing this to the
-    /// current wall-clock time.
+    /// Unix timestamp (seconds) at which this snapshot was captured.
     pub observed_at_unix_s: u64,
 }
 
