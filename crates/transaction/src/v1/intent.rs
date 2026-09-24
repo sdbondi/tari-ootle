@@ -235,7 +235,11 @@ mod tests {
             .collect();
         assert_ne!(commitment_of(u), base_commitment, "inputs (version changed)");
         let mut u = base.clone();
-        u.inputs = base.inputs.iter().map(|i| i.clone().with_intent(!i.is_write)).collect();
+        u.inputs = base
+            .inputs
+            .iter()
+            .map(|i| i.clone().with_is_write(!i.is_write))
+            .collect();
         assert_ne!(commitment_of(u), base_commitment, "inputs (intent changed)");
 
         // min_epoch: value change and Some <-> None; max_epoch: value change

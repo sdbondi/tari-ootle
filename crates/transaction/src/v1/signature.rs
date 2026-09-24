@@ -649,7 +649,11 @@ mod tests {
             .collect();
         assert_ne!(sig_msg(&signer, &tx), base_msg, "inputs (version changed)");
         let mut tx = base.clone();
-        tx.inputs = base.inputs.iter().map(|i| i.clone().with_intent(!i.is_write)).collect();
+        tx.inputs = base
+            .inputs
+            .iter()
+            .map(|i| i.clone().with_is_write(!i.is_write))
+            .collect();
         assert_ne!(sig_msg(&signer, &tx), base_msg, "inputs (intent changed)");
 
         // min_epoch: value change / Some <-> None
@@ -782,7 +786,7 @@ mod tests {
         u.inputs = base_unsigned
             .inputs
             .iter()
-            .map(|i| i.clone().with_intent(!i.is_write))
+            .map(|i| i.clone().with_is_write(!i.is_write))
             .collect();
         assert_ne!(seal_msg(&with_body(u)), base_msg, "inputs (intent changed)");
 

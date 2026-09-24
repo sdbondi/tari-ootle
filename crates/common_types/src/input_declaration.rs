@@ -112,7 +112,7 @@ impl InputDeclaration {
         )
     }
 
-    pub fn with_intent(mut self, is_write: bool) -> Self {
+    pub fn with_is_write(mut self, is_write: bool) -> Self {
         self.is_write = is_write;
         self
     }

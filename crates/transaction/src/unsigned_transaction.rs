@@ -191,7 +191,7 @@ impl UnsignedTransaction {
             .into_iter()
             .map(|decl| {
                 let narrow = decl.is_write() && is_read(&decl);
-                if narrow { decl.with_intent(false) } else { decl }
+                if narrow { decl.with_is_write(false) } else { decl }
             })
             .collect();
         self
