@@ -61,8 +61,8 @@ impl InputDeclaration {
         Self::new(id.into(), None, true)
     }
 
-    pub fn write_versioned<T: Into<SubstateId>>(id: T, version: SubstateVersion) -> Self {
-        Self::new(id.into(), Some(version), true)
+    pub fn write_versioned<V: Into<SubstateVersion>, T: Into<SubstateId>>(id: T, version: V) -> Self {
+        Self::new(id.into(), Some(version.into()), true)
     }
 
     /// A read declaration. The engine aborts the transaction if it writes to this input.
