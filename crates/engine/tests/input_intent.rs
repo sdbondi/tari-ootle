@@ -122,7 +122,9 @@ fn burning_from_a_read_declared_resource_that_tracks_supply_aborts() {
     let mut test = TemplateTest::new(CRATE_PATH, vec!["tests/templates/faucet"]);
     test.execute_expect_success(
         test.transaction()
-            .call_function(test.get_template_address("TestFaucet"), "mint", args![Amount::new(1000)])
+            .call_function(test.get_template_address("TestFaucet"), "mint", args![Amount::new(
+                1000
+            )])
             .build_and_seal(test.secret_key()),
         vec![],
     );
@@ -132,7 +134,9 @@ fn burning_from_a_read_declared_resource_that_tracks_supply_aborts() {
     let reason = test.execute_expect_failure(
         test.transaction()
             .add_input(InputDeclaration::read(resource.clone()))
-            .call_method(faucet.as_component_address().unwrap(), "burn_coins", args![Amount::new(10)])
+            .call_method(faucet.as_component_address().unwrap(), "burn_coins", args![
+                Amount::new(10)
+            ])
             .build_and_seal(test.secret_key()),
         vec![],
     );
