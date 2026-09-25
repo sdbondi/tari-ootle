@@ -506,6 +506,11 @@ mod tests {
             let pid = libc::fork();
             assert!(pid >= 0, "fork failed");
             if pid == 0 {
+                // The child holds duplicates of the test runner's output pipes; close them so
+                // this fork can never register as a leaked handle, however it exits.
+                libc::close(0);
+                libc::close(1);
+                libc::close(2);
                 std::ptr::read_volatile(probe);
                 // Reaching this line means the read did not trap.
                 libc::_exit(0);
