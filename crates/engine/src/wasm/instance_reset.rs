@@ -10,7 +10,7 @@
 //! linear memory (contents and size), its mutable globals, its tables, and whether its data and
 //! element segments have been dropped — and each is made restorable or immutable here:
 //!
-//! * **Memory** is restored: scrubbed to zero, shrunk back to the module's minimum, and rewritten with the image
+//! * **Memory** is restored: zero-filled, shrunk back to the module's minimum, and rewritten with the image
 //!   instantiation left in it (the active data segments), captured once per loaded template.
 //! * **Mutable globals** are restored: [`ResettableState`] exports every one the module defines, so the engine can read
 //!   each initial value and write it back.
@@ -74,8 +74,7 @@ impl ModuleMiddleware for ResettableState {
             .iter()
             .skip(module_info.num_imported_globals)
             .filter(|(_, global)| global.mutability == Mutability::Var)
-            .map(|(index, global)| (index, global.ty))
-            .collect::<Vec<_>>();
+            .map(|(index, global)| (index, global.ty));
         for (index, ty) in defined_globals {
             // A reference is only meaningful in the store that created it, so a reference-typed
             // global's initial value could not be written back into another instance's store.
@@ -124,6 +123,8 @@ pub enum InstanceResetError {
     Export(#[from] ExportError),
     #[error("guest global: {0}")]
     Global(#[from] RuntimeError),
+    #[error("guest memory is {actual:?} after a reset, not the {expected:?} it was instantiated with")]
+    MemorySize { expected: Pages, actual: Pages },
     #[error("global `{name}` holds a value of type {ty}")]
     UnsupportedGlobal { name: String, ty: Type },
 }
@@ -201,11 +202,16 @@ impl InitialState {
     /// On error the instance is in an unknown state and must not run again.
     pub fn restore(&self, store: &mut impl AsStoreMut, instance: &Instance) -> Result<(), InstanceResetError> {
         let memory = instance.exports.get_memory("memory")?;
-        // The engine's static memories are `PooledLinearMemory`, whose reset scrubs every page it
-        // had made accessible back to a zero-filled `PROT_NONE` reservation.
+        // The engine's static memories are `PooledLinearMemory`, whose reset zero-fills every page
+        // and returns the memory to the module's minimum size and protection boundary.
         memory.reset(store)?;
-        memory.grow(store, self.memory_pages)?;
         let view = memory.view(store);
+        if view.size() != self.memory_pages {
+            return Err(InstanceResetError::MemorySize {
+                expected: self.memory_pages,
+                actual: view.size(),
+            });
+        }
         for (offset, bytes) in &self.memory_image {
             view.write(*offset, bytes)?;
         }
