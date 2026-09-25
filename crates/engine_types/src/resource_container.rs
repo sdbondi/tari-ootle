@@ -1037,6 +1037,7 @@ impl ResourceError {
             Self::InvalidValueProof { .. } |
             Self::InvalidSpend { .. } |
             Self::RequiredSignatureMissingForStealthUtxo { .. } |
+            Self::RevealedOutputReceiverNotInScope { .. } |
             Self::UtxoBurnFailed { .. } => C::InvalidProof,
             Self::ResourceTypeMismatch { .. } |
             Self::ResourceAddressMismatch { .. } |
