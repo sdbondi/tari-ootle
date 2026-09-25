@@ -168,7 +168,7 @@ impl PooledLinearMemory {
     /// `vm_memory_location`, when given, must point to a valid `VMMemoryDefinition` that outlives
     /// the returned memory (it is the instance's own definition slot).
     unsafe fn new(
-        pool: &Arc<MemoryPool>,
+        pool: Arc<MemoryPool>,
         ty: &MemoryType,
         vm_memory_location: Option<NonNull<VMMemoryDefinition>>,
     ) -> Result<Self, MemoryError> {
@@ -225,7 +225,7 @@ impl PooledLinearMemory {
             memory_type: *ty,
             maximum,
             vm_memory_definition,
-            pool: pool.clone(),
+            pool,
         })
     }
 
@@ -367,7 +367,7 @@ impl<T: Tunables> Tunables for PooledMemoryTunables<T> {
         match style {
             MemoryStyle::Static => {
                 // SAFETY: no definition location is passed.
-                let memory = unsafe { PooledLinearMemory::new(&self.pool, ty, None)? };
+                let memory = unsafe { PooledLinearMemory::new(self.pool.clone(), ty, None)? };
                 Ok(VMMemory(Box::new(memory)))
             },
             MemoryStyle::Dynamic { .. } => self.base.create_host_memory(ty, style),
@@ -383,7 +383,7 @@ impl<T: Tunables> Tunables for PooledMemoryTunables<T> {
         match style {
             MemoryStyle::Static => {
                 // SAFETY: forwarded to caller — the location is the instance's definition slot.
-                let memory = unsafe { PooledLinearMemory::new(&self.pool, ty, Some(vm_definition_location))? };
+                let memory = unsafe { PooledLinearMemory::new(self.pool.clone(), ty, Some(vm_definition_location))? };
                 Ok(VMMemory(Box::new(memory)))
             },
             // SAFETY: forwarded to caller.
@@ -434,7 +434,7 @@ mod tests {
     fn reused_mapping_is_zeroed_and_resized() {
         let pool = test_pool();
         // SAFETY: no definition location is passed.
-        let mut memory = unsafe { PooledLinearMemory::new(&pool, &memory_type(2, 32), None).unwrap() };
+        let mut memory = unsafe { PooledLinearMemory::new(pool.clone(), &memory_type(2, 32), None).unwrap() };
         unsafe {
             let definition = memory.vmmemory().as_ref();
             std::ptr::write_bytes(definition.base, 0xAB, definition.current_length);
@@ -445,7 +445,7 @@ mod tests {
         assert_eq!(pool.pooled_count(), 1);
 
         // SAFETY: as above.
-        let memory = unsafe { PooledLinearMemory::new(&pool, &memory_type(4, 32), None).unwrap() };
+        let memory = unsafe { PooledLinearMemory::new(pool.clone(), &memory_type(4, 32), None).unwrap() };
         assert_eq!(pool.pooled_count(), 0);
         assert_eq!(memory.size(), Pages(4));
         assert!(
@@ -461,7 +461,7 @@ mod tests {
     fn pages_grown_into_previous_tenants_range_are_zeroed() {
         let pool = test_pool();
         // SAFETY: no definition location is passed.
-        let mut first = unsafe { PooledLinearMemory::new(&pool, &memory_type(1, 32), None).unwrap() };
+        let mut first = unsafe { PooledLinearMemory::new(pool.clone(), &memory_type(1, 32), None).unwrap() };
         first.grow(Pages(7)).unwrap();
         unsafe {
             let definition = first.vmmemory().as_ref();
@@ -470,7 +470,7 @@ mod tests {
         drop(first);
 
         // SAFETY: as above.
-        let mut second = unsafe { PooledLinearMemory::new(&pool, &memory_type(1, 32), None).unwrap() };
+        let mut second = unsafe { PooledLinearMemory::new(pool.clone(), &memory_type(1, 32), None).unwrap() };
         second.grow(Pages(7)).unwrap();
         assert!(
             slice_of(&second).iter().all(|&b| b == 0),
@@ -487,7 +487,7 @@ mod tests {
     fn out_of_bounds_read_into_previous_tenants_range_faults() {
         let pool = test_pool();
         // SAFETY: no definition location is passed.
-        let mut first = unsafe { PooledLinearMemory::new(&pool, &memory_type(1, 32), None).unwrap() };
+        let mut first = unsafe { PooledLinearMemory::new(pool.clone(), &memory_type(1, 32), None).unwrap() };
         first.grow(Pages(7)).unwrap();
         unsafe {
             let definition = first.vmmemory().as_ref();
@@ -496,7 +496,7 @@ mod tests {
         drop(first);
 
         // SAFETY: as above.
-        let second = unsafe { PooledLinearMemory::new(&pool, &memory_type(1, 32), None).unwrap() };
+        let second = unsafe { PooledLinearMemory::new(pool.clone(), &memory_type(1, 32), None).unwrap() };
         // Two pages past the new tenant's single accessible page, well inside the previous
         // tenant's eight.
         let probe = unsafe { second.vmmemory().as_ref().base.add(2 * 64 * 1024) };
@@ -529,7 +529,7 @@ mod tests {
     fn grow_respects_maximum() {
         let pool = test_pool();
         // SAFETY: no definition location is passed.
-        let mut memory = unsafe { PooledLinearMemory::new(&pool, &memory_type(1, 4), None).unwrap() };
+        let mut memory = unsafe { PooledLinearMemory::new(pool.clone(), &memory_type(1, 4), None).unwrap() };
         memory.grow(Pages(3)).unwrap();
         let err = memory.grow(Pages(1)).unwrap_err();
         assert!(matches!(err, MemoryError::CouldNotGrow { .. }));
@@ -539,9 +539,9 @@ mod tests {
     fn pool_capacity_is_bounded() {
         let pool = Arc::new(MemoryPool::new(1));
         // SAFETY: no definition location is passed.
-        let a = unsafe { PooledLinearMemory::new(&pool, &memory_type(1, 4), None).unwrap() };
+        let a = unsafe { PooledLinearMemory::new(pool.clone(), &memory_type(1, 4), None).unwrap() };
         // SAFETY: as above.
-        let b = unsafe { PooledLinearMemory::new(&pool, &memory_type(1, 4), None).unwrap() };
+        let b = unsafe { PooledLinearMemory::new(pool.clone(), &memory_type(1, 4), None).unwrap() };
         drop(a);
         drop(b);
         assert_eq!(pool.pooled_count(), 1, "pool must not exceed max_slots");
