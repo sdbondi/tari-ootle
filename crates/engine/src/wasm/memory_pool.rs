@@ -146,9 +146,9 @@ impl MemoryPool {
 struct PooledLinearMemory {
     /// `None` only transiently during drop, when the mapping is handed back to the pool.
     mmap: Option<Mmap>,
-    /// Bytes from the base that are `PROT_READ|PROT_WRITE`. Always equal to the definition's
-    /// `current_length` (grow raises both together), preserving the trap-at-current-length
-    /// protection boundary the compiled code relies on.
+    /// Bytes from the base that are `PROT_READ|PROT_WRITE`. At least the definition's
+    /// `current_length`, and equal to it except after `reset` (grow raises both together),
+    /// preserving the trap-at-current-length protection boundary the compiled code relies on.
     accessible_bytes: usize,
     size: Pages,
     memory_type: MemoryType,
