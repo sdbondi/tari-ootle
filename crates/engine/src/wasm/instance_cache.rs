@@ -4,11 +4,11 @@
 //! The WASM instances one transaction has created, kept so a template's later calls in the
 //! transaction run on the instance its first call created.
 //!
-//! The cache is scoped to one transaction and dropped with it. Guest statics and heap therefore
-//! persist across a template's calls within a transaction and never across transactions. Reusing an
-//! instance is safe only because any failed call rejects the whole transaction; an instance whose
-//! call failed is still discarded rather than returned, so no later call can run on an instance a
-//! trap left mid-way.
+//! The cache is scoped to one transaction and dropped with it. A reused instance is restored to the
+//! state of a fresh instantiation before each call (see [`InitialState`](super::InitialState)), so
+//! reuse saves the work of building the instance and changes nothing a call can observe. An instance
+//! whose call failed is discarded rather than returned; any failed call rejects the whole
+//! transaction regardless.
 
 use std::collections::HashMap;
 

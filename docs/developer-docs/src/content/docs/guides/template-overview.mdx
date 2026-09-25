@@ -224,17 +224,15 @@ You can still declare `struct`/`enum` types inside a stateless module to use as 
   unused struct, and the compiler guarantees no state or component sneaks in.
 </Aside>
 
-### Template state within a transaction
+### Template state between calls
 
-A transaction runs every call to your template on one WASM instance: the first call instantiates it, and later calls
-in the same transaction — to any of your template's components or functions, from any caller, in the fee payment and
-the main instructions alike — reuse it. Anything held in a `static` or left on the heap by one call is therefore
-visible to the next. Nothing carries over between transactions, and a call your template makes back into itself gets
-an instance of its own.
+Every call to your template starts from the state of a freshly loaded template: each `static` holds its initial value,
+the heap is empty and linear memory is back at its initial size. Nothing one call leaves in the guest is visible to any
+other call, in the same transaction or another. State that must outlive a call belongs in component state.
 
-Keep per-call context (the caller, the component being called, a "done" flag) in local variables or component state,
-never in a `static`: within a transaction, the next call to your template may be composed by someone else and aimed at
-another user's component.
+The engine guarantees this by refusing, at publish, the few WebAssembly constructs whose effects it could not undo:
+instructions that modify a table (`table.set`, `table.grow`, `table.fill`, `table.copy`), passive data and element
+segments, and mutable globals of reference type. Templates built with the standard Rust toolchain use none of them.
 
 ### Next Steps
 

@@ -97,6 +97,8 @@ const ENGINE_FINGERPRINT_BITS: u64 = {
     // The per-operator cost tables the middlewares bake into the emitted instrumentation.
     let h = const_hash::part(h, include_bytes!("../metering.rs"));
     let h = const_hash::part(h, include_bytes!("../bulk_metering.rs"));
+    // The operators and segments refused at compile, and the globals exported for restoring.
+    let h = const_hash::part(h, include_bytes!("../instance_reset.rs"));
     // The memory and table bounds, which reach codegen through the style each one is adjusted to.
     let h = const_hash::part(h, include_bytes!("../limiting_tunable.rs"));
     // Which count a hit reads out of each header slot. Swapping two of these is a fee change.

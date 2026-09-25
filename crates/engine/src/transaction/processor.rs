@@ -998,7 +998,7 @@ where
     /// and its `Proof` arguments.
     ///
     /// The call runs on the instance of `template_address` the transaction's earlier calls used, if any (see
-    /// [`WasmInstanceCache`]).
+    /// [`WasmInstanceCache`]), restored first to the state of a fresh instantiation.
     fn invoke_template(
         template_address: TemplateAddress,
         module: LoadedTemplate,
@@ -1017,7 +1017,19 @@ where
                     .checkout(&template_address);
                 let cacheable = !matches!(checkout, Checkout::Reentrant);
                 let instance = match checkout {
-                    Checkout::Reuse(instance) => Ok(instance),
+                    Checkout::Reuse(mut instance) => match instance.process.reset(&mut instance.store) {
+                        Ok(()) => Ok(instance),
+                        // A reset that fails is a host fault, not something the transaction did, so it
+                        // must not change what the transaction is charged: a fresh instance stands in,
+                        // uncharged, exactly as the restored one would have.
+                        Err(err) => {
+                            warn!(
+                                target: LOG_TARGET,
+                                "Could not reset the instance of template {template_address}, instantiating afresh: {err}"
+                            );
+                            Self::create_instance(loaded)
+                        },
+                    },
                     Checkout::Vacant | Checkout::Reentrant => Self::instantiate(&runtime, loaded),
                 };
                 let outcome = instance.and_then(|mut instance| {
@@ -1052,6 +1064,10 @@ where
         // Instantiation runs before the first metered operator, so it is charged against the same allowance and
         // per-block budget the call's execution draws on.
         runtime.interface().charge_template_instantiation(&module.shape())?;
+        Self::create_instance(module)
+    }
+
+    fn create_instance(module: LoadedWasmTemplate) -> Result<WasmInstance, TransactionErrorKind> {
         let mut store = module.create_store();
         let process = WasmProcess::init(&mut store, module)?;
         Ok(WasmInstance { store, process })

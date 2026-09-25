@@ -224,8 +224,9 @@ pub struct ModuleShape {
 /// metered operator.
 ///
 /// A transaction instantiates a template on its first call to it and runs the template's later
-/// calls on that same instance; only a call made while the template's instance is already running
-/// (a template calling back into itself) instantiates it again. Instantiating maps linear memory,
+/// calls on that same instance, restored to its freshly instantiated state before each one; only a
+/// call made while the template's instance is already running (a template calling back into itself)
+/// instantiates it again. Instantiating maps linear memory,
 /// copies the module's data segments into it, writes its element segments into its tables, and
 /// wires up the imports. Compiled
 /// code is laid down once at publish and costs nothing to instantiate, so the only part that scales

@@ -59,6 +59,7 @@ use crate::{
     abi_metrics,
     runtime::{ComputeAllowance, ComputeFunding, Runtime, RuntimeError},
     wasm::{
+        InstanceResetError,
         LoadedWasmTemplate,
         environment::{AllocPtr, WasmEnv},
         error::WasmExecutionError,
@@ -105,6 +106,12 @@ impl WasmProcess {
             fn_env,
             instance,
         })
+    }
+
+    /// Returns this instance to the state of a fresh instantiation, so a reused instance starts its
+    /// next call exactly as a new one would. On error the instance must not run again.
+    pub fn reset(&self, store: &mut Store) -> Result<(), InstanceResetError> {
+        self.module.initial_state().restore(store, &self.instance)
     }
 
     /// Runs one call on this instance against `state`, the runtime of the call frame the caller has

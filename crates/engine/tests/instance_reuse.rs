@@ -1,7 +1,8 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-//! A template's calls within one transaction share one WASM instance; transactions never share one.
+//! A template's calls within one transaction share one WASM instance, yet every call starts from the
+//! state of a fresh instantiation: nothing one call leaves in the guest reaches the next.
 
 use tari_ootle_transaction::args;
 use tari_template_lib::types::TemplateAddress;
@@ -17,7 +18,7 @@ fn setup() -> (TemplateTest, TemplateAddress) {
 }
 
 #[test]
-fn a_templates_calls_in_one_transaction_share_an_instance() {
+fn a_guest_static_does_not_outlive_its_call() {
     let (mut test, template) = setup();
 
     let result = test.execute_expect_success(
@@ -35,27 +36,42 @@ fn a_templates_calls_in_one_transaction_share_an_instance() {
         .iter()
         .map(|r| r.decode().unwrap())
         .collect();
-    assert_eq!(counts, [1, 2, 3]);
+    assert_eq!(counts, [1, 1, 1]);
 }
 
 #[test]
-fn each_transaction_starts_from_a_fresh_instance() {
+fn memory_grown_by_one_call_is_not_grown_for_the_next() {
     let (mut test, template) = setup();
 
-    for _ in 0..2 {
-        let result = test.execute_expect_success(
-            test.transaction()
-                .call_function(template, "count", args![])
-                .build_and_seal(test.secret_key()),
-            vec![],
-        );
-        let count: u32 = result.finalize.execution_results[0].decode().unwrap();
-        assert_eq!(count, 1);
-    }
+    let result = test.execute_expect_success(
+        test.transaction()
+            .call_function(template, "grow_memory", args![])
+            .call_function(template, "grow_memory", args![])
+            .build_and_seal(test.secret_key()),
+        vec![],
+    );
+
+    let results = &result.finalize.execution_results;
+    assert_eq!(results[0].decode::<u32>().unwrap(), results[1].decode::<u32>().unwrap());
 }
 
 #[test]
-fn a_reentrant_call_runs_in_its_own_instance() {
+fn memory_written_by_one_call_is_zero_for_the_next() {
+    let (mut test, template) = setup();
+
+    let result = test.execute_expect_success(
+        test.transaction()
+            .call_function(template, "scribble_last_byte", args![])
+            .call_function(template, "read_last_byte", args![])
+            .build_and_seal(test.secret_key()),
+        vec![],
+    );
+
+    assert_eq!(result.finalize.execution_results[1].decode::<u8>().unwrap(), 0);
+}
+
+#[test]
+fn a_reentrant_call_starts_fresh() {
     let (mut test, template) = setup();
 
     let result = test.execute_expect_success(
@@ -69,10 +85,8 @@ fn a_reentrant_call_runs_in_its_own_instance() {
 
     let results = &result.finalize.execution_results;
     assert_eq!(results[0].decode::<u32>().unwrap(), 1);
-    // The outer call holds the shared instance, so the inner call gets a new one of its own.
-    assert_eq!(results[1].decode::<(u32, u32)>().unwrap(), (2, 1));
-    // The inner call's instance is discarded; the shared one serves the rest of the transaction.
-    assert_eq!(results[2].decode::<u32>().unwrap(), 3);
+    assert_eq!(results[1].decode::<(u32, u32)>().unwrap(), (1, 1));
+    assert_eq!(results[2].decode::<u32>().unwrap(), 1);
 }
 
 #[test]
