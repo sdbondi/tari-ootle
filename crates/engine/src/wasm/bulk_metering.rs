@@ -1,7 +1,7 @@
 // Copyright 2026 The Tari Project
 // SPDX-License-Identifier: BSD-3-Clause
 
-//! Length-aware metering for the bulk memory and table operators.
+//! Length-aware metering for the bulk memory operators and `table.init`.
 //!
 //! The static cost function in [`super::metering`] prices one operator at one constant, which is
 //! the wrong shape for an operator whose work is a runtime operand: `memory.copy` moves between 0
@@ -16,7 +16,6 @@
 
 use std::sync::{Arc, OnceLock};
 
-use tari_engine_types::limits;
 use tari_wasmer_middlewares::Metering;
 use wasmer::{
     GlobalInit,
@@ -39,7 +38,7 @@ use super::metering::CostFunction;
 /// a bulk copy is never cheaper per byte than the meter believes.
 const POINTS_PER_MEMORY_BYTE: i64 = 1;
 
-/// Points charged per element touched by `table.copy`, `table.fill` and `table.grow`.
+/// Points charged per element touched by `table.init`.
 ///
 /// A table element is a host-side function reference, 8 to 16 bytes, and writing one costs more
 /// than a byte of `memcpy` because each write goes through the reference representation rather than
@@ -134,14 +133,6 @@ struct FunctionBulkMetering {
 pub struct Charge {
     /// Points per unit of the operand on top of the stack.
     rate: i64,
-    /// Largest operand value that can do any work, where the engine's tunables impose one.
-    ///
-    /// `grow` is the only bulk operator with a defined refusal: past the tunables' cap it returns
-    /// `-1` having moved nothing. Charging the requested delta would bill a refusal at the price of
-    /// a success, and a large enough request would exhaust the meter and trap where the module is
-    /// entitled to a `-1`. The charge is therefore taken on the delta the tunables could actually
-    /// grant.
-    grantable_units: Option<i32>,
 }
 
 /// The charge for an operator whose work is a runtime operand, or `None` for one the static cost
@@ -150,22 +141,17 @@ pub struct Charge {
 /// This is the authority on which operators carry an inline charge: `metering::cost_function` reads
 /// it back so the static half and the length-aware half cannot drift apart.
 pub fn charge_for(operator: &Operator) -> Option<Charge> {
-    let charge = |rate, grantable_units| Some(Charge { rate, grantable_units });
     match operator {
         // `[dst, src, len]` / `[dst, value, len]` / `[dst, offset, len]`: bytes. An out-of-range
         // length traps on the bounds check, which ends the call, so there is no refusal to price.
-        Operator::MemoryCopy { .. } | Operator::MemoryFill { .. } | Operator::MemoryInit { .. } => {
-            charge(POINTS_PER_MEMORY_BYTE, None)
-        },
-        // `[dst, src, len]` / `[dst, value, len]`: table elements.
-        Operator::TableCopy { .. } | Operator::TableFill { .. } | Operator::TableInit { .. } => {
-            charge(POINTS_PER_TABLE_ELEMENT, None)
-        },
-        // `[value, delta]`: table elements, bounded by what a table may hold.
-        Operator::TableGrow { .. } => charge(
-            POINTS_PER_TABLE_ELEMENT,
-            Some(i32::try_from(limits::WASM_LIMITS.max_table_elements).unwrap_or(i32::MAX)),
-        ),
+        Operator::MemoryCopy { .. } | Operator::MemoryFill { .. } | Operator::MemoryInit { .. } => Some(Charge {
+            rate: POINTS_PER_MEMORY_BYTE,
+        }),
+        // `[dst, offset, len]`: table elements. The other table-writing operators are refused at
+        // compile (see `instance_reset`), so a table never changes after instantiation.
+        Operator::TableInit { .. } => Some(Charge {
+            rate: POINTS_PER_TABLE_ELEMENT,
+        }),
         _ => None,
     }
 }
@@ -177,33 +163,16 @@ impl<'a> FunctionMiddleware<'a> for FunctionBulkMetering {
             return Ok(());
         };
 
-        // Every operator priced here leaves its count — bytes, elements or pages — on top of the
-        // stack, so the charge is computed from the value popped here and the value is pushed back
-        // unchanged before the operator runs.
-        state.extend([Operator::GlobalSet {
-            global_index: self.scratch.len,
-        }]);
-
-        // `min(units, grantable)`, leaving the charged count on the stack.
-        match charge.grantable_units {
-            Some(grantable) => state.extend([
-                Operator::GlobalGet {
-                    global_index: self.scratch.len,
-                },
-                Operator::I32Const { value: grantable },
-                Operator::GlobalGet {
-                    global_index: self.scratch.len,
-                },
-                Operator::I32Const { value: grantable },
-                Operator::I32LtU,
-                Operator::Select,
-            ]),
-            None => state.extend([Operator::GlobalGet {
-                global_index: self.scratch.len,
-            }]),
-        }
-
+        // Every operator priced here leaves its count — bytes or elements — on top of the stack, so
+        // the charge is computed from the value popped here and the value is pushed back unchanged
+        // before the operator runs.
         state.extend([
+            Operator::GlobalSet {
+                global_index: self.scratch.len,
+            },
+            Operator::GlobalGet {
+                global_index: self.scratch.len,
+            },
             Operator::I64ExtendI32U,
             Operator::I64Const { value: charge.rate },
             Operator::I64Mul,

@@ -38,7 +38,7 @@ pub fn middleware(limit: u64) -> Metering<CostFunction> {
 /// the table below prices at 2 to 4 for these. The second is the charge sequence itself: those
 /// operators are emitted after this middleware has run, which is what keeps them out of the
 /// accumulator, so the ~16 points they execute — three global stores, an extend, a multiply, a
-/// compare, a conditional block, a subtract, and for `table.grow` a clamp — have to be paid for here.
+/// compare, a conditional block and a subtract — have to be paid for here.
 /// Without it a module could run the sequence for free by repeating a zero-length copy.
 const BULK_OPERATOR_COST: u64 = 20;
 
@@ -256,11 +256,7 @@ fn cost_function(op: &Operator) -> u64 {
         Operator::MemoryCopy { .. } | Operator::MemoryFill { .. } => 2,
         Operator::TableInit { .. } |
         Operator::ElemDrop { .. } |
-        Operator::TableCopy { .. } |
-        Operator::TableFill { .. } |
         Operator::TableGet { .. } |
-        Operator::TableSet { .. } |
-        Operator::TableGrow { .. } |
         Operator::TableSize { .. } => 2,
         Operator::MemoryAtomicNotify { .. } |
         Operator::MemoryAtomicWait32 { .. } |
