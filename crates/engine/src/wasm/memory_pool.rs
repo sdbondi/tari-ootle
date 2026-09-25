@@ -8,22 +8,29 @@
 //! destroying that reservation per instantiation costs an `mmap`/`munmap` pair that serializes
 //! every executing thread on the process's mmap lock and broadcasts TLB shootdowns on teardown —
 //! measured as the ceiling on concurrent transaction execution. This pool keeps the reservations
-//! alive and hands them out per instantiation, so the steady-state cost per guest memory is an
-//! `mprotect`/`madvise` pair over the few pages the guest actually touched.
+//! alive and hands them out per instantiation, so the steady-state cost per guest memory is one
+//! fixed re-map over the few pages the guest actually touched.
 //!
 //! # Guest-observable equivalence (consensus-critical)
 //!
 //! A pooled memory must be indistinguishable from a freshly mapped one:
 //!
-//! * **Contents**: on release the accessible range is `madvise(MADV_DONTNEED)`ed, which for private anonymous mappings
-//!   resets every page to zero-fill. The next tenant reads zeroes, exactly like a fresh mapping.
+//! * **Contents**: on release the accessible range is replaced with a fresh anonymous mapping (`mmap` with
+//!   `MAP_FIXED`), so the next tenant reads kernel-guaranteed zero pages, exactly like a fresh reservation. A fixed
+//!   re-map is used rather than `madvise(MADV_DONTNEED)` because the latter's zero-fill guarantee is Linux-specific.
 //! * **Protection**: cranelift compiles static-style memories without explicit bounds checks — an out-of-bounds access
-//!   traps only because pages beyond `current_length` are `PROT_NONE`. On release the accessible range is re-protected
-//!   to `PROT_NONE`, so the next tenant's protection boundary sits exactly at its own accessible size, never at a
-//!   previous tenant's high-water mark.
+//!   traps only because pages beyond `current_length` are `PROT_NONE`. The same re-map installs the range `PROT_NONE`,
+//!   so the next tenant's protection boundary sits exactly at its own accessible size, never at a previous tenant's
+//!   high-water mark.
 //!
-//! If either syscall fails on release the mapping is dropped (munmapped) instead of pooled, so a
-//! failure degrades to the old per-instantiation cost, never to a semantic difference.
+//! If the re-map fails the mapping is dropped (munmapped) instead of pooled, so a failure degrades
+//! to the old per-instantiation cost, never to a semantic difference.
+
+#[cfg(not(unix))]
+compile_error!(
+    "Windows is not supported: the tari engine manages guest memory with the mmap and mprotect system calls, which \
+     only exist on unix systems (Linux, macOS)."
+);
 
 use std::{
     cell::UnsafeCell,
@@ -104,10 +111,19 @@ impl MemoryPool {
             let base = mmap.as_mut_ptr();
             // SAFETY: `base..base+accessible_bytes` lies within the mapping this pool created
             // (accessible never exceeds mapping_bytes), and no instance references it any more —
-            // the memory holding it is being dropped.
+            // the memory holding it is being dropped. MAP_FIXED replaces exactly that range with a
+            // fresh zero-filled PROT_NONE anonymous mapping and leaves the rest of the reservation
+            // untouched.
             let scrubbed = unsafe {
-                libc::mprotect(base.cast(), accessible_bytes, libc::PROT_NONE) == 0 &&
-                    libc::madvise(base.cast(), accessible_bytes, libc::MADV_DONTNEED) == 0
+                let remapped = libc::mmap(
+                    base.cast(),
+                    accessible_bytes,
+                    libc::PROT_NONE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED,
+                    -1,
+                    0,
+                );
+                remapped == base.cast()
             };
             if !scrubbed {
                 return;
@@ -258,10 +274,15 @@ impl LinearMemory for PooledLinearMemory {
 
         let prev_pages = self.size;
         let new_bytes = new_pages.bytes().0;
-        let mmap = self.mmap.as_mut().expect("mmap is only vacated on drop");
-        mmap.make_accessible(self.accessible_bytes, new_bytes - self.accessible_bytes)
-            .map_err(MemoryError::Region)?;
-        self.accessible_bytes = new_bytes;
+        // After a reset the size drops below the accessible high-water mark, so a later grow may
+        // land on pages that are already accessible; only the range beyond the mark needs the
+        // protection change.
+        if new_bytes > self.accessible_bytes {
+            let mmap = self.mmap.as_mut().expect("mmap is only vacated on drop");
+            mmap.make_accessible(self.accessible_bytes, new_bytes - self.accessible_bytes)
+                .map_err(MemoryError::Region)?;
+            self.accessible_bytes = new_bytes;
+        }
         self.size = new_pages;
 
         // SAFETY: the definition outlives this memory (instance-owned) or is owned by it (host).
