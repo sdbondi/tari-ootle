@@ -454,6 +454,72 @@ mod tests {
         );
     }
 
+    /// A previous tenant's bytes must not be reachable by growing into its high-water mark: pages
+    /// the new tenant reaches via `memory.grow` are exactly the pages the scrub re-mapped, so a
+    /// scrub that merely re-protected without discarding contents fails here.
+    #[test]
+    fn pages_grown_into_previous_tenants_range_are_zeroed() {
+        let pool = test_pool();
+        // SAFETY: no definition location is passed.
+        let mut first = unsafe { PooledLinearMemory::new(&pool, &memory_type(1, 32), None).unwrap() };
+        first.grow(Pages(7)).unwrap();
+        unsafe {
+            let definition = first.vmmemory().as_ref();
+            std::ptr::write_bytes(definition.base, 0xCD, definition.current_length);
+        }
+        drop(first);
+
+        // SAFETY: as above.
+        let mut second = unsafe { PooledLinearMemory::new(&pool, &memory_type(1, 32), None).unwrap() };
+        second.grow(Pages(7)).unwrap();
+        assert!(
+            slice_of(&second).iter().all(|&b| b == 0),
+            "pages grown into a previous tenant's high-water mark must be zeroed"
+        );
+    }
+
+    /// The trap boundary must be restored on reuse: cranelift elides bounds checks for static
+    /// memories, so an out-of-bounds read below a previous tenant's high-water mark is stopped
+    /// only by the pages being `PROT_NONE` again. The faulting read runs in a forked child
+    /// (nextest runs one test per process, so the fork is isolated) and must die by SIGSEGV/SIGBUS
+    /// rather than complete — completing would mean the previous tenant's range is still readable.
+    #[test]
+    fn out_of_bounds_read_into_previous_tenants_range_faults() {
+        let pool = test_pool();
+        // SAFETY: no definition location is passed.
+        let mut first = unsafe { PooledLinearMemory::new(&pool, &memory_type(1, 32), None).unwrap() };
+        first.grow(Pages(7)).unwrap();
+        unsafe {
+            let definition = first.vmmemory().as_ref();
+            std::ptr::write_bytes(definition.base, 0xCD, definition.current_length);
+        }
+        drop(first);
+
+        // SAFETY: as above.
+        let second = unsafe { PooledLinearMemory::new(&pool, &memory_type(1, 32), None).unwrap() };
+        // Two pages past the new tenant's single accessible page, well inside the previous
+        // tenant's eight.
+        let probe = unsafe { second.vmmemory().as_ref().base.add(2 * 64 * 1024) };
+
+        // SAFETY: fork + waitpid; the child only performs the probe read and _exits.
+        unsafe {
+            let pid = libc::fork();
+            assert!(pid >= 0, "fork failed");
+            if pid == 0 {
+                std::ptr::read_volatile(probe);
+                // Reaching this line means the read did not trap.
+                libc::_exit(0);
+            }
+            let mut status = 0;
+            assert_eq!(libc::waitpid(pid, &mut status, 0), pid);
+            assert!(
+                libc::WIFSIGNALED(status) &&
+                    (libc::WTERMSIG(status) == libc::SIGSEGV || libc::WTERMSIG(status) == libc::SIGBUS),
+                "reading past current_length into a previous tenant's range must fault, got status {status}"
+            );
+        }
+    }
+
     #[test]
     fn grow_respects_maximum() {
         let pool = test_pool();
