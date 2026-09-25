@@ -13563,6 +13563,7 @@ dependencies = [
  "tari_swarm",
  "tari_template_lib",
  "tari_template_test_tooling",
+ "wasmer",
 ]
 
 [[package]]

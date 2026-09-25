@@ -860,6 +860,30 @@ impl TemplateTest {
         Ok(result)
     }
 
+    /// Captures an immutable, `Send + Sync` snapshot of this harness that can execute
+    /// transactions from any thread.
+    ///
+    /// Each [`SnapshotExecutor::execute`] call is snapshot-isolated exactly like
+    /// [`Self::try_execute`]: it builds a fresh processor over the captured state and commits
+    /// nothing, so calls are independent and may run concurrently. State committed to the harness
+    /// after the snapshot is not visible to it.
+    pub fn snapshot_executor(&self) -> SnapshotExecutor {
+        SnapshotExecutor {
+            package: self.package.clone(),
+            state_store: self.state_store.clone().into_read_only(),
+            extra_inputs: self
+                .state_store
+                .iter()
+                .map(|(id, s)| SubstateRequirement::versioned(id.clone(), s.version()))
+                .collect(),
+            fee_table: self.enable_fees.then(|| self.fee_table.clone()),
+            virtual_substates: self.virtual_substates.clone(),
+            burn_rate: self.burn_rate,
+            dry_run: self.dry_run,
+            auto_add_proofs_from_signers: self.auto_add_proofs_from_signers,
+        }
+    }
+
     /// Executes a transaction and commits state changes only if the transaction is accepted.
     /// Does not panic on rejection — returns the result in all cases.
     #[track_caller]
@@ -1021,5 +1045,74 @@ impl TemplateTest {
         for (k, v) in self.state_store.iter() {
             eprintln!("[{}]: {:?}", k, v.substate_value());
         }
+    }
+}
+
+/// An immutable snapshot of a [`TemplateTest`] that executes transactions from any thread.
+///
+/// Created by [`TemplateTest::snapshot_executor`]. Holds the compiled package, a read-only copy of
+/// the state store and the execution configuration, all of which are `Send + Sync`, so a single
+/// snapshot can be shared across worker threads to execute transactions concurrently.
+pub struct SnapshotExecutor {
+    package: Arc<Package>,
+    state_store: ReadOnlyMemoryStateStore,
+    /// Every substate in the snapshot, declared as an input on each executed transaction so
+    /// that, like [`TemplateTest::try_execute`], a transaction need not declare its inputs.
+    extra_inputs: Vec<SubstateRequirement>,
+    /// `None` means fees were disabled on the harness when the snapshot was taken.
+    fee_table: Option<FeeTable>,
+    virtual_substates: HashMap<VirtualSubstateId, VirtualSubstate>,
+    burn_rate: ExhaustBurnRate,
+    dry_run: bool,
+    auto_add_proofs_from_signers: bool,
+}
+
+impl SnapshotExecutor {
+    /// Executes a pre-built transaction against the snapshot without committing state changes.
+    ///
+    /// Semantics match [`TemplateTest::try_execute`], minus per-call diagnostics: rejection is
+    /// reported inside the `Ok(ExecuteResult)`, and `Err` means the processor itself failed.
+    pub fn execute(
+        &self,
+        transaction: Transaction,
+        mut proofs: Vec<NonFungibleAddress>,
+    ) -> Result<ExecuteResult, TransactionError> {
+        let mut modules: Vec<Box<dyn RuntimeModule<ReadOnlyMemoryStateStore>>> = Vec::with_capacity(1);
+        let wasm_metering_rate = match &self.fee_table {
+            Some(fee_table) => {
+                modules.push(Box::new(FeeModule::new(0, fee_table.clone())));
+                WasmMeteringRate::from_fee_table(fee_table)
+            },
+            None => WasmMeteringRate::unmetered(),
+        };
+
+        if self.auto_add_proofs_from_signers && proofs.is_empty() {
+            proofs.extend(
+                transaction
+                    .signers_iter()
+                    .map(|pk| NonFungibleAddress::from_public_key(*pk)),
+            );
+        }
+
+        let auth_params = AuthParams {
+            initial_ownership_proofs: proofs.into_iter().collect(),
+        };
+
+        let processor = TransactionProcessor::new(
+            self.package.clone(),
+            self.state_store.clone(),
+            auth_params,
+            self.virtual_substates.clone().into(),
+            Arc::from(modules.into_boxed_slice()),
+            Arc::new(AlwaysPassesProofVerifier),
+            wasm_metering_rate,
+            self.burn_rate,
+            Network::LocalNet,
+            self.dry_run,
+        );
+
+        let mut wrapped_transaction = WrappedTransaction::new(transaction);
+        wrapped_transaction.extend_inputs(self.extra_inputs.iter().cloned());
+        processor.execute(wrapped_transaction)
     }
 }
