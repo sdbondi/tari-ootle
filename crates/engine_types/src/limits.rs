@@ -223,12 +223,10 @@ pub struct ModuleShape {
 /// Points charged for building the `Store` and `Instance` a template call runs in, before its first
 /// metered operator.
 ///
-/// A transaction instantiates a template on its first call to it and runs the template's later
-/// calls on that same instance, restored to its freshly instantiated state before each one; only a
-/// call made while the template's instance is already running (a template calling back into itself)
-/// instantiates it again. Instantiating maps linear memory,
-/// copies the module's data segments into it, writes its element segments into its tables, and
-/// wires up the imports. Compiled
+/// Charged on every call to a template, including nested cross-template calls. A call runs on a new
+/// instance or on one the transaction already created, restored to its freshly instantiated state;
+/// both pay this. Instantiating maps linear memory, copies the module's data segments into it,
+/// writes its element segments into its tables, and wires up the imports. Compiled
 /// code is laid down once at publish and costs nothing to instantiate, so the only part that scales
 /// with the binary is the data copy — measured across the built-in templates, a 150 KiB and a 520
 /// KiB module instantiate in the same ~0.015 ms because both carry a few KiB of data. Pricing this

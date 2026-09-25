@@ -58,7 +58,8 @@ const BULK_OPERATOR_COST: u64 = 20;
 /// (~2,000 ns/page measured). A guest writing across a page pays that through its own metered
 /// stores; one writing a single byte per page does not, and a module may declare its whole page
 /// allowance as initial memory and never grow at all, so this constant is not what bounds the
-/// faults. What bounds them is the instantiation count:
+/// faults. What bounds them is the instantiation charge every call pays, on a new instance or a
+/// reset one:
 /// [`tari_engine_types::limits::PER_TEMPLATE_INSTANTIATION`] against
 /// [`tari_engine_types::limits::MAX_NATIVE_POINTS_PER_TRANSACTION`] admits ~24,000 calls, and a
 /// template declaring the full `WASM_LIMITS.max_memory_pages` and touching each page once costs

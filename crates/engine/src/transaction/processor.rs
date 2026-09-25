@@ -1010,6 +1010,11 @@ where
 
         let result = match module {
             LoadedTemplate::Wasm(loaded) => {
+                // Every call pays for an instantiation, whether it gets a new instance or a reused one reset to
+                // its fresh state. The charge also bounds the kernel work each call can cause, such as faulting in
+                // the module's minimum memory pages again after a reset. It runs before the first metered operator,
+                // so it draws on the same allowance and per-block budget as the call's execution.
+                runtime.interface().charge_template_instantiation(&loaded.shape())?;
                 let checkout = runtime
                     .interface()
                     .wasm_instances()
@@ -1019,9 +1024,8 @@ where
                 let instance = match checkout {
                     Checkout::Reuse(mut instance) => match instance.process.reset(&mut instance.store) {
                         Ok(()) => Ok(instance),
-                        // A reset that fails is a host fault, not something the transaction did, so it
-                        // must not change what the transaction is charged: a fresh instance stands in,
-                        // uncharged, exactly as the restored one would have.
+                        // A reset that fails is a host fault, not something the transaction did: a fresh
+                        // instance stands in, at the charge already paid.
                         Err(err) => {
                             warn!(
                                 target: LOG_TARGET,
@@ -1030,7 +1034,7 @@ where
                             Self::create_instance(loaded)
                         },
                     },
-                    Checkout::Vacant | Checkout::Reentrant => Self::instantiate(&runtime, loaded),
+                    Checkout::Vacant | Checkout::Reentrant => Self::create_instance(loaded),
                 };
                 let outcome = instance.and_then(|mut instance| {
                     let result = instance
@@ -1058,13 +1062,6 @@ where
             },
         };
         Ok(result)
-    }
-
-    fn instantiate(runtime: &Runtime, module: LoadedWasmTemplate) -> Result<WasmInstance, TransactionErrorKind> {
-        // Instantiation runs before the first metered operator, so it is charged against the same allowance and
-        // per-block budget the call's execution draws on.
-        runtime.interface().charge_template_instantiation(&module.shape())?;
-        Self::create_instance(module)
     }
 
     fn create_instance(module: LoadedWasmTemplate) -> Result<WasmInstance, TransactionErrorKind> {

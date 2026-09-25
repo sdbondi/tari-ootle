@@ -180,10 +180,9 @@ Rules and checks applied to a payment:
   retained in each validator's record of the execution rather than in consensus state, so its
   bytes are priced well below persisted ones.
 - `TemplateLoad` — `(bytes_loaded / 3000) × per_template_load_cost_unit`, charged **once per template
-  per transaction**. Instantiation is paid once per template per transaction too: the first call
-  into a template instantiates it and pays `instantiation_points` (see below), and its later calls in
-  the transaction run on that instance. A template calling back into itself while its instance is
-  running pays for a second instantiation.
+  per transaction**. Loading is what is deduplicated, not calling: every invocation instantiates the
+  template afresh and pays `instantiation_points` for it (see below), including nested cross-template
+  calls.
 - Metering points accumulate for WASM and native crypto, but are not priced until finalisation.
 
 **Compute on credit.** A transaction cannot pay before it has sourced its funds, so the fee intent
@@ -366,13 +365,12 @@ rate alone:
 
 | Native work | Points | Roughly |
 |---|---|---|
-| Instantiating a template — once per template per transaction, on its first call | `100,000 + 5×data-segment byte + 700×data segment + 32×element entry + 16×table slot` | ~197 µT for the builtin account template, ~150 µT for the faucet |
+| Instantiating a template — **every** call, including nested cross-template ones | `100,000 + 5×data-segment byte + 700×data segment + 32×element entry + 16×table slot` | ~197 µT per call into the builtin account template, ~150 µT into the faucet |
 | Compiling a published binary, once at publish | `140,000,000 + 2,100 × binary bytes` | ~0.34 tTARI for a 96 KiB template, ~2.3 tTARI at the 1 MiB cap |
 
 The compile charge is what sets the binary cap: `MAX_NATIVE_POINTS_PER_TRANSACTION` has to hold it
-and still leave a transaction room to source its fee. Instantiation scales with the number of distinct
-templates a transaction calls, not with its calls: a transfer, whose fee payment, withdrawal and deposit
-all run in the account template, pays ~197 µT of it.
+and still leave a transaction room to source its fee. A four-call transaction pays roughly 600–800 µT
+of instantiation before any template code runs, which is usually larger than its `WasmExecution`.
 
 A source that charges nothing is omitted from the breakdown entirely rather than recorded as a zero.
 The exhaust burn is not a source: it is settled over the total paid and recorded on the receipt's
