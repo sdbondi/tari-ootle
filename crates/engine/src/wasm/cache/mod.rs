@@ -5,7 +5,7 @@
 //!
 //! Cranelift compilation of WASM templates is expensive: ~6 MB peak heap and
 //! tens of milliseconds per template, paid on every node startup. The compiled
-//! output for a given `(wasm_source, engine_config)` is deterministic and
+//! output for a given `(wasm_source, engine)` is deterministic and
 //! reusable, so it can be persisted on local disk and loaded back via
 //! [`wasmer::Module::deserialize_unchecked`] in milliseconds with negligible
 //! peak heap.
@@ -72,7 +72,7 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// say so.
 ///
 /// Every source input is a file narrow enough that each line in it decides what an artifact
-/// contains, which is what [`engine_config`](super::engine_config) and
+/// contains, which is what [`engine`](super::engine) and
 /// [`module_shape`](super::module_shape) exist as separate files for: a digest over a file is only
 /// as precise as that file is narrow, and imprecision here is paid for by every node recompiling
 /// every template. What is configuration rather than logic — the header layout and the limits — is
@@ -91,7 +91,7 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const ENGINE_FINGERPRINT_BITS: u64 = {
     let h = const_hash::init(b"tari.ootle.wasm_cache.engine_fingerprint.v2");
     // The compiler flags, feature set and tunables every artifact is built under.
-    let h = const_hash::part(h, include_bytes!("../engine_config.rs"));
+    let h = const_hash::part(h, include_bytes!("../engine.rs"));
     // The derivation of the shape counts a hit serves verbatim out of the header.
     let h = const_hash::part(h, include_bytes!("../module_shape.rs"));
     // The per-operator cost tables the middlewares bake into the emitted instrumentation.
