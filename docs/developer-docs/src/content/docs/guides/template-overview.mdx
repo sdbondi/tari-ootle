@@ -224,16 +224,6 @@ You can still declare `struct`/`enum` types inside a stateless module to use as 
   unused struct, and the compiler guarantees no state or component sneaks in.
 </Aside>
 
-### Template state between calls
-
-Every call to your template starts from the state of a freshly loaded template: each `static` holds its initial value,
-the heap is empty and linear memory is back at its initial size. Nothing one call leaves in the guest is visible to any
-other call, in the same transaction or another. State that must outlive a call belongs in component state.
-
-The engine guarantees this by refusing, at publish, the few WebAssembly constructs whose effects it could not undo:
-instructions that modify a table (`table.set`, `table.grow`, `table.fill`, `table.copy`), passive data and element
-segments, and mutable globals of reference type. Templates built with the standard Rust toolchain use none of them.
-
 ### Next Steps
 
 - Now that you know a little about templates, let's build a simple <a href={basePath("/guides/build-a-guessing-game")}>Guessing Game</a>.
