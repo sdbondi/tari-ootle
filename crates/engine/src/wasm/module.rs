@@ -39,13 +39,7 @@ use wasmer::{
 
 use crate::{
     template::{LoadedTemplate, TemplateLoaderError, TemplateModuleLoader},
-    wasm::{
-        WasmExecutionError,
-        WasmProcess,
-        WasmValidationError,
-        engine_config,
-        module_shape::validate_module_structure,
-    },
+    wasm::{WasmExecutionError, WasmProcess, WasmValidationError, engine, module_shape::validate_module_structure},
 };
 
 pub type MainFunction = TypedFunction<(WasmPtr<u8>, u32), WasmPtr<u8>>;
@@ -175,7 +169,7 @@ impl WasmModule {
     }
 
     fn create_engine() -> Engine {
-        engine_config::create_engine()
+        engine::create_engine()
     }
 }
 

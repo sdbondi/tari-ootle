@@ -11997,6 +11997,7 @@ dependencies = [
  "criterion",
  "digest 0.10.7",
  "indexmap 2.14.2",
+ "libc",
  "log",
  "memmap2 0.9.11",
  "minicbor",
@@ -12642,13 +12643,13 @@ dependencies = [
  "reqwest 0.13.2",
  "serde_json",
  "tari_bor",
- "tari_engine",
  "tari_engine_types",
  "tari_ootle_address",
  "tari_ootle_common_types",
  "tari_ootle_transaction",
  "tari_ootle_wallet_sdk",
  "tari_ootle_walletd_client",
+ "tari_template_abi",
  "tari_template_lib",
  "tari_transaction_manifest",
  "tari_utilities",
@@ -13563,6 +13564,7 @@ dependencies = [
  "tari_swarm",
  "tari_template_lib",
  "tari_template_test_tooling",
+ "wasmer",
 ]
 
 [[package]]

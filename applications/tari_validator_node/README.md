@@ -1,5 +1,20 @@
 # Tari Validator Node
 
+### Host requirements
+
+- **Supported platforms:** Linux (x86_64, arm64) and macOS (arm64). Windows is not supported for the
+  validator node or indexer, because the engine manages guest memory with the unix
+  `mmap`/`mprotect` system calls; attempting to compile for Windows fails with an error saying so.
+  The wallet daemon and wallet CLI do not embed the engine and are unaffected.
+- **Virtual address space (`ulimit -v` / `RLIMIT_AS`) must be unlimited** (the default on most
+  distributions). Every executing WASM template reserves ~8 GiB of address space for its guest
+  memory, and the engine keeps a pool of up to 2 × vCPU reservations alive for the life of the
+  process (~512 GiB of address space on a 32-vCPU host). This is reservation only — it consumes no
+  physical memory or commit charge, and container memory limits (Docker/k8s) are unaffected because
+  they count resident memory, not address space.
+- **`vm.max_map_count`:** the Linux default (65530) is ample; pooled reservations use a couple of
+  mappings each.
+
 ### Web GUI
 
 React frontend that uses the JSON-RPC backend running. By default runs on port 5000.

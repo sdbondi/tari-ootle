@@ -5,7 +5,7 @@ use std::{
     collections::HashMap,
     ffi::OsStr,
     path::Path,
-    sync::{Arc, LazyLock, Mutex},
+    sync::{Arc, LazyLock},
 };
 
 use tari_engine::{
@@ -39,7 +39,7 @@ fn cached_builtin_templates() -> &'static [(TemplateAddress, LoadedTemplate)] {
 
 #[derive(Debug, Clone)]
 pub struct Package {
-    templates: Arc<Mutex<HashMap<TemplateAddress, LoadedTemplate>>>,
+    templates: Arc<HashMap<TemplateAddress, LoadedTemplate>>,
 }
 
 impl Package {
@@ -48,24 +48,22 @@ impl Package {
     }
 
     pub fn get_template_by_address(&self, addr: &TemplateAddress) -> Option<LoadedTemplate> {
-        self.templates.lock().unwrap().get(addr).cloned()
+        self.templates.get(addr).cloned()
     }
 
     pub fn get_template_defs(&self) -> HashMap<TemplateAddress, TemplateDef> {
         self.templates
-            .lock()
-            .unwrap()
             .iter()
             .map(|(addr, template)| (*addr, template.template_def().clone()))
             .collect()
     }
 
     pub fn total_code_byte_size(&self) -> usize {
-        self.templates.lock().unwrap().values().map(|t| t.code_size()).sum()
+        self.templates.values().map(|t| t.code_size()).sum()
     }
 
     pub fn templates(&self) -> HashMap<TemplateAddress, LoadedTemplate> {
-        self.templates.lock().unwrap().clone()
+        (*self.templates).clone()
     }
 }
 
@@ -136,7 +134,7 @@ impl PackageBuilder {
 
     pub fn build(&mut self) -> Package {
         Package {
-            templates: Arc::new(Mutex::new(self.templates.drain().collect())),
+            templates: Arc::new(self.templates.drain().collect()),
         }
     }
 }
@@ -151,6 +149,6 @@ impl TemplateProvider for Package {
     type Template = LoadedTemplate;
 
     fn get_template(&self, id: &TemplateAddress) -> Result<Option<Self::Template>, Self::Error> {
-        Ok(self.templates.lock().unwrap().get(id).cloned())
+        Ok(self.templates.get(id).cloned())
     }
 }

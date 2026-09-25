@@ -20,7 +20,7 @@ pub use cache::{
 };
 
 mod bulk_metering;
-mod engine_config;
+mod engine;
 mod metering;
 mod module_shape;
 mod process;
@@ -29,3 +29,5 @@ pub use process::WasmProcess;
 
 mod limiting_tunable;
 mod mem_writer;
+mod memory_pool;
+pub use memory_pool::{MemoryPool, PooledMemoryTunables};
