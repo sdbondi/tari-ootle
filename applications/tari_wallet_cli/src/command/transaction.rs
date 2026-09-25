@@ -32,7 +32,7 @@ use std::{
 use anyhow::anyhow;
 use clap::{Args, Subcommand};
 use tari_bor::decode_exact;
-use tari_engine::abi::Type;
+use tari_template_abi::Type;
 use tari_engine_types::{
     commit_result::{FinalizeResult, RejectReason, TransactionResult},
     instruction_result::InstructionResult,
