@@ -53,6 +53,8 @@ pub enum WasmExecutionError {
     MemoryAllocationFailed,
     #[error("BUG: memory not set in environment")]
     MemoryNotSet,
+    #[error("BUG: template code ran on an instance with no call bound to it")]
+    NoCallBound,
     #[error("Missing function {function}")]
     MissingAbiFunction { function: &'static str },
     #[error("Engine call size limit of {limit} bytes exceeded")]
@@ -195,7 +197,7 @@ impl WasmExecutionError {
             Self::EngineCallArgSizeExceeded { .. } => C::LimitExceeded,
 
             Self::InvalidArgumentCount { .. } => C::InvalidArgument,
-            Self::MemoryNotSet => C::EngineInvariant,
+            Self::MemoryNotSet | Self::NoCallBound => C::EngineInvariant,
 
             Self::RuntimeError(err) => err.failure_code(),
             Self::WasmValidationError(err) => err.failure_code(),

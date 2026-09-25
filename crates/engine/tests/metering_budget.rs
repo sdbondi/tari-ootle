@@ -58,8 +58,8 @@ fn per_transaction_budget_caps_total_across_calls() {
     );
 }
 
-/// Every instruction that calls a template builds a fresh `Store` and `Instance` before the first
-/// metered operator runs, so the cost of doing so is charged per call rather than absorbed.
+/// Every instruction that calls a template runs on a new instance or on one reset to its fresh
+/// state, before the first metered operator runs, and pays an instantiation for it on every call.
 #[test]
 fn instantiation_is_charged_once_per_call() {
     use tari_engine_types::limits::PER_TEMPLATE_INSTANTIATION;

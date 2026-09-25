@@ -38,6 +38,7 @@ use wasmer::{
 
 use crate::wasm::{
     bulk_metering::BulkMetering,
+    instance_reset::ResettableState,
     limiting_tunable::LimitingTunables,
     memory_pool::{MemoryPool, PooledMemoryTunables},
     metering,
@@ -61,6 +62,8 @@ pub(crate) fn create_engine() -> Engine {
     compiler
         .opt_level(CraneliftOptLevel::SpeedAndSize)
         .canonicalize_nans(true);
+    // Must precede the meters, so the globals it exports for restoring are exactly the module's own.
+    compiler.push_middleware(Arc::new(ResettableState));
     // Per-call metering ceiling. `WasmProcess::invoke` lowers each call's allowance further to
     // whatever remains of the per-transaction budget (`MAX_WASM_POINTS_PER_TRANSACTION`).
     let metering = Arc::new(metering::middleware(limits::MAX_WASM_POINTS_PER_CALL));

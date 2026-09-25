@@ -53,7 +53,7 @@ mod validation;
 mod working_state;
 mod workspace;
 
-use std::{fmt::Debug, rc::Rc};
+use std::{cell::RefCell, fmt::Debug, rc::Rc};
 
 pub use pay_fee::PayFee;
 use tari_engine_types::{
@@ -115,9 +115,12 @@ use tari_template_lib::{
 pub use tracker::{ComputeAllowance, ComputeFunding, FinalizedState, StateTracker};
 pub use working_state::ChargeableState;
 
-use crate::runtime::{
-    locking::LockedSubstate,
-    scope::{FrameWriteMode, PushCallFrame},
+use crate::{
+    runtime::{
+        locking::LockedSubstate,
+        scope::{FrameWriteMode, PushCallFrame},
+    },
+    wasm::WasmInstanceCache,
 };
 
 pub trait RuntimeInterface {
@@ -276,6 +279,10 @@ pub trait RuntimeInterface {
     /// the work.
     fn charge_template_instantiation(&self, shape: &ModuleShape) -> Result<(), RuntimeError>;
 
+    /// The template instances this transaction has created. A borrow of it must not be held across a
+    /// template call, which may reach it again through a nested call.
+    fn wasm_instances(&self) -> &RefCell<WasmInstanceCache>;
+
     /// Charges the Cranelift compile a `PublishTemplate` instruction makes every validator run,
     /// before the compile starts. Priced by [`tari_engine_types::limits::template_compile_points`].
     fn charge_template_compile(&self, binary_bytes: u64) -> Result<(), RuntimeError>;
@@ -322,7 +329,7 @@ pub trait RuntimeInterface {
 ///
 /// Frames reach that state two ways. [`Runtime::clone`] shares the interface itself, while
 /// `RuntimeInterfaceImpl::for_nested_call` builds a new one over the same tracker, entity-id
-/// provider and spend-script context. What is shared in both cases is the state; the interface is
+/// provider, spend-script context and template instances. What is shared in both cases is the state; the interface is
 /// shared only in the first.
 #[derive(Clone)]
 pub struct Runtime {
@@ -332,11 +339,12 @@ pub struct Runtime {
 // SAFETY: wasmer requires `Send + Sync` of a `FunctionEnv`'s data. A `Runtime` satisfies neither
 // structurally — its interface handle is `Rc` and the state behind it is `RefCell` — so what makes
 // the impls sound is that a `Runtime` stays on one thread. Its whole lifetime is one execution: it
-// is built in `TransactionProcessor::execute`, and the `Store` that holds it is created and dropped
-// inside `TransactionProcessor::invoke_template` on the thread executing the transaction, so every
-// refcount touch — wasmer's own drop of the `FunctionEnv` data included — happens there. Nothing a
-// `Runtime` reaches outlives that execution: the handles `TransactionProcessor` is given from
-// outside it, which do cross threads, stay `Arc`.
+// is built in `TransactionProcessor::execute`, and a `Store` holds one only while
+// `TransactionProcessor::invoke_template` runs a call on the thread executing the transaction, so
+// every refcount touch — wasmer's own drop of the `FunctionEnv` data included — happens there. The
+// stores themselves live in the transaction's instance cache and are dropped with it, on that
+// same thread. Nothing a `Runtime` reaches outlives that execution: the handles
+// `TransactionProcessor` is given from outside it, which do cross threads, stay `Arc`.
 unsafe impl Sync for Runtime {}
 // SAFETY: See the `Sync` impl above.
 unsafe impl Send for Runtime {}

@@ -38,7 +38,7 @@ pub fn middleware(limit: u64) -> Metering<CostFunction> {
 /// the table below prices at 2 to 4 for these. The second is the charge sequence itself: those
 /// operators are emitted after this middleware has run, which is what keeps them out of the
 /// accumulator, so the ~16 points they execute — three global stores, an extend, a multiply, a
-/// compare, a conditional block, a subtract, and for `table.grow` a clamp — have to be paid for here.
+/// compare, a conditional block and a subtract — have to be paid for here.
 /// Without it a module could run the sequence for free by repeating a zero-length copy.
 const BULK_OPERATOR_COST: u64 = 20;
 
@@ -58,7 +58,8 @@ const BULK_OPERATOR_COST: u64 = 20;
 /// (~2,000 ns/page measured). A guest writing across a page pays that through its own metered
 /// stores; one writing a single byte per page does not, and a module may declare its whole page
 /// allowance as initial memory and never grow at all, so this constant is not what bounds the
-/// faults. What bounds them is the instantiation count:
+/// faults. What bounds them is the instantiation charge every call pays, on a new instance or a
+/// reset one:
 /// [`tari_engine_types::limits::PER_TEMPLATE_INSTANTIATION`] against
 /// [`tari_engine_types::limits::MAX_NATIVE_POINTS_PER_TRANSACTION`] admits ~24,000 calls, and a
 /// template declaring the full `WASM_LIMITS.max_memory_pages` and touching each page once costs
@@ -256,11 +257,7 @@ fn cost_function(op: &Operator) -> u64 {
         Operator::MemoryCopy { .. } | Operator::MemoryFill { .. } => 2,
         Operator::TableInit { .. } |
         Operator::ElemDrop { .. } |
-        Operator::TableCopy { .. } |
-        Operator::TableFill { .. } |
         Operator::TableGet { .. } |
-        Operator::TableSet { .. } |
-        Operator::TableGrow { .. } |
         Operator::TableSize { .. } => 2,
         Operator::MemoryAtomicNotify { .. } |
         Operator::MemoryAtomicWait32 { .. } |

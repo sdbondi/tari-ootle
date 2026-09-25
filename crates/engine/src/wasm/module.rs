@@ -39,7 +39,14 @@ use wasmer::{
 
 use crate::{
     template::{LoadedTemplate, TemplateLoaderError, TemplateModuleLoader},
-    wasm::{WasmExecutionError, WasmProcess, WasmValidationError, engine, module_shape::validate_module_structure},
+    wasm::{
+        InitialState,
+        WasmExecutionError,
+        WasmProcess,
+        WasmValidationError,
+        engine,
+        module_shape::validate_module_structure,
+    },
 };
 
 pub type MainFunction = TypedFunction<(WasmPtr<u8>, u32), WasmPtr<u8>>;
@@ -153,11 +160,15 @@ impl WasmModule {
         // declared types when the instance's storage is created. Instantiating here is what applies
         // them, so a template that declares more than a limit allows is refused at load rather than
         // at its first call.
-        Instance::new(&mut store, &module, &imports)?;
+        //
+        // The instance has run no code, so its state is exactly what every instantiation of the
+        // module starts from, and what a reused instance is restored to before each call.
+        let instance = Instance::new(&mut store, &module, &imports)?;
+        let initial_state = InitialState::capture(&mut store, &instance)?;
 
         let engine = store.engine().clone();
 
-        Ok(LoadedWasmTemplate::new(template, module, engine, code_size, shape).into())
+        Ok(LoadedWasmTemplate::new(template, module, engine, code_size, shape, initial_state).into())
     }
 
     pub fn code(&self) -> &[u8] {
@@ -186,6 +197,7 @@ pub struct LoadedWasmTemplate {
     engine: Engine,
     code_size: usize,
     shape: ModuleShape,
+    initial_state: Arc<InitialState>,
 }
 
 impl LoadedWasmTemplate {
@@ -195,6 +207,7 @@ impl LoadedWasmTemplate {
         engine: Engine,
         code_size: usize,
         shape: ModuleShape,
+        initial_state: InitialState,
     ) -> Self {
         Self {
             template_def: Arc::new(template_def),
@@ -202,6 +215,7 @@ impl LoadedWasmTemplate {
             engine,
             code_size,
             shape,
+            initial_state: Arc::new(initial_state),
         }
     }
 
@@ -239,6 +253,11 @@ impl LoadedWasmTemplate {
 
     pub fn shape(&self) -> ModuleShape {
         self.shape
+    }
+
+    /// The state every instance of this template starts a call from.
+    pub fn initial_state(&self) -> &InitialState {
+        &self.initial_state
     }
 }
 

@@ -85,9 +85,9 @@ use crate::{
     },
     state_store::StateReader,
     template::LoadedTemplate,
-    traits::{ClaimProofVerifier, Invokable},
+    traits::ClaimProofVerifier,
     transaction::{TransactionError, error::TransactionErrorKind},
-    wasm::{WasmModule, WasmProcess},
+    wasm::{Checkout, LoadedWasmTemplate, WasmInstance, WasmModule, WasmProcess},
 };
 
 const LOG_TARGET: &str = "tari::ootle::engine::instruction_processor";
@@ -457,22 +457,24 @@ where
         template_provider: &TTemplateProvider,
         runtime: &Runtime,
         component: ComponentReference,
-        new_template: TemplateAddress,
+        new_template_addr: TemplateAddress,
         migrate: Option<MigrateFunction>,
     ) -> Result<InstructionResult, TransactionErrorKind> {
         let (component_address, component) = runtime.interface().load_component(component)?;
 
         let template = template_provider
-            .get_template(&new_template)
+            .get_template(&new_template_addr)
             .map_err(|e| TransactionErrorKind::FailedToLoadTemplate {
-                address: new_template,
+                address: new_template_addr,
                 details: e.to_string(),
             })?
-            .ok_or(TransactionErrorKind::TemplateNotFound { address: new_template })?;
+            .ok_or(TransactionErrorKind::TemplateNotFound {
+                address: new_template_addr,
+            })?;
 
         runtime
             .interface()
-            .track_template_loaded(&new_template, template.code_size())?;
+            .track_template_loaded(&new_template_addr, template.code_size())?;
 
         let component_lock = runtime.interface().lock_component(component_address, LockFlag::Write)?;
 
@@ -520,7 +522,7 @@ where
                 .collect::<Result<_, _>>()?;
 
             let frame = PushCallFrame::MigrationContext {
-                template_address: new_template,
+                template_address: new_template_addr,
                 module_name: template.template_name().to_string(),
                 component_scope,
                 component_lock,
@@ -530,7 +532,7 @@ where
             (frame, resolved_args)
         } else {
             let frame = PushCallFrame::MigrationContext {
-                template_address: new_template,
+                template_address: new_template_addr,
                 module_name: template.template_name().to_string(),
                 component_scope,
                 component_lock,
@@ -553,11 +555,12 @@ where
         // ends here.
         runtime.interface().revoke_boundary_proofs()?;
 
-        runtime.interface().update_component_template(new_template)?;
+        runtime.interface().update_component_template(new_template_addr)?;
 
         let returned = if let Some(function_def) = migration_function {
             // Migrate function is defined, so we need to call it
-            let result = Self::invoke_template(template, runtime.clone(), &function_def, &final_args)?;
+            let result =
+                Self::invoke_template(new_template_addr, template, runtime.clone(), &function_def, &final_args)?;
             runtime.interface().validate_return_value(&result.indexed)?;
             result.indexed
         } else {
@@ -676,6 +679,7 @@ where
         Ok(InstructionResult::empty())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn create_account(
         template_provider: &TTemplateProvider,
         runtime: &Runtime,
@@ -795,7 +799,13 @@ where
                     None,
                 )?;
 
-                let result = Self::invoke_template(template, runtime.clone(), &function_def, &resolved_args)?;
+                let result = Self::invoke_template(
+                    ACCOUNT_TEMPLATE_ADDRESS,
+                    template,
+                    runtime.clone(),
+                    &function_def,
+                    &resolved_args,
+                )?;
 
                 runtime.interface().validate_return_value(&result.indexed)?;
                 runtime.interface().pop_call_frame(result.indexed.well_known_types())?;
@@ -863,7 +873,13 @@ where
 
         runtime.interface().push_call_frame(frame, restrict_frame_to)?;
 
-        let result = Self::invoke_template(template, runtime.clone(), &function_def, &resolved_args)?;
+        let result = Self::invoke_template(
+            *template_address,
+            template,
+            runtime.clone(),
+            &function_def,
+            &resolved_args,
+        )?;
 
         runtime.interface().validate_return_value(&result.indexed)?;
         runtime.interface().pop_call_frame(result.indexed.well_known_types())?;
@@ -963,7 +979,13 @@ where
         // This must come after the call frame as that defines the authorization scope
         runtime.interface().check_component_access_rules(method)?;
 
-        let result = Self::invoke_template(template, runtime.clone(), &function_def, &resolved_args)?;
+        let result = Self::invoke_template(
+            component.header.template_address,
+            template,
+            runtime.clone(),
+            &function_def,
+            &resolved_args,
+        )?;
 
         runtime.interface().validate_return_value(&result.indexed)?;
         runtime.interface().pop_call_frame(result.indexed.well_known_types())?;
@@ -974,7 +996,11 @@ where
     /// into template code, so it is where a frame stops holding the proofs that were in scope for its call
     /// boundary: whatever the frame's access rule was evaluated against, the code itself acts with its own badges
     /// and its `Proof` arguments.
+    ///
+    /// The call runs on the instance of `template_address` the transaction's earlier calls used, if any (see
+    /// [`WasmInstanceCache`]), restored first to the state of a fresh instantiation.
     fn invoke_template(
+        template_address: TemplateAddress,
         module: LoadedTemplate,
         runtime: Runtime,
         function_def: &FunctionDef,
@@ -984,14 +1010,63 @@ where
 
         let result = match module {
             LoadedTemplate::Wasm(loaded) => {
-                // Instantiation runs before the first metered operator, so it is charged against
-                // the same allowance and per-block budget the call's execution draws on.
+                // Every call pays for an instantiation, whether it gets a new instance or a reused one reset to
+                // its fresh state. The charge also bounds the kernel work each call can cause, such as faulting in
+                // the module's minimum memory pages again after a reset. It runs before the first metered operator,
+                // so it draws on the same allowance and per-block budget as the call's execution.
                 runtime.interface().charge_template_instantiation(&loaded.shape())?;
-                let mut store = loaded.create_store();
-                let mut process = WasmProcess::init(&mut store, loaded, runtime)?;
-                process.invoke(&mut store, function_def, args)?
+                let checkout = runtime
+                    .interface()
+                    .wasm_instances()
+                    .borrow_mut()
+                    .checkout(&template_address);
+                let cacheable = !matches!(checkout, Checkout::Reentrant);
+                let instance = match checkout {
+                    Checkout::Reuse(mut instance) => match instance.process.reset(&mut instance.store) {
+                        Ok(()) => Ok(instance),
+                        // A reset that fails is a host fault, not something the transaction did: a fresh
+                        // instance stands in, at the charge already paid.
+                        Err(err) => {
+                            warn!(
+                                target: LOG_TARGET,
+                                "Could not reset the instance of template {template_address}, instantiating afresh: {err}"
+                            );
+                            Self::create_instance(loaded)
+                        },
+                    },
+                    Checkout::Vacant | Checkout::Reentrant => Self::create_instance(loaded),
+                };
+                let outcome = instance.and_then(|mut instance| {
+                    let result = instance
+                        .process
+                        .call(&mut instance.store, runtime.clone(), function_def, args)?;
+                    Ok((instance, result))
+                });
+
+                // Borrowed again only once the call has returned, since a nested call reaches the cache too.
+                let mut instances = runtime.interface().wasm_instances().borrow_mut();
+                match outcome {
+                    Ok((instance, result)) => {
+                        if cacheable {
+                            instances.checkin(&template_address, instance);
+                        }
+                        result
+                    },
+                    Err(err) => {
+                        if cacheable {
+                            instances.discard(&template_address);
+                        }
+                        return Err(err);
+                    },
+                }
             },
         };
         Ok(result)
+    }
+
+    fn create_instance(module: LoadedWasmTemplate) -> Result<WasmInstance, TransactionErrorKind> {
+        let mut store = module.create_store();
+        let process = WasmProcess::init(&mut store, module)?;
+        Ok(WasmInstance { store, process })
     }
 }

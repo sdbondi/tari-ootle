@@ -107,27 +107,8 @@ impl MemoryPool {
     /// `PROT_NONE` and zero-filled over the previously accessible range. A mapping that cannot be
     /// scrubbed, or that arrives while the pool is full, is dropped (munmapped) instead.
     fn release(&self, mut mmap: Mmap, accessible_bytes: usize) {
-        if accessible_bytes > 0 {
-            let base = mmap.as_mut_ptr();
-            // SAFETY: `base..base+accessible_bytes` lies within the mapping this pool created
-            // (accessible never exceeds mapping_bytes), and no instance references it any more —
-            // the memory holding it is being dropped. MAP_FIXED replaces exactly that range with a
-            // fresh zero-filled PROT_NONE anonymous mapping and leaves the rest of the reservation
-            // untouched.
-            let scrubbed = unsafe {
-                let remapped = libc::mmap(
-                    base.cast(),
-                    accessible_bytes,
-                    libc::PROT_NONE,
-                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED,
-                    -1,
-                    0,
-                );
-                remapped == base.cast()
-            };
-            if !scrubbed {
-                return;
-            }
+        if scrub(&mut mmap, accessible_bytes).is_err() {
+            return;
         }
         let mut slots = self.slots.lock().unwrap();
         if slots.len() < self.max_slots {
@@ -136,19 +117,96 @@ impl MemoryPool {
     }
 }
 
+/// Zero-fills `mmap[..accessible_bytes]` and leaves `mmap[..minimum_bytes]` accessible and the rest
+/// `PROT_NONE`. `accessible_bytes` is never below `minimum_bytes`: a memory never shrinks below the
+/// module's minimum.
+///
+/// On Linux `MADV_DONTNEED` drops the pages of a private anonymous mapping, so each reads as zero
+/// when next touched. It takes the process's mmap lock only for reading, so concurrent executions
+/// do not serialize on it, and the protection change the lock must be taken for writing to make is
+/// needed only when the memory grew past its minimum.
+#[cfg(target_os = "linux")]
+fn discard_contents(mmap: &mut Mmap, minimum_bytes: usize, accessible_bytes: usize) -> Result<(), MemoryError> {
+    let base = mmap.as_mut_ptr();
+    // SAFETY: both ranges lie within the mapping (accessible never exceeds mapping_bytes), and the
+    // caller holds the only memory backed by it, which runs no guest code across the call.
+    unsafe {
+        if accessible_bytes > 0 && libc::madvise(base.cast(), accessible_bytes, libc::MADV_DONTNEED) != 0 {
+            return Err(os_error("discard a guest memory's pages"));
+        }
+        if accessible_bytes > minimum_bytes &&
+            libc::mprotect(
+                base.add(minimum_bytes).cast(),
+                accessible_bytes - minimum_bytes,
+                libc::PROT_NONE,
+            ) != 0
+        {
+            return Err(os_error("re-protect a guest memory's grown pages"));
+        }
+    }
+    Ok(())
+}
+
+/// Zero-fills `mmap[..accessible_bytes]` and leaves `mmap[..minimum_bytes]` accessible and the rest
+/// `PROT_NONE`. Outside Linux `MADV_DONTNEED` does not guarantee zero-filled pages, so the range is
+/// re-mapped fresh instead.
+#[cfg(not(target_os = "linux"))]
+fn discard_contents(mmap: &mut Mmap, minimum_bytes: usize, accessible_bytes: usize) -> Result<(), MemoryError> {
+    scrub(mmap, accessible_bytes)?;
+    if minimum_bytes > 0 {
+        mmap.make_accessible(0, minimum_bytes).map_err(MemoryError::Region)?;
+    }
+    Ok(())
+}
+
+fn os_error(action: &str) -> MemoryError {
+    MemoryError::Generic(format!("could not {action}: {}", std::io::Error::last_os_error()))
+}
+
+/// Replaces `mmap[..accessible_bytes]` with a fresh zero-filled `PROT_NONE` anonymous mapping,
+/// leaving the rest of the reservation untouched. The range is then exactly as a fresh
+/// `Mmap::accessible_reserved(0, ..)` left it.
+///
+/// Nothing may reference the range's contents across this call: the caller either owns the mapping
+/// outright or holds the only memory backed by it.
+fn scrub(mmap: &mut Mmap, accessible_bytes: usize) -> Result<(), MemoryError> {
+    if accessible_bytes == 0 {
+        return Ok(());
+    }
+    let base = mmap.as_mut_ptr();
+    // SAFETY: `base..base+accessible_bytes` lies within the mapping (accessible never exceeds
+    // mapping_bytes), and the caller guarantees nothing reads it across the re-map.
+    let remapped = unsafe {
+        libc::mmap(
+            base.cast(),
+            accessible_bytes,
+            libc::PROT_NONE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED,
+            -1,
+            0,
+        )
+    };
+    if remapped == base.cast() {
+        Ok(())
+    } else {
+        Err(os_error("re-map a guest memory"))
+    }
+}
+
 /// A static-style guest linear memory backed by a pooled reservation.
 ///
-/// Mirrors the semantics of wasmer's `VMOwnedMemory` for static memories exactly — same
-/// definition handling, same grow/reset behaviour, same protection boundary — with the single
-/// difference that the backing mapping returns to the [`MemoryPool`] on drop instead of being
-/// unmapped.
+/// Mirrors the semantics of wasmer's `VMOwnedMemory` for static memories — same definition
+/// handling, same grow behaviour, same protection boundary — with two differences: the backing
+/// mapping returns to the [`MemoryPool`] on drop instead of being unmapped, and
+/// [`LinearMemory::reset`] returns the memory to the state a fresh instantiation creates rather
+/// than only zeroing its size, so an instance can be restored to its freshly instantiated state.
 #[derive(Debug)]
 struct PooledLinearMemory {
     /// `None` only transiently during drop, when the mapping is handed back to the pool.
     mmap: Option<Mmap>,
-    /// Bytes from the base that are `PROT_READ|PROT_WRITE`. At least the definition's
-    /// `current_length`, and equal to it except after `reset` (grow raises both together),
-    /// preserving the trap-at-current-length protection boundary the compiled code relies on.
+    /// Bytes from the base that are `PROT_READ|PROT_WRITE`. Always equal to the definition's
+    /// `current_length` (grow raises both together, reset returns both to the minimum), preserving the
+    /// trap-at-current-length protection boundary the compiled code relies on.
     accessible_bytes: usize,
     size: Pages,
     memory_type: MemoryType,
@@ -274,15 +332,10 @@ impl LinearMemory for PooledLinearMemory {
 
         let prev_pages = self.size;
         let new_bytes = new_pages.bytes().0;
-        // After a reset the size drops below the accessible high-water mark, so a later grow may
-        // land on pages that are already accessible; only the range beyond the mark needs the
-        // protection change.
-        if new_bytes > self.accessible_bytes {
-            let mmap = self.mmap.as_mut().expect("mmap is only vacated on drop");
-            mmap.make_accessible(self.accessible_bytes, new_bytes - self.accessible_bytes)
-                .map_err(MemoryError::Region)?;
-            self.accessible_bytes = new_bytes;
-        }
+        let mmap = self.mmap.as_mut().expect("mmap is only vacated on drop");
+        mmap.make_accessible(self.accessible_bytes, new_bytes - self.accessible_bytes)
+            .map_err(MemoryError::Region)?;
+        self.accessible_bytes = new_bytes;
         self.size = new_pages;
 
         // SAFETY: the definition outlives this memory (instance-owned) or is owned by it (host).
@@ -306,12 +359,26 @@ impl LinearMemory for PooledLinearMemory {
         Ok(())
     }
 
+    /// Returns the memory to the state a fresh instantiation creates it in, before its data
+    /// segments are written: sized at the module's declared minimum, every page zero-filled, and
+    /// every page past the minimum `PROT_NONE` again.
+    ///
+    /// This is the one place the memory departs from `VMOwnedMemory`, whose reset only drops the
+    /// size to zero and leaves the protection and contents alone. The engine calls it to restore a
+    /// reused instance, and nothing else reaches it.
+    ///
+    /// If the reset fails the memory is in an unknown state and the error is returned; the caller
+    /// must then not run guest code on it.
     fn reset(&mut self) -> Result<(), MemoryError> {
-        // Mirrors VMOwnedMemory::reset: the size drops to zero without changing protection.
-        self.size = Pages(0);
+        let minimum = self.memory_type.minimum;
+        let minimum_bytes = minimum.bytes().0;
+        let mmap = self.mmap.as_mut().expect("mmap is only vacated on drop");
+        discard_contents(mmap, minimum_bytes, self.accessible_bytes)?;
+        self.accessible_bytes = minimum_bytes;
+        self.size = minimum;
         // SAFETY: as in `grow`.
         unsafe {
-            self.definition().as_mut().current_length = 0;
+            self.definition().as_mut().current_length = minimum_bytes;
         }
         Ok(())
     }
@@ -501,6 +568,15 @@ mod tests {
         // tenant's eight.
         let probe = unsafe { second.vmmemory().as_ref().base.add(2 * 64 * 1024) };
 
+        assert_read_faults(
+            probe,
+            "reading past current_length into a previous tenant's range must fault",
+        );
+    }
+
+    /// Asserts that reading `probe` faults. The read runs in a forked child (nextest runs one test
+    /// per process, so the fork is isolated), which must die by SIGSEGV/SIGBUS rather than complete.
+    fn assert_read_faults(probe: *const u8, why: &str) {
         // SAFETY: fork + waitpid; the child only performs the probe read and _exits.
         unsafe {
             let pid = libc::fork();
@@ -520,9 +596,31 @@ mod tests {
             assert!(
                 libc::WIFSIGNALED(status) &&
                     (libc::WTERMSIG(status) == libc::SIGSEGV || libc::WTERMSIG(status) == libc::SIGBUS),
-                "reading past current_length into a previous tenant's range must fault, got status {status}"
+                "{why}, got status {status}"
             );
         }
+    }
+
+    #[test]
+    fn reset_restores_a_fresh_reservation() {
+        let pool = test_pool();
+        // SAFETY: no definition location is passed.
+        let mut memory = unsafe { PooledLinearMemory::new(pool.clone(), &memory_type(1, 32), None).unwrap() };
+        memory.grow(Pages(7)).unwrap();
+        unsafe {
+            let definition = memory.vmmemory().as_ref();
+            std::ptr::write_bytes(definition.base, 0xCD, definition.current_length);
+        }
+
+        memory.reset().unwrap();
+        assert_eq!(memory.size(), Pages(1), "a reset returns the memory to its minimum");
+        assert!(
+            slice_of(&memory).iter().all(|&b| b == 0),
+            "pages accessible after a reset must be zeroed"
+        );
+        // Two pages past the minimum, inside the eight the memory held before.
+        let probe = unsafe { memory.vmmemory().as_ref().base.add(2 * 64 * 1024) };
+        assert_read_faults(probe, "a page accessible only before a reset must fault after it");
     }
 
     #[test]

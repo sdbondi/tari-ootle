@@ -223,9 +223,10 @@ pub struct ModuleShape {
 /// Points charged for building the `Store` and `Instance` a template call runs in, before its first
 /// metered operator.
 ///
-/// Every instruction that calls a template instantiates it afresh: linear memory is mapped, the
-/// module's data segments are copied into it, its element segments are written into its tables, and
-/// the imports are wired up. Compiled
+/// Charged on every call to a template, including nested cross-template calls. A call runs on a new
+/// instance or on one the transaction already created, restored to its freshly instantiated state;
+/// both pay this. Instantiating maps linear memory, copies the module's data segments into it,
+/// writes its element segments into its tables, and wires up the imports. Compiled
 /// code is laid down once at publish and costs nothing to instantiate, so the only part that scales
 /// with the binary is the data copy — measured across the built-in templates, a 150 KiB and a 520
 /// KiB module instantiate in the same ~0.015 ms because both carry a few KiB of data. Pricing this
@@ -309,7 +310,7 @@ pub struct EngineLimits {
     pub max_internal_call_size: usize,
     pub max_logs: usize,
     pub max_log_size_bytes: usize,
-    /// Maximum number of `tari_debug` messages one template instance may write. Debug output is
+    /// Maximum number of `tari_debug` messages one template call may write. Debug output is
     /// validator I/O that never reaches the transaction result, so it carries its own budget rather
     /// than drawing on [`EngineLimits::max_logs`].
     pub max_debug_messages: usize,

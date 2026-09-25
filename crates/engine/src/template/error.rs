@@ -23,7 +23,7 @@
 use tari_engine_types::commit_result::ExecutionFailureCode;
 use wasmer::InstantiationError;
 
-use crate::wasm::WasmExecutionError;
+use crate::wasm::{InstanceResetError, WasmExecutionError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TemplateLoaderError {
@@ -39,6 +39,8 @@ pub enum TemplateLoaderError {
     RuntimeError(#[from] wasmer::RuntimeError),
     #[error("Deserialize error: {0}")]
     DeserializeError(#[from] wasmer::DeserializeError),
+    #[error("Could not capture the template's initial instance state: {0}")]
+    InitialStateCaptureError(#[from] InstanceResetError),
 }
 
 impl From<wasmer::InstantiationError> for TemplateLoaderError {
@@ -57,7 +59,8 @@ impl TemplateLoaderError {
             Self::InstantiationError(_) |
             Self::ExportError(_) |
             Self::RuntimeError(_) |
-            Self::DeserializeError(_) => ExecutionFailureCode::TemplateError,
+            Self::DeserializeError(_) |
+            Self::InitialStateCaptureError(_) => ExecutionFailureCode::TemplateError,
         }
     }
 }

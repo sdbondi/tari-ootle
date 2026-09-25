@@ -349,24 +349,23 @@ fn load_and_call(code: Vec<u8>) -> Result<u64, RejectReason> {
     }
 }
 
-/// A table without a declared maximum is capped by the engine rather than left to grow to whatever
-/// a guest operand asks for: `table.grow` past the cap must refuse, returning -1.
+/// A table is immutable once instantiated, so a reused instance never needs its tables restored:
+/// `table.grow` is refused when the module is loaded.
 #[test]
-fn a_table_grows_no_further_than_the_limit() {
-    let over_limit = limits::WASM_LIMITS.max_table_elements + 1;
-    let code = template_module(&format!(
+fn a_table_growing_module_is_refused() {
+    let code = template_module(
         r#"
         (table 1 funcref)
         (func (export "tari_alloc") (param i32) (result i32) (i32.const 1024))
         (func (export "tari_free") (param i32))
         (func (export "Buggy_main") (param i32 i32) (result i32)
-          (if (i32.ne (table.grow 0 (ref.null func) (i32.const {over_limit})) (i32.const -1))
-            (then unreachable))
+          (drop (table.grow 0 (ref.null func) (i32.const 1)))
           (i32.const 20))
-        "#
-    ));
+        "#,
+    );
 
-    load_and_call(code).expect("the call trapped: table.grow was allowed past the limit");
+    let err = WasmModule::load_template_from_code(&code).expect_err("a table-growing module was accepted");
+    assert!(err.to_string().contains("modifies a table"), "unexpected error: {err}");
 }
 
 /// The value a template returns is bounded like the arguments passed into it. Without a bound the
@@ -594,29 +593,28 @@ fn element_segment_entries_are_charged_per_instantiation() {
     );
 }
 
-/// A passive segment is not written into the instance at build time — only a `memory.init` or
-/// `table.init` reaching for it does that, and those are charged where they run. Counting one as
-/// instantiation work would charge the same bytes twice, against a call that may never touch them.
+/// Every segment must be dropped at instantiation, so that `memory.init`, `table.init` and the
+/// drop operators can change nothing a reused instance would need restored: a passive segment is
+/// refused when the module is loaded.
 #[test]
-fn passive_segments_are_not_instantiation_work() {
-    let code = template_module(
-        r#"
-        (table 4 4 funcref)
-        (data "passive bytes that no instantiation copies")
-        (elem func 0 0 0 0)
-        (func (export "tari_alloc") (param i32) (result i32) (i32.const 1024))
-        (func (export "tari_free") (param i32))
-        (func (export "Buggy_main") (param i32 i32) (result i32) (i32.const 20))
-        "#,
-    );
+fn passive_segments_are_refused() {
+    for segment in [r#"(data "passive bytes")"#, "(elem func 0)"] {
+        let code = template_module(&format!(
+            r#"
+            (table 4 4 funcref)
+            {segment}
+            (func (export "tari_alloc") (param i32) (result i32) (i32.const 1024))
+            (func (export "tari_free") (param i32))
+            (func (export "Buggy_main") (param i32 i32) (result i32) (i32.const 20))
+            "#
+        ));
 
-    let shape = match WasmModule::load_template_from_code(&code).expect("module was rejected") {
-        tari_engine::template::LoadedTemplate::Wasm(loaded) => loaded.shape(),
-    };
-
-    // `template_module` contributes one active data segment of its own; the passive one adds nothing.
-    assert_eq!(shape.data_segment_bytes, 5);
-    assert_eq!(shape.element_segment_entries, 0);
+        let err = WasmModule::load_template_from_code(&code).expect_err("a passive segment was accepted");
+        assert!(
+            err.to_string().contains("passive"),
+            "unexpected error for {segment}: {err}"
+        );
+    }
 }
 
 /// Nothing caps how many element segments a module declares, and several may target one table at

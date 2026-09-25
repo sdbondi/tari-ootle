@@ -27,6 +27,11 @@ mod process;
 
 pub use process::WasmProcess;
 
+mod instance_cache;
+mod instance_reset;
+pub use instance_cache::{Checkout, WasmInstance, WasmInstanceCache};
+pub use instance_reset::{InitialState, InstanceResetError};
+
 mod limiting_tunable;
 mod mem_writer;
 mod memory_pool;
