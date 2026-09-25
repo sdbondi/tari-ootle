@@ -9,7 +9,7 @@ use tari_crypto::{
     tari_utilities,
     tari_utilities::ByteArray,
 };
-use tari_ootle_common_types::{Epoch, SubstateRequirement, signature::SignatureOutput};
+use tari_ootle_common_types::{Epoch, InputDeclaration, signature::SignatureOutput};
 use tari_template_lib_types::crypto::{RistrettoPublicKeyBytes, SchnorrSignatureBytes};
 
 use crate::{
@@ -489,7 +489,7 @@ pub(crate) struct TransactionSignatureFields<'a> {
     network: u8,
     fee_instructions: &'a [Instruction],
     instructions: &'a [Instruction],
-    inputs: &'a IndexSet<SubstateRequirement>,
+    inputs: &'a IndexSet<InputDeclaration>,
     min_epoch: Option<Epoch>,
     max_epoch: Epoch,
     is_seal_signer_authorized: bool,
@@ -546,11 +546,11 @@ mod tests {
 
     fn sample_unsigned() -> UnsignedTransactionV1 {
         let mut inputs = IndexSet::new();
-        inputs.insert(SubstateRequirement::versioned(
+        inputs.insert(InputDeclaration::write_versioned(
             SubstateId::Component(ComponentAddress::from_array([1; 32])),
             SubstateVersion::new(1),
         ));
-        inputs.insert(SubstateRequirement::versioned(
+        inputs.insert(InputDeclaration::write_versioned(
             SubstateId::Component(ComponentAddress::from_array([2; 32])),
             SubstateVersion::new(2),
         ));
@@ -627,7 +627,7 @@ mod tests {
 
         // inputs: extra / reorder / version changed
         let mut tx = base.clone();
-        tx.inputs.insert(SubstateRequirement::versioned(
+        tx.inputs.insert(InputDeclaration::write_versioned(
             SubstateId::Component(ComponentAddress::from_array([9; 32])),
             SubstateVersion::new(1),
         ));
@@ -641,12 +641,20 @@ mod tests {
         tx.inputs = base
             .inputs
             .iter()
-            .map(|i| SubstateRequirement {
+            .map(|i| InputDeclaration {
                 substate_id: i.substate_id.clone(),
                 version: i.version.map(|v| v.next()),
+                is_write: i.is_write,
             })
             .collect();
         assert_ne!(sig_msg(&signer, &tx), base_msg, "inputs (version changed)");
+        let mut tx = base.clone();
+        tx.inputs = base
+            .inputs
+            .iter()
+            .map(|i| i.clone().with_is_write(!i.is_write))
+            .collect();
+        assert_ne!(sig_msg(&signer, &tx), base_msg, "inputs (intent changed)");
 
         // min_epoch: value change / Some <-> None
         let mut tx = base.clone();
@@ -753,7 +761,7 @@ mod tests {
 
         // inputs: extra / reordered / version changed
         let mut u = base_unsigned.clone();
-        u.inputs.insert(SubstateRequirement::versioned(
+        u.inputs.insert(InputDeclaration::write_versioned(
             SubstateId::Component(ComponentAddress::from_array([9; 32])),
             SubstateVersion::new(1),
         ));
@@ -767,12 +775,20 @@ mod tests {
         u.inputs = base_unsigned
             .inputs
             .iter()
-            .map(|i| SubstateRequirement {
+            .map(|i| InputDeclaration {
                 substate_id: i.substate_id.clone(),
                 version: i.version.map(|v| v.next()),
+                is_write: i.is_write,
             })
             .collect();
         assert_ne!(seal_msg(&with_body(u)), base_msg, "inputs (version changed)");
+        let mut u = base_unsigned.clone();
+        u.inputs = base_unsigned
+            .inputs
+            .iter()
+            .map(|i| i.clone().with_is_write(!i.is_write))
+            .collect();
+        assert_ne!(seal_msg(&with_body(u)), base_msg, "inputs (intent changed)");
 
         // min_epoch
         let mut u = base_unsigned.clone();

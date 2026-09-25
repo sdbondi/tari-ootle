@@ -1,6 +1,6 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use anyhow::anyhow;
 use axum_extra::headers::authorization::Bearer;
@@ -9,8 +9,14 @@ use futures::{future, future::Either};
 use indexmap::IndexSet;
 use log::*;
 use ootle_byte_type::ToByteType;
-use tari_ootle_common_types::{Epoch, optional::Optional, response_status::ResponseErrorStatus};
-use tari_ootle_transaction::args;
+use tari_ootle_common_types::{
+    Epoch,
+    InputDeclaration,
+    SubstateRequirement,
+    optional::Optional,
+    response_status::ResponseErrorStatus,
+};
+use tari_ootle_transaction::{Transaction, UnsignedTransaction, args};
 use tari_ootle_wallet_sdk::{
     apis::transaction::TransactionApiError,
     models::{KeyId, OutputStatus, StealthUtxoSpendKeyId, TransactionContext, WalletEvent, WalletLockId},
@@ -162,15 +168,10 @@ async fn submit_inner(
             .locate_dependent_substates(&substates, req.detect_inputs_use_unversioned)
             .await
             .or_jrpc_not_found()?;
+        let declared = req.transaction.inputs().clone();
         loaded_substates
             .into_iter()
-            .map(|input| {
-                if req.detect_inputs_use_unversioned {
-                    input.into_unversioned()
-                } else {
-                    input
-                }
-            })
+            .map(|input| declare_detected_input(input, &declared, req.detect_inputs_use_unversioned))
             .collect()
     } else {
         vec![]
@@ -372,13 +373,7 @@ pub async fn handle_detect_inputs(
         .await
         .or_jrpc_not_found()?
         .into_iter()
-        .map(|input| {
-            if req.use_unversioned {
-                input.into_unversioned()
-            } else {
-                input
-            }
-        })
+        .map(|input| declare_detected_input(input, req.transaction.inputs(), req.use_unversioned))
         .collect::<Vec<_>>();
 
     let transaction = context
@@ -418,15 +413,10 @@ async fn submit_dry_run_inner(
             .locate_dependent_substates(&substates, req.detect_inputs_use_unversioned)
             .await
             .or_jrpc_not_found()?;
+        let declared = req.transaction.inputs().clone();
         dependencies
             .into_iter()
-            .map(|input| {
-                if req.detect_inputs_use_unversioned {
-                    input.into_unversioned()
-                } else {
-                    input
-                }
-            })
+            .map(|input| declare_detected_input(input, &declared, req.detect_inputs_use_unversioned))
             .collect()
     } else {
         vec![]
@@ -543,29 +533,19 @@ pub async fn handle_submit_manifest(
         .locate_dependent_substates(&substates, true)
         .await
         .or_jrpc_not_found()?;
-    let inputs = dependencies.into_iter().map(|input| input.into_unversioned());
+    let inputs = dependencies
+        .into_iter()
+        .map(|input| InputDeclaration::write(input.into_substate_id()));
 
-    let transaction = transaction.with_inputs(inputs);
+    let unsigned = transaction.with_inputs(inputs);
 
-    // Sign with each additional signing key (not the seal signer, which seals the transaction)
-    let mut transaction = transaction.finish();
-    if !req.signing_key_ids.is_empty() {
-        let seal_signer_pk = sdk.key_manager_api().get_public_key(seal_signer_key_id)?;
-        let seal_signer_pk_bytes = seal_signer_pk.public_key.to_byte_type();
-        let signer = sdk.signer_api().with_context(&seal_signer_pk_bytes);
-        for signing_key_id in &req.signing_key_ids {
-            if *signing_key_id != seal_signer_key_id {
-                transaction = signer.sign(*signing_key_id, transaction)?;
-            }
-        }
-    }
-
-    let transaction = sdk.signer_api().sign(seal_signer_key_id, transaction)?;
-
+    let sign = |unsigned: UnsignedTransaction| {
+        sign_manifest_transaction(sdk, unsigned, seal_signer_key_id, &req.signing_key_ids)
+    };
     if req.dry_run {
         let exec_result = context
             .transaction_service()
-            .submit_dry_run_transaction(transaction)
+            .submit_dry_run_transaction(sign(unsigned)?)
             .await?;
 
         if let Some(reject) = exec_result.finalize.any_reject() {
@@ -583,6 +563,8 @@ pub async fn handle_submit_manifest(
             result: Some(exec_result),
         });
     }
+
+    let transaction = declare_written_inputs_only(context, unsigned, sign).await?;
 
     // Link the fee payer and the seal signer's account (when it maps to one of the wallet's
     // accounts). Manifest instructions can touch any account, so this is best-effort.
@@ -816,6 +798,79 @@ pub async fn handle_publish_template(
     })
 }
 
+/// Declares as reads the inputs that a dry run of `unsigned` does not write, and signs the result.
+///
+/// Detection cannot tell how a manifest uses each input, so every input starts as a write; the dry run
+/// shows which ones it actually writes, and declaring the rest as reads keeps the transaction from
+/// serialising with others that only read them. A dry run that fails or is not fully accepted says
+/// nothing reliable about the main instructions, so the declarations are then left as writes.
+async fn declare_written_inputs_only<F>(
+    context: &HandlerContext,
+    unsigned: UnsignedTransaction,
+    sign: F,
+) -> Result<Transaction, anyhow::Error>
+where
+    F: Fn(UnsignedTransaction) -> Result<Transaction, anyhow::Error>,
+{
+    let dry_run = context
+        .transaction_service()
+        .submit_dry_run_transaction(sign(unsigned.clone().with_dry_run(true))?)
+        .await;
+    match dry_run {
+        Ok(result) => match result.finalize.accept() {
+            Some(diff) => {
+                let written = diff.down_iter().map(|(id, _)| id).collect::<HashSet<_>>();
+                sign(unsigned.narrow_to_reads(|decl| !written.contains(decl.substate_id())))
+            },
+            None => sign(unsigned),
+        },
+        Err(err) => {
+            warn!(target: LOG_TARGET, "Manifest dry run failed, declaring every input a write: {err}");
+            sign(unsigned)
+        },
+    }
+}
+
+/// Signs with each additional signing key, then seals with the seal signer.
+fn sign_manifest_transaction(
+    sdk: &WalletSdk,
+    unsigned: UnsignedTransaction,
+    seal_signer_key_id: KeyId,
+    signing_key_ids: &[KeyId],
+) -> Result<Transaction, anyhow::Error> {
+    let mut transaction = unsigned.finish();
+    if !signing_key_ids.is_empty() {
+        let seal_signer_pk = sdk.key_manager_api().get_public_key(seal_signer_key_id)?;
+        let seal_signer_pk_bytes = seal_signer_pk.public_key.to_byte_type();
+        let signer = sdk.signer_api().with_context(&seal_signer_pk_bytes);
+        for signing_key_id in signing_key_ids {
+            if *signing_key_id != seal_signer_key_id {
+                transaction = signer.sign(*signing_key_id, transaction)?;
+            }
+        }
+    }
+    Ok(sdk.signer_api().sign(seal_signer_key_id, transaction)?)
+}
+
+/// Turns a detected dependency into a declaration, deferring to what the transaction already said
+/// about that substate.
+///
+/// Input detection walks the substates an instruction reaches and learns nothing about how each one
+/// is used, so on its own it can only declare a write. A caller that declared a read knows better,
+/// and folding the detected set in would otherwise widen it back to a write and take the caller's
+/// read parallelism away.
+fn declare_detected_input(
+    detected: SubstateRequirement,
+    declared: &IndexSet<InputDeclaration>,
+    use_unversioned: bool,
+) -> InputDeclaration {
+    let is_write = declared
+        .get(detected.substate_id())
+        .is_none_or(|declaration| declaration.is_write());
+    let version = if use_unversioned { None } else { detected.version() };
+    InputDeclaration::new(detected.into_substate_id(), version, is_write)
+}
+
 fn resolve_metadata_hash(
     input: tari_ootle_walletd_client::types::PublishTemplateMetadata,
 ) -> Result<tari_ootle_template_metadata::MetadataHash, anyhow::Error> {
@@ -829,5 +884,70 @@ fn resolve_metadata_hash(
             let meta = TemplateMetadata::from_cbor(&bytes).map_err(|e| anyhow!(e))?;
             meta.hash().map_err(|e| anyhow!(e))
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tari_ootle_common_types::{SubstateVersion, engine_types::substate::SubstateId};
+    use tari_template_lib_types::ComponentAddress;
+
+    use super::*;
+
+    fn component(byte: u8) -> SubstateId {
+        SubstateId::Component(ComponentAddress::from_array([byte; 32]))
+    }
+
+    #[test]
+    fn a_detected_input_the_caller_declared_read_stays_a_read() {
+        let id = component(1);
+        let declared = IndexSet::from([InputDeclaration::read(id.clone())]);
+
+        let decl = declare_detected_input(
+            SubstateRequirement::versioned(id, SubstateVersion::new(3)),
+            &declared,
+            false,
+        );
+
+        assert!(decl.is_read());
+        assert_eq!(decl.version(), Some(SubstateVersion::new(3)));
+    }
+
+    #[test]
+    fn a_detected_input_the_caller_did_not_declare_is_a_write() {
+        let declared = IndexSet::from([InputDeclaration::read(component(1))]);
+
+        let decl = declare_detected_input(SubstateRequirement::unversioned(component(2)), &declared, false);
+
+        assert!(decl.is_write());
+    }
+
+    #[test]
+    fn a_detected_input_the_caller_declared_write_stays_a_write() {
+        let id = component(1);
+        let declared = IndexSet::from([InputDeclaration::write(id.clone())]);
+
+        let decl = declare_detected_input(
+            SubstateRequirement::versioned(id, SubstateVersion::new(3)),
+            &declared,
+            false,
+        );
+
+        assert!(decl.is_write());
+    }
+
+    #[test]
+    fn unversioned_detection_drops_the_version_it_found() {
+        let id = component(1);
+        let declared = IndexSet::from([InputDeclaration::read(id.clone())]);
+
+        let decl = declare_detected_input(
+            SubstateRequirement::versioned(id, SubstateVersion::new(3)),
+            &declared,
+            true,
+        );
+
+        assert_eq!(decl.version(), None);
+        assert!(decl.is_read());
     }
 }

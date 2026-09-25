@@ -92,6 +92,7 @@ export * from "./types/Hash64";
 export * from "./types/HashAlg";
 export * from "./types/IndexedValue";
 export * from "./types/IndexedWellKnownTypes";
+export * from "./types/InputDeclaration";
 export * from "./types/Instruction";
 export * from "./types/InstructionArg";
 export * from "./types/InstructionResult";

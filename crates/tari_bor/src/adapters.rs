@@ -84,7 +84,8 @@ pub mod boxed_slice {
 /// `#[cbor(with = "tari_bor::adapters::indexset_codec")]`.
 ///
 /// On the wire this matches the canonical encoding of `Vec<T>` — a length-prefixed array.
-/// On decode the order encoded by the sender is preserved.
+/// On decode the order encoded by the sender is preserved, and an element encoded twice is an error: a set
+/// has no single meaning for it.
 #[cfg(feature = "indexmap")]
 pub mod indexset_codec {
     use core::hash::{BuildHasher, Hash};
@@ -119,7 +120,9 @@ pub mod indexset_codec {
                 let mut out = IndexSet::with_capacity_and_hasher(n.min(super::MAX_PREALLOC) as usize, S::default());
                 for _ in 0..n {
                     let v = T::decode(d, ctx)?;
-                    out.insert(v);
+                    if !out.insert(v) {
+                        return Err(minicbor::decode::Error::message("duplicate element in set"));
+                    }
                 }
                 Ok(out)
             },
@@ -131,7 +134,9 @@ pub mod indexset_codec {
                         break;
                     }
                     let v = T::decode(d, ctx)?;
-                    out.insert(v);
+                    if !out.insert(v) {
+                        return Err(minicbor::decode::Error::message("duplicate element in set"));
+                    }
                 }
                 Ok(out)
             },
@@ -319,5 +324,27 @@ mod alloc_cap_tests {
         use std::collections::hash_map::RandomState;
         let mut d = Decoder::new(&HUGE_MAP_HEADER);
         assert!(super::indexmap_codec::decode::<(), u8, u8, RandomState>(&mut d, &mut ()).is_err());
+    }
+}
+
+#[cfg(all(test, feature = "indexmap"))]
+mod indexset_codec_tests {
+    use std::collections::hash_map::RandomState;
+
+    use minicbor::Decoder;
+
+    use super::indexset_codec;
+
+    #[test]
+    fn a_set_with_a_repeated_element_is_rejected() {
+        // [1, 2, 1] as a definite-length and an indefinite-length array.
+        for bytes in [&[0x83, 0x01, 0x02, 0x01][..], &[0x9f, 0x01, 0x02, 0x01, 0xff][..]] {
+            let mut d = Decoder::new(bytes);
+            assert!(indexset_codec::decode::<(), u8, RandomState>(&mut d, &mut ()).is_err());
+        }
+
+        let mut d = Decoder::new(&[0x82, 0x01, 0x02]);
+        let set = indexset_codec::decode::<(), u8, RandomState>(&mut d, &mut ()).unwrap();
+        assert_eq!(set.into_iter().collect::<Vec<_>>(), vec![1, 2]);
     }
 }

@@ -12,9 +12,9 @@ use tari_engine_types::{
 };
 use tari_ootle_common_types::{
     Epoch,
+    InputDeclarationRef,
     LockIntent,
     SubstateRequirement,
-    SubstateRequirementRef,
     SubstateVersion,
     committee::CommitteeInfo,
     optional::{IsNotFoundError, Optional},
@@ -402,7 +402,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         store: &mut PendingSubstateStore<TTx>,
         local_committee_info: &CommitteeInfo,
         transaction: &TransactionRecord,
-        local_versions: IndexMap<SubstateRequirementRef<'_>, SubstateVersion>,
+        local_versions: IndexMap<InputDeclarationRef<'_>, SubstateVersion>,
         block: LeafBlock,
         execution_locked_epoch: LockedEpoch,
     ) -> Result<PreparedTransaction, BlockTransactionExecutorError> {
@@ -418,7 +418,11 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
             transaction.transaction().claim_burn_iter().count()
         );
 
-        let local_inputs = store.get_many(local_versions.iter().map(|(req, v)| (req.to_owned(), *v)))?;
+        let local_inputs = store.get_many(
+            local_versions
+                .iter()
+                .map(|(req, v)| (req.to_substate_requirement_ref().to_owned(), *v)),
+        )?;
         let execution = self.execute_or_fetch(store, transaction, &local_inputs, &block, execution_locked_epoch)?;
 
         let is_outputs_local_only = local_committee_info.is_all_local(execution.resulting_outputs());
@@ -480,8 +484,8 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         store: &mut PendingSubstateStore<TTx>,
         local_committee_info: &CommitteeInfo,
         transaction: &TransactionRecord,
-        local_versions: IndexMap<SubstateRequirementRef<'_>, SubstateVersion>,
-        non_local_inputs: IndexSet<SubstateRequirementRef<'_>>,
+        local_versions: IndexMap<InputDeclarationRef<'_>, SubstateVersion>,
+        non_local_inputs: IndexSet<InputDeclarationRef<'_>>,
         block: LeafBlock,
     ) -> Result<PreparedTransaction, BlockTransactionExecutorError> {
         // CASE: Multishard transaction, some inputs are local, some are foreign
@@ -546,21 +550,14 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         store: &mut PendingSubstateStore<TTx>,
         local_committee_info: &CommitteeInfo,
         transaction_id: TransactionId,
-        local_versions: IndexMap<SubstateRequirementRef<'_>, SubstateVersion>,
-        non_local_inputs: IndexSet<SubstateRequirementRef<'_>>,
+        local_versions: IndexMap<InputDeclarationRef<'_>, SubstateVersion>,
+        non_local_inputs: IndexSet<InputDeclarationRef<'_>>,
     ) -> Result<PreparedTransaction, BlockTransactionExecutorError> {
-        // TODO: We do not know if the inputs locks required are Read/Write. Either we allow the user to
-        //       specify this or we can correct the locks after execution. Currently, this limitation
-        //       prevents concurrent multi-shard read locks.
-        let requested_locks = local_versions.iter().map(|(req, version)| {
-            // TODO: we assume all resources are not being written to. How can we do this in the vast
-            // majority of cases but still allow (presumably rare) Access Rule updates?
-            if req.substate_id().is_read_only() || req.substate_id().is_resource() {
-                SubstateRequirementLockIntent::read(req.to_owned(), *version)
-            } else {
-                SubstateRequirementLockIntent::write(req.to_owned(), *version)
-            }
-        });
+        // This shard group does not hold every input, so it cannot execute to discover how each one is
+        // used and must lock on what the transaction declared.
+        let requested_locks = local_versions
+            .iter()
+            .map(|(decl, version)| declared_lock_intent(decl, *version));
 
         let mut evidence = Evidence::from_lock_intents(
             local_committee_info.num_preshards(),
@@ -590,7 +587,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         store: &mut PendingSubstateStore<TTx>,
         local_committee_info: &CommitteeInfo,
         transaction: &TransactionRecord,
-        non_local_inputs: IndexSet<SubstateRequirementRef<'_>>,
+        non_local_inputs: IndexSet<InputDeclarationRef<'_>>,
         block: LeafBlock,
         change_set: &ProposedBlockChangeSet,
         execution_locked_epoch: LockedEpoch,
@@ -652,17 +649,17 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
 
 enum ResolvedTransactionInputs<'a> {
     OnlyLocalInputs {
-        local_versions: IndexMap<SubstateRequirementRef<'a>, SubstateVersion>,
+        local_versions: IndexMap<InputDeclarationRef<'a>, SubstateVersion>,
     },
     LocalAndForeignInputs {
-        local_versions: IndexMap<SubstateRequirementRef<'a>, SubstateVersion>,
-        non_local_inputs: IndexSet<SubstateRequirementRef<'a>>,
+        local_versions: IndexMap<InputDeclarationRef<'a>, SubstateVersion>,
+        non_local_inputs: IndexSet<InputDeclarationRef<'a>>,
     },
     /// Does not involve any local inputs, but involves one or more local tombstone outputs
     OnlyTombstones,
     /// a.k.a "output-only"
     OnlyForeignInputs {
-        non_local_inputs: IndexSet<SubstateRequirementRef<'a>>,
+        non_local_inputs: IndexSet<InputDeclarationRef<'a>>,
     },
     OneOrMoreLocalInputsNotFound {
         is_local_only: bool,
@@ -671,7 +668,55 @@ enum ResolvedTransactionInputs<'a> {
 }
 
 struct ResolvedInputs<'a> {
-    pub local_inputs: IndexMap<SubstateRequirementRef<'a>, SubstateVersion>,
-    pub foreign_inputs: IndexSet<SubstateRequirementRef<'a>>,
+    pub local_inputs: IndexMap<InputDeclarationRef<'a>, SubstateVersion>,
+    pub foreign_inputs: IndexSet<InputDeclarationRef<'a>>,
     pub num_local_tombstones: usize,
+}
+
+/// The lock a shard group takes on an input it holds but cannot execute against, from the transaction's
+/// declaration alone. Writing to a read-declared input aborts in the engine, so a read lock cannot be escaped by
+/// the transaction that asked for it. A substate that no transaction can write takes a read lock whatever was
+/// declared, so that the default write declaration does not serialise every transaction that uses it.
+fn declared_lock_intent(decl: &InputDeclarationRef<'_>, version: SubstateVersion) -> SubstateRequirementLockIntent {
+    let requirement = decl.to_substate_requirement_ref().to_owned();
+    if decl.is_write() && !decl.substate_id().is_read_only() {
+        SubstateRequirementLockIntent::write(requirement, version)
+    } else {
+        SubstateRequirementLockIntent::read(requirement, version)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tari_engine_types::substate::SubstateId;
+    use tari_ootle_common_types::{InputDeclarationRef, SubstateLockType, SubstateVersion};
+    use tari_template_lib_types::{
+        ComponentAddress,
+        ObjectKey,
+        constants::{PUBLIC_IDENTITY_RESOURCE_ADDRESS, STEALTH_TARI_RESOURCE_ADDRESS},
+    };
+
+    use super::declared_lock_intent;
+
+    fn lock_type(decl: InputDeclarationRef<'_>) -> SubstateLockType {
+        declared_lock_intent(&decl, SubstateVersion::ZERO).lock_type()
+    }
+
+    #[test]
+    fn a_write_declaration_on_a_writable_substate_takes_a_write_lock() {
+        let id = SubstateId::Component(ComponentAddress::new(ObjectKey::from_array([1; 32])));
+        assert_eq!(lock_type(InputDeclarationRef::write(&id)), SubstateLockType::Write);
+        assert_eq!(lock_type(InputDeclarationRef::read(&id)), SubstateLockType::Read);
+    }
+
+    #[test]
+    fn a_write_declaration_on_a_read_only_substate_takes_a_read_lock() {
+        for id in [
+            SubstateId::Resource(STEALTH_TARI_RESOURCE_ADDRESS),
+            SubstateId::Resource(PUBLIC_IDENTITY_RESOURCE_ADDRESS),
+        ] {
+            assert!(id.is_read_only());
+            assert_eq!(lock_type(InputDeclarationRef::write(&id)), SubstateLockType::Read);
+        }
+    }
 }

@@ -78,10 +78,10 @@ pub struct Substate {
 }
 
 impl Substate {
-    pub fn new<T: Into<SubstateValue>>(version: SubstateVersion, substate: T) -> Self {
+    pub fn new<V: Into<SubstateVersion>, T: Into<SubstateValue>>(version: V, substate: T) -> Self {
         Self {
             substate: substate.into(),
-            version,
+            version: version.into(),
         }
     }
 
@@ -369,6 +369,9 @@ impl SubstateId {
         self.is_template()
     }
 
+    /// Substates that no transaction can write once they exist: templates, receipts and claim tombstones are only
+    /// ever created, and the stealth TARI and public identity resources deny every mutating action. Consensus locks
+    /// these for read whatever a transaction declares, so an id added here must be impossible to write.
     pub fn is_read_only(&self) -> bool {
         matches!(
             self,

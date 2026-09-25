@@ -2,8 +2,8 @@
   "name": "substate_decode/component",
   "schema_version": 1,
   "provenance": {
-    "core_version": "0.39.0",
-    "git_rev": "9f4833febee5c633a6fb2f0bd61dd1ce6d33c481",
+    "core_version": "0.41.2",
+    "git_rev": "f1de8633ae83fa2801be7c31c8a53a46cc0cb921",
     "generated_by": "ootle_sdk_core golden-vector generator"
   },
   "operation": "decode_substate",

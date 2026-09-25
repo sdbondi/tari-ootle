@@ -184,6 +184,7 @@ impl<TStore: StateReader> WorkingState<TStore> {
         state_store: TStore,
         virtual_substates: VirtualSubstates,
         initial_call_scope: CallScope,
+        read_declared_inputs: HashSet<SubstateId>,
         transaction_hash: Hash32,
         intent_commitment: Hash32,
         burn_rate: ExhaustBurnRate,
@@ -205,7 +206,7 @@ impl<TStore: StateReader> WorkingState<TStore> {
             address_allocations: IndexMap::new(),
             used_address_allocations: IndexMap::new(),
 
-            store: WorkingStateStore::new(state_store),
+            store: WorkingStateStore::new(state_store, read_declared_inputs),
 
             last_instruction_output: None,
 
@@ -796,9 +797,10 @@ impl<TStore: StateReader> WorkingState<TStore> {
 
     /// Destroys `bucket` and its contents, decreasing the resource's total supply by the value destroyed.
     ///
-    /// `resource_lock` must be a write lock on the bucket's resource. When the resource tracks total supply,
-    /// `value_proofs` must prove the value of every confidential commitment the bucket holds: a commitment's value
-    /// is not visible to `unlocked_amount`, so without a proof the engine cannot know how much the burn destroys.
+    /// `resource_lock` must be a lock on the bucket's resource, and a write lock when the resource tracks total
+    /// supply. Such a resource also needs `value_proofs` to prove the value of every confidential commitment the
+    /// bucket holds: a commitment's value is not visible to `unlocked_amount`, so without a proof the engine cannot
+    /// know how much the burn destroys.
     ///
     /// A holder who knows the masks can prove a commitment directly. A holder who does not — a recaller, say — can
     /// only prove one through the resource's view key, so commitments recalled from a resource without a view key

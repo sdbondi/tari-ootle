@@ -597,12 +597,19 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         })
     }
 
-    /// Takes a resource's write lock back after its auth hook has run. A hook must be able to read the resource it
+    /// Takes a resource's lock back after its auth hook has run. A hook must be able to read the resource it
     /// guards, so the lock cannot be held across the call; the hook frame cannot write, so what it reads is what
-    /// the operation goes on to alter.
-    fn relock_resource_for_write(&self, resource_address: ResourceAddress) -> Result<LockedSubstate, RuntimeError> {
-        self.tracker
-            .write_with(|state_mut| state_mut.write_lock_substate(SubstateId::Resource(resource_address)))
+    /// the operation goes on to alter. Only an operation that alters the resource takes a write lock, so that a
+    /// transaction may declare the resource as a read input when it does not.
+    fn relock_resource(
+        &self,
+        resource_address: ResourceAddress,
+        lock_flag: LockFlag,
+    ) -> Result<LockedSubstate, RuntimeError> {
+        self.tracker.write_with(|state_mut| match lock_flag {
+            LockFlag::Read => state_mut.read_lock_substate(SubstateId::Resource(resource_address)),
+            LockFlag::Write => state_mut.write_lock_substate(SubstateId::Resource(resource_address)),
+        })
     }
 
     /// A bucket with funds locked by a proof may only be held, never consumed. Every operation that empties one —
@@ -1790,7 +1797,7 @@ where
 
                 let (maybe_auth_hook, auth_caller, has_view_key, tracks_supply) =
                     self.tracker.write_with(|state_mut| {
-                        let resource_lock = state_mut.write_lock_substate(SubstateId::Resource(resource_address))?;
+                        let resource_lock = state_mut.read_lock_substate(SubstateId::Resource(resource_address))?;
 
                         let resource = state_mut.get_resource(&resource_lock)?;
 
@@ -1812,7 +1819,10 @@ where
                     self.invoke_resource_access_hook(auth_hook, auth_caller, ResourceAuthAction::Mint)?;
                 }
 
-                let resource_lock = self.relock_resource_for_write(resource_address)?;
+                let resource_lock = self.relock_resource(
+                    resource_address,
+                    if tracks_supply { LockFlag::Write } else { LockFlag::Read },
+                )?;
 
                 // Charge the mint's native verification cost against the payment-funded allowance
                 // before its proof crypto runs.
@@ -2005,7 +2015,7 @@ where
                 reject_invalid_m_of_n("new_rule", new_rule.find_invalid_m_of_n())?;
 
                 let resource_lock = self.tracker.write_with(|state_mut| {
-                    let resource_lock = state_mut.write_lock_substate(SubstateId::Resource(resource_address))?;
+                    let resource_lock = state_mut.read_lock_substate(SubstateId::Resource(resource_address))?;
 
                     let resource = state_mut.get_resource(&resource_lock)?;
                     let updater = resource.access_rules().get_updater(&action);
@@ -2022,7 +2032,8 @@ where
                         });
                     }
 
-                    Ok::<_, RuntimeError>(resource_lock)
+                    state_mut.unlock_substate(resource_lock)?;
+                    state_mut.write_lock_substate(SubstateId::Resource(resource_address))
                 })?;
 
                 self.tracker.write_with(|state_mut| {
@@ -2047,7 +2058,7 @@ where
                 let UpdateAuthHookArg { auth_hook } = args.assert_one_arg()?;
 
                 let resource_lock = self.tracker.write_with(|state_mut| {
-                    let resource_lock = state_mut.write_lock_substate(SubstateId::Resource(resource_address))?;
+                    let resource_lock = state_mut.read_lock_substate(SubstateId::Resource(resource_address))?;
 
                     let resource = state_mut.get_resource(&resource_lock)?;
                     let updater = resource.access_rules().auth_hook_updater();
@@ -2064,7 +2075,8 @@ where
                         });
                     }
 
-                    Ok::<_, RuntimeError>(resource_lock)
+                    state_mut.unlock_substate(resource_lock)?;
+                    state_mut.write_lock_substate(SubstateId::Resource(resource_address))
                 })?;
 
                 // The hook being replaced is not invoked: a hook that denies or panics is the failure this
@@ -2103,7 +2115,7 @@ where
                 Self::check_token_symbol(&new_metadata)?;
 
                 let (maybe_auth_hook, auth_caller) = self.tracker.write_with(|state_mut| {
-                    let resource_lock = state_mut.write_lock_substate(SubstateId::Resource(resource_address))?;
+                    let resource_lock = state_mut.read_lock_substate(SubstateId::Resource(resource_address))?;
 
                     let resource = state_mut.get_resource(&resource_lock)?;
 
@@ -2133,7 +2145,7 @@ where
                     self.invoke_resource_access_hook(auth_hook, auth_caller, ResourceAuthAction::UpdateMetadata)?;
                 }
 
-                let resource_lock = self.relock_resource_for_write(resource_address)?;
+                let resource_lock = self.relock_resource(resource_address, LockFlag::Write)?;
 
                 self.tracker.write_with(|state_mut| {
                     let resource_mut = state_mut.get_resource_mut(&resource_lock)?;
@@ -3229,7 +3241,7 @@ where
                         Self::check_bucket_is_unlocked("burn", bucket_id, bucket)?;
 
                         let resource_address = *bucket.resource_address();
-                        let resource_lock = state_mut.write_lock_substate(SubstateId::Resource(resource_address))?;
+                        let resource_lock = state_mut.read_lock_substate(SubstateId::Resource(resource_address))?;
 
                         let resource = state_mut.get_resource(&resource_lock)?;
 
@@ -3250,7 +3262,10 @@ where
                     self.invoke_resource_access_hook(auth_hook, auth_caller, ResourceAuthAction::Burn)?;
                 }
 
-                let resource_lock = self.relock_resource_for_write(resource_address)?;
+                let resource_lock = self.relock_resource(
+                    resource_address,
+                    if tracks_supply { LockFlag::Write } else { LockFlag::Read },
+                )?;
 
                 // The hook may have altered the bucket, so it is re-inspected after the hook runs and before
                 // anything is charged: a hook that locked funds makes the burn fail, and the charge must cover the
