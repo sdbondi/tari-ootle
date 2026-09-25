@@ -444,10 +444,10 @@ fn calc_stealth_statement_weight(statement: &StealthTransferStatement) -> u64 {
 ///
 /// A call with no arguments weighs nothing by argument alone, so without a floor
 /// `max_transaction_weight` bounds a transaction's bytes but not the number of invocations it
-/// packs — and every invocation instantiates the template afresh
-/// ([`tari_engine_types::limits::instantiation_points`]), which is real work before any of the
-/// template's own code runs. The execution-point budget is what prices that work; this floor is
-/// what keeps the weight cap a bound on instruction count at all.
+/// packs — and every invocation is engine work before any of the template's own code runs: its
+/// call is staged in guest memory, and the first invocation of each template instantiates it
+/// ([`tari_engine_types::limits::instantiation_points`]). The execution-point budget is what prices that work; this
+/// floor is what keeps the weight cap a bound on instruction count at all.
 pub const INVOCATION_FLOOR: u64 = 30;
 
 /// Smallest number of encoded bytes an instruction that invokes a template can occupy — a

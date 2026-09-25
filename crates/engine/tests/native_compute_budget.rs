@@ -267,7 +267,7 @@ fn in_flight_wasm_counts_toward_the_native_allowance() {
 }
 
 /// The `NativeExecution` charge a bare fee payment carries: `pay_fee_from_component` calls into the
-/// Account template, and every call instantiates its template. Subtracting it leaves the charge for
+/// Account template, which instantiates it. Subtracting it leaves the charge for
 /// the verification the test is actually about.
 fn fee_payment_native_charge(test: &mut TemplateTest, account: ComponentAddress, owner: NonFungibleAddress) -> u64 {
     let result = test.execute_expect_success(

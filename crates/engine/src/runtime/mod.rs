@@ -343,9 +343,8 @@ pub struct Runtime {
 // `TransactionProcessor::invoke_template` runs a call on the thread executing the transaction, so
 // every refcount touch — wasmer's own drop of the `FunctionEnv` data included — happens there. The
 // stores themselves live in the transaction's instance cache and are dropped with it, on that
-// same thread. Nothing a
-// `Runtime` reaches outlives that execution: the handles `TransactionProcessor` is given from
-// outside it, which do cross threads, stay `Arc`.
+// same thread. Nothing a `Runtime` reaches outlives that execution: the handles
+// `TransactionProcessor` is given from outside it, which do cross threads, stay `Arc`.
 unsafe impl Sync for Runtime {}
 // SAFETY: See the `Sync` impl above.
 unsafe impl Send for Runtime {}

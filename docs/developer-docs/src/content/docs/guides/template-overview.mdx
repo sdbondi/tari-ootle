@@ -224,6 +224,18 @@ You can still declare `struct`/`enum` types inside a stateless module to use as 
   unused struct, and the compiler guarantees no state or component sneaks in.
 </Aside>
 
+### Template state within a transaction
+
+A transaction runs every call to your template on one WASM instance: the first call instantiates it, and later calls
+in the same transaction — to any of your template's components or functions, from any caller, in the fee payment and
+the main instructions alike — reuse it. Anything held in a `static` or left on the heap by one call is therefore
+visible to the next. Nothing carries over between transactions, and a call your template makes back into itself gets
+an instance of its own.
+
+Keep per-call context (the caller, the component being called, a "done" flag) in local variables or component state,
+never in a `static`: within a transaction, the next call to your template may be composed by someone else and aimed at
+another user's component.
+
 ### Next Steps
 
 - Now that you know a little about templates, let's build a simple <a href={basePath("/guides/build-a-guessing-game")}>Guessing Game</a>.
