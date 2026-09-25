@@ -19,7 +19,6 @@ use crate::{
     stealth::{
         ResolvedStealthInput,
         ResolvedStealthTransferSpec,
-        SealSource,
         SignatureRequirements,
         StealthSignerRequirement,
         error::{InvalidStealthInputError, StealthProviderError},
@@ -186,9 +185,9 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
     /// [`seal_public_key`](crate::wallet::WalletStealthAuthorizer::seal_public_key) the authorization message is built
     /// from. That key signs the carrying transaction, so the badge the engine looks for is present by construction.
     ///
-    /// An ephemeral seal is the exception: its key is drawn fresh per authorizer and discarded, so it authorises
-    /// nothing a later signing pass would reproduce. A transfer sealed that way spends nothing and cannot balance a
-    /// revealed output anyway.
+    /// An ephemeral seal draws a fresh key per authorizer, so the key named here would not be the one that seals.
+    /// That shape never reaches execution: an ephemeral seal means no stealth inputs and no revealed input, so
+    /// nothing funds the revealed output and `validate_transfer` rejects the statement as unbalanced.
     async fn revealed_output(&self, signatures: &SignatureRequirements) -> WalletResult<Option<RevealedOutput>> {
         if self.spec.revealed_output_amount.is_zero() {
             return Ok(None);
@@ -196,14 +195,6 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
         let receiver = match self.spec.revealed_receiver {
             Some(named) => named,
             None => {
-                if matches!(signatures.seal(), SealSource::Ephemeral) {
-                    return Err(StealthProviderError::UnexpectedError {
-                        details: "This transfer seals with a discarded ephemeral key, which authorises nothing, so a \
-                                  revealed output needs a receiver named with `to_revealed_output_for`"
-                            .to_string(),
-                    }
-                    .into());
-                }
                 self.provider
                     .wallet()
                     .stealth_authorizer(signatures.clone())
