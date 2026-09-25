@@ -874,7 +874,7 @@ impl TemplateTest {
             extra_inputs: self
                 .state_store
                 .iter()
-                .map(|(id, s)| SubstateRequirement::versioned(id.clone(), s.version()))
+                .map(|(id, s)| InputDeclaration::write_versioned(id.clone(), s.version()))
                 .collect(),
             fee_table: self.enable_fees.then(|| self.fee_table.clone()),
             virtual_substates: self.virtual_substates.clone(),
@@ -1058,7 +1058,7 @@ pub struct SnapshotExecutor {
     state_store: ReadOnlyMemoryStateStore,
     /// Every substate in the snapshot, declared as an input on each executed transaction so
     /// that, like [`TemplateTest::try_execute`], a transaction need not declare its inputs.
-    extra_inputs: Vec<SubstateRequirement>,
+    extra_inputs: Vec<InputDeclaration>,
     /// `None` means fees were disabled on the harness when the snapshot was taken.
     fee_table: Option<FeeTable>,
     virtual_substates: HashMap<VirtualSubstateId, VirtualSubstate>,
