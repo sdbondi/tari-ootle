@@ -34,9 +34,13 @@ pub(crate) type WasmFreeFn = TypedFunction<WasmPtr<u8>, ()>;
 /// State shared between the host and one WASM instance. It lives in the instance's
 /// [`wasmer::FunctionEnv`], which hands out `&mut` to whoever holds the store, so nothing here
 /// needs interior mutability: the engine executes one instance at a time on one thread.
+///
+/// An instance outlives a single call: it serves every call to its template within a transaction.
+/// `state` and the per-invocation fields are therefore bound per call by [`Self::bind_call`] and
+/// released by [`Self::unbind_call`], so no call runs against what an earlier call left behind.
 pub struct WasmEnv<T> {
     memory: Option<Memory>,
-    state: T,
+    state: Option<T>,
     mem_alloc: Option<WasmAllocFn>,
     mem_free: Option<WasmFreeFn>,
     last_panic: Option<String>,
@@ -58,10 +62,10 @@ pub(super) struct InvocationMeter {
 }
 
 impl<T> WasmEnv<T> {
-    pub fn new(state: T) -> Self {
+    pub fn new() -> Self {
         Self {
             memory: None,
-            state,
+            state: None,
             mem_alloc: None,
             mem_free: None,
             last_panic: None,
@@ -73,7 +77,25 @@ impl<T> WasmEnv<T> {
         }
     }
 
-    /// Counts one `tari_debug` message against this instance's debug budget, reporting whether it
+    /// Binds the state one call runs against and clears everything an earlier call on this instance
+    /// may have left in the per-invocation fields.
+    pub(super) fn bind_call(&mut self, state: T) {
+        self.state = Some(state);
+        self.last_panic = None;
+        self.last_engine_error = None;
+        self.invocation_meter = None;
+        self.in_template_invocation = false;
+        self.refused_engine_call = None;
+        self.debug_messages_written = 0;
+    }
+
+    /// Releases the state bound by [`Self::bind_call`]. An idle instance holds none, so a cached
+    /// instance keeps no reference to the transaction state that owns the cache.
+    pub(super) fn unbind_call(&mut self) -> Option<T> {
+        self.state.take()
+    }
+
+    /// Counts one `tari_debug` message against this call's debug budget, reporting whether it
     /// may be written.
     ///
     /// Debug output is validator I/O a template pays almost nothing for — one host call, whatever
@@ -309,13 +331,20 @@ impl<T> WasmEnv<T> {
         Ok(callback(slice))
     }
 
-    pub fn state(&self) -> &T {
-        &self.state
+    /// The state bound for the call in flight.
+    pub fn state(&self) -> Result<&T, WasmExecutionError> {
+        self.state.as_ref().ok_or(WasmExecutionError::NoCallBound)
     }
 
     fn get_memory(&self) -> Result<&Memory, WasmExecutionError> {
         let memory = self.memory.as_ref().ok_or_else(|| WasmExecutionError::MemoryNotSet)?;
         Ok(memory)
+    }
+}
+
+impl<T> Default for WasmEnv<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

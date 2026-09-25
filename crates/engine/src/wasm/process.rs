@@ -58,7 +58,6 @@ use wasmer::{AsStoreMut, AsStoreRef, Function, FunctionEnv, FunctionEnvMut, Inst
 use crate::{
     abi_metrics,
     runtime::{ComputeAllowance, ComputeFunding, Runtime, RuntimeError},
-    traits::Invokable,
     wasm::{
         LoadedWasmTemplate,
         environment::{AllocPtr, WasmEnv},
@@ -79,8 +78,10 @@ pub struct WasmProcess {
 }
 
 impl WasmProcess {
-    pub fn init(store: &mut Store, module: LoadedWasmTemplate, state: Runtime) -> Result<Self, WasmExecutionError> {
-        let fn_env = FunctionEnv::new(store, WasmEnv::new(state));
+    /// Instantiates `module` in `store`. The instance runs no template code until a call is bound to
+    /// it by [`Self::call`].
+    pub fn init(store: &mut Store, module: LoadedWasmTemplate) -> Result<Self, WasmExecutionError> {
+        let fn_env = FunctionEnv::new(store, WasmEnv::new());
         let tari_engine = Function::new_typed_with_env(store, &fn_env, Self::tari_engine_entrypoint);
 
         let imports = imports! {
@@ -104,6 +105,22 @@ impl WasmProcess {
             fn_env,
             instance,
         })
+    }
+
+    /// Runs one call on this instance against `state`, the runtime of the call frame the caller has
+    /// pushed. The runtime is bound for exactly the duration of the call, so template code on a
+    /// reused instance only ever reaches the frame it was called in.
+    pub fn call(
+        &mut self,
+        store: &mut Store,
+        state: Runtime,
+        func_def: &FunctionDef,
+        args: &[tari_bor::Value],
+    ) -> Result<InstructionResult, WasmExecutionError> {
+        self.env_mut(store).bind_call(state);
+        let result = self.invoke(store, func_def, args);
+        self.env_mut(store).unbind_call();
+        result
     }
 
     fn with_alloc_and_mem_writer<S, F, R>(
@@ -176,8 +193,9 @@ impl WasmProcess {
 
     /// Works out how much compute this invocation may run, and what bounds it.
     ///
-    /// The Wasmer meter starts each store at the per-call ceiling (set when the engine compiles the
-    /// module, see `wasm::module::create_engine`). Lowering it to what remains of the
+    /// Each invocation starts from the per-call ceiling, `MAX_WASM_POINTS_PER_CALL`. It is taken
+    /// from the constant because an instance serves several calls in a transaction, and its meter
+    /// holds whatever the previous call left. Lowering it to what remains of the
     /// transaction-wide budget stops a transaction from exceeding
     /// `MAX_WASM_POINTS_PER_TRANSACTION` by spreading work across many instructions or nested
     /// cross-template calls, each of which would otherwise get a fresh per-call budget. When the
@@ -190,12 +208,9 @@ impl WasmProcess {
     /// rather than running up to the per-transaction hard cap. The allowance is shared with native
     /// verification (which pre-charges its point cost), so it is reduced by the combined
     /// consumption; the hard cap bounds WASM work only.
-    fn metering_allowance(&self, store: &mut Store) -> MeteringAllowance {
-        let per_call_cap = match get_remaining_points(store, &self.instance) {
-            MeteringPoints::Remaining(n) => n,
-            MeteringPoints::Exhausted => 0,
-        };
-        let interface = self.env(store).state().interface();
+    fn metering_allowance(&self, store: &mut Store) -> Result<MeteringAllowance, WasmExecutionError> {
+        let per_call_cap = limits::MAX_WASM_POINTS_PER_CALL;
+        let interface = self.env(store).state()?.interface();
         let consumed = interface.wasm_points_consumed();
         let native_consumed = interface.native_points_consumed();
         let budget_remaining = limits::MAX_WASM_POINTS_PER_TRANSACTION.saturating_sub(consumed);
@@ -206,7 +221,7 @@ impl WasmProcess {
             (allowance, remaining)
         });
 
-        MeteringAllowance {
+        Ok(MeteringAllowance {
             consumed,
             points_before: match allowance_remaining {
                 Some((_, remaining)) => per_call_cap.min(budget_remaining).min(remaining),
@@ -218,10 +233,10 @@ impl WasmProcess {
             binding_allowance: allowance_remaining
                 .filter(|(_, remaining)| *remaining < budget_remaining && *remaining <= per_call_cap)
                 .map(|(allowance, _)| allowance),
-        }
+        })
     }
 
-    /// Runs one invocation on the meter [`Invokable::invoke`] has installed, and reports how it
+    /// Runs one invocation on the meter [`Self::invoke`] has installed, and reports how it
     /// ended without charging for it — the caller charges every outcome alike.
     ///
     /// The metered span covers all three pieces of template code the engine drives for a call: the
@@ -339,11 +354,14 @@ impl WasmProcess {
             // verification pre-charges, nested cross-template call budgets) see it. Without this, a
             // call could spend its whole metering allowance and still pass mid-call checks that
             // read the stale end-of-invocation total.
-            if let Some(delta) = env_mut.take_unsynced_in_flight_points(&mut store) &&
-                let Err(err) = env_mut.state().interface().record_wasm_execution(delta)
-            {
-                env_mut.set_last_engine_error(err);
-                return WasmPtr::null();
+            if let Some(delta) = env_mut.take_unsynced_in_flight_points(&mut store) {
+                let recorded = env_mut
+                    .state()
+                    .and_then(|state| Ok(state.interface().record_wasm_execution(delta)?));
+                if let Err(err) = recorded {
+                    env_mut.set_last_engine_error(err);
+                    return WasmPtr::null();
+                }
             }
         }
 
@@ -483,7 +501,7 @@ impl WasmProcess {
         sample.decode_ns = span.finish();
 
         let span = abi_metrics::Span::start();
-        let resp = f(env.data().state(), decoded)?;
+        let resp = f(env.data().state()?, decoded)?;
         sample.handler_ns = span.finish();
 
         let span = abi_metrics::Span::start();
@@ -555,15 +573,13 @@ impl WasmProcess {
     }
 }
 
-impl Invokable<Store> for WasmProcess {
-    type Error = WasmExecutionError;
-
+impl WasmProcess {
     fn invoke(
         &mut self,
         store: &mut Store,
         func_def: &FunctionDef,
         args: &[tari_bor::Value],
-    ) -> Result<InstructionResult, Self::Error> {
+    ) -> Result<InstructionResult, WasmExecutionError> {
         let main_name = format!("{}_main", self.module.template_name());
         let func: MainFunction = self.instance.exports.get_typed_function(store, &main_name)?;
         if func_def.arguments.len() != args.len() {
@@ -585,7 +601,7 @@ impl Invokable<Store> for WasmProcess {
             consumed,
             points_before,
             binding_allowance,
-        } = self.metering_allowance(store);
+        } = self.metering_allowance(store)?;
         set_remaining_points(store, &self.instance, points_before);
         // Expose the in-flight meter to host calls: consumption inside this invocation must be
         // visible to budget/allowance checks made mid-call (native verification pre-charges,
@@ -607,7 +623,7 @@ impl Invokable<Store> for WasmProcess {
         let already_synced = self.env_mut(store).end_metered_invocation();
         // Charging happens before we return the result so fees are recorded even on failure paths.
         self.env(store)
-            .state()
+            .state()?
             .interface()
             .record_wasm_execution(points_consumed.saturating_sub(already_synced))?;
 
@@ -638,9 +654,9 @@ impl Invokable<Store> for WasmProcess {
 
         match outcome {
             InvocationOutcome::Returned(value) => {
-                self.env(store).state().interface().validate_return_value(&value)?;
+                self.env(store).state()?.interface().validate_return_value(&value)?;
                 self.env(store)
-                    .state()
+                    .state()?
                     .interface()
                     .set_last_instruction_output(value.clone())?;
 

@@ -27,6 +27,9 @@ mod process;
 
 pub use process::WasmProcess;
 
+mod instance_cache;
+pub use instance_cache::{Checkout, WasmInstance, WasmInstanceCache};
+
 mod limiting_tunable;
 mod mem_writer;
 mod memory_pool;

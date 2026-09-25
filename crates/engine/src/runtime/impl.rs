@@ -179,6 +179,7 @@ use crate::{
     template::LoadedTemplate,
     traits::{ClaimProofRejection, ClaimProofVerifier},
     transaction::{ModulesCollection, TransactionProcessor},
+    wasm::WasmInstanceCache,
 };
 
 const LOG_TARGET: &str = "tari::ootle::engine::runtime::impl";
@@ -202,6 +203,8 @@ pub struct RuntimeInterfaceImpl<TStore, TTemplateProvider> {
     /// set immediately before invoking the predicate and cleared immediately after, so `spend_context_invoke` — which
     /// the predicate reaches through its own nested interface — can serve the `SpendContext` accessors.
     spend_exec_context: Rc<RefCell<Option<SpendScriptExecution>>>,
+    /// The template instances this transaction has created, shared by every frame's interface.
+    wasm_instances: Rc<RefCell<WasmInstanceCache>>,
 }
 
 impl<TStore, TTemplateProvider> Clone for RuntimeInterfaceImpl<TStore, TTemplateProvider> {
@@ -215,6 +218,7 @@ impl<TStore, TTemplateProvider> Clone for RuntimeInterfaceImpl<TStore, TTemplate
             claim_burn_proof_verifier: self.claim_burn_proof_verifier.clone(),
             blobs: self.blobs.clone(),
             spend_exec_context: self.spend_exec_context.clone(),
+            wasm_instances: self.wasm_instances.clone(),
         }
     }
 }
@@ -240,6 +244,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
             claim_burn_proof_verifier,
             blobs,
             spend_exec_context: Rc::new(RefCell::new(None)),
+            wasm_instances: Rc::new(RefCell::new(WasmInstanceCache::new())),
         };
         runtime.invoke_modules_on_initialize()?;
         Ok(runtime)
@@ -4280,6 +4285,10 @@ where
     fn charge_template_instantiation(&self, shape: &ModuleShape) -> Result<(), RuntimeError> {
         self.tracker
             .charge_native_execution(tari_engine_types::limits::instantiation_points(shape))
+    }
+
+    fn wasm_instances(&self) -> &RefCell<WasmInstanceCache> {
+        &self.wasm_instances
     }
 
     fn charge_template_compile(&self, binary_bytes: u64) -> Result<(), RuntimeError> {

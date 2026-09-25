@@ -20,21 +20,9 @@
 //  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use tari_engine_types::{confidential::MinotariBurnClaimProof, instruction_result::InstructionResult};
+use tari_engine_types::confidential::MinotariBurnClaimProof;
 use tari_ootle_common_types::Epoch;
-use tari_template_abi::FunctionDef;
 use tari_template_lib::types::crypto::RistrettoPublicKeyBytes;
-
-pub trait Invokable<S> {
-    type Error;
-
-    fn invoke(
-        &mut self,
-        store: &mut S,
-        def: &FunctionDef,
-        args: &[tari_bor::Value],
-    ) -> Result<InstructionResult, Self::Error>;
-}
 
 /// Why a claim proof was refused.
 ///

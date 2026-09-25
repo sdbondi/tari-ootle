@@ -442,7 +442,7 @@ fn fail_partial_paid_fees() {
     // through an instruction, which rejects as an execution failure instead; fund more and the whole
     // transaction is affordable. Engine pricing changes move the window, so re-tune against the fee
     // the transaction reports when it succeeds.
-    const FEE_PAID: u64 = 1700;
+    const FEE_PAID: u64 = 1100;
 
     let result = test.execute_expect_commit(
         Transaction::builder_localnet(Epoch(1))

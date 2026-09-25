@@ -58,38 +58,45 @@ fn per_transaction_budget_caps_total_across_calls() {
     );
 }
 
-/// Every instruction that calls a template builds a fresh `Store` and `Instance` before the first
-/// metered operator runs, so the cost of doing so is charged per call rather than absorbed.
+/// A transaction builds a template's `Store` and `Instance` on its first call to the template, before
+/// the first metered operator runs, and runs the template's later calls on that instance. The cost
+/// of building it is charged on that first call and on no other.
 #[test]
-fn instantiation_is_charged_once_per_call() {
+fn instantiation_is_charged_once_per_template_per_transaction() {
     use tari_engine_types::limits::PER_TEMPLATE_INSTANTIATION;
 
-    let mut test = TemplateTest::new(CRATE_PATH, [METERING_BENCH]);
-    let addr = test.get_template_address("MeteringBench");
+    let mut test = TemplateTest::new(CRATE_PATH, [METERING_BENCH, "tests/templates/hello_world"]);
+    let bench = test.get_template_address("MeteringBench");
+    let hello = test.get_template_address("HelloWorld");
     let (account, owner, key) = test.create_funded_account();
 
     test.enable_fees();
 
-    let native_points = |test: &mut TemplateTest, calls: usize| -> u64 {
+    let native_points = |test: &mut TemplateTest, bench_calls: usize, hello_calls: usize| -> u64 {
         let mut builder = Transaction::builder_localnet(Epoch(1)).pay_fee_from_component(account, 900_000_000u64);
-        for _ in 0..calls {
-            builder = builder.call_function(addr, "bench_div_u64", args![1u64]);
+        for _ in 0..bench_calls {
+            builder = builder.call_function(bench, "bench_div_u64", args![1u64]);
+        }
+        for _ in 0..hello_calls {
+            builder = builder.call_function(hello, "greet", args![]);
         }
         test.execute_expect_success(builder.build_and_seal(&key), vec![owner.clone()])
             .native_execution_points
     };
 
-    let one = native_points(&mut test, 1);
-    let two = native_points(&mut test, 2);
-    let three = native_points(&mut test, 3);
+    let one = native_points(&mut test, 1, 0);
+    let three = native_points(&mut test, 3, 0);
+    let with_second_template = native_points(&mut test, 1, 1);
 
-    // `bench_div_u64` does no native verification of its own, so each added call contributes
-    // exactly one instantiation. The single-call figure also carries the fee payment's own call
-    // into the Account template, so the marginal cost is what identifies the charge.
-    let marginal = two - one;
+    // Neither template does native verification of its own, so native points differ only by
+    // instantiations.
+    assert_eq!(
+        three, one,
+        "a repeated call to the same template was charged an instantiation"
+    );
+    let marginal = with_second_template - one;
     assert!(
         marginal >= PER_TEMPLATE_INSTANTIATION,
-        "an added call charged only {marginal} points"
+        "a call to a second template charged only {marginal} points"
     );
-    assert_eq!(three - two, marginal, "the charge must be the same for every call");
 }
