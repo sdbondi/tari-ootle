@@ -11997,6 +11997,7 @@ dependencies = [
  "criterion",
  "digest 0.10.7",
  "indexmap 2.14.2",
+ "libc",
  "log",
  "memmap2 0.9.11",
  "minicbor",

@@ -27,7 +27,7 @@
 //! produced it, so every change here has to move the fingerprint. Keeping the configuration alone
 //! in a file is what lets that be true without every edit to the loader orphaning the cache.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use tari_engine_types::limits;
 use wasmer::{
@@ -36,12 +36,26 @@ use wasmer::{
     sys::{BaseTunables, CompilerConfig, Cranelift, CraneliftOptLevel, EngineBuilder},
 };
 
-use crate::wasm::{bulk_metering::BulkMetering, limiting_tunable::LimitingTunables, metering};
+use crate::wasm::{
+    bulk_metering::BulkMetering,
+    limiting_tunable::LimitingTunables,
+    memory_pool::{MemoryPool, PooledMemoryTunables},
+    metering,
+};
+
+/// One pool for every engine in the process: templates each carry their own engine, but their
+/// static-style memories all reserve the identical address-space layout, so the reservations are
+/// interchangeable. Sized to cover the process's worst-case concurrent instantiations with room
+/// for one queued reservation per executing thread.
+static GUEST_MEMORY_POOL: LazyLock<Arc<MemoryPool>> = LazyLock::new(|| {
+    let max_slots = std::thread::available_parallelism().map_or(16, |n| n.get() * 2);
+    Arc::new(MemoryPool::new(max_slots))
+});
 
 /// Build the engine that compiles a template and that a cached artifact is deserialized against.
 pub(crate) fn create_engine() -> Engine {
     const MEMORY_PAGE_LIMIT: Pages = Pages(limits::WASM_LIMITS.max_memory_pages as u32);
-    let base = BaseTunables::new();
+    let base = PooledMemoryTunables::new(BaseTunables::new(), GUEST_MEMORY_POOL.clone());
     let tunables = LimitingTunables::new(base, MEMORY_PAGE_LIMIT, limits::WASM_LIMITS.max_table_elements);
     let mut compiler = Cranelift::new();
     compiler

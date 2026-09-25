@@ -29,3 +29,5 @@ pub use process::WasmProcess;
 
 mod limiting_tunable;
 mod mem_writer;
+mod memory_pool;
+pub use memory_pool::{MemoryPool, PooledMemoryTunables};

@@ -30,6 +30,7 @@ rand = { workspace = true }
 indexmap = { workspace = true }
 serde = { workspace = true, default-features = true }
 thiserror = { workspace = true }
+libc = { workspace = true }
 wasmer = { workspace = true, features = ["cranelift"] }
 tari-wasmer-middlewares = { workspace = true }
 bytes = { workspace = true, optional = true }
