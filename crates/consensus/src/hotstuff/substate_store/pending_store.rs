@@ -984,9 +984,8 @@ impl LockStatus {
         self.hard_conflict_idx.is_some()
     }
 
-    /// Returns true if locking failed only in ways that may succeed once the conflicting locks are released, i.e. the
-    /// transaction is deferred to a later block rather than aborted. An honest proposer never sequences such a
-    /// transaction, so a replica must not vote for a block that does.
+    /// Returns true if locking failed only in ways that may succeed once the conflicting locks are released. The
+    /// proposer defers such a transaction to a later block rather than aborting it.
     pub fn is_deferrable_conflict(&self) -> bool {
         self.is_any_failed() && !self.is_hard_conflict()
     }

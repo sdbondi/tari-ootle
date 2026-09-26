@@ -54,6 +54,8 @@ certificate fixes land.
   different branch history agree on it. Pledges and foreign conflict checks read one chain too, and
   every lock a block grants on one substate is kept. (#2711, #2716, #2720, #2722)
 - `fix` — **Votes and proposals are fsynced before they are sent.** (#2721)
+- `fix` — **Replicas vote on blocks with lock conflicts an honest proposer defers**, as in v0.41.4,
+  so a replica whose lock view differs from the proposer's no longer stalls the chain. (#2730)
 - `perf` — **The pending chain is read once per block, RocksDB point lookups are cheaper, and epoch
   and state tree GC run in small transactions.** (#2718, #2719, #2723)
 
