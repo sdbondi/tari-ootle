@@ -241,12 +241,8 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
     /// inputs say which that is. Use [`to_revealed_output_for`](Self::to_revealed_output_for) to name a different key.
     ///
     /// Revealing zero is a no-op, so an amount that came out at zero needs no guard at the call site.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `amount` is negative.
     pub fn to_revealed_output<A: Into<Amount>>(mut self, amount: A) -> Self {
-        self.spec.revealed_output_amount += revealed_amount(amount);
+        self.spec.revealed_output_amount += amount.into();
         self
     }
 
@@ -259,10 +255,9 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
     ///
     /// # Panics
     ///
-    /// Panics if `amount` is negative, or if a different receiver was already named — one transfer reveals to one
-    /// key.
+    /// Panics if a different receiver was already named — one transfer reveals to one key.
     pub fn to_revealed_output_for<A: Into<Amount>>(mut self, amount: A, receiver: RistrettoPublicKeyBytes) -> Self {
-        let amount = revealed_amount(amount);
+        let amount = amount.into();
         if amount.is_zero() {
             return self;
         }
@@ -304,21 +299,6 @@ impl StealthTransferSpec {
         let stealth_output_total: Amount = self.outputs.iter().map(|o| Amount::from(o.amount.get())).sum();
         stealth_output_total + self.revealed_output_amount
     }
-}
-
-/// `amount` as an [`Amount`], rejecting a negative one.
-///
-/// Zero is allowed and reveals nothing: it leaves the running total where it was, which
-/// [`revealed_output`](StealthTransfer::revealed_output) resolves to `None`. A caller whose amount is computed — a
-/// fee or a change slice that came out at zero — gets that for free instead of guarding the call.
-///
-/// # Panics
-///
-/// Panics if `amount` is negative.
-fn revealed_amount<A: Into<Amount>>(amount: A) -> Amount {
-    let amount = amount.into();
-    assert!(!amount.is_negative(), "Revealed amount must not be negative");
-    amount
 }
 
 #[cfg(test)]
