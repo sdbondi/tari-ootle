@@ -713,6 +713,7 @@ mod tests {
         let proposed_by = RistrettoPublicKeyBytes::default();
         let accumulated_data = ShardGroupAccumulatedData::default();
         let parent_timestamp = 1234;
+        let exhaust_burn_rate = ExhaustBurnRate::new(500);
 
         let dummy = BlockHeader::dummy_block(
             Network::LocalNet,
@@ -727,7 +728,10 @@ mod tests {
             parent_timestamp,
             FixedHash::zero(),
             accumulated_data,
+            exhaust_burn_rate,
         );
+        let mut extra_data = ExtraData::new();
+        extra_data.insert_bps(ExtraFieldKey::ExhaustBurnRate, exhaust_burn_rate.as_bps());
         let proposal = BlockHeader::create(
             Network::LocalNet,
             protocol_version,
@@ -745,7 +749,7 @@ mod tests {
             parent_timestamp,
             FixedHash::zero(),
             accumulated_data,
-            ExtraData::new(),
+            extra_data,
         )
         .unwrap();
 
