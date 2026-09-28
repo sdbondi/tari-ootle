@@ -240,11 +240,13 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
     /// the account, otherwise the sealing input's one-time key — resolved at [`prepare`](Self::prepare) time, once the
     /// inputs say which that is. Use [`to_revealed_output_for`](Self::to_revealed_output_for) to name a different key.
     ///
+    /// Revealing zero is a no-op, so an amount that came out at zero needs no guard at the call site.
+    ///
     /// # Panics
     ///
-    /// Panics if `amount` is not positive.
+    /// Panics if `amount` is negative.
     pub fn to_revealed_output<A: Into<Amount>>(mut self, amount: A) -> Self {
-        self.spec.revealed_output_amount += positive_amount(amount);
+        self.spec.revealed_output_amount += revealed_amount(amount);
         self
     }
 
@@ -253,12 +255,18 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> StealthTransfer<'a, P> {
     /// `receiver`'s badge must be in the auth scope of the transaction that carries this transfer, so it has to be a
     /// key that signs it — otherwise the engine refuses to create the revealed bucket.
     ///
+    /// Revealing zero is a no-op, `receiver` included, so a later call naming a different receiver still settles it.
+    ///
     /// # Panics
     ///
-    /// Panics if `amount` is not positive, or if a different receiver was already named — one transfer reveals to one
+    /// Panics if `amount` is negative, or if a different receiver was already named — one transfer reveals to one
     /// key.
     pub fn to_revealed_output_for<A: Into<Amount>>(mut self, amount: A, receiver: RistrettoPublicKeyBytes) -> Self {
-        self.spec.revealed_output_amount += positive_amount(amount);
+        let amount = revealed_amount(amount);
+        if amount.is_zero() {
+            return self;
+        }
+        self.spec.revealed_output_amount += amount;
         match self.spec.revealed_receiver {
             Some(existing) if existing != receiver => {
                 panic!("Revealed output is already assigned to a different receiver");
@@ -298,14 +306,18 @@ impl StealthTransferSpec {
     }
 }
 
-/// `amount` as an [`Amount`], rejecting a non-positive one.
+/// `amount` as an [`Amount`], rejecting a negative one.
+///
+/// Zero is allowed and reveals nothing: it leaves the running total where it was, which
+/// [`revealed_output`](StealthTransfer::revealed_output) resolves to `None`. A caller whose amount is computed — a
+/// fee or a change slice that came out at zero — gets that for free instead of guarding the call.
 ///
 /// # Panics
 ///
-/// Panics if `amount` is not positive.
-fn positive_amount<A: Into<Amount>>(amount: A) -> Amount {
+/// Panics if `amount` is negative.
+fn revealed_amount<A: Into<Amount>>(amount: A) -> Amount {
     let amount = amount.into();
-    assert!(amount.is_positive(), "Transfer amount must be positive");
+    assert!(!amount.is_negative(), "Revealed amount must not be negative");
     amount
 }
 
@@ -505,6 +517,23 @@ mod tests {
             .expect("the receiver resolves")
             .expect("a revealed output was requested");
         assert_eq!(revealed.receiver, named);
+    }
+
+    /// Revealing zero leaves the transfer revealing nothing, so it resolves like a transfer that never asked.
+    #[tokio::test]
+    async fn revealing_zero_is_a_no_op() {
+        let (provider, address, minted) = provider_owning(1).await;
+        let named = *PrivateKeyProvider::random(Network::LocalNet)
+            .address()
+            .account_public_key();
+
+        let mut transfer = StealthTransfer::new(TARI_TOKEN, &provider)
+            .spend_stealth_input(address.clone(), minted[0].output.commitment)
+            .to_revealed_output(0u64)
+            .to_revealed_output_for(0u64, named);
+        let (_, requirements) = transfer.resolve_inputs().await.expect("the input is owned and unspent");
+
+        assert!(transfer.revealed_output(&requirements).await.unwrap().is_none());
     }
 
     /// No revealed output means no receiver to resolve, so a transfer that reveals nothing needs no signer for it.
