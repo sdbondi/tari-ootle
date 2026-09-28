@@ -171,10 +171,11 @@ fn display_sidechain_id(id: Option<&RistrettoPublicKeyBytes>) -> String {
 
 /// Computes the L1 `TransactionOutput::hash` of a claim's burn output.
 ///
-/// The fields that the rules depend on (the features and commitment) are built into L1 types and hashed through
-/// their own consensus encoding. The opaque fields are consensus encodings already and are hashed as given: the L1
-/// hash is the concatenation of each field's encoding, and every encoding ahead of them is self-delimiting, so no
-/// choice of opaque bytes can change what the features and commitment decode to.
+/// The fields a claim relies on (the features, the commitment and the sender offset public key) are built into L1
+/// types and hashed through their own consensus encoding. The opaque fields are consensus encodings already and are
+/// hashed as given. The L1 hash is the concatenation of each field's encoding, so a field is pinned to its place in
+/// the output only if every encoding ahead of it is self-delimiting. The typed encodings are, and the script's
+/// declared length must match its bytes, which pins the sender offset public key that follows it.
 fn hash_burn_output(network: Network, claim: &MinotariBurnClaimProof) -> Result<FixedHash, String> {
     let BurnOutput {
         version,
@@ -188,6 +189,7 @@ fn hash_burn_output(network: Network, claim: &MinotariBurnClaimProof) -> Result<
         minimum_value_promise,
     } = &claim.output;
 
+    check_script_length(script.as_slice())?;
     let version = TransactionOutputVersion::try_from(*version).map_err(|e| format!("bad output version: {}", e))?;
     let range_proof_type = match features.range_proof_type {
         0 => RangeProofType::BulletProofPlus,
@@ -240,6 +242,23 @@ fn hash_burn_output(network: Network, claim: &MinotariBurnClaimProof) -> Result<
     .chain(&MicroMinotari::from(*minimum_value_promise))
     .finalize();
     Ok(hash.into())
+}
+
+/// Checks that a consensus encoded script is its varint length prefix followed by exactly that many bytes
+fn check_script_length(script: &[u8]) -> Result<(), String> {
+    let mut declared = 0u64;
+    for (i, byte) in script.iter().enumerate().take(10) {
+        declared |= u64::from(byte & 0x7f) << (7 * i);
+        if byte & 0x80 == 0 {
+            let body = script.len() - (i + 1);
+            return if u64::try_from(body).ok() == Some(declared) {
+                Ok(())
+            } else {
+                Err(format!("the script declares {} bytes but carries {}", declared, body))
+            };
+        }
+    }
+    Err("the script has no valid length prefix".to_string())
 }
 
 /// Bytes that are already a consensus encoding, written to a consensus hasher as they are
@@ -1210,6 +1229,46 @@ mod burn_output_proof_tests {
         claim.output.covenant = bytes(vec![1, 0]);
 
         assert_invalid(chain.verify(Epoch(5), &claim), "a tampered output must be rejected");
+    }
+
+    #[test]
+    fn the_sender_offset_public_key_is_pinned_to_its_place_in_the_output() {
+        let chain = Chain::new(None);
+        let burn = l1_burn(None);
+        let claim = chain.mine(&burn, Epoch(4));
+        chain.verify(Epoch(5), &claim).unwrap();
+
+        // Move the script/sender offset boundary one key encoding later. The metadata signature starts with a key
+        // encoded the same way, so the preimage, and so the hash, is unchanged.
+        let encoded_key = borsh::to_vec(&burn.output.sender_offset_public_key).unwrap();
+        let prefix_len = encoded_key.len() - 32;
+        let metadata_signature = claim.output.metadata_signature.as_slice();
+        assert_eq!(metadata_signature[..prefix_len], encoded_key[..prefix_len]);
+        let mut shifted = claim.clone();
+        shifted.output.script = bytes([claim.output.script.as_slice(), &encoded_key].concat());
+        shifted.output.sender_offset_public_key =
+            RistrettoPublicKeyBytes::from_bytes(&metadata_signature[prefix_len..encoded_key.len()]).unwrap();
+        shifted.output.metadata_signature = bytes(metadata_signature[encoded_key.len()..].to_vec());
+
+        assert_invalid(
+            chain.verify(Epoch(5), &shifted),
+            "a claim that moves the sender offset public key must be rejected",
+        );
+    }
+
+    #[test]
+    fn script_length_prefix_must_match_its_bytes() {
+        for (script, ok) in [
+            (vec![0], true),
+            (vec![2, 1, 2], true),
+            (vec![2, 1], false),
+            (vec![1, 1, 2], false),
+            ([vec![0x80, 0x20], vec![0; 4096]].concat(), true),
+            (vec![0x80], false),
+            (vec![0xff; 11], false),
+        ] {
+            assert_eq!(super::check_script_length(&script).is_ok(), ok, "{script:?}");
+        }
     }
 
     #[test]
