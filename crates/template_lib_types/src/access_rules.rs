@@ -527,8 +527,6 @@ pub struct ResourceAccessRules {
     /// whoever satisfies the updater change the rules that existing holders are relying on — up to and
     /// including giving a hook-free resource a hook.
     #[n(16)]
-    #[cbor(default)]
-    #[cfg_attr(feature = "serde", serde(default))]
     auth_hook_updater: UpdateRule,
 }
 
@@ -751,51 +749,6 @@ impl ResourceAccessRules {
             ResourceAuthAction::UpdateMetadata => self.update_metadata = rule,
             ResourceAuthAction::Freeze => self.freeze = rule,
         }
-    }
-
-    /// Writes the rules as a protocol version 0 substate hash preimage: every field but `auth_hook_updater`,
-    /// which version 0 resources do not carry.
-    #[cfg(feature = "borsh")]
-    #[doc(hidden)]
-    pub fn borsh_serialize_v0<W: borsh::io::Write>(&self, writer: &mut W) -> borsh::io::Result<()> {
-        // Destructured so that a field added to the struct fails to compile here rather than being silently
-        // dropped from the version 0 preimage.
-        let Self {
-            mint,
-            mint_updater,
-            burn,
-            burn_updater,
-            recall,
-            recall_updater,
-            withdraw,
-            withdraw_updater,
-            deposit,
-            deposit_updater,
-            update_nft_data,
-            nft_data_updater,
-            freeze,
-            freeze_updater,
-            update_metadata,
-            metadata_updater,
-            auth_hook_updater: _,
-        } = self;
-
-        borsh::BorshSerialize::serialize(mint, writer)?;
-        borsh::BorshSerialize::serialize(mint_updater, writer)?;
-        borsh::BorshSerialize::serialize(burn, writer)?;
-        borsh::BorshSerialize::serialize(burn_updater, writer)?;
-        borsh::BorshSerialize::serialize(recall, writer)?;
-        borsh::BorshSerialize::serialize(recall_updater, writer)?;
-        borsh::BorshSerialize::serialize(withdraw, writer)?;
-        borsh::BorshSerialize::serialize(withdraw_updater, writer)?;
-        borsh::BorshSerialize::serialize(deposit, writer)?;
-        borsh::BorshSerialize::serialize(deposit_updater, writer)?;
-        borsh::BorshSerialize::serialize(update_nft_data, writer)?;
-        borsh::BorshSerialize::serialize(nft_data_updater, writer)?;
-        borsh::BorshSerialize::serialize(freeze, writer)?;
-        borsh::BorshSerialize::serialize(freeze_updater, writer)?;
-        borsh::BorshSerialize::serialize(update_metadata, writer)?;
-        borsh::BorshSerialize::serialize(metadata_updater, writer)
     }
 }
 

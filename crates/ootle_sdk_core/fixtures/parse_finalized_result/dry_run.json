@@ -34,6 +34,7 @@
                 "Storage": 9007199254740999
               }
             },
+            "exhaust_burn": 0,
             "total_fee_overcharge": 0,
             "total_fee_payment": 9007199254742992,
             "total_fees_paid": 9007199254742492

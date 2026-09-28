@@ -17,30 +17,19 @@ use crate::Epoch;
 #[borsh(use_discriminant = true)]
 #[serde(into = "u32", try_from = "u32")]
 pub enum ProtocolVersion {
-    /// The genesis schema, which every network starts under and which anything carrying no explicit version is
-    /// under.
+    /// The genesis schema, which every network starts under.
     #[default]
     V0 = 0,
-    /// Block headers commit to their own protocol version, a transaction receipt's substate hash
-    /// covers `FeeReceipt::exhaust_burn`, and a resource's covers
-    /// `ResourceAccessRules::auth_hook_updater`. Networks without history launch at this version; a network
-    /// with V0 history reaches it through a scheduled activation in [`Self::activations`], a
-    /// deliberate per-network deployment decision.
-    V1 = 1,
 }
 
 impl ProtocolVersion {
     /// The schema activation schedule for `network`, ordered by activation epoch ascending. Entry at
     /// index 0 is the genesis schema, which that network starts under.
     ///
-    /// Esmeralda is the only network with an Ootle deployment carrying block history, so it is the
-    /// only one whose genesis entry is chain history: it stays at `V0` and takes a scheduled
-    /// activation when one is decided. Mainnet, stagenet and nextnet have never launched; igor and
-    /// localnet are reset before use. Those five are launched directly at the newest version, which
-    /// spares them an activation to coordinate.
-    ///
     /// Networks run at independent epochs, so an activation is scheduled per network: the epoch at
-    /// which a schema goes live on esmeralda says nothing about when it goes live on igor.
+    /// which a schema goes live on esmeralda says nothing about when it goes live on igor. A network
+    /// with no history to preserve is launched directly at the newest version, which spares it an
+    /// activation to coordinate.
     ///
     /// NB: entries here are CONSENSUS-BOUND via `hash_substate`. Never reorder or mutate an entry
     /// after it has activated on a live network — doing so changes every hash derived under it. A
@@ -51,12 +40,12 @@ impl ProtocolVersion {
     /// one.
     const fn activations(network: Network) -> &'static [(Epoch, Self)] {
         match network {
-            Network::MainNet => &[(Epoch(0), Self::V1)],
-            Network::StageNet => &[(Epoch(0), Self::V1)],
-            Network::NextNet => &[(Epoch(0), Self::V1)],
-            Network::Igor => &[(Epoch(0), Self::V1)],
-            Network::Esmeralda => &[(Epoch(0), Self::V0), (Epoch(11086), Self::V1)],
-            Network::LocalNet => &[(Epoch(0), Self::V0), (Epoch(5), Self::V1)],
+            Network::MainNet => &[(Epoch(0), Self::V0)],
+            Network::StageNet => &[(Epoch(0), Self::V0)],
+            Network::NextNet => &[(Epoch(0), Self::V0)],
+            Network::Igor => &[(Epoch(0), Self::V0)],
+            Network::Esmeralda => &[(Epoch(0), Self::V0)],
+            Network::LocalNet => &[(Epoch(0), Self::V0)],
         }
     }
 
@@ -82,7 +71,6 @@ impl ProtocolVersion {
     pub const fn from_u32(v: u32) -> Option<Self> {
         match v {
             0 => Some(Self::V0),
-            1 => Some(Self::V1),
             _ => None,
         }
     }
@@ -284,13 +272,6 @@ mod tests {
     }
 
     #[test]
-    fn the_live_network_stays_at_its_launched_version() {
-        // Esmeralda is running, so its genesis version is chain history and cannot be moved. Every other network
-        // is free to be launched at whatever version is newest when it starts.
-        assert_eq!(ProtocolVersion::genesis(Network::Esmeralda), ProtocolVersion::V0);
-    }
-
-    #[test]
     fn far_future_resolves_to_the_newest_activation() {
         for network in all_networks() {
             let (_, newest) = *ProtocolVersion::activations(network).last().unwrap();
@@ -341,49 +322,13 @@ mod tests {
             already_recorded: &[u64],
             last_known_epoch: Option<u64>,
         ) -> Result<Vec<Epoch>, ActivationScheduleError> {
-            check_with_genesis(
-                scheduled,
-                already_recorded,
-                last_known_epoch,
-                ProtocolVersion::V0,
-                ProtocolVersion::V0,
-            )
-        }
-
-        fn check_with_genesis(
-            scheduled: &[u64],
-            already_recorded: &[u64],
-            last_known_epoch: Option<u64>,
-            genesis: ProtocolVersion,
-            recorded_genesis: ProtocolVersion,
-        ) -> Result<Vec<Epoch>, ActivationScheduleError> {
             ProtocolVersion::check_schedule(
                 &schedule(scheduled),
-                genesis,
+                ProtocolVersion::V0,
                 &recorded(already_recorded),
-                recorded_genesis,
+                ProtocolVersion::V0,
                 last_known_epoch.map(Epoch),
             )
-        }
-
-        #[test]
-        fn moving_the_genesis_version_under_a_node_with_history_is_rejected() {
-            assert_eq!(
-                check_with_genesis(&[], &[], Some(6), ProtocolVersion::V1, ProtocolVersion::V0),
-                Err(ActivationScheduleError::GenesisChanged {
-                    recorded: ProtocolVersion::V0,
-                    binary: ProtocolVersion::V1,
-                    last_known_epoch: Epoch(6),
-                })
-            );
-        }
-
-        #[test]
-        fn a_node_with_no_epoch_history_adopts_any_genesis_version() {
-            assert_eq!(
-                check_with_genesis(&[], &[], None, ProtocolVersion::V1, ProtocolVersion::V0),
-                Ok(recorded(&[]))
-            );
         }
 
         #[test]

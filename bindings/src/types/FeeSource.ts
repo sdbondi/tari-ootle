@@ -9,5 +9,4 @@ export type FeeSource =
   | "SubstateCreate"
   | "WasmExecution"
   | "TemplatePublish"
-  | "Reserved"
   | "NativeExecution";

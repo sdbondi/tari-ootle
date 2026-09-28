@@ -16,6 +16,9 @@ See [standard-version](https://github.com/conventional-changelog/standard-versio
 - **SDK `ArgValue::Metadata` maps to `ArgValue`s, and event payload values are JSON.** A text value
   is written `{"String": ".."}`; `EventSummary::payload` and the indexer's GraphQL event `payload`
   carry each value's JSON form. (#2679)
+- **Testnet reset: every network starts at `ProtocolVersion::V0`.** The V0 substate preimage now
+  covers `exhaust_burn` and `auth_hook_updater`, so a node must wipe its data; one that keeps
+  esmeralda history refuses to start.
 
 ### Engine
 

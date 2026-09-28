@@ -285,7 +285,7 @@ mod tests {
     fn invalid_protocol_version(block: u8) -> HotStuffError {
         HotStuffError::ProposalValidationError(ProposalValidationError::InvalidProtocolVersion {
             expected_version: ProtocolVersion::V0,
-            block_version: ProtocolVersion::V1,
+            block_version: ProtocolVersion::V0,
             epoch: Epoch(7),
             block_id: BlockId::new(FixedHash::from([block; 32])),
         })

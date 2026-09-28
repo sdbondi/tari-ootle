@@ -458,10 +458,8 @@ mod tests {
 
     #[test]
     fn it_hashes_the_header_identically_to_sidechain_header() {
-        for protocol_version in [ProtocolVersion::V0, ProtocolVersion::V1] {
-            for timeout_certificate_id in [None, Some(TcId::from([4u8; 32]))] {
-                assert_hashes_identically_to_sidechain_header(protocol_version, timeout_certificate_id);
-            }
+        for timeout_certificate_id in [None, Some(TcId::from([4u8; 32]))] {
+            assert_hashes_identically_to_sidechain_header(ProtocolVersion::V0, timeout_certificate_id);
         }
     }
 
@@ -504,9 +502,7 @@ mod tests {
 
     #[test]
     fn a_vote_signed_here_verifies_in_the_sidechain_crate() {
-        for protocol_version in [ProtocolVersion::V0, ProtocolVersion::V1] {
-            assert_vote_verifies_in_the_sidechain_crate(protocol_version);
-        }
+        assert_vote_verifies_in_the_sidechain_crate(ProtocolVersion::V0);
     }
 
     fn assert_vote_verifies_in_the_sidechain_crate(protocol_version: ProtocolVersion) {

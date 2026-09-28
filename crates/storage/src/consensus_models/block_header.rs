@@ -26,7 +26,7 @@ use tari_consensus_types::{
 use tari_crypto::tari_utilities::epoch_time::EpochTime;
 use tari_ootle_common_types::{Epoch, ExtraData, NodeHeight, NumPreshards, ProtocolVersion, ShardGroup, hashing};
 use tari_ootle_transaction::Network;
-use tari_sidechain::{BlockHeaderHashFields, BlockHeaderHashFieldsV1, BlockHeaderHashFieldsV2};
+use tari_sidechain::{BlockHeaderHashFields, BlockHeaderHashFieldsV1};
 use tari_state_tree::{TreeHash, compute_merkle_root_for_hashes};
 use tari_template_lib_types::crypto::{RistrettoPublicKeyBytes, SchnorrSignatureBytes};
 
@@ -102,13 +102,8 @@ pub struct BlockHeader {
     /// The protocol version this block was produced under, resolved from the network's activation schedule at
     /// [`Self::epoch`]. It makes the block self-describing: [`Self::calculate_hash`] and the L1 verifier in
     /// `tari_sidechain` both select the hash schema from this field rather than from the schedule.
-    ///
-    /// A header that carries no version is under [`ProtocolVersion::V0`], so blocks written before the field
-    /// existed decode and hash unchanged.
     #[cfg_attr(feature = "ts", ts(type = "number"))]
-    #[serde(default)]
     #[n(16)]
-    #[cbor(default)]
     protocol_version: ProtocolVersion,
     /// The id of the timeout certificate this block carries, or `None` when it carries none. It is part of the
     /// metadata hash and therefore of the signed block id, so a validity rule that reads the certificate
@@ -385,26 +380,11 @@ impl BlockHeader {
         // This selection must stay identical to `tari_sidechain::SidechainBlockHeader::calculate_hash`, which is what
         // the base layer uses to verify a commit proof against the block ID a committee signed.
         let fields = match self.protocol_version {
-            // Version 0 commits to a preimage that carries no version, so its block IDs stay reproducible.
+            // `tari_sidechain` maps version 0 to the preimage that carries no version. A later version must commit
+            // to itself through `BlockHeaderHashFields::V2`, so that two versions sharing a preimage shape still
+            // produce distinct block IDs and the version a block claims cannot be altered without invalidating it.
             ProtocolVersion::V0 => BlockHeaderHashFields::V1(BlockHeaderHashFieldsV1 {
                 network: self.network.as_byte(),
-                justify_id: self.justify_id.hash(),
-                height: self.height.as_u64(),
-                epoch: self.epoch.as_u64(),
-                epoch_hash: &self.epoch_hash,
-                shard_group,
-                proposed_by: self.proposed_by.as_bytes(),
-                state_merkle_root: &self.state_merkle_root,
-                command_merkle_root: &self.command_merkle_root,
-                accumulated_data: &accumulated_data,
-                metadata_hash: &metadata_hash,
-            }),
-            // From version 1 the version is part of the preimage, so that two versions sharing a preimage shape
-            // still produce distinct block IDs and the version a block claims cannot be altered without
-            // invalidating it.
-            ProtocolVersion::V1 => BlockHeaderHashFields::V2(BlockHeaderHashFieldsV2 {
-                network: self.network.as_byte(),
-                protocol_version: self.protocol_version.as_u32(),
                 justify_id: self.justify_id.hash(),
                 height: self.height.as_u64(),
                 epoch: self.epoch.as_u64(),
@@ -651,54 +631,19 @@ mod tests {
         .unwrap()
     }
 
-    /// The encoding of a header that carries no protocol version: the same array truncated before element 16,
-    /// which is `protocol_version`, dropping it and every field added after it.
-    fn encode_without_protocol_version(header: &BlockHeader) -> Vec<u8> {
-        const PROTOCOL_VERSION_INDEX: u64 = 16;
-        let bytes = tari_bor::encode(header).unwrap();
-        let mut decoder = minicbor::Decoder::new(&bytes);
-        let len = decoder
-            .array()
-            .unwrap()
-            .expect("BlockHeader encodes as a definite length array");
-        assert!(len > PROTOCOL_VERSION_INDEX);
-        let body_start = decoder.position();
-        for _ in 0..PROTOCOL_VERSION_INDEX {
-            decoder.skip().unwrap();
-        }
-        let protocol_version_start = decoder.position();
-
-        let mut out = Vec::new();
-        minicbor::Encoder::new(&mut out).array(PROTOCOL_VERSION_INDEX).unwrap();
-        out.extend_from_slice(&bytes[body_start..protocol_version_start]);
-        out
-    }
-
-    #[test]
-    fn a_header_encoded_without_a_protocol_version_decodes_as_v0() {
-        let header = header(ProtocolVersion::V0);
-        let decoded: BlockHeader = tari_bor::decode(&encode_without_protocol_version(&header)).unwrap();
-
-        assert_eq!(decoded.protocol_version(), ProtocolVersion::V0);
-        assert_eq!(decoded.id(), header.id());
-        assert_eq!(decoded.calculate_hash(), header.calculate_hash());
-    }
-
     #[test]
     fn a_header_round_trips_its_protocol_version() {
-        for protocol_version in [ProtocolVersion::V0, ProtocolVersion::V1] {
-            let header = header(protocol_version);
-            let bytes = tari_bor::encode(&header).unwrap();
-            let decoded: BlockHeader = tari_bor::decode(&bytes).unwrap();
-            assert_eq!(decoded.protocol_version(), protocol_version);
-            assert_eq!(decoded.calculate_hash(), header.calculate_hash());
-        }
+        let header = header(ProtocolVersion::V0);
+        let bytes = tari_bor::encode(&header).unwrap();
+        let decoded: BlockHeader = tari_bor::decode(&bytes).unwrap();
+        assert_eq!(decoded.protocol_version(), ProtocolVersion::V0);
+        assert_eq!(decoded.calculate_hash(), header.calculate_hash());
     }
 
     #[test]
     fn a_header_round_trips_its_timeout_certificate_id() {
         let tc_id = TcId::from([7u8; 32]);
-        let header = header_with_timeout_certificate(ProtocolVersion::V1, Some(tc_id));
+        let header = header_with_timeout_certificate(ProtocolVersion::V0, Some(tc_id));
         let decoded: BlockHeader = tari_bor::decode(&tari_bor::encode(&header).unwrap()).unwrap();
         assert_eq!(decoded.timeout_certificate_id(), Some(&tc_id));
         assert_eq!(decoded.id(), header.id());
@@ -706,75 +651,65 @@ mod tests {
 
     #[test]
     fn the_timeout_certificate_id_is_in_the_block_id() {
-        for protocol_version in [ProtocolVersion::V0, ProtocolVersion::V1] {
-            let without = header(protocol_version);
-            let with = header_with_timeout_certificate(protocol_version, Some(TcId::from([7u8; 32])));
-            let with_other = header_with_timeout_certificate(protocol_version, Some(TcId::from([8u8; 32])));
-            assert_ne!(without.calculate_metadata_hash(), with.calculate_metadata_hash());
-            assert_ne!(with.calculate_metadata_hash(), with_other.calculate_metadata_hash());
-            assert_ne!(without.id(), with.id());
-            assert_ne!(with.id(), with_other.id());
-        }
+        let protocol_version = ProtocolVersion::V0;
+        let without = header(protocol_version);
+        let with = header_with_timeout_certificate(protocol_version, Some(TcId::from([7u8; 32])));
+        let with_other = header_with_timeout_certificate(protocol_version, Some(TcId::from([8u8; 32])));
+        assert_ne!(without.calculate_metadata_hash(), with.calculate_metadata_hash());
+        assert_ne!(with.calculate_metadata_hash(), with_other.calculate_metadata_hash());
+        assert_ne!(without.id(), with.id());
+        assert_ne!(with.id(), with_other.id());
     }
 
     /// An empty proposal made in the same second as its parent matches the dummy block for its view in every
     /// field but the signature.
     #[test]
     fn a_dummy_block_never_shares_an_id_with_an_empty_proposal() {
-        for protocol_version in [ProtocolVersion::V0, ProtocolVersion::V1] {
-            let shard_group = ShardGroup::all_shards(NumPreshards::P64);
-            let parent = BlockId::from([1u8; 32]);
-            let justify_id = ProposalCertificate::genesis(Epoch(1), shard_group).calculate_id();
-            let proposed_by = RistrettoPublicKeyBytes::default();
-            let accumulated_data = ShardGroupAccumulatedData::default();
-            let parent_timestamp = 1234;
+        let protocol_version = ProtocolVersion::V0;
+        let shard_group = ShardGroup::all_shards(NumPreshards::P64);
+        let parent = BlockId::from([1u8; 32]);
+        let justify_id = ProposalCertificate::genesis(Epoch(1), shard_group).calculate_id();
+        let proposed_by = RistrettoPublicKeyBytes::default();
+        let accumulated_data = ShardGroupAccumulatedData::default();
+        let parent_timestamp = 1234;
 
-            let dummy = BlockHeader::dummy_block(
-                Network::LocalNet,
-                protocol_version,
-                parent,
-                proposed_by,
-                NodeHeight(2),
-                justify_id,
-                Epoch(1),
-                shard_group,
-                FixedHash::zero(),
-                parent_timestamp,
-                FixedHash::zero(),
-                accumulated_data,
-            );
-            let proposal = BlockHeader::create(
-                Network::LocalNet,
-                protocol_version,
-                parent,
-                justify_id,
-                None,
-                NodeHeight(2),
-                Epoch(1),
-                shard_group,
-                proposed_by,
-                FixedHash::zero(),
-                &BTreeSet::new(),
-                0,
-                SchnorrSignatureBytes::zero(),
-                parent_timestamp,
-                FixedHash::zero(),
-                accumulated_data,
-                ExtraData::new(),
-            )
-            .unwrap();
-
-            assert_ne!(dummy.id(), proposal.id());
-            assert_eq!(dummy.calculate_id(), *dummy.id());
-            assert_eq!(proposal.calculate_id(), *proposal.id());
-        }
-    }
-
-    #[test]
-    fn each_protocol_version_hashes_a_header_differently() {
-        assert_ne!(
-            header(ProtocolVersion::V0).calculate_hash(),
-            header(ProtocolVersion::V1).calculate_hash()
+        let dummy = BlockHeader::dummy_block(
+            Network::LocalNet,
+            protocol_version,
+            parent,
+            proposed_by,
+            NodeHeight(2),
+            justify_id,
+            Epoch(1),
+            shard_group,
+            FixedHash::zero(),
+            parent_timestamp,
+            FixedHash::zero(),
+            accumulated_data,
         );
+        let proposal = BlockHeader::create(
+            Network::LocalNet,
+            protocol_version,
+            parent,
+            justify_id,
+            None,
+            NodeHeight(2),
+            Epoch(1),
+            shard_group,
+            proposed_by,
+            FixedHash::zero(),
+            &BTreeSet::new(),
+            0,
+            SchnorrSignatureBytes::zero(),
+            parent_timestamp,
+            FixedHash::zero(),
+            accumulated_data,
+            ExtraData::new(),
+        )
+        .unwrap();
+
+        assert_ne!(dummy.id(), proposal.id());
+        assert_eq!(dummy.calculate_id(), *dummy.id());
+        assert_eq!(proposal.calculate_id(), *proposal.id());
     }
 }

@@ -190,8 +190,6 @@ pub struct FeeReceipt {
     /// the exhaust burn rate in force for the execution epoch. Settled over what was collected, so it is never
     /// charged to the payer and never appears in `cost_breakdown`.
     #[n(4)]
-    #[cbor(default)]
-    #[serde(default)]
     exhaust_burn: u64,
 }
 
@@ -215,15 +213,6 @@ impl FeeReceipt {
             cost_breakdown,
             exhaust_burn: u64::MAX,
         }
-    }
-
-    /// Writes the receipt as a protocol version 0 substate hash preimage: every field but
-    /// `exhaust_burn`, which version 0 receipts do not carry.
-    pub(crate) fn borsh_serialize_v0<W: borsh::io::Write>(&self, writer: &mut W) -> borsh::io::Result<()> {
-        borsh::BorshSerialize::serialize(&self.total_fee_payment, writer)?;
-        borsh::BorshSerialize::serialize(&self.total_fees_paid, writer)?;
-        borsh::BorshSerialize::serialize(&self.total_fee_overcharge, writer)?;
-        borsh::BorshSerialize::serialize(&self.cost_breakdown, writer)
     }
 
     pub fn to_cost_breakdown(&self) -> FeeCostBreakdown {
@@ -354,27 +343,19 @@ pub enum FeeSource {
     Storage = 2,
     #[n(3)]
     TransactionWeight = 3,
-    // 4 Reserved for future use
+    #[n(4)]
+    TemplateLoad = 4,
     #[n(5)]
-    TemplateLoad = 5,
-    #[n(6)]
-    SubstateCreate = 6,
+    SubstateCreate = 5,
     /// WASM execution metering, charged in proportion to consumed Wasmer metering points.
-    #[n(7)]
-    WasmExecution = 7,
+    #[n(6)]
+    WasmExecution = 6,
     /// Cost of publishing a template's binary, replacing the flat per-byte `Storage` charge for
     /// that binary: the first `template_size_premium_free_bytes` are priced at the per-byte storage
     /// rate, and every whole unit beyond that is charged quadratically to discourage oversized
     /// templates.
-    #[n(8)]
-    TemplatePublish = 8,
-    /// Never charged. Slot 9 carried the exhaust burn surcharge before the burn became a share of
-    /// what was paid, recorded on `FeeReceipt::exhaust_burn`. The variant remains so receipts
-    /// persisted under that model still decode, by index in CBOR and borsh and by either name in
-    /// JSON; it can go at the next testnet reset.
-    #[n(9)]
-    #[serde(alias = "ExhaustBurn")]
-    Reserved = 9,
+    #[n(7)]
+    TemplatePublish = 7,
     /// Native verification metering — stealth transfers, confidential withdraws, burn claims, and
     /// the intrinsics a template invokes — priced in the same points as `WasmExecution` via
     /// wall-clock equivalence and charged at the same per-point rate.
@@ -382,14 +363,14 @@ pub enum FeeSource {
     /// Every kind of native work shares this source deliberately. A source per kind would widen
     /// [`FeeReceipt::widest`], and so the receipt size bound on every transaction, to itemise a
     /// breakdown the per-point rate already makes comparable.
-    #[n(10)]
-    NativeExecution = 10,
+    #[n(8)]
+    NativeExecution = 8,
 }
 
 impl FeeSource {
     /// Every variant. `fee_source_all_is_exhaustive` fails to compile if a variant is added without
     /// being listed here.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 9] = [
         Self::Initial,
         Self::RuntimeCall,
         Self::Storage,
@@ -398,7 +379,6 @@ impl FeeSource {
         Self::SubstateCreate,
         Self::WasmExecution,
         Self::TemplatePublish,
-        Self::Reserved,
         Self::NativeExecution,
     ];
 }
@@ -522,20 +502,9 @@ mod tests {
                 FeeSource::SubstateCreate |
                 FeeSource::WasmExecution |
                 FeeSource::TemplatePublish |
-                FeeSource::Reserved |
                 FeeSource::NativeExecution => {},
             }
         }
-    }
-
-    /// Wallets and the indexer persist receipts as JSON, so a breakdown written under the surcharge
-    /// model still names the slot by its old name.
-    #[test]
-    fn the_reserved_slot_decodes_from_its_former_json_name() {
-        let breakdown: FeeBreakdown = serde_json::from_str(r#"{"breakdown":{"ExhaustBurn":5}}"#).unwrap();
-        assert_eq!(breakdown.get(FeeSource::Reserved), 5);
-        let single: FeeSource = serde_json::from_str(r#""ExhaustBurn""#).unwrap();
-        assert_eq!(single, FeeSource::Reserved);
     }
 
     #[test]

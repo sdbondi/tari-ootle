@@ -23,7 +23,8 @@
     "accumulated_data": {
       "total_exhaust_burn": 0
     },
-    "extra_data": {}
+    "extra_data": {},
+    "protocol_version": 0
   },
   "justify": {
     "qc_id": "fb2b609cfaede15013a4976b433de48c5e55257cd363dce5dfea841614aef006",

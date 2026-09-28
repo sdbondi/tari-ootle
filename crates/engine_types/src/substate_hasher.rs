@@ -9,7 +9,6 @@ use crate::{
     component::Component,
     confidential::ClaimedOutputTombstone,
     confidential_output::ConfidentialOutput,
-    fees::FeeReceipt,
     hashing::{EngineHashDomainLabel, hasher32},
     non_fungible::NonFungibleContainer,
     published_template::PublishedTemplate,
@@ -21,49 +20,37 @@ use crate::{
     vault::Vault,
 };
 
+/// The substate hash preimage, tagged with the protocol version it was written under so that no two versions
+/// share a preimage.
 #[derive(Debug, Clone, Copy, borsh::BorshSerialize)]
 pub enum SubstateHashMessage<'a> {
-    V0(SubstateValueHashMessageV0<'a>),
-    V1(SubstateValueHashMessageV1<'a>),
+    V0(SubstateValueHashMessage<'a>),
 }
 
 impl<'a> SubstateHashMessage<'a> {
     pub fn new(protocol_version: ProtocolVersion, value: &'a SubstateValue) -> Self {
         match protocol_version {
             ProtocolVersion::V0 => Self::V0(value.into()),
-            ProtocolVersion::V1 => Self::V1(value.into()),
         }
     }
 }
 
-pub type SubstateValueHashMessageV0<'a> =
-    SubstateValueHashMessage<'a, ResourceHashMessageV0<'a>, TransactionReceiptHashMessageV0<'a>>;
-
-/// Version 1 changes the transaction receipt's preimage, which covers `FeeReceipt::exhaust_burn`, and the
-/// resource's, which covers `ResourceAccessRules::auth_hook_updater` - and, through the leading
-/// `SubstateHashMessage` tag, the preimage of every substate.
-pub type SubstateValueHashMessageV1<'a> =
-    SubstateValueHashMessage<'a, ResourceHashMessageV1<'a>, TransactionReceiptHashMessageV1<'a>>;
-
-/// The per-type preimage, shared by every protocol version so that the borsh tag of each variant is
-/// the same under all of them. Variant order is consensus-bound: a new variant goes at the end.
+/// The per-type preimage. Variant order is consensus-bound: a new variant goes at the end.
 #[derive(Debug, Clone, Copy, borsh::BorshSerialize)]
-pub enum SubstateValueHashMessage<'a, Res, Rec> {
+pub enum SubstateValueHashMessage<'a> {
     Component(ComponentHashMessage<'a>),
-    Resource(Res),
+    Resource(ResourceHashMessage<'a>),
     Vault(VaultHashMessage<'a>),
     NonFungible(NonFungibleContainerHashMessage<'a>),
     ClaimedOutputTombstone(ClaimedOutputTombstoneHashMessage<'a>),
-    TransactionReceipt(Rec),
+    TransactionReceipt(TransactionReceiptHashMessage<'a>),
     Template(PublishedTemplateHashMessage<'a>),
     ValidatorFeePool(ValidatorFeePoolHashMessage<'a>),
     Utxo(UtxoHashMessage<'a>),
     ConfidentialOutput(ConfidentialOutputHashMessage<'a>),
 }
 
-impl<'a, Res: From<&'a Resource>, Rec: From<&'a TransactionReceipt>> From<&'a SubstateValue>
-    for SubstateValueHashMessage<'a, Res, Rec>
-{
+impl<'a> From<&'a SubstateValue> for SubstateValueHashMessage<'a> {
     fn from(value: &'a SubstateValue) -> Self {
         match value {
             SubstateValue::Component(component) => Self::Component(component.into()),
@@ -100,28 +87,10 @@ impl borsh::BorshSerialize for ComponentHashMessage<'_> {
     }
 }
 
-/// The resource preimage under protocol version 0. `ResourceAccessRules` is written without
-/// `auth_hook_updater`, the shape every version 0 resource was hashed with.
-#[derive(Debug, Clone, Copy)]
-pub struct ResourceHashMessageV0<'a>(pub &'a Resource);
-
-impl<'a> From<&'a Resource> for ResourceHashMessageV0<'a> {
-    fn from(resource: &'a Resource) -> Self {
-        Self(resource)
-    }
-}
-
-impl borsh::BorshSerialize for ResourceHashMessageV0<'_> {
-    fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
-        self.0.borsh_serialize_v0(writer)
-    }
-}
-
-/// The resource preimage from protocol version 1: the whole `Resource`, `auth_hook_updater` included.
 #[derive(Debug, Clone, Copy, borsh::BorshSerialize)]
-pub struct ResourceHashMessageV1<'a>(pub &'a Resource);
+pub struct ResourceHashMessage<'a>(pub &'a Resource);
 
-impl<'a> From<&'a Resource> for ResourceHashMessageV1<'a> {
+impl<'a> From<&'a Resource> for ResourceHashMessage<'a> {
     fn from(resource: &'a Resource) -> Self {
         Self(resource)
     }
@@ -154,62 +123,31 @@ impl<'a> From<&'a ClaimedOutputTombstone> for ClaimedOutputTombstoneHashMessage<
     }
 }
 
-/// The receipt preimage under protocol version 0. `FeeReceipt` is written without `exhaust_burn`,
-/// the shape every version 0 receipt was hashed with.
 #[derive(Debug, Clone, Copy)]
-pub struct TransactionReceiptHashMessageV0<'a> {
+pub struct TransactionReceiptHashMessage<'a> {
     pub receipt: &'a TransactionReceipt,
 }
 
-impl<'a> From<&'a TransactionReceipt> for TransactionReceiptHashMessageV0<'a> {
+impl<'a> From<&'a TransactionReceipt> for TransactionReceiptHashMessage<'a> {
     fn from(receipt: &'a TransactionReceipt) -> Self {
         Self { receipt }
     }
 }
 
-impl borsh::BorshSerialize for TransactionReceiptHashMessageV0<'_> {
+impl borsh::BorshSerialize for TransactionReceiptHashMessage<'_> {
     fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
-        serialize_receipt(self.receipt, writer, |fee_receipt, writer| {
-            fee_receipt.borsh_serialize_v0(writer)
-        })
+        let receipt = self.receipt;
+        BorshSerialize::serialize(&receipt.outcome, writer)?;
+        BorshSerialize::serialize(&receipt.diff_summary, writer)?;
+        BorshSerialize::serialize(&receipt.fee_withdrawals, writer)?;
+        let events = hash(&receipt.events);
+        BorshSerialize::serialize(&events, writer)?;
+        BorshSerialize::serialize(&receipt.fee_receipt, writer)?;
+        BorshSerialize::serialize(&receipt.epoch, writer)?;
+        // Serialized in full: the commitment is already 32 bytes, so part-hashing it saves nothing.
+        BorshSerialize::serialize(&receipt.intent_commitment, writer)?;
+        Ok(())
     }
-}
-
-/// The receipt preimage from protocol version 1: the whole `FeeReceipt`, `exhaust_burn` included.
-#[derive(Debug, Clone, Copy)]
-pub struct TransactionReceiptHashMessageV1<'a> {
-    pub receipt: &'a TransactionReceipt,
-}
-
-impl<'a> From<&'a TransactionReceipt> for TransactionReceiptHashMessageV1<'a> {
-    fn from(receipt: &'a TransactionReceipt) -> Self {
-        Self { receipt }
-    }
-}
-
-impl borsh::BorshSerialize for TransactionReceiptHashMessageV1<'_> {
-    fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
-        serialize_receipt(self.receipt, writer, |fee_receipt, writer| {
-            BorshSerialize::serialize(fee_receipt, writer)
-        })
-    }
-}
-
-fn serialize_receipt<W: io::Write>(
-    receipt: &TransactionReceipt,
-    writer: &mut W,
-    serialize_fee_receipt: impl FnOnce(&FeeReceipt, &mut W) -> io::Result<()>,
-) -> io::Result<()> {
-    BorshSerialize::serialize(&receipt.outcome, writer)?;
-    BorshSerialize::serialize(&receipt.diff_summary, writer)?;
-    BorshSerialize::serialize(&receipt.fee_withdrawals, writer)?;
-    let events = hash(&receipt.events);
-    BorshSerialize::serialize(&events, writer)?;
-    serialize_fee_receipt(&receipt.fee_receipt, writer)?;
-    BorshSerialize::serialize(&receipt.epoch, writer)?;
-    // Serialized in full: the commitment is already 32 bytes, so part-hashing it saves nothing.
-    BorshSerialize::serialize(&receipt.intent_commitment, writer)?;
-    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -288,7 +226,7 @@ mod tests {
     use crate::{
         Epoch,
         SubstateVersion,
-        fees::{FeeBreakdown, FeeSource},
+        fees::{FeeBreakdown, FeeReceipt, FeeSource},
         resource_container::ResourceContainer,
         substate::hash_substate,
         transaction_receipt::{DiffSummary, FinalizeOutcome},
@@ -351,23 +289,12 @@ mod tests {
     #[test]
     fn version_0_receipt_hash_is_pinned() {
         assert_eq!(
-            hex(hash_at(ProtocolVersion::V0, &receipt(0))),
-            "69e78b9cdb50296e66a7c951528c1958b37f03f2a1023340c85c2f87f09f4c20"
+            hex(hash_at(ProtocolVersion::V0, &receipt(123))),
+            "3ed616d2ebdc09d0bf480368e2a0812b358f8c16bfad772c69baf565c77bbd89"
         );
-        // Esmeralda is the network whose history was hashed under version 0.
-        assert_eq!(ProtocolVersion::at(Network::Esmeralda, Epoch(3)), ProtocolVersion::V0);
         assert_eq!(
-            hash_substate(Network::Esmeralda, &receipt(0), SubstateVersion::ZERO, Epoch(3)),
-            hash_at(ProtocolVersion::V0, &receipt(0))
-        );
-    }
-
-    /// Networks launched at version 1 commit to this from their first block.
-    #[test]
-    fn version_1_hash_is_pinned() {
-        assert_eq!(
-            hex(hash_at(ProtocolVersion::V1, &receipt(123))),
-            "9baaaa4e443977af5d248e158d071e8ecfe2db2d9a057b8687ac1ceeaaab4be8"
+            hash_substate(Network::Esmeralda, &receipt(123), SubstateVersion::ZERO, Epoch(3)),
+            hash_at(ProtocolVersion::V0, &receipt(123))
         );
     }
 
@@ -377,48 +304,23 @@ mod tests {
     fn version_0_resource_hash_is_pinned() {
         assert_eq!(
             hex(hash_at(ProtocolVersion::V0, &resource(UpdateRule::Locked))),
-            "e34f9346d46318fe8e5e1430009a020371feb9de197ff85e52db8723d832a340"
+            "30d55dd7f25674254559dbcb8af6130df44501f1c3b76f790e72d23aa0a9e840"
         );
     }
 
     #[test]
-    fn version_0_does_not_cover_auth_hook_updater() {
-        assert_eq!(
+    fn version_0_covers_auth_hook_updater() {
+        assert_ne!(
             hash_at(ProtocolVersion::V0, &resource(UpdateRule::Locked)),
             hash_at(ProtocolVersion::V0, &resource(UpdateRule::Owner))
         );
     }
 
     #[test]
-    fn version_1_covers_auth_hook_updater() {
+    fn version_0_covers_exhaust_burn() {
         assert_ne!(
-            hash_at(ProtocolVersion::V1, &resource(UpdateRule::Locked)),
-            hash_at(ProtocolVersion::V1, &resource(UpdateRule::Owner))
-        );
-        // Past the leading version tag, so that wiring V1 to the version 0 preimage would fail here.
-        let value = resource(UpdateRule::Locked);
-        let v0 = borsh::to_vec(&SubstateHashMessage::new(ProtocolVersion::V0, &value)).unwrap();
-        let v1 = borsh::to_vec(&SubstateHashMessage::new(ProtocolVersion::V1, &value)).unwrap();
-        assert_ne!(v0[1..], v1[1..]);
-    }
-
-    #[test]
-    fn version_0_does_not_cover_exhaust_burn() {
-        assert_eq!(
             hash_at(ProtocolVersion::V0, &receipt(0)),
             hash_at(ProtocolVersion::V0, &receipt(123))
-        );
-    }
-
-    #[test]
-    fn version_1_covers_exhaust_burn() {
-        assert_ne!(
-            hash_at(ProtocolVersion::V1, &receipt(0)),
-            hash_at(ProtocolVersion::V1, &receipt(123))
-        );
-        assert_ne!(
-            hash_at(ProtocolVersion::V0, &receipt(0)),
-            hash_at(ProtocolVersion::V1, &receipt(0))
         );
     }
 
@@ -427,7 +329,7 @@ mod tests {
     /// last, where an append is the only move and is safe. The two leading bytes are the
     /// `SubstateHashMessage` version tag and the value tag.
     #[test]
-    fn value_tags_are_stable_and_shared_by_both_versions() {
+    fn value_tags_are_stable() {
         let values: Vec<(u8, SubstateValue)> = vec![
             (
                 2,
@@ -460,18 +362,7 @@ mod tests {
         ];
         for (tag, value) in &values {
             let v0 = borsh::to_vec(&SubstateHashMessage::new(ProtocolVersion::V0, value)).unwrap();
-            let v1 = borsh::to_vec(&SubstateHashMessage::new(ProtocolVersion::V1, value)).unwrap();
             assert_eq!(&v0[..2], &[0, *tag], "V0 tag for {value:?}");
-            assert_eq!(&v1[..2], &[1, *tag], "V1 tag for {value:?}");
-            // Receipts and resources carry a version-dependent preimage; every other value is written
-            // identically under both versions.
-            if value.as_transaction_receipt().is_none() && value.as_resource().is_none() {
-                assert_eq!(
-                    v0[1..],
-                    v1[1..],
-                    "V1 must differ from V0 only in the version tag for {value:?}"
-                );
-            }
         }
     }
 }
