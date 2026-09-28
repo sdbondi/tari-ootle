@@ -11992,6 +11992,7 @@ dependencies = [
  "ark-snark",
  "ark-std",
  "blake2 0.10.6",
+ "bounded-vec",
  "bytes",
  "crc32fast",
  "criterion",

@@ -30,6 +30,7 @@ use tari_engine::{
         memory::{MemoryStateStore, ReadOnlyMemoryStateStore},
     },
     template::LoadedTemplate,
+    traits::ClaimProofVerifier,
     transaction::{TransactionError, TransactionProcessor},
     wasm::LoadedWasmTemplate,
 };
@@ -115,6 +116,7 @@ pub struct TemplateTest {
     state_store: MemoryStateStore,
     enable_fees: bool,
     dry_run: bool,
+    claim_proof_verifier: Arc<dyn ClaimProofVerifier + Send + Sync>,
     fee_table: FeeTable,
     burn_rate: ExhaustBurnRate,
     virtual_substates: HashMap<VirtualSubstateId, VirtualSubstate>,
@@ -269,6 +271,7 @@ impl TemplateTest {
             transaction_seq: Cell::new(0),
             enable_fees: false,
             dry_run: false,
+            claim_proof_verifier: Arc::new(AlwaysPassesProofVerifier),
             fee_table: FeeTable {
                 per_transaction_weight_cost: 1,
                 per_module_call_cost: 1,
@@ -333,6 +336,15 @@ impl TemplateTest {
     /// indexer's fee estimation does.
     pub fn set_dry_run(&mut self, dry_run: bool) -> &mut Self {
         self.dry_run = dry_run;
+        self
+    }
+
+    /// Verifies burn claims in subsequent transactions with `verifier`. By default every claim passes.
+    pub fn set_claim_proof_verifier<V: ClaimProofVerifier + Send + Sync + 'static>(
+        &mut self,
+        verifier: V,
+    ) -> &mut Self {
+        self.claim_proof_verifier = Arc::new(verifier);
         self
     }
 
@@ -815,7 +827,7 @@ impl TemplateTest {
             auth_params,
             self.virtual_substates.clone().into(),
             Arc::from(modules.into_boxed_slice()),
-            Arc::new(AlwaysPassesProofVerifier),
+            self.claim_proof_verifier.clone(),
             wasm_metering_rate,
             self.burn_rate,
             Network::LocalNet,
@@ -880,6 +892,7 @@ impl TemplateTest {
             virtual_substates: self.virtual_substates.clone(),
             burn_rate: self.burn_rate,
             dry_run: self.dry_run,
+            claim_proof_verifier: self.claim_proof_verifier.clone(),
             auto_add_proofs_from_signers: self.auto_add_proofs_from_signers,
         }
     }
@@ -1064,6 +1077,7 @@ pub struct SnapshotExecutor {
     virtual_substates: HashMap<VirtualSubstateId, VirtualSubstate>,
     burn_rate: ExhaustBurnRate,
     dry_run: bool,
+    claim_proof_verifier: Arc<dyn ClaimProofVerifier + Send + Sync>,
     auto_add_proofs_from_signers: bool,
 }
 
@@ -1104,7 +1118,7 @@ impl SnapshotExecutor {
             auth_params,
             self.virtual_substates.clone().into(),
             Arc::from(modules.into_boxed_slice()),
-            Arc::new(AlwaysPassesProofVerifier),
+            self.claim_proof_verifier.clone(),
             wasm_metering_rate,
             self.burn_rate,
             Network::LocalNet,

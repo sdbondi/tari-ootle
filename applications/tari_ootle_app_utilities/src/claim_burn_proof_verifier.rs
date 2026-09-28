@@ -123,8 +123,9 @@ where
         }
 
         // 2. Fetch the block header for this proof. Only headers from epochs before the current one count: a node
-        // that has reached an epoch holds every header of the epochs before it, but each node scans the current
-        // epoch's headers at its own pace, so they would disagree on whether one is present.
+        // that has reached an epoch holds every header of the epochs before it from its configured scan
+        // `start_height` on, but each node scans the current epoch's headers at its own pace, so they would disagree
+        // on whether one is present.
         let Some(max_header_epoch) = epoch.checked_sub(1) else {
             warn!(target: LOG_TARGET, "Claim burn failed - no base layer header is claimable in epoch 0");
             return Err(ClaimProofRejection::NotYetValid(

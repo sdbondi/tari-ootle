@@ -49,8 +49,8 @@ const MAX_RETRIES_DEFERRED: u32 = 20;
 /// claimable epoch, as opposed to a genuinely invalid claim.
 ///
 /// The engine says which of the two it is: `TariClaimBurnProofVerifier` returns
-/// `ClaimProofRejection::NotYetValid` for a header it has not synced, and that reaches here as
-/// [`ExecutionFailureCode::NotYetValid`].
+/// `ClaimProofRejection::NotYetValid` for a header from the current epoch or one it has not synced, and that
+/// reaches here as [`ExecutionFailureCode::NotYetValid`].
 fn is_burn_not_yet_claimable(reject_reason: &RejectReason) -> bool {
     reject_reason.execution_failure_code() == Some(ExecutionFailureCode::NotYetValid)
 }
