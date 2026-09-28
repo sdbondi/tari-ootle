@@ -31,6 +31,11 @@ See [standard-version](https://github.com/conventional-changelog/standard-versio
   records each substate downed without a later version, such as a spent UTXO. Receipt hashes and
   stealth fee estimates change; this ships with the testnet reset.
 
+- `fix` — **A burn claim must cite an L1 header from an earlier epoch**, so every validator reaches the
+  same verdict; a claim citing the current epoch is not yet valid and is retried in the next one.
+- `fix` — **A node that cannot read its own L1 headers aborts the transaction's execution** instead
+  of rejecting a claim that may be valid.
+
 ### Transaction manifest
 
 - `feat!` — **`metadata!` and `cbor!` take a JSON-shaped value with typed values nested in it**, e.g.

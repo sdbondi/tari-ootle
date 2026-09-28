@@ -47,6 +47,23 @@ impl From<String> for ClaimProofRejection {
     }
 }
 
+/// Why a claim proof check did not pass: a verdict on the proof, or a fault in the verifying node.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ClaimProofError {
+    #[error(transparent)]
+    Rejected(#[from] ClaimProofRejection),
+    /// This node could not reach a verdict, e.g. its own database failed. The fault is local to this node,
+    /// so it must never become a receipt.
+    #[error("{0}")]
+    VerifierFault(String),
+}
+
+impl From<String> for ClaimProofError {
+    fn from(details: String) -> Self {
+        Self::Rejected(details.into())
+    }
+}
+
 /// Verifier for claim proofs (MinotariBurnClaimProof).
 ///
 /// Implementors of this trait should provide the logic to verify the authenticity and validity of the claim proof.
@@ -54,12 +71,13 @@ impl From<String> for ClaimProofRejection {
 ///
 /// NOTE: This trait must be deterministic, as it is used in consensus-critical code paths. That extends to
 /// which [`ClaimProofRejection`] variant is returned: validators in an epoch must agree on whether a proof is
-/// refused for good or only for now.
+/// refused for good or only for now. A [`ClaimProofError::VerifierFault`] is the one outcome exempt from this,
+/// which is why it aborts execution instead of producing a result.
 pub trait ClaimProofVerifier {
     fn verify_claim_proof(
         &self,
         epoch: Epoch,
         claimant: &RistrettoPublicKeyBytes,
         claim: &MinotariBurnClaimProof,
-    ) -> Result<(), ClaimProofRejection>;
+    ) -> Result<(), ClaimProofError>;
 }

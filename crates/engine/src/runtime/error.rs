@@ -259,6 +259,8 @@ pub enum RuntimeError {
     InvalidClaimProof { details: String },
     #[error("Burn claim proof names base layer state this epoch does not have: {details}")]
     ClaimProofNotYetValid { details: String },
+    #[error("Burn claim proof verifier failed on this node: {details}")]
+    ClaimProofVerifierFault { details: String },
     #[error("Layer one commitment already claimed with address '{address}'")]
     ConfidentialOutputAlreadyClaimed { address: ClaimedOutputTombstoneAddress },
     #[error("Template {template_address} not found")]
@@ -576,6 +578,7 @@ impl RuntimeError {
             Self::UnexpectedNonNullInAuthHookReturn => C::TemplateError,
 
             Self::StateStoreError(_) |
+            Self::ClaimProofVerifierFault { .. } |
             Self::LockSubstateMismatch { .. } |
             Self::CurrentFrameError { .. } |
             Self::ModuleError(_) |

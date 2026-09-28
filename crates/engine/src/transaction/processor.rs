@@ -254,6 +254,7 @@ where
                 }
                 execution_results
             },
+            Err(err) if err.is_node_fault() => return Err(err),
             Err(err) => {
                 warn!(
                     target: LOG_TARGET,
@@ -287,6 +288,7 @@ where
         let native_execution_points = runtime.interface().native_points_consumed();
 
         match instruction_result {
+            Err(err) if err.is_node_fault() => Err(err),
             Ok(execution_results) => {
                 let mut finalize = runtime.interface().finalize()?;
                 finalize.execution_results = execution_results;

@@ -125,7 +125,7 @@ A claim is accepted when both of the following hold:
       │      where S = the transaction's seal signer key
       │
       └─▶ 2. Kernel inclusion proof
-             look up header by block_hash (epoch ≤ current)
+             look up header by block_hash (epoch < current)
              rebuild burn kernel from abridged fields + C
              verify MMR proof: hash(kernel) ∈ header.kernel_merkle_root at leaf_index
 ```

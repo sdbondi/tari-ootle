@@ -50,6 +50,7 @@ tari_consensus = { workspace = true, optional = true }
 
 [dev-dependencies]
 bounded-vec = { workspace = true }
+tari_ootle_storage_sqlite = { workspace = true }
 tempfile = { workspace = true }
 
 [features]

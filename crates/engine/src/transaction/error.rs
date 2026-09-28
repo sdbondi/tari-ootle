@@ -55,6 +55,15 @@ impl TransactionError {
         &self.kind
     }
 
+    /// A fault local to this node. It has no receipt, because a validator that does not share the fault would
+    /// reach a different one.
+    pub fn is_node_fault(&self) -> bool {
+        matches!(
+            &*self.kind,
+            TransactionErrorKind::RuntimeError(RuntimeError::ClaimProofVerifierFault { .. })
+        )
+    }
+
     pub fn to_reject_reason(&self) -> RejectReason {
         match &*self.kind {
             TransactionErrorKind::RuntimeError(err) => err.to_reject_reason(self.instruction_idx),

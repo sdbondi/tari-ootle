@@ -12,7 +12,7 @@ use tari_crypto::{
     ristretto::{RistrettoSchnorr, RistrettoSecretKey, pedersen::PedersenCommitment},
     tari_utilities::ByteArray,
 };
-use tari_engine::traits::{ClaimProofRejection, ClaimProofVerifier};
+use tari_engine::traits::{ClaimProofError, ClaimProofRejection, ClaimProofVerifier};
 use tari_engine_types::{confidential::MinotariBurnClaimProof, crypto::get_commitment_factory};
 use tari_hashing::{TransactionHashDomain, hashers::KernelMmrHasherBlake256};
 use tari_mmr::common::LeafIndex;
@@ -59,7 +59,7 @@ where
         epoch: Epoch,
         claimant: &RistrettoPublicKeyBytes,
         claim_proof: &MinotariBurnClaimProof,
-    ) -> Result<(), ClaimProofRejection> {
+    ) -> Result<(), ClaimProofError> {
         // 1. Verify proof of knowledge of the burn commitment opening
         self.knowledge_proof.verify_claim_proof(epoch, claimant, claim_proof)?;
         // 2. Verify kernel inclusion proof
@@ -104,7 +104,7 @@ where
         epoch: Epoch,
         _claimant: &RistrettoPublicKeyBytes,
         claim_proof: &MinotariBurnClaimProof,
-    ) -> Result<(), ClaimProofRejection> {
+    ) -> Result<(), ClaimProofError> {
         // 1. Decode the merkle proof
         let (proof, read) = bincode::serde::decode_from_slice::<tari_mmr::MerkleProof, _>(
             claim_proof.encoded_merkle_proof.encoded_merkle_proof.as_slice(),
@@ -117,68 +117,52 @@ where
         })?;
         if read != claim_proof.encoded_merkle_proof.encoded_merkle_proof.len() {
             warn!(target: LOG_TARGET, "Claim burn failed - malformed merkle proof: read length mismatch");
-            return Err(ClaimProofRejection::Invalid(
-                "malformed merkle proof: read length mismatch".to_string(),
-            ));
+            return Err(
+                ClaimProofRejection::Invalid("malformed merkle proof: read length mismatch".to_string()).into(),
+            );
         }
 
-        // 2. Fetch the block header for this proof
+        // 2. Fetch the block header for this proof. Only headers from epochs before the current one count: a node
+        // that has reached an epoch holds every header of the epochs before it, but each node scans the current
+        // epoch's headers at its own pace, so they would disagree on whether one is present.
+        let Some(max_header_epoch) = epoch.checked_sub(1) else {
+            warn!(target: LOG_TARGET, "Claim burn failed - no base layer header is claimable in epoch 0");
+            return Err(ClaimProofRejection::NotYetValid(
+                "no base layer header is claimable in epoch 0. The burn is claimable in a later epoch.".to_string(),
+            )
+            .into());
+        };
         let block_header = {
             let mut tx = self.global_db.create_transaction().map_err(|e| {
                 warn!(target: LOG_TARGET, "Claim burn failed - could not create DB transaction: {}", e);
-                format!("could not create DB transaction: {}", e)
+                ClaimProofError::VerifierFault(format!("could not create DB transaction: {}", e))
             })?;
             self.global_db
                 .block_headers(&mut tx)
-                .get_by_hash(epoch, &claim_proof.encoded_merkle_proof.block_hash)
+                .get_by_hash(max_header_epoch, &claim_proof.encoded_merkle_proof.block_hash)
                 .optional()
                 .map_err(|e| {
                     warn!(target: LOG_TARGET, "Claim burn failed - could not fetch block header: {}", e);
-                    format!("could not fetch block header: {}", e)
+                    ClaimProofError::VerifierFault(format!("could not fetch block header: {}", e))
                 })?
         };
         let block_header = block_header.ok_or_else(|| {
             warn!(
                 target: LOG_TARGET,
-                "Claim burn failed - block header not found for hash {} in epoch {}",
+                "Claim burn failed - block header not found for hash {} in an epoch before {}",
                 claim_proof.encoded_merkle_proof.block_hash, epoch
             );
-            // A header this epoch has not synced may arrive in a later one, so the same proof can still
-            // verify. This is the only failure here that depends on when it is checked.
+            // A header from this epoch, or one not yet synced, is claimable in a later epoch, so the same proof
+            // can still verify. This is the only failure here that depends on when it is checked.
             ClaimProofRejection::NotYetValid(format!(
-                "block header not found for hash {}. The claim may be invalid, or the burn may only be claimable in a \
-                 later epoch.",
-                claim_proof.encoded_merkle_proof.block_hash
+                "block header not found for hash {} in an epoch before {}. The claim may be invalid, or the burn may \
+                 only be claimable in a later epoch.",
+                claim_proof.encoded_merkle_proof.block_hash, epoch
             ))
         })?;
 
         // 3. Reconstitute the kernel to get the hash
-        let kernel = &claim_proof.kernel;
-        let kernel = TransactionKernel {
-            version: kernel
-                .version
-                .try_into()
-                .map_err(|e| format!("bad kernel version: {}", e))?,
-            features: KernelFeatures::BURN_KERNEL,
-            fee: kernel.fee.into(),
-            lock_height: kernel.lock_height,
-            excess: CompressedCommitment::from_canonical_bytes(kernel.excess.as_bytes()).map_err(|e| {
-                warn!(target: LOG_TARGET, "Claim burn failed - malformed excess commitment: {}", e);
-                format!("malformed excess commitment: {}", e)
-            })?,
-            excess_sig: CompressedSignature::new(
-                CompressedPublicKey::from_canonical_bytes(kernel.excess_sig.public_nonce().as_bytes())
-                    .map_err(|e| format!("malformed excess signature nonce: {}", e))?,
-                RistrettoSecretKey::from_canonical_bytes(kernel.excess_sig.signature().as_bytes())
-                    .map_err(|e| format!("malformed excess signature: {}", e))?,
-            ),
-            burn_commitment: Some(
-                CompressedCommitment::from_canonical_bytes(claim_proof.commitment.as_bytes()).map_err(|e| {
-                    warn!(target: LOG_TARGET, "Claim burn failed - malformed burn commitment: {}", e);
-                    format!("malformed burn commitment: {}", e)
-                })?,
-            ),
-        };
+        let kernel = reconstitute_kernel(claim_proof)?;
 
         // 4. Verify the merkle proof (proving that the kernel is in the block)
         let leaf_index = claim_proof.encoded_merkle_proof.leaf_index.try_into().map_err(|e| {
@@ -203,6 +187,36 @@ where
     }
 }
 
+/// Rebuilds the L1 burn kernel a claim cites, from the abridged form the claim carries.
+fn reconstitute_kernel(claim_proof: &MinotariBurnClaimProof) -> Result<TransactionKernel, String> {
+    let kernel = &claim_proof.kernel;
+    Ok(TransactionKernel {
+        version: kernel
+            .version
+            .try_into()
+            .map_err(|e| format!("bad kernel version: {}", e))?,
+        features: KernelFeatures::BURN_KERNEL,
+        fee: kernel.fee.into(),
+        lock_height: kernel.lock_height,
+        excess: CompressedCommitment::from_canonical_bytes(kernel.excess.as_bytes()).map_err(|e| {
+            warn!(target: LOG_TARGET, "Claim burn failed - malformed excess commitment: {}", e);
+            format!("malformed excess commitment: {}", e)
+        })?,
+        excess_sig: CompressedSignature::new(
+            CompressedPublicKey::from_canonical_bytes(kernel.excess_sig.public_nonce().as_bytes())
+                .map_err(|e| format!("malformed excess signature nonce: {}", e))?,
+            RistrettoSecretKey::from_canonical_bytes(kernel.excess_sig.signature().as_bytes())
+                .map_err(|e| format!("malformed excess signature: {}", e))?,
+        ),
+        burn_commitment: Some(
+            CompressedCommitment::from_canonical_bytes(claim_proof.commitment.as_bytes()).map_err(|e| {
+                warn!(target: LOG_TARGET, "Claim burn failed - malformed burn commitment: {}", e);
+                format!("malformed burn commitment: {}", e)
+            })?,
+        ),
+    })
+}
+
 pub struct KnowledgeProofVerifier {
     network: Network,
     /// This chain's own burnt-utxo sidechain id (the L1 deployment key's public key), bound into
@@ -223,7 +237,7 @@ impl ClaimProofVerifier for KnowledgeProofVerifier {
         _epoch: Epoch,
         claimant: &RistrettoPublicKeyBytes,
         claim: &MinotariBurnClaimProof,
-    ) -> Result<(), ClaimProofRejection> {
+    ) -> Result<(), ClaimProofError> {
         let MinotariBurnClaimProof {
             commitment,
             ownership_proof: proof_of_knowledge,
@@ -264,9 +278,7 @@ impl ClaimProofVerifier for KnowledgeProofVerifier {
 
         if !proof_of_knowledge.verify(&signer_pk, message) {
             warn!(target: LOG_TARGET, "Claim burn failed - signature verification failed");
-            return Err(ClaimProofRejection::Invalid(
-                "invalid proof of knowledge signature".to_string(),
-            ));
+            return Err(ClaimProofRejection::Invalid("invalid proof of knowledge signature".to_string()).into());
         }
 
         Ok(())
@@ -440,6 +452,157 @@ mod tests {
         assert!(
             result.is_err(),
             "an unbound proof must not verify on a chain that expects a sidechain id"
+        );
+    }
+}
+
+#[cfg(test)]
+mod kernel_merkle_proof_tests {
+    use ootle_byte_type::ToByteType;
+    use tari_common_types::types::FixedHash;
+    use tari_crypto::{
+        commitment::HomomorphicCommitmentFactory,
+        keys::{PublicKey as _, SecretKey as _},
+        ristretto::{RistrettoPublicKey, RistrettoSchnorr, RistrettoSecretKey},
+    };
+    use tari_engine::traits::{ClaimProofError, ClaimProofRejection, ClaimProofVerifier};
+    use tari_engine_types::{
+        confidential::{AbridgedTransactionKernel, EncodedMerkleProof, MinotariBurnClaimProof},
+        crypto::get_commitment_factory,
+    };
+    use tari_hashing::hashers::KernelMmrHasherBlake256;
+    use tari_mmr::{MerkleMountainRange, MerkleProof, common::LeafIndex};
+    use tari_ootle_common_types::Epoch;
+    use tari_ootle_storage::global::{BlockHeaderModel, DbFactory, GlobalDb};
+    use tari_ootle_storage_sqlite::{SqliteDbFactory, global::SqliteGlobalDbAdapter};
+    use tari_ootle_transaction::Network;
+    use tari_template_lib::types::crypto::RistrettoPublicKeyBytes;
+    use tempfile::TempDir;
+
+    use super::{KernelMerkleProofVerifier, reconstitute_kernel};
+
+    type Adapter = SqliteGlobalDbAdapter<RistrettoPublicKeyBytes>;
+
+    const NETWORK: Network = Network::LocalNet;
+
+    fn open_db(dir: &TempDir, migrate: bool) -> GlobalDb<Adapter> {
+        let factory = SqliteDbFactory::<RistrettoPublicKeyBytes>::new(dir.path().join("global.sqlite"));
+        if migrate {
+            factory.migrate().unwrap();
+        }
+        factory.get_or_create_global_db().unwrap()
+    }
+
+    fn new_verifier(dir: &TempDir) -> KernelMerkleProofVerifier<Adapter> {
+        KernelMerkleProofVerifier::new(open_db(dir, true), NETWORK)
+    }
+
+    /// Stores a header in `header_epoch` whose kernel MMR holds a single burn kernel, and returns a claim of it.
+    fn claim_in_header(verifier: &KernelMerkleProofVerifier<Adapter>, header_epoch: Epoch) -> MinotariBurnClaimProof {
+        let mut rng = rand::rng();
+        let commitment = get_commitment_factory().commit_value(&RistrettoSecretKey::random(&mut rng), 1_000);
+        let excess = get_commitment_factory().commit_value(&RistrettoSecretKey::random(&mut rng), 0);
+        let excess_sig = RistrettoSchnorr::sign(&RistrettoSecretKey::random(&mut rng), b"kernel", &mut rng).unwrap();
+        let block_hash = FixedHash::from(rand::random::<[u8; 32]>());
+
+        let mut claim = MinotariBurnClaimProof {
+            burn_public_key: RistrettoPublicKeyBytes::zero(),
+            commitment: commitment.to_byte_type(),
+            ownership_proof: excess_sig.to_byte_type(),
+            encoded_merkle_proof: EncodedMerkleProof {
+                block_hash: block_hash.into_array().into(),
+                encoded_merkle_proof: bounded_vec::BoundedVec::<u8, 1, 4096>::from_vec(vec![0]).unwrap(),
+                leaf_index: 0,
+            },
+            kernel: AbridgedTransactionKernel {
+                version: 0,
+                fee: 0,
+                lock_height: 0,
+                excess: excess.to_byte_type(),
+                excess_sig: excess_sig.to_byte_type(),
+            },
+            value: 1_000,
+            sender_offset_public_key: RistrettoPublicKey::random_keypair(&mut rng).1.to_byte_type(),
+        };
+
+        let kernel = reconstitute_kernel(&claim).unwrap();
+        let kernel_hash = verifier.hash_kernel(&kernel);
+        let mut mmr = MerkleMountainRange::<KernelMmrHasherBlake256, Vec<Vec<u8>>>::new(Vec::new());
+        mmr.push(kernel_hash.to_vec()).unwrap();
+        let proof = MerkleProof::for_leaf_node(&mmr, LeafIndex(0)).unwrap();
+        let encoded = bincode::serde::encode_to_vec(&proof, bincode::config::legacy()).unwrap();
+        claim.encoded_merkle_proof.encoded_merkle_proof =
+            bounded_vec::BoundedVec::<u8, 1, 4096>::from_vec(encoded).unwrap();
+
+        let header = BlockHeaderModel {
+            epoch: header_epoch,
+            height: 1,
+            block_hash,
+            kernel_merkle_root: FixedHash::try_from(mmr.get_merkle_root().unwrap()).unwrap(),
+            validator_node_merkle_root: FixedHash::zero(),
+        };
+        let db = &verifier.global_db;
+        let mut tx = db.create_transaction().unwrap();
+        db.block_headers(&mut tx).insert(header).unwrap();
+        db.commit(tx).unwrap();
+        claim
+    }
+
+    fn verify(
+        verifier: &KernelMerkleProofVerifier<Adapter>,
+        epoch: Epoch,
+        claim: &MinotariBurnClaimProof,
+    ) -> Result<(), ClaimProofError> {
+        verifier.verify_claim_proof(epoch, &RistrettoPublicKeyBytes::zero(), claim)
+    }
+
+    #[test]
+    fn accepts_a_header_from_the_previous_epoch() {
+        let dir = TempDir::new().unwrap();
+        let verifier = new_verifier(&dir);
+        let claim = claim_in_header(&verifier, Epoch(4));
+
+        verify(&verifier, Epoch(5), &claim).unwrap();
+    }
+
+    #[test]
+    fn a_header_from_the_current_epoch_is_not_yet_valid() {
+        let dir = TempDir::new().unwrap();
+        let verifier = new_verifier(&dir);
+        let claim = claim_in_header(&verifier, Epoch(5));
+
+        let err = verify(&verifier, Epoch(5), &claim).unwrap_err();
+        assert!(
+            matches!(err, ClaimProofError::Rejected(ClaimProofRejection::NotYetValid(_))),
+            "expected NotYetValid, got {err:?}"
+        );
+        verify(&verifier, Epoch(6), &claim).unwrap();
+    }
+
+    #[test]
+    fn nothing_is_claimable_in_epoch_zero() {
+        let dir = TempDir::new().unwrap();
+        let verifier = new_verifier(&dir);
+        let claim = claim_in_header(&verifier, Epoch(0));
+
+        let err = verify(&verifier, Epoch(0), &claim).unwrap_err();
+        assert!(
+            matches!(err, ClaimProofError::Rejected(ClaimProofRejection::NotYetValid(_))),
+            "expected NotYetValid, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_database_failure_is_a_verifier_fault() {
+        let claim = claim_in_header(&new_verifier(&TempDir::new().unwrap()), Epoch(4));
+        // An unmigrated database has no block_headers table, so the lookup fails with a SQL error.
+        let dir = TempDir::new().unwrap();
+        let verifier = KernelMerkleProofVerifier::new(open_db(&dir, false), NETWORK);
+
+        let err = verify(&verifier, Epoch(5), &claim).unwrap_err();
+        assert!(
+            matches!(err, ClaimProofError::VerifierFault(_)),
+            "expected VerifierFault, got {err:?}"
         );
     }
 }

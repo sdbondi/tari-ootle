@@ -177,7 +177,7 @@ use crate::{
     },
     state_store::StateReader,
     template::LoadedTemplate,
-    traits::{ClaimProofRejection, ClaimProofVerifier},
+    traits::{ClaimProofError, ClaimProofRejection, ClaimProofVerifier},
     transaction::{ModulesCollection, TransactionProcessor},
     wasm::WasmInstanceCache,
 };
@@ -3716,8 +3716,13 @@ where
             .map_err(|e| {
                 warn!(target: LOG_TARGET, "Claim burn failed - proof verification failed: {}", e);
                 match e {
-                    ClaimProofRejection::Invalid(details) => RuntimeError::InvalidClaimProof { details },
-                    ClaimProofRejection::NotYetValid(details) => RuntimeError::ClaimProofNotYetValid { details },
+                    ClaimProofError::Rejected(ClaimProofRejection::Invalid(details)) => {
+                        RuntimeError::InvalidClaimProof { details }
+                    },
+                    ClaimProofError::Rejected(ClaimProofRejection::NotYetValid(details)) => {
+                        RuntimeError::ClaimProofNotYetValid { details }
+                    },
+                    ClaimProofError::VerifierFault(details) => RuntimeError::ClaimProofVerifierFault { details },
                 }
             })?;
 
