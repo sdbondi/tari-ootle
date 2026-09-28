@@ -10,6 +10,7 @@ use cucumber::{gherkin::Step, given, then, when};
 use integration_tests::{
     TariWorld,
     base_node::get_base_node_client,
+    claim_proof::CucumberClaimProof,
     cucumber_log,
     template,
     template::{RegisteredTemplate, send_template_registration},
@@ -462,6 +463,39 @@ async fn vn_has_scanned_to_epoch(world: &mut TariWorld, step: &Step, vn_name: St
 
     let stats = client.get_epoch_manager_stats().await.expect("Failed to get stats");
     assert_eq!(stats.current_epoch, epoch);
+}
+
+#[when(expr = "{word} is past the epoch burn proof {word} was mined in")]
+#[then(expr = "{word} is past the epoch burn proof {word} was mined in")]
+async fn vn_is_past_burn_proof_epoch(world: &mut TariWorld, step: &Step, vn_name: String, proof_name: String) {
+    cucumber_log!("==== Step: {}", step.value);
+    const TIMEOUT_SECS: usize = 60;
+    let Some(CucumberClaimProof::Confirmed { complete_proof, .. }) = world.claim_proofs.get(&proof_name) else {
+        panic!("Burn proof {proof_name} is not a confirmed proof");
+    };
+    let mined_in_epoch = Epoch(
+        complete_proof
+            .mined_in_epoch
+            .unwrap_or_else(|| panic!("Burn proof {proof_name} does not record the epoch it was mined in")),
+    );
+    let vn = world.get_validator_node(&vn_name);
+    let mut client = vn.create_client();
+    let mut current_epoch = Epoch(0);
+    for _ in 0..TIMEOUT_SECS {
+        current_epoch = client
+            .get_epoch_manager_stats()
+            .await
+            .expect("Failed to get stats")
+            .current_epoch;
+        if current_epoch > mined_in_epoch {
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    panic!(
+        "Validator {vn_name} is on epoch {current_epoch}, not past epoch {mined_in_epoch} that burn proof \
+         {proof_name} was mined in, after {TIMEOUT_SECS}s"
+    );
 }
 
 #[then(expr = "{word} has scanned to at least height {int}")]
