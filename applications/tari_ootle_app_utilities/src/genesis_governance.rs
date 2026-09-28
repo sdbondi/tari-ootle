@@ -10,35 +10,97 @@ use tari_template_lib::types::{
     governance::{council_owner_rule, no_council_owner_rule},
 };
 
-/// The threshold and membership of `network`'s burn rate council.
+/// The threshold and membership of a burn rate council.
 ///
 /// A council is fixed at genesis. The component that holds it lives on the global shard, and a
-/// substate cannot be introduced to a chain that has already taken state roots over the shard it
+/// migration that adds a substate to a live chain shifts the state root of every shard group it
 /// would live on, so a network launches with the council it is going to have. Rotating it afterwards
 /// is what `BurnRateGovernance::set_council` is for, and it takes the sitting council's threshold.
 ///
 /// An empty council is a network that has decided not to govern the rate on chain: the component is
 /// still instantiated, owned by nobody, and the rate comes from `ExhaustBurnRateSchedule` — the
 /// release-scheduled table — instead.
-pub fn genesis_council(network: Network) -> (u16, Vec<RistrettoPublicKeyBytes>) {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenesisCouncil {
+    pub threshold: u16,
+    pub members: Vec<RistrettoPublicKeyBytes>,
+}
+
+impl GenesisCouncil {
+    pub const fn none() -> Self {
+        Self {
+            threshold: 0,
+            members: Vec::new(),
+        }
+    }
+
+    pub fn is_seated(&self) -> bool {
+        self.threshold > 0
+    }
+
+    /// The owner rule the governance component is created with, which is the whole of who may move
+    /// the rate on the network.
+    pub fn owner_rule(&self) -> SubstateOwnerRule {
+        if !self.is_seated() {
+            return no_council_owner_rule();
+        }
+        council_owner_rule(self.threshold, &self.members)
+    }
+
+    fn validate(&self) -> Result<(), GenesisCouncilError> {
+        let members = self.members.len();
+        if (self.threshold == 0 && members > 0) || usize::from(self.threshold) > members {
+            return Err(GenesisCouncilError::Unmeetable {
+                threshold: self.threshold,
+                members,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// The council `network` seats when its operator configures none.
+///
+/// This is the only council MainNet can seat: its genesis is part of what every node agrees on, so
+/// nothing an operator configures is safe to write into it.
+pub fn genesis_council(network: Network) -> GenesisCouncil {
     match network {
         Network::MainNet |
         Network::StageNet |
         Network::NextNet |
         Network::Igor |
         Network::Esmeralda |
-        Network::LocalNet => (0, Vec::new()),
+        Network::LocalNet => GenesisCouncil::none(),
     }
 }
 
-/// The owner rule `network`'s governance component is created with, which is the whole of who may
-/// move the rate on that network.
-pub fn genesis_governance_owner_rule(network: Network) -> SubstateOwnerRule {
-    let (threshold, council) = genesis_council(network);
-    if threshold == 0 {
-        return no_council_owner_rule();
+/// The council a node writes into genesis: the one its operator `configured`, or the network's own
+/// when they configured none.
+///
+/// Every node on a network must write the same council, or their global shards disagree from the
+/// first block. On a network the operator also runs — a devnet, or a testnet before it
+/// decentralises — configuration is how every node is handed the same one. MainNet refuses a
+/// configured council outright.
+pub fn resolve_genesis_council(
+    network: Network,
+    configured: Option<GenesisCouncil>,
+) -> Result<GenesisCouncil, GenesisCouncilError> {
+    let Some(council) = configured else {
+        return Ok(genesis_council(network));
+    };
+    if network == Network::MainNet {
+        return Err(GenesisCouncilError::ConfiguredOnMainNet);
     }
-    council_owner_rule(threshold, &council)
+    council.validate()?;
+    Ok(council)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum GenesisCouncilError {
+    #[error("A genesis council cannot be configured on MainNet: its council is fixed in the release")]
+    ConfiguredOnMainNet,
+    #[error("A council of {members} cannot be seated at a threshold of {threshold}")]
+    Unmeetable { threshold: u16, members: usize },
 }
 
 #[cfg(test)]
@@ -51,14 +113,19 @@ mod tests {
             .collect()
     }
 
+    fn member(byte: u8) -> RistrettoPublicKeyBytes {
+        RistrettoPublicKeyBytes::from_bytes(&[byte; 32]).unwrap()
+    }
+
     #[test]
     fn every_networks_council_can_meet_its_own_threshold() {
         for network in all_networks() {
-            let (threshold, council) = genesis_council(network);
+            let council = genesis_council(network);
             assert!(
-                usize::from(threshold) <= council.len(),
-                "{network} names a threshold of {threshold} over a council of {}",
-                council.len()
+                usize::from(council.threshold) <= council.members.len(),
+                "{network} names a threshold of {} over a council of {}",
+                council.threshold,
+                council.members.len()
             );
         }
     }
@@ -66,30 +133,54 @@ mod tests {
     #[test]
     fn a_network_with_no_council_admits_nobody() {
         for network in all_networks() {
-            if genesis_council(network).0 > 0 {
+            let council = genesis_council(network);
+            if council.is_seated() {
                 continue;
             }
+            assert_eq!(council.owner_rule(), SubstateOwnerRule::None, "{network}");
+        }
+    }
+
+    #[test]
+    fn a_configured_council_seats_on_every_network_but_mainnet() {
+        let configured = GenesisCouncil {
+            threshold: 1,
+            members: vec![member(1)],
+        };
+        for network in all_networks() {
+            let resolved = resolve_genesis_council(network, Some(configured.clone()));
+            if network == Network::MainNet {
+                assert!(matches!(resolved, Err(GenesisCouncilError::ConfiguredOnMainNet)));
+            } else {
+                assert_eq!(resolved.unwrap(), configured, "{network}");
+            }
+        }
+    }
+
+    #[test]
+    fn no_configured_council_falls_back_to_the_networks_own() {
+        for network in all_networks() {
             assert_eq!(
-                genesis_governance_owner_rule(network),
-                SubstateOwnerRule::None,
+                resolve_genesis_council(network, None).unwrap(),
+                genesis_council(network),
                 "{network}"
             );
         }
     }
 
     /// `council_owner_rule` panics on a threshold the engine would reject, and genesis writes the
-    /// component straight to the state store, so this is what stops a network launching with a
-    /// council nobody can assemble.
+    /// component straight to the state store, so a configured council is refused before it gets there.
     #[test]
-    fn every_seated_council_builds_a_rule_the_engine_accepts() {
-        for network in all_networks() {
-            if genesis_council(network).0 == 0 {
-                continue;
-            }
-            let SubstateOwnerRule::ByAccessRule(rule) = genesis_governance_owner_rule(network) else {
-                panic!("{network} seats a council but does not name an access rule");
-            };
-            assert_eq!(rule.find_invalid_m_of_n(), None, "{network}");
+    fn a_configured_council_must_be_able_to_meet_its_threshold() {
+        for (threshold, members) in [(0, vec![member(1)]), (2, vec![member(1)]), (1, vec![])] {
+            let council = GenesisCouncil { threshold, members };
+            assert!(
+                matches!(
+                    resolve_genesis_council(Network::LocalNet, Some(council)),
+                    Err(GenesisCouncilError::Unmeetable { .. })
+                ),
+                "threshold {threshold}"
+            );
         }
     }
 }

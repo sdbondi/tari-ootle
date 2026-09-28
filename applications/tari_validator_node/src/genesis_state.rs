@@ -12,7 +12,7 @@ use tari_engine_types::{
     vault::Vault,
 };
 use tari_ootle_app_utilities::{
-    genesis_governance::genesis_governance_owner_rule,
+    genesis_governance::GenesisCouncil,
     genesis_resources::{get_public_identity_resource, get_stealth_tari_resource},
     shared_consts::TXTR_FAUCET_INITIAL_SUPPLY,
 };
@@ -72,6 +72,7 @@ pub fn create_genesis_state<TTx>(
     tx: &mut TTx,
     network: Network,
     num_preshards: NumPreshards,
+    genesis_council: &GenesisCouncil,
 ) -> Result<(), StorageError>
 where
     TTx: StateStoreWriteTransaction + Deref,
@@ -90,7 +91,7 @@ where
     let (xtr_address, xtr_resource) = get_stealth_tari_resource(network);
     substates.push((xtr_address.into(), xtr_resource.into()));
 
-    substates.push(burn_rate_governance_substate(network));
+    substates.push(burn_rate_governance_substate(genesis_council));
 
     if network.is_testnet() {
         // Create tXTR faucet
@@ -106,7 +107,7 @@ where
 
 /// The component the council moves the exhaust burn rate through.
 ///
-/// Instantiated on every network, with an empty schedule and whatever council the network seats. The
+/// Instantiated on every network, with an empty schedule and whatever council the node seats. The
 /// address has to exist from genesis: it lives on the global shard, and state roots are taken over
 /// that shard from the first block. A network that seats no council gets one owned by nobody, which
 /// leaves the rate with the release-scheduled table.
@@ -114,11 +115,11 @@ where
 /// The council is the owner rule and every method rule denies, so the engine admits a call only from
 /// the owner. `ComponentAccessRules::new()` denies by default, which is the whole of the method
 /// policy.
-fn burn_rate_governance_substate(network: Network) -> (SubstateId, SubstateValue) {
+fn burn_rate_governance_substate(council: &GenesisCouncil) -> (SubstateId, SubstateValue) {
     let component = Component {
         header: ComponentHeader {
             template_address: tari_template_builtin::BURN_RATE_GOVERNANCE_TEMPLATE_ADDRESS,
-            owner_rule: genesis_governance_owner_rule(network),
+            owner_rule: council.owner_rule(),
             access_rules: ComponentAccessRules::new(),
             entity_id: EntityId::default(),
         },

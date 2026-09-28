@@ -52,6 +52,11 @@ impl ProcessDefinition for ValidatorNode {
 
         if let Some(claim_public_key) = context.get_setting("claim_public_key") {
             command.arg(format!("-pvalidator_node.fee_claim_public_key={claim_public_key}"));
+            // The one claim key is shared by every validator in the swarm, so seating it as a council
+            // of one gives every node the same genesis and the swarm's wallet the power to move the
+            // burn rate.
+            command.arg("-pvalidator_node.genesis_council.threshold=1");
+            command.arg(format!("-pvalidator_node.genesis_council.members={claim_public_key}"));
         }
 
         command

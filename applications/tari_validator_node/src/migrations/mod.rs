@@ -42,6 +42,7 @@ use std::time::Instant;
 
 use log::*;
 use tari_consensus::consensus_constants::ConsensusConstants;
+use tari_ootle_app_utilities::genesis_governance::GenesisCouncil;
 use tari_ootle_common_types::{NodeAddressable, optional::Optional};
 use tari_ootle_transaction::Network;
 use tari_state_store_rocksdb::{
@@ -60,6 +61,7 @@ pub fn migrate<TAddr: NodeAddressable + 'static>(
     tx: &mut RocksDbStateStoreWriteTransaction<'_, TAddr>,
     network: Network,
     consensus_constants: &ConsensusConstants,
+    genesis_council: &GenesisCouncil,
 ) -> anyhow::Result<()> {
     const OPERATION: &str = "migrate";
 
@@ -105,7 +107,7 @@ pub fn migrate<TAddr: NodeAddressable + 'static>(
         // A fresh database: lay down the genesis state and stamp the current version.
         None => {
             info!(target: LOG_TARGET, "🌱 Fresh database - adding genesis state");
-            create_genesis_state(tx, network, consensus_constants.num_preshards)?;
+            create_genesis_state(tx, network, consensus_constants.num_preshards, genesis_council)?;
             tx.db()
                 .cf(DatabaseMigrationVersion)?
                 .put(&ByteColumn, &CURRENT_VERSION, OPERATION)?;

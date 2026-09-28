@@ -28,10 +28,16 @@ use std::{
 
 use config::Config;
 use serde::{Deserialize, Serialize};
-use tari_common::{ConfigurationError, DefaultConfigLoader, SubConfigPath, configuration::CommonConfig};
+use tari_common::{
+    ConfigurationError,
+    DefaultConfigLoader,
+    SubConfigPath,
+    configuration::{CommonConfig, ConfigList},
+};
 use tari_crypto::ristretto::RistrettoPublicKey;
 use tari_ootle_app_utilities::{
     epoch_oracle_config::EpochOracleConfig,
+    genesis_governance::{GenesisCouncil, GenesisCouncilError},
     p2p_config::{P2pConfig, PeerSeedsConfig, RpcConfig},
 };
 use tari_ootle_common_types::diagnostics::DiagnosticLevel;
@@ -39,6 +45,7 @@ use tari_ootle_storage::DiagnosticRetention;
 use tari_ootle_template_provider::TemplateConfig;
 use tari_ootle_transaction::Network;
 use tari_state_store_rocksdb::DatabaseOptions;
+use tari_template_lib::types::crypto::RistrettoPublicKeyBytes;
 
 #[derive(Debug, Clone)]
 pub struct ApplicationConfig {
@@ -106,6 +113,11 @@ pub struct ValidatorNodeConfig {
     pub templates: TemplateConfig,
     /// Fee claim public key
     pub fee_claim_public_key: RistrettoPublicKey,
+    /// The burn rate council this node writes into genesis. Genesis is part of what every node on a
+    /// network agrees on, so every node must be configured with the same council, or none: with none
+    /// the network's own council is seated, which is the only council MainNet accepts.
+    #[serde(default)]
+    pub genesis_council: GenesisCouncilConfig,
     /// Create identity file if not exists
     pub dont_create_id: bool,
     /// The (optional) sidechain to run this on. Identifies this chain for validator-node and
@@ -309,6 +321,7 @@ impl Default for ValidatorNodeConfig {
             templates: TemplateConfig::default(),
             // Burn your fees
             fee_claim_public_key: RistrettoPublicKey::default(),
+            genesis_council: GenesisCouncilConfig::default(),
             dont_create_id: false,
             sidechain_id: None,
             keep_transaction_history: false,
@@ -321,6 +334,32 @@ impl Default for ValidatorNodeConfig {
             state_store_memory_budget_bytes: default_state_store_memory_budget_bytes(),
             diagnostics: DiagnosticsConfig::default(),
         }
+    }
+}
+
+/// A council named in configuration: `threshold` of `members` must sign to move the burn rate.
+///
+/// Left at its default, no council is configured and the network's own is seated.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GenesisCouncilConfig {
+    #[serde(default)]
+    pub threshold: u16,
+    /// Hex-encoded public keys, as a list or comma-separated.
+    #[serde(default)]
+    pub members: ConfigList<RistrettoPublicKeyBytes>,
+}
+
+impl GenesisCouncilConfig {
+    /// The configured council, or `None` when nothing was configured.
+    pub fn to_council(&self) -> Result<Option<GenesisCouncil>, GenesisCouncilError> {
+        if self.threshold == 0 && self.members.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(GenesisCouncil {
+            threshold: self.threshold,
+            members: self.members.iter().copied().collect(),
+        }))
     }
 }
 

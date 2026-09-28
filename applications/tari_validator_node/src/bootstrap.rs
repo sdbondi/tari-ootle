@@ -67,6 +67,7 @@ use tari_ootle_app_utilities::{
     configuration::convert_network_to_l1_network,
     epoch_oracle_config::{BaseLayerOracleConfig, EpochOracleType},
     fee_tables::get_fee_table_by_network,
+    genesis_governance::resolve_genesis_council,
     identity_management,
     keypair::RistrettoKeypair,
     seed_peer::SeedPeer,
@@ -272,7 +273,8 @@ pub async fn spawn_services(
     #[cfg(feature = "metrics")]
     StateStoreMemoryCollector::new(state_store.memory_budget().clone()).register(metrics_registry);
 
-    state_store.with_write_tx(|tx| migrations::migrate(tx, config.network, &consensus_constants))?;
+    let genesis_council = resolve_genesis_council(config.network, config.validator_node.genesis_council.to_council()?)?;
+    state_store.with_write_tx(|tx| migrations::migrate(tx, config.network, &consensus_constants, &genesis_council))?;
 
     let (diagnostics, diagnostics_join_handle) = diagnostics::spawn(
         state_store.clone(),
