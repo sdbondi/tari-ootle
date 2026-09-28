@@ -10,21 +10,15 @@ use minotari_app_grpc::{
     tari_rpc,
     tari_rpc::{GetBalanceRequest, ValidateRequest},
 };
-use tari_common_types::{
-    burn_proof::EncodedMerkleProof as SidechainEncodedMerkleProof,
-    types::{CompressedCommitment, CompressedPublicKey},
-};
+use tari_common_types::{burn_proof::BurnOutputProof, types::CompressedPublicKey};
 use tari_crypto::{
-    ristretto::{CompressedRistrettoSchnorr, RistrettoSecretKey, pedersen::CompressedPedersenCommitment},
+    ristretto::{CompressedRistrettoSchnorr, RistrettoSecretKey},
     tari_utilities::ByteArray,
 };
-use tari_engine_types::confidential::{AbridgedTransactionKernel, EncodedMerkleProof, MinotariBurnClaimProof};
+use tari_ootle_app_utilities::burn_claim_proof::claim_proof_from_l1;
 use tari_ootle_walletd_client::types::{ClaimBurnProof, ClaimBurnProofContents};
-use tari_sidechain::{AbridgedTransactionKernel as SidechainKernel, BurnClaimProof, CompleteClaimBurnProof};
-use tari_template_lib_types::{
-    EncryptedData,
-    crypto::{PedersenCommitmentBytes, RistrettoPublicKeyBytes, Scalar32Bytes, SchnorrSignatureBytes},
-};
+use tari_sidechain::{BurnClaimProof, CompleteClaimBurnProof};
+use tari_template_lib_types::{EncryptedData, crypto::PedersenCommitmentBytes};
 use tari_transaction_components::{
     tari_amount::T,
     transaction_components::{MemoField, memo_field::TxType},
@@ -160,151 +154,56 @@ async fn when_i_wait_for_proof_to_confirm_on_wallet(
 
         cucumber_log!("Received burn claim proof response: {:?}", resp);
 
-        let is_merkle_proof_available = resp.merkle_proof.is_some();
-        if is_merkle_proof_available {
+        if resp.burn_output_proof.is_some() && resp.mined_in_epoch.is_some() {
             break resp;
         }
         if attempts >= 20 {
             return Err(anyhow!(
-                "Kernel Proof not available after waiting for {} attempts",
+                "Burn output proof not available after waiting for {} attempts",
                 attempts
             ));
         }
         attempts += 1;
 
-        cucumber_log!("Kernel proof not available yet, waiting...");
+        cucumber_log!("Burn output proof not available yet, waiting...");
         sleep(Duration::from_secs(3)).await;
     };
-    // Now that the proof is confirmed, call the base node HTTP endpoint to get kernel merkle proof
-    cucumber_log!("Proof confirmed! Now calling base node HTTP endpoint to get kernel merkle proof");
-
     let claim_proof = proof_resp
         .claim_proof
         .ok_or_else(|| anyhow!("No claim proof in response"))?;
     let ownership_proof = claim_proof
         .ownership_proof
         .ok_or_else(|| anyhow!("No ownership proof in response"))?;
-    let commitment = PedersenCommitmentBytes::from_bytes(&claim_proof.commitment)
-        .map_err(|e| anyhow!("commitment parse error: {e}"))?;
-
-    let ownership_proof = SchnorrSignatureBytes::new(
-        RistrettoPublicKeyBytes::from_bytes(&ownership_proof.public_nonce)
+    let ownership_proof = CompressedRistrettoSchnorr::new(
+        CompressedPublicKey::from_canonical_bytes(&ownership_proof.public_nonce)
             .map_err(|e| anyhow!("sig public_nonce parse error {e}"))?,
-        Scalar32Bytes::from_bytes(&ownership_proof.signature).map_err(|e| anyhow!("sig parse error {e}"))?,
+        RistrettoSecretKey::from_canonical_bytes(&ownership_proof.signature)
+            .map_err(|e| anyhow!("sig parse error {e}"))?,
     );
-
-    let reciprocal_claim_public_key = RistrettoPublicKeyBytes::from_bytes(&claim_proof.claim_public_key)
+    let reciprocal_claim_public_key = CompressedPublicKey::from_canonical_bytes(&claim_proof.claim_public_key)
         .map_err(|e| anyhow!("reciprocal_claim_public_key parse error {e}"))?;
+    let output_proof = proof_resp
+        .burn_output_proof
+        .ok_or_else(|| anyhow!("No burn output proof in response"))?;
 
-    let sender_offset_public_key = RistrettoPublicKeyBytes::from_bytes(&claim_proof.sender_offset_public_key)
-        .map_err(|e| anyhow!("sender_offset_public_key parse error {e}"))?;
-
-    let kernel = proof_resp.kernel.ok_or_else(|| anyhow!("No kernel in response"))?;
-    let kernel = AbridgedTransactionKernel {
-        version: kernel.version as u8,
-        fee: kernel.fee,
-        lock_height: kernel.lock_height,
-        excess: kernel
-            .excess
-            .as_slice()
-            .try_into()
-            .map_err(|e| anyhow!("excess parse error: {e}"))?,
-        excess_sig: {
-            let excess_sig = kernel
-                .excess_sig
-                .as_ref()
-                .ok_or_else(|| anyhow!("No excess_sig in response"))?;
-
-            SchnorrSignatureBytes::new(
-                excess_sig
-                    .public_nonce
-                    .as_slice()
-                    .try_into()
-                    .map_err(|e| anyhow!("excess_sig parse error: {e}"))?,
-                excess_sig
-                    .signature
-                    .as_slice()
-                    .try_into()
-                    .map_err(|e| anyhow!("excess_sig parse error: {e}"))?,
-            )
-        },
-    };
-
-    cucumber_log!(
-        "DEBUG: creating confirmed proof. commitment: {}, encrypted_data: {}, reciprocal_key: {}",
-        commitment,
-        hex::encode(&proof_resp.encrypted_data),
-        reciprocal_claim_public_key
-    );
-    let merkle_proof = proof_resp
-        .merkle_proof
-        .ok_or_else(|| anyhow!("No merkle proof in claim proof"))?;
-
-    // Build the on-disk file format (CompleteClaimBurnProof) for auto-claim integration tests.
-    // This is done before building ClaimBurnProofContents to avoid moving the local variables.
+    // The on-disk file format (CompleteClaimBurnProof) for the auto-claim integration tests
     let complete_proof = CompleteClaimBurnProof {
         claim_proof: BurnClaimProof {
-            burn_public_key: CompressedPublicKey::from_canonical_bytes(reciprocal_claim_public_key.as_bytes())
-                .map_err(|e| anyhow!("burn_public_key parse error for complete proof: {e}"))?,
-            commitment: CompressedPedersenCommitment::from_canonical_bytes(commitment.as_bytes())
-                .map_err(|e| anyhow!("commitment parse error for complete proof: {e}"))?,
-            ownership_proof: CompressedRistrettoSchnorr::new(
-                CompressedPublicKey::from_canonical_bytes(ownership_proof.public_nonce().as_bytes())
-                    .map_err(|e| anyhow!("ownership nonce parse error for complete proof: {e}"))?,
-                RistrettoSecretKey::from_canonical_bytes(ownership_proof.signature().as_bytes())
-                    .map_err(|e| anyhow!("ownership sig parse error for complete proof: {e}"))?,
-            ),
-            encoded_merkle_proof: SidechainEncodedMerkleProof {
-                block_hash: merkle_proof
-                    .block_hash
-                    .as_slice()
-                    .try_into()
-                    .map_err(|e| anyhow!("block_hash parse error for complete proof: {e}"))?,
-                encoded_merkle_proof: merkle_proof.encoded_proof.clone(),
-                leaf_index: merkle_proof.leaf_index,
-            },
-            kernel: SidechainKernel {
-                version: kernel.version,
-                fee: kernel.fee,
-                lock_height: kernel.lock_height,
-                excess: CompressedCommitment::from_canonical_bytes(kernel.excess.as_bytes())
-                    .map_err(|e| anyhow!("kernel excess parse error for complete proof: {e}"))?,
-                excess_sig: CompressedRistrettoSchnorr::new(
-                    CompressedPublicKey::from_canonical_bytes(kernel.excess_sig.public_nonce().as_bytes())
-                        .map_err(|e| anyhow!("kernel excess_sig nonce parse error for complete proof: {e}"))?,
-                    RistrettoSecretKey::from_canonical_bytes(kernel.excess_sig.signature().as_bytes())
-                        .map_err(|e| anyhow!("kernel excess_sig parse error for complete proof: {e}"))?,
-                ),
-            },
+            burn_public_key: reciprocal_claim_public_key,
+            ownership_proof,
+            output_proof: BurnOutputProof::try_from(output_proof)
+                .map_err(|e| anyhow!("burn output proof parse error: {e}"))?,
             value: proof_resp.value,
-            sender_offset_public_key: CompressedPublicKey::from_canonical_bytes(sender_offset_public_key.as_bytes())
-                .map_err(|e| anyhow!("sender_offset_public_key parse error for complete proof: {e}"))?,
         },
         encrypted_data: proof_resp.encrypted_data.clone(),
-        mined_in_epoch: proof_resp.mined_in_epoch,
+        mined_in_epoch: proof_resp
+            .mined_in_epoch
+            .ok_or_else(|| anyhow!("No mined_in_epoch in response"))?,
     };
 
     let proof = ClaimBurnProofContents {
-        claim_proof: MinotariBurnClaimProof {
-            burn_public_key: reciprocal_claim_public_key,
-            commitment,
-            ownership_proof,
-            encoded_merkle_proof: EncodedMerkleProof {
-                block_hash: merkle_proof
-                    .block_hash
-                    .as_slice()
-                    .try_into()
-                    .map_err(|e| anyhow!("block_hash parse error: {e}"))?,
-                encoded_merkle_proof: merkle_proof
-                    .encoded_proof
-                    .try_into()
-                    .map_err(|e| anyhow!("encoded_merkle_proof parse error: {e}"))?,
-                leaf_index: merkle_proof.leaf_index,
-            },
-            kernel,
-            value: proof_resp.value,
-            sender_offset_public_key,
-        },
+        claim_proof: claim_proof_from_l1(&complete_proof.claim_proof)
+            .map_err(|e| anyhow!("burn claim proof conversion error: {e}"))?,
         encrypted_data: EncryptedData::try_from(proof_resp.encrypted_data)
             .map_err(|e| anyhow!("Encrypted data length is out of bounds: {e}",))?,
     };

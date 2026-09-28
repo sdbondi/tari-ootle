@@ -32,7 +32,6 @@ pub struct BlockHeaderModel {
     pub epoch: i64,
     pub height: i64,
     pub block_hash: Vec<u8>,
-    pub kernel_merkle_root: Vec<u8>,
     pub block_output_merkle_root: Vec<u8>,
     pub validator_node_merkle_root: Vec<u8>,
     pub _created_at: time::PrimitiveDateTime,
@@ -51,11 +50,6 @@ impl TryFrom<BlockHeaderModel> for global::BlockHeaderModel {
                 .map_err(|e| SqliteStorageError::ConversionError {
                     reason: format!("Block hash invalid: {e}"),
                 })?,
-            kernel_merkle_root: value.kernel_merkle_root.try_into().map_err(|e| {
-                SqliteStorageError::ConversionError {
-                    reason: format!("Kernel merkle root invalid: {e}"),
-                }
-            })?,
             block_output_merkle_root: value.block_output_merkle_root.try_into().map_err(|e| {
                 SqliteStorageError::ConversionError {
                     reason: format!("Block output merkle root invalid: {e}"),
@@ -82,7 +76,6 @@ mod tests {
             epoch: 3,
             height: 42,
             block_hash: vec![1u8; 32],
-            kernel_merkle_root: vec![2u8; 32],
             block_output_merkle_root,
             validator_node_merkle_root: vec![3u8; 32],
             _created_at: time::PrimitiveDateTime::MIN,
@@ -95,7 +88,6 @@ mod tests {
         assert_eq!(header.epoch, Epoch(3));
         assert_eq!(header.height, 42);
         assert_eq!(header.block_hash, FixedHash::from([1u8; 32]));
-        assert_eq!(header.kernel_merkle_root, FixedHash::from([2u8; 32]));
         assert_eq!(header.block_output_merkle_root, FixedHash::from([4u8; 32]));
         assert_eq!(header.validator_node_merkle_root, FixedHash::from([3u8; 32]));
     }

@@ -77,7 +77,13 @@ pub trait ClaimProofVerifier {
     fn verify_claim_proof(
         &self,
         epoch: Epoch,
-        claimant: &RistrettoPublicKeyBytes,
         claim: &MinotariBurnClaimProof,
-    ) -> Result<(), ClaimProofError>;
+    ) -> Result<VerifiedClaim, ClaimProofError>;
+}
+
+/// What a verified claim proof establishes about the L1 burn output it cites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedClaim {
+    /// The stealth key `S` the burn output is made out to. Only a transaction `S` signs may claim the burn.
+    pub claim_public_key: RistrettoPublicKeyBytes,
 }

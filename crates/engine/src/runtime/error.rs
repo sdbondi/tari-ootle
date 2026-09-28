@@ -259,6 +259,8 @@ pub enum RuntimeError {
     InvalidClaimProof { details: String },
     #[error("Burn claim proof names base layer state this epoch does not have: {details}")]
     ClaimProofNotYetValid { details: String },
+    #[error("The burn claim is not signed by the burn output's claim key {claim_public_key}")]
+    ClaimNotSignedByClaimKey { claim_public_key: RistrettoPublicKeyBytes },
     #[error("Burn claim proof verifier failed on this node: {details}")]
     ClaimProofVerifierFault { details: String },
     #[error("Layer one commitment already claimed with address '{address}'")]
@@ -550,6 +552,7 @@ impl RuntimeError {
             Self::MissingValueProofForCommitment { .. } |
             Self::SpendConditionNotMet { .. } |
             Self::InvalidClaimProof { .. } => C::InvalidProof,
+            Self::ClaimNotSignedByClaimKey { .. } => C::AccessDenied,
 
             Self::ClaimProofNotYetValid { .. } => C::NotYetValid,
 

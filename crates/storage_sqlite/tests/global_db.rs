@@ -198,7 +198,6 @@ fn block_header_insert_is_idempotent() {
         epoch: Epoch(1),
         height: 100,
         block_hash: FixedHash::from([1u8; 32]),
-        kernel_merkle_root: FixedHash::from([2u8; 32]),
         block_output_merkle_root: FixedHash::from([6u8; 32]),
         validator_node_merkle_root: FixedHash::from([3u8; 32]),
     };
@@ -207,7 +206,6 @@ fn block_header_insert_is_idempotent() {
     headers.insert(model).unwrap();
 
     let stored = headers.get_by_hash(Epoch(1), &Hash32::from_array([1u8; 32])).unwrap();
-    assert_eq!(stored.kernel_merkle_root, FixedHash::from([2u8; 32]));
     assert_eq!(stored.block_output_merkle_root, FixedHash::from([6u8; 32]));
     assert_eq!(stored.validator_node_merkle_root, FixedHash::from([3u8; 32]));
 
@@ -216,7 +214,6 @@ fn block_header_insert_is_idempotent() {
         epoch: Epoch(2),
         height: 200,
         block_hash: FixedHash::from([1u8; 32]),
-        kernel_merkle_root: FixedHash::from([4u8; 32]),
         block_output_merkle_root: FixedHash::from([7u8; 32]),
         validator_node_merkle_root: FixedHash::from([5u8; 32]),
     };
@@ -236,7 +233,6 @@ fn delete_block_headers_above_removes_higher_headers() {
                 epoch: Epoch(1),
                 height,
                 block_hash: FixedHash::from([height as u8; 32]),
-                kernel_merkle_root: FixedHash::from([2u8; 32]),
                 block_output_merkle_root: FixedHash::from([height as u8 + 1; 32]),
                 validator_node_merkle_root: FixedHash::from([3u8; 32]),
             })

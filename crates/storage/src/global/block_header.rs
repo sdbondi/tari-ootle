@@ -63,7 +63,6 @@ pub struct BlockHeaderModel {
     pub epoch: Epoch,
     pub height: u64,
     pub block_hash: FixedHash,
-    pub kernel_merkle_root: FixedHash,
     pub block_output_merkle_root: FixedHash,
     pub validator_node_merkle_root: FixedHash,
 }

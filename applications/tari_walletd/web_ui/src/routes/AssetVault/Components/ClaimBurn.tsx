@@ -393,19 +393,9 @@ export default function ClaimBurn() {
                 <Typography variant="body2">
                   <strong>L1 Block:</strong>{" "}
                   <span style={{ fontFamily: "monospace" }}>
-                    {truncateHex(proofDetails.claim_proof.encoded_merkle_proof.block_hash)}
+                    {truncateHex(proofDetails.claim_proof.inclusion_proof.block_hash)}
                   </span>
                 </Typography>
-                {selectedAccount &&
-                  (proofDetails.claim_proof.burn_public_key === selectedAccount.account.owner_public_key ? (
-                    <Alert severity="success" sx={{ mt: 0.5 }}>
-                      Account matches burn proof
-                    </Alert>
-                  ) : (
-                    <Alert severity="warning" sx={{ mt: 0.5 }}>
-                      This burn proof was created for a different account
-                    </Alert>
-                  ))}
               </Box>
             )}
 

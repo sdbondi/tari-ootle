@@ -567,9 +567,10 @@ pub(crate) async fn execute_claim_burn(
 
     // Get the sender_offset_public_key (R) and use it to create a DH with the account owner key
     let sender_offset_pub_key: RistrettoPublicKey = claim_proof
+        .output
         .sender_offset_public_key
         .try_from_byte_type()
-        .map_err(|e| invalid_params("claim_proof.sender_offset_public_key", Some(e)))?;
+        .map_err(|e| invalid_params("claim_proof.output.sender_offset_public_key", Some(e)))?;
 
     // Stealth spend secret `s = H(R·p) + p`. The L1 ownership proof commits the burn to `C = s·G`,
     // so this is the only key that can sign the claim transaction and satisfy the spend condition

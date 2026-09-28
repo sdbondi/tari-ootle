@@ -1092,26 +1092,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bincode"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36eaf5d7b090263e8150820482d5d93cd964a81e4019913c972f4edcc6edb740"
-dependencies = [
- "bincode_derive",
- "serde",
- "unty",
-]
-
-[[package]]
-name = "bincode_derive"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf95709a440f45e986983918d0e8a1f30a9b1df04918fc828670606804ac3c09"
-dependencies = [
- "virtue",
-]
-
-[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3373,19 +3353,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dialoguer"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "658bce805d770f407bc62102fca7c2c64ceef2fbcb2b8bd19d2765ce093980de"
-dependencies = [
- "console 0.15.11",
- "shell-words",
- "tempfile",
- "thiserror 1.0.69",
- "zeroize",
-]
-
-[[package]]
 name = "diesel"
 version = "2.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3573,7 +3540,7 @@ dependencies = [
  "aes",
  "aes-gcm",
  "async-trait",
- "bincode 1.3.3",
+ "bincode",
  "byteorder",
  "cbc",
  "ccm",
@@ -7107,9 +7074,8 @@ dependencies = [
 
 [[package]]
 name = "minotari_app_grpc"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc43c88c2c11e75ce58ee9cc5d440d07fa16d387c27616a9bbd350b0fc8f8b9d"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "argon2 0.6.0-rc.8",
  "base64 0.22.1",
@@ -7139,12 +7105,11 @@ dependencies = [
 
 [[package]]
 name = "minotari_app_utilities"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "167bccda762ef8603f274049044688f92ed8819da6c44378527df79c80ccafd4"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "clap 4.5.54",
- "dialoguer 0.10.4",
+ "dialoguer",
  "futures 0.3.34",
  "json5",
  "log",
@@ -7163,9 +7128,8 @@ dependencies = [
 
 [[package]]
 name = "minotari_console_wallet"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1a3899e395ce5294b97797f51823534a9e187965efb82e613ea15371325392a"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7174,7 +7138,7 @@ dependencies = [
  "console-subscriber",
  "crossterm 0.28.1",
  "dhat",
- "dialoguer 0.10.4",
+ "dialoguer",
  "digest 0.10.7",
  "dirs-next 2.0.0",
  "futures 0.3.34",
@@ -7220,9 +7184,8 @@ dependencies = [
 
 [[package]]
 name = "minotari_ledger_wallet_common"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25cf92dd63d46fbf6a7f54f378043616c8a09ebd40b0038bae3965ed5068016b"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "borsh",
  "bs58",
@@ -7231,12 +7194,10 @@ dependencies = [
 
 [[package]]
 name = "minotari_ledger_wallet_comms"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c5e0876b98c67333b0c9a4fca6ee5fa337486dd25ef521c9f65a2027232524d"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "borsh",
- "dialoguer 0.11.0",
  "ledger-transport",
  "ledger-transport-hid",
  "log",
@@ -7254,14 +7215,13 @@ dependencies = [
 
 [[package]]
 name = "minotari_node"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a57b6a4fc39b9b9855beb6a176d7e561d5f4f71c08783211ddda834063a6312"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "anyhow",
  "async-trait",
  "axum 0.8.8",
- "bincode 1.3.3",
+ "bincode",
  "borsh",
  "bytes",
  "chrono",
@@ -7315,18 +7275,16 @@ dependencies = [
 
 [[package]]
 name = "minotari_node_grpc_client"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9fed967d1e1d772bed299a3b348ac20964b9191137036de73ae2c67c8ff903e8"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "minotari_app_grpc",
 ]
 
 [[package]]
 name = "minotari_node_wallet_client"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "730648bda7111453c42327c5be8df8737fcfb733414705dc7d1d1be6c4791cfd"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7334,6 +7292,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "tari_common_types",
  "tari_shutdown",
  "tari_transaction_components",
  "tari_utilities",
@@ -7343,14 +7302,13 @@ dependencies = [
 
 [[package]]
 name = "minotari_wallet"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdd1c85dd03800c78f39462641dc5e338b49d045dc13d9405c794e7146c8be00"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "anyhow",
  "argon2 0.6.0-rc.8",
  "async-trait",
- "bincode 1.3.3",
+ "bincode",
  "blake2 0.10.6",
  "borsh",
  "chacha20poly1305",
@@ -7402,9 +7360,8 @@ dependencies = [
 
 [[package]]
 name = "minotari_wallet_grpc_client"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e9adb61de06eed8aeff1a697c1856b317ff12ee623e48e86fd24feecac5a5c7"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "minotari_app_grpc",
  "tari_common",
@@ -11676,9 +11633,8 @@ dependencies = [
 
 [[package]]
 name = "tari_common"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5bd1ecf6675e475d82cd01776003f288666c783d3683ce6209a460a618943317"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "anyhow",
  "cargo_toml 0.20.5",
@@ -11702,9 +11658,8 @@ dependencies = [
 
 [[package]]
 name = "tari_common_sqlite"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab7eca6b184d142cdf0a458ec20bd5e0b4fdbc3fe0efc9f4dd9d06aa973a7cf5"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "diesel",
  "diesel_migrations",
@@ -11720,9 +11675,8 @@ dependencies = [
 
 [[package]]
 name = "tari_common_types"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b8e0e188ba9a471c8e3bbe64157805b67fc38df13380c00e5230e4dc9240fe2"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "argon2 0.6.0-rc.8",
  "base64 0.22.1",
@@ -11758,9 +11712,8 @@ dependencies = [
 
 [[package]]
 name = "tari_comms"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24e254c32979cc1cd900f60f197bcaed172d912166cd8164b6e92f50ecf9aacc"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -11806,9 +11759,8 @@ dependencies = [
 
 [[package]]
 name = "tari_comms_dht"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95e18c6b5c7da57c73021d3cbc5a539820b7c6c168b006b13014fc59e033d312"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "anyhow",
  "bitflags 2.13.0",
@@ -11841,9 +11793,8 @@ dependencies = [
 
 [[package]]
 name = "tari_comms_rpc_macros"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "100113212a37a68e5e09319ecc98daf8ecdbacf009711289ed919e86d39fcace"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -11899,13 +11850,12 @@ dependencies = [
 
 [[package]]
 name = "tari_core"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0708eefe0015db06850b9fbffe5813f9d3a2f396ec20328e143e036f6267e8cc"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "anyhow",
  "async-trait",
- "bincode 1.3.3",
+ "bincode",
  "blake2 0.10.6",
  "borsh",
  "chrono",
@@ -12110,15 +12060,13 @@ dependencies = [
 
 [[package]]
 name = "tari_features"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba38256b95dabd629a45abc7efbb7ad5addc64f589d0d8ca1cdd4289fad086d8"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 
 [[package]]
 name = "tari_hashing"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "834dd8c98cc56c540d3156fc857b63cfd16bfad573101b9ea4dda2d7f91e912e"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "blake2 0.10.6",
  "borsh",
@@ -12255,9 +12203,8 @@ dependencies = [
 
 [[package]]
 name = "tari_jellyfish"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5c4ed2a66ded9f3f8dc3202823fae9af034e4be033981e9afcad7b2721c203f"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "borsh",
  "digest 0.10.7",
@@ -12270,9 +12217,8 @@ dependencies = [
 
 [[package]]
 name = "tari_libtor"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "324422cac72c00c138db31f159399da981b58b7bb1c9cf72c764ebe8e5b7ef20"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "derivative",
  "libtor",
@@ -12286,9 +12232,8 @@ dependencies = [
 
 [[package]]
 name = "tari_max_size"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d29202f6ec85120d2d02604de625266e2bc66b62ff1b29211d79d68111e265d0"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "borsh",
  "serde",
@@ -12310,9 +12255,8 @@ dependencies = [
 
 [[package]]
 name = "tari_metrics"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa4173b9cbf00f568c2093f9e824cdd4d862135e632ef801c87e6004bdaf0021"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "once_cell",
  "prometheus",
@@ -12321,9 +12265,8 @@ dependencies = [
 
 [[package]]
 name = "tari_mmr"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c71bcf1ad1e9eab608c43dbae6eb638ba526d223152450c368377c06e149ff9f"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "borsh",
  "digest 0.10.7",
@@ -12352,9 +12295,8 @@ dependencies = [
 
 [[package]]
 name = "tari_node_components"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e855e40d6404bc830efed1ca80955646936aaf30ddac6eef5cbc16e27ffa7c52"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "blake2 0.10.6",
  "borsh",
@@ -12392,8 +12334,8 @@ name = "tari_ootle_app_utilities"
 version = "0.41.2"
 dependencies = [
  "anyhow",
- "bincode 2.0.1",
  "blake2 0.10.6",
+ "borsh",
  "bounded-vec",
  "clap 3.2.25",
  "config",
@@ -12423,6 +12365,8 @@ dependencies = [
  "tari_ootle_storage",
  "tari_ootle_storage_sqlite",
  "tari_ootle_transaction",
+ "tari_script",
+ "tari_sidechain",
  "tari_template_lib",
  "tari_transaction_components",
  "tempfile",
@@ -12908,9 +12852,8 @@ dependencies = [
 
 [[package]]
 name = "tari_p2p"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3962df533801808c5563e98bd87c17e824f7af62d2d2b228ea1f6358e716993"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "anyhow",
  "futures 0.3.34",
@@ -12996,9 +12939,8 @@ dependencies = [
 
 [[package]]
 name = "tari_script"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f60eb57e141fa7311f202f31624c87ec736151d1c063f7d21f2b96e7b30fa7d4"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "blake2 0.10.6",
  "borsh",
@@ -13015,9 +12957,8 @@ dependencies = [
 
 [[package]]
 name = "tari_service_framework"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb071e01c5e419e0be55e0e3dfb3444eec56b335f5a33816575dceae974ae68f"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -13031,18 +12972,16 @@ dependencies = [
 
 [[package]]
 name = "tari_shutdown"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70ac8074210c173b1e5064df1d5a3ec3fd1cfb803e5ab653270e639651a0477b"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "futures 0.3.34",
 ]
 
 [[package]]
 name = "tari_sidechain"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4a80e814f7d03838addb9fcfd7c974f29eeac839d19f77c20aed06f1a59f687"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "borsh",
  "hex",
@@ -13106,11 +13045,10 @@ dependencies = [
 
 [[package]]
 name = "tari_storage"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cda4de3424d0bc06ea053d7159c2f4a956d74a17abf431e0b2dadbce7cd28861"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
- "bincode 1.3.3",
+ "bincode",
  "lmdb-zero",
  "log",
  "serde",
@@ -13269,9 +13207,8 @@ dependencies = [
 
 [[package]]
 name = "tari_test_utils"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8f8c18d0a133d51feed6f1a99a46637b607444f414b50cd5fb73849bcc54d98"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "futures 0.3.34",
  "rand 0.10.1",
@@ -13282,9 +13219,8 @@ dependencies = [
 
 [[package]]
 name = "tari_transaction_components"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a7200cdbb9ca3ee2b11f494a3226b64d92b9fc050b0212998edce8b04c263f0"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -13318,6 +13254,7 @@ dependencies = [
  "tari_crypto",
  "tari_hashing",
  "tari_max_size",
+ "tari_mmr",
  "tari_script",
  "tari_sidechain",
  "tari_utilities",
@@ -13329,9 +13266,8 @@ dependencies = [
 
 [[package]]
 name = "tari_transaction_key_manager"
-version = "5.7.0-pre.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1cf60b2307ec3ecd3ce24f5d027c33c93135ac5bde78e1301d97feb082b6d371"
+version = "6.0.1-pre.0"
+source = "git+https://github.com/sdbondi/tari.git?branch=feat%2Fburn-output-merkle-proof#3792c5008ef6d52fa87750d9bdf4af92f81b1946"
 dependencies = [
  "async-trait",
  "blake2 0.10.6",
@@ -13384,7 +13320,7 @@ checksum = "59020053bb363474087e5b170acbf0e1a848b1af5736e058a0332ce69b6dbf9e"
 dependencies = [
  "base58-monero",
  "base64 0.13.1",
- "bincode 1.3.3",
+ "bincode",
  "borsh",
  "generic-array",
  "newtype-ops",
@@ -14597,12 +14533,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
-name = "unty"
-version = "0.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
-
-[[package]]
 name = "url"
 version = "2.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14709,12 +14639,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "virtue"
-version = "0.0.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "waitgroup"

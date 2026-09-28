@@ -8,15 +8,12 @@ use log::{error, info};
 use minotari_node_grpc_client::grpc::{self, RevalidateRequest};
 use minotari_wallet_grpc_client::WalletGrpcClient;
 use serde::Serialize;
-use tari_common_types::{
-    burn_proof::EncodedMerkleProof,
-    types::{CompressedCommitment, CompressedPublicKey},
-};
+use tari_common_types::{burn_proof::BurnOutputProof, types::CompressedPublicKey};
 use tari_crypto::{
-    ristretto::{CompressedRistrettoSchnorr, RistrettoSecretKey, pedersen::CompressedPedersenCommitment},
+    ristretto::{CompressedRistrettoSchnorr, RistrettoSecretKey},
     tari_utilities::ByteArray,
 };
-use tari_sidechain::{AbridgedTransactionKernel, BurnClaimProof, CompleteClaimBurnProof};
+use tari_sidechain::{BurnClaimProof, CompleteClaimBurnProof};
 use tari_template_lib_types::crypto::{PedersenCommitmentBytes, RistrettoPublicKeyBytes};
 use tari_transaction_components::transaction_components::{MemoField, memo_field::TxType};
 
@@ -112,7 +109,7 @@ impl MinoTariWalletProcess {
                 })
                 .await?;
             let resp = resp.into_inner();
-            let Some(merkle_proof) = resp.merkle_proof else {
+            let (Some(output_proof), Some(mined_in_epoch)) = (resp.burn_output_proof, resp.mined_in_epoch) else {
                 attempts += 1;
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 info!("Waiting for burn claim proof... attempt {}", attempts);
@@ -125,66 +122,25 @@ impl MinoTariWalletProcess {
             let ownership_proof = claim_proof
                 .ownership_proof
                 .ok_or_else(|| anyhow!("No ownership proof in response"))?;
-            let commitment = CompressedPedersenCommitment::from_canonical_bytes(&claim_proof.commitment)
-                .map_err(|e| anyhow!("commitment parse error: {e}"))?;
-
             let ownership_proof = CompressedRistrettoSchnorr::new(
                 CompressedPublicKey::from_canonical_bytes(&ownership_proof.public_nonce)
                     .map_err(|e| anyhow!("sig public_nonce parse error {e}"))?,
                 RistrettoSecretKey::from_canonical_bytes(&ownership_proof.signature)
                     .map_err(|e| anyhow!("sig parse error {e}"))?,
             );
-
             let reciprocal_claim_public_key = CompressedPublicKey::from_canonical_bytes(&claim_proof.claim_public_key)
                 .map_err(|e| anyhow!("reciprocal_claim_public_key parse error {e}"))?;
-
-            let sender_offset_public_key =
-                CompressedPublicKey::from_canonical_bytes(&claim_proof.sender_offset_public_key)
-                    .map_err(|e| anyhow!("sender_offset_public_key parse error {e}"))?;
-
-            let kernel = resp.kernel.ok_or_else(|| anyhow!("No kernel in response"))?;
-            let kernel = AbridgedTransactionKernel {
-                version: kernel.version as u8,
-                fee: kernel.fee,
-                lock_height: kernel.lock_height,
-                excess: CompressedCommitment::from_canonical_bytes(&kernel.excess)
-                    .map_err(|e| anyhow!("excess parse error: {e}"))?,
-                excess_sig: {
-                    let excess_sig = kernel
-                        .excess_sig
-                        .as_ref()
-                        .ok_or_else(|| anyhow!("No excess_sig in response"))?;
-
-                    CompressedRistrettoSchnorr::new(
-                        CompressedPublicKey::from_canonical_bytes(&excess_sig.public_nonce)
-                            .map_err(|e| anyhow!("excess_sig parse error: {e}"))?,
-                        RistrettoSecretKey::from_canonical_bytes(&excess_sig.signature)
-                            .map_err(|e| anyhow!("excess_sig parse error: {e}"))?,
-                    )
-                },
-            };
 
             let proof = CompleteClaimBurnProof {
                 claim_proof: BurnClaimProof {
                     burn_public_key: reciprocal_claim_public_key,
-                    commitment,
                     ownership_proof,
-                    encoded_merkle_proof: EncodedMerkleProof {
-                        block_hash: merkle_proof.block_hash.as_slice().try_into().map_err(|e| {
-                            anyhow!(
-                                "Block hash length {} is out of bounds: {e}",
-                                merkle_proof.block_hash.len()
-                            )
-                        })?,
-                        encoded_merkle_proof: merkle_proof.encoded_proof,
-                        leaf_index: merkle_proof.leaf_index,
-                    },
-                    kernel,
+                    output_proof: BurnOutputProof::try_from(output_proof)
+                        .map_err(|e| anyhow!("burn output proof parse error: {e}"))?,
                     value,
-                    sender_offset_public_key,
                 },
                 encrypted_data: resp.encrypted_data,
-                mined_in_epoch: resp.mined_in_epoch,
+                mined_in_epoch,
             };
 
             let mut file = File::create(&path)?;

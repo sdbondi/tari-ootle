@@ -155,24 +155,25 @@ ootle-wasm-core = { path = "crates/ootle_wasm/core", version = "0.41.2" }
 ootle_sdk_core = { path = "crates/ootle_sdk_core", version = "0.41" }
 
 # external minotari/tari dependencies
-minotari_app_grpc = { version = "5.7.0-pre.5", default-features = false }
-minotari_app_utilities = "5.7.0-pre.5"
-minotari_node_grpc_client = "5.7.0-pre.5"
-minotari_wallet_grpc_client = "5.7.0-pre.5"
-tari_common = "5.7.0-pre.5"
-tari_common_sqlite = "5.7.0-pre.5"
-tari_common_types = "5.7.0-pre.5"
-tari_jellyfish = "5.7.0-pre.5"
-tari_metrics = "5.7.0-pre.5"
-tari_mmr = "5.7.0-pre.5"
-tari_node_components = "5.7.0-pre.5"
-tari_shutdown = "5.7.0-pre.5"
-tari_sidechain = "5.7.0-pre.5"
-tari_transaction_components = "5.7.0-pre.5"
+minotari_app_grpc = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof", default-features = false }
+minotari_app_utilities = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
+minotari_node_grpc_client = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
+minotari_wallet_grpc_client = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
+tari_common = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
+tari_common_sqlite = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
+tari_common_types = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
+tari_jellyfish = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
+tari_metrics = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
+tari_mmr = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
+tari_node_components = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
+tari_script = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
+tari_shutdown = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
+tari_sidechain = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
+tari_transaction_components = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
 
 tari_crypto = "0.23.4"
 tari_utilities = "0.10"
-tari_hashing = "5.7.0-pre.5"
+tari_hashing = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
 
 ## Ledger
 ootle_ledger_common = { path = "crates/wallet/ledger/common", version = "0.2.0" }

@@ -473,11 +473,7 @@ async fn vn_is_past_burn_proof_epoch(world: &mut TariWorld, step: &Step, vn_name
     let Some(CucumberClaimProof::Confirmed { complete_proof, .. }) = world.claim_proofs.get(&proof_name) else {
         panic!("Burn proof {proof_name} is not a confirmed proof");
     };
-    let mined_in_epoch = Epoch(
-        complete_proof
-            .mined_in_epoch
-            .unwrap_or_else(|| panic!("Burn proof {proof_name} does not record the epoch it was mined in")),
-    );
+    let mined_in_epoch = Epoch(complete_proof.mined_in_epoch);
     let vn = world.get_validator_node(&vn_name);
     let mut client = vn.create_client();
     let mut current_epoch = Epoch(0);

@@ -47,12 +47,12 @@ tari_ootle_wallet_sdk = { workspace = true }
 ootle_byte_type = { workspace = true }
 
 # Minotari
-minotari_console_wallet = "5.7.0-pre.5"
-minotari_node = "5.7.0-pre.5"
-minotari_wallet = "5.7.0-pre.5"
-tari_comms = "5.7.0-pre.5"
-tari_comms_dht = "5.7.0-pre.5"
-tari_p2p = "5.7.0-pre.5"
+minotari_console_wallet = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
+minotari_node = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
+minotari_wallet = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
+tari_comms = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
+tari_comms_dht = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
+tari_p2p = { git = "https://github.com/sdbondi/tari.git", branch = "feat/burn-output-merkle-proof" }
 
 anyhow = { workspace = true }
 config = { workspace = true }

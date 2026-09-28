@@ -3711,8 +3711,9 @@ where
         let epoch = self.tracker.get_current_epoch()?;
         self.tracker
             .charge_native_execution(tari_engine_types::limits::NativeExecutionPoints::PER_CLAIM_BURN)?;
-        self.claim_burn_proof_verifier
-            .verify_claim_proof(epoch, &self.seal_signer_public_key, &claim)
+        let verified = self
+            .claim_burn_proof_verifier
+            .verify_claim_proof(epoch, &claim)
             .map_err(|e| {
                 warn!(target: LOG_TARGET, "Claim burn failed - proof verification failed: {}", e);
                 match e {
@@ -3725,6 +3726,16 @@ where
                     ClaimProofError::VerifierFault(details) => RuntimeError::ClaimProofVerifierFault { details },
                 }
             })?;
+        // The burner also knows the commitment opening and can make a valid ownership proof, so only the claim key's
+        // signature shows the claimant is the recipient the burn output names
+        let claim_public_key = verified.claim_public_key;
+        self.tracker.read_with(|state| {
+            let badge = NonFungibleAddress::from_public_key(claim_public_key);
+            if !state.base_call_scope().auth_scope().contains_badge(&badge) {
+                return Err(RuntimeError::ClaimNotSignedByClaimKey { claim_public_key });
+            }
+            Ok(())
+        })?;
 
         self.tracker.write_with(|state_mut| {
             // 2. Create a tombstone
@@ -3739,7 +3750,7 @@ where
             let address = UtxoAddress::new(TARI_TOKEN, claim.commitment.into());
             let utxo = Utxo::new(UtxoOutput {
                 output: OutputBody {
-                    public_nonce: claim.burn_public_key,
+                    public_nonce: claim.output.sender_offset_public_key,
                     encrypted_data: output_data.encrypted_data,
                     minimum_value_promise: 0,
                     viewable_balance: None,

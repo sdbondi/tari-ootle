@@ -153,6 +153,7 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> ClaimBurn<'a, P> {
 
         // `R`, the public nonce the L1 UTXO was burnt with.
         let sender_offset_public_key: RistrettoPublicKey = claim_proof
+            .output
             .sender_offset_public_key
             .try_from_byte_type()
             .map_err(|e| StealthProviderError::UnexpectedError {

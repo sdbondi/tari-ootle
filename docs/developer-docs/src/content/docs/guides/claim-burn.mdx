@@ -8,7 +8,7 @@ import { Aside } from "@astrojs/starlight/components";
 ### Covered in this guide
 
 - What a burn claim is and why it exists.
-- The three pieces of a claim proof: a burn commitment, an ownership proof and a kernel inclusion proof.
+- The three pieces of a claim proof: a burn commitment, an ownership proof and a burn output inclusion proof.
 - How validators scan Minotari block headers so that a proof can be checked without a base node.
 - How a claim is executed by the engine and how double claims are prevented.
 
@@ -24,7 +24,7 @@ exactly the amount that L2 supply increases.
    Minotari (L1)                                Ootle (L2)
    ┌──────────────────────────┐                 ┌──────────────────────────┐
    │ Burn transaction         │   claim proof   │ ClaimBurn instruction    │
-   │  • burn kernel           │ ──────────────▶ │  • verify proof          │
+   │  • burn output           │ ──────────────▶ │  • verify proof          │
    │  • commitment C = vH+kG  │                 │  • write tombstone       │
    │  • ownership proof       │                 │  • mint stealth UTXO     │
    └──────────────────────────┘                 └──────────────────────────┘
@@ -38,9 +38,9 @@ turn the burn into spendable funds.
 
 ## Anatomy of a burn
 
-When a Minotari wallet burns funds for the Ootle it produces a transaction with a **burn kernel** carrying a
-`burn_commitment`, a Pedersen commitment `C = v·H + k·G` to the burned value `v` with blinding factor `k`. The burn
-is bound to an L2 claimant with a **stealth claim key**:
+When a Minotari wallet burns funds for the Ootle it produces a **burn output**: an output of type `Burn` whose
+commitment `C = v·H + k·G` commits to the burned value `v` with blinding factor `k`. The burn is bound to an L2
+claimant with a **stealth claim key**:
 
 ```
    p, P = p·G        claimant's Ootle account key (secret, public)
@@ -49,26 +49,25 @@ is bound to an L2 claimant with a **stealth claim key**:
    S = s·G           stealth claim public key, computable by the burner as H(r·P)·G + P
 ```
 
-The burner then signs an **ownership proof**: a Schnorr signature under the blinding factor `k` over the message
+The output carries `S` in its `ConfidentialOutput` sidechain feature. The burner then signs an **ownership proof**: a Schnorr signature under the blinding factor `k` over the message
 `H(C ‖ S ‖ sidechain_id)`. This proves knowledge of the commitment opening and binds the burn to both the claimant
 `S` and the target sidechain.
 
 The **sidechain id** identifies which Minotari sidechain the burn is for. It is the public key of the sidechain's
 L1 deployment key, and every validator on that sidechain is configured with the same value. The Ootle itself uses
 a blank sidechain id, so a burn with no sidechain id is a burn for the Ootle. Other sidechains built on Minotari
-each bind burns to their own key.
+each bind burns to their own key, and L1 checks that the deployment key signed `S`. A validator only accepts a burn
+output tagged with its own sidechain id: a burn with no `ConfidentialOutput` feature is never claimable.
 
 The wallet bundles everything the Ootle needs into a **claim proof**:
 
-| Field                     | Purpose                                                   |
-| ------------------------- | --------------------------------------------------------- |
-| `commitment`              | The burn commitment `C`                                   |
-| `value`                   | The burned amount `v` (revealed; needed to check `C`)     |
-| `ownership_proof`         | Schnorr signature over `H(C ‖ S ‖ sidechain_id)`          |
-| `sender_offset_public_key`| The nonce `R` used to derive the stealth claim key        |
-| `burn_public_key`         | Public nonce of the burnt output, reused on the minted UTXO |
-| `kernel`                  | Abridged burn kernel (fee, lock height, excess, excess sig) |
-| `encoded_merkle_proof`    | Kernel MMR proof plus the L1 block hash and leaf index    |
+| Field             | Purpose                                                                          |
+| ----------------- | -------------------------------------------------------------------------------- |
+| `commitment`      | The burn commitment `C`                                                          |
+| `value`           | The burned amount `v` (revealed; needed to check `C`)                            |
+| `ownership_proof` | Schnorr signature over `H(C ‖ S ‖ sidechain_id)`                                 |
+| `output`          | The burn output's hashed fields: its features (with `S`), the nonce `R`, and the rest as L1 encodes them |
+| `inclusion_proof` | The L1 block hash and a two-level MMR proof of the output hash in that block     |
 
 <Aside type="note">
   The value is revealed in the claim proof. The burn is public on L1 anyway; privacy begins once the claimed funds
@@ -96,7 +95,7 @@ scanner stores a minimal record of every header it crosses, keyed by epoch:
            ▼        ▼        ▼        ▼        ▼
    ┌────────────────────────────────────────────────────┐
    │ Validator header store (per epoch)                 │
-   │   block_hash → { height, kernel_merkle_root, ... } │
+   │   block_hash → { height, block_output_mr, ... }    │
    └────────────────────────────────────────────────────┘
 ```
 
@@ -114,32 +113,44 @@ deleted and the affected range is rescanned, so the store converges on the canon
 
 ### Two checks per claim
 
-A claim is accepted when both of the following hold:
+A claim is accepted when all of the following hold:
 
 ```
    claim proof
       │
-      ├─▶ 1. Ownership proof
+      ├─▶ 1. Burn output rules
+      │      the output's sidechain id == this chain's sidechain id
+      │
+      ├─▶ 2. Ownership proof
       │      k·G = C − v·H                       (recover the "public key" of the blinding factor)
       │      verify Schnorr(k·G, H(C ‖ S ‖ sidechain_id))
-      │      where S = the transaction's seal signer key
+      │      where S = the claim key the burn output names
       │
-      └─▶ 2. Kernel inclusion proof
-             look up header by block_hash (epoch < current)
-             rebuild burn kernel from abridged fields + C
-             verify MMR proof: hash(kernel) ∈ header.kernel_merkle_root at leaf_index
+      ├─▶ 3. Output inclusion proof
+      │      look up header by block_hash (epoch < current)
+      │      hash the output: type Burn, a ConfidentialOutput feature naming S, commitment C
+      │      fold the hash to the normal output MMR root, then that root (the last leaf) to header.block_output_mr
+      │
+      └─▶ 4. Claim key signs
+             S is among the transaction's signers
 ```
 
-**Ownership proof.** The transaction carrying the claim is sealed (signed) with the stealth claim secret `s`, so the
-transaction's seal signer public key is `S`. The verifier recomputes the challenge with its *own* configured
-sidechain id and checks the signature against `C − v·H`. A proof signed for a different claimant or a different
+**Ownership proof.** The verifier recomputes the challenge from the output's claim key `S` and its *own* configured
+sidechain id, and checks the signature against `C − v·H`. A proof signed for a different claimant or a different
 sidechain fails here.
 
-**Kernel inclusion proof.** The verifier reconstructs the full burn kernel from the abridged kernel plus the
-commitment, hashes it, and checks the Merkle proof against the `kernel_merkle_root` of the stored header. If the
-header is not in the store the claim is rejected, which also covers burns newer than the validator's scan position.
+**Output inclusion proof.** The verifier hashes the burn output the way L1 does, with its type fixed to `Burn`, its
+sidechain feature fixed to a `ConfidentialOutput` naming `S`, and `C` as its commitment. It then checks the hash is
+in the block: the block output MMR has the block's coinbases as leaves and, as its last leaf, the root of an MMR of
+every other output. Since the hash fixes the type, the feature and the commitment, a proof of any other output does
+not verify. If the header is not in the store the claim is rejected, which also covers burns newer than the
+validator's scan position.
 
-Both checks use only the proof and the local header store. No L1 network access happens at execution time, and every
+**Claim key signs.** The burner also knows `k`, so it can make an ownership proof for any key. The engine therefore
+requires `S` to sign the transaction, as its sealer or as one of its signers. Only the holder of the stealth claim
+secret `s` can claim the burn, even when someone else seals and pays the fee.
+
+The verifier's checks use only the proof and the local header store. No L1 network access happens at execution time, and every
 validator in the committee reaches the same verdict from the same inputs.
 
 ---
@@ -157,16 +168,16 @@ its first fee from the funds it is claiming. On success the engine writes two su
       ├─▶ ClaimedOutputTombstone @ address(C)      { value }
       │
       └─▶ Utxo @ address(TARI, C)                  stealth UTXO worth v,
-                                                   spendable only by S
+                                                   spendable by the sealer
 ```
 
-The UTXO is minted directly into the genesis TARI resource with the claimant's stealth key `S` as the spend
+The UTXO is minted directly into the genesis TARI resource with the transaction's sealer as the spend
 authorization. A typical claim transaction immediately spends it in a stealth transfer: a small revealed amount pays
 the fee and the remainder becomes a stealth output owned by the claiming account.
 
 ```
    fee instructions:
-     ClaimBurn(proof, output_data)             mint UTXO(C) owned by S
+     ClaimBurn(proof, output_data)             mint UTXO(C) owned by the sealer
      StealthTransfer { input: UTXO(C),
                        reveal: max_fee,        → bucket used to pay the fee
                        output: stealth → account }

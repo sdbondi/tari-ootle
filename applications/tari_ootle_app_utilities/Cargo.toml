@@ -23,6 +23,7 @@ tari_bor = { workspace = true, default-features = true }
 tari_mmr = { workspace = true }
 tari_networking = { workspace = true, optional = true }
 tari_transaction_components = { workspace = true }
+tari_sidechain = { workspace = true }
 tari_hashing = { workspace = true }
 tari_ootle_p2p = { workspace = true, optional = true }
 ootle_serde = { workspace = true, features = ["std"] }
@@ -30,7 +31,8 @@ ootle_byte_type = { workspace = true, features = ["crypto"] }
 
 anyhow = { workspace = true }
 blake2 = { workspace = true }
-bincode = { workspace = true, features = ["serde"] }
+bounded-vec = { workspace = true }
+borsh = { workspace = true, features = ["std"] }
 clap = { workspace = true, features = ["derive", "env"] }
 dirs-next = { workspace = true }
 libp2p-identity = { workspace = true, optional = true }
@@ -49,7 +51,7 @@ config = { workspace = true }
 tari_consensus = { workspace = true, optional = true }
 
 [dev-dependencies]
-bounded-vec = { workspace = true }
+tari_script = { workspace = true }
 tari_ootle_storage_sqlite = { workspace = true }
 tempfile = { workspace = true }
 

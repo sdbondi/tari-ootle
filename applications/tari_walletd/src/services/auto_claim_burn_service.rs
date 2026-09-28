@@ -13,6 +13,7 @@ use notify::{
     Watcher,
     event::{AccessKind, AccessMode},
 };
+use ootle_byte_type::ToByteType;
 use tari_engine_types::commit_result::{ExecutionFailureCode, RejectReason};
 use tari_ootle_common_types::{Epoch, optional::Optional};
 use tari_ootle_wallet_sdk::network::WalletNetworkInterface;
@@ -55,13 +56,6 @@ fn is_burn_not_yet_claimable(reject_reason: &RejectReason) -> bool {
     reject_reason.execution_failure_code() == Some(ExecutionFailureCode::NotYetValid)
 }
 
-/// The epoch a claim must be strictly past before it is claimable, given the proof's
-/// `mined_in_epoch`. A proof without the field (older L1 wallet) yields `Epoch(0)` so it is
-/// attempted immediately and the dry-run backstop defers it until claimable (bounded).
-fn claim_after_epoch(mined_in_epoch: Option<u64>) -> Epoch {
-    mined_in_epoch.map(Epoch).unwrap_or(Epoch(0))
-}
-
 /// Watches the burn proof directory for new JSON files and automatically submits claim burn
 /// transactions on behalf of the wallet, deferring each claim until the burn's L1 block is
 /// claimable on L2.
@@ -71,9 +65,8 @@ fn claim_after_epoch(mined_in_epoch: Option<u64>) -> Epoch {
 /// committed epoch. That sync lags the L1 tip by `base_layer_confirmations` (e.g. 780 blocks on
 /// mainnet), so submitting too early is rejected. Each proof file records the L1 epoch the burn was
 /// mined in (`mined_in_epoch`); this service reads it and only submits once the network reports a
-/// strictly later epoch. Proofs without that field (older L1 wallets) are attempted eagerly and
-/// held back by the dry-run backstop until claimable, or dropped after `MAX_RETRIES_DEFERRED`
-/// deferrals (the file stays for a manual claim via the wallet API).
+/// strictly later epoch. A claim the dry run still finds not yet claimable is held back, or dropped
+/// after `MAX_RETRIES_DEFERRED` deferrals (the file stays for a manual claim via the wallet API).
 ///
 /// ## Crash safety
 /// Pending state is held in memory only. On restart the service re-scans the directory and
@@ -249,10 +242,8 @@ impl AutoClaimBurnService {
     }
 
     /// Resolves the claim epoch for any unresolved queued files by reading each proof file's
-    /// `mined_in_epoch`: the burn is claimable once L2 is strictly past that epoch. Proofs without
-    /// the field (older L1 wallets) become eligible immediately and rely on the dry-run backstop to
-    /// defer until claimable. Files that are not yet readable are left unresolved and retried next
-    /// interval.
+    /// `mined_in_epoch`: the burn is claimable once L2 is strictly past that epoch. Files that are not
+    /// yet readable are left unresolved and retried next interval.
     async fn resolve_claim_epochs(&mut self) {
         let unresolved: Vec<String> = self
             .pending_claims
@@ -263,23 +254,15 @@ impl AutoClaimBurnService {
         for file_name in unresolved {
             let after = match self.read_proof_file(&file_name).await {
                 Ok(proof) => {
-                    let after = claim_after_epoch(proof.mined_in_epoch);
-                    match proof.mined_in_epoch {
-                        Some(mined) => info!(
-                            target: LOG_TARGET,
-                            "Burn proof '{}' was mined in L1 epoch {}; will claim once L2 passes it (epoch {}).",
-                            file_name,
-                            mined,
-                            mined.saturating_add(1),
-                        ),
-                        None => info!(
-                            target: LOG_TARGET,
-                            "Burn proof '{}' carries no mined-in epoch (older L1 wallet); attempting now and \
-                             deferring if not yet claimable.",
-                            file_name,
-                        ),
-                    }
-                    after
+                    let mined = proof.mined_in_epoch;
+                    info!(
+                        target: LOG_TARGET,
+                        "Burn proof '{}' was mined in L1 epoch {}; will claim once L2 passes it (epoch {}).",
+                        file_name,
+                        mined,
+                        mined.saturating_add(1),
+                    );
+                    Epoch(mined)
                 },
                 Err(e) => {
                     let pending = self.pending_claims.get_mut(&file_name).expect("just iterated");
@@ -444,20 +427,21 @@ impl AutoClaimBurnService {
             .await
             .map_err(|e| ClaimError::transient(e, MAX_RETRIES_FILE_READ))?;
 
+        let burn_public_key = complete_proof.claim_proof.burn_public_key.to_byte_type();
         let proof_contents = complete_burn_proof_to_contents(complete_proof).map_err(ClaimError::Permanent)?;
 
         // Find the target account using the burn_public_key embedded in the proof.
         // This is the account whose owner key was used when burning on L1.
         let accounts_api = self.sdk.accounts_api();
         let account = accounts_api
-            .get_account_by_public_key(&proof_contents.claim_proof.burn_public_key)
+            .get_account_by_public_key(&burn_public_key)
             .optional()
             .map_err(|e| ClaimError::transient(e.into(), MAX_RETRIES_NETWORK))?
             .ok_or_else(|| {
                 ClaimError::Permanent(anyhow::anyhow!(
                     "No account found for burn_public_key '{}'. The burn was not destined for any account in this \
                      wallet.",
-                    proof_contents.claim_proof.burn_public_key,
+                    burn_public_key,
                 ))
             })?;
 
@@ -610,13 +594,5 @@ mod tests {
         assert!(!is_burn_not_yet_claimable(&RejectReason::FailedToLockInputs(
             "input conflict".to_string()
         )));
-    }
-
-    #[test]
-    fn claim_after_epoch_uses_mined_epoch_else_zero() {
-        // A known mined epoch gates on `current > mined`, i.e. the claim lands one epoch later.
-        assert_eq!(claim_after_epoch(Some(5)), Epoch(5));
-        // No mined epoch (older L1 proof) => attempt immediately; the dry-run backstop defers it.
-        assert_eq!(claim_after_epoch(None), Epoch(0));
     }
 }

@@ -875,7 +875,6 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
                 block_headers::epoch.eq(header.epoch.as_u64() as i64),
                 block_headers::height.eq(header.height as i64),
                 block_headers::block_hash.eq(header.block_hash.as_bytes()),
-                block_headers::kernel_merkle_root.eq(header.kernel_merkle_root.as_bytes()),
                 block_headers::block_output_merkle_root.eq(header.block_output_merkle_root.as_bytes()),
                 block_headers::validator_node_merkle_root.eq(header.validator_node_merkle_root.as_bytes()),
             ))

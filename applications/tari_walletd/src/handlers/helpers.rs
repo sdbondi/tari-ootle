@@ -5,10 +5,8 @@ use std::{collections::HashSet, fmt::Display, path::Path};
 
 use anyhow::anyhow;
 use ootle_byte_type::ToByteType;
-use tari_engine_types::{
-    component::derive_component_address_from_public_key,
-    confidential::{AbridgedTransactionKernel, EncodedMerkleProof, MinotariBurnClaimProof},
-};
+use tari_engine_types::component::derive_component_address_from_public_key;
+use tari_ootle_app_utilities::burn_claim_proof::claim_proof_from_l1;
 use tari_ootle_common_types::{
     SubstateRequirement,
     optional::{IsNotFoundError, Optional},
@@ -252,33 +250,9 @@ pub(crate) fn complete_burn_proof_to_contents(proof: CompleteClaimBurnProof) -> 
             EncryptedData::MAX_MEMO_SIZE
         )
     })?;
-    let encoded_merkle_proof = proof
-        .claim_proof
-        .encoded_merkle_proof
-        .encoded_merkle_proof
-        .try_into()
-        .map_err(|_| anyhow!("Invalid encoded merkle proof length"))?;
-
+    let claim_proof = claim_proof_from_l1(&proof.claim_proof).map_err(|e| anyhow!("Invalid burn proof: {e}"))?;
     Ok(ClaimBurnProofContents {
-        claim_proof: MinotariBurnClaimProof {
-            burn_public_key: proof.claim_proof.burn_public_key.to_byte_type(),
-            commitment: proof.claim_proof.commitment.to_byte_type(),
-            ownership_proof: proof.claim_proof.ownership_proof.to_byte_type(),
-            encoded_merkle_proof: EncodedMerkleProof {
-                block_hash: proof.claim_proof.encoded_merkle_proof.block_hash.into_array().into(),
-                encoded_merkle_proof,
-                leaf_index: proof.claim_proof.encoded_merkle_proof.leaf_index,
-            },
-            kernel: AbridgedTransactionKernel {
-                version: proof.claim_proof.kernel.version,
-                fee: proof.claim_proof.kernel.fee,
-                lock_height: proof.claim_proof.kernel.lock_height,
-                excess: proof.claim_proof.kernel.excess.to_byte_type(),
-                excess_sig: proof.claim_proof.kernel.excess_sig.to_byte_type(),
-            },
-            value: proof.claim_proof.value,
-            sender_offset_public_key: proof.claim_proof.sender_offset_public_key.to_byte_type(),
-        },
+        claim_proof,
         encrypted_data,
     })
 }

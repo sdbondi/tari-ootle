@@ -63,7 +63,7 @@ use tari_networking::{
     gossip_queue,
 };
 use tari_ootle_app_utilities::{
-    claim_burn_proof_verifier::KnowledgeProofVerifier,
+    claim_burn_proof_verifier::HeaderlessClaimBurnProofVerifier,
     configuration::convert_network_to_l1_network,
     epoch_oracle_config::EpochOracleType,
     fee_tables::get_fee_table_by_network,
@@ -379,9 +379,8 @@ pub async fn spawn_services(
         dry_run_substate_manager,
         wasm_cache,
         &config.indexer.templates,
-        // We do not verify the kernel merkle proof, since that requires syncing L1 headers
-        // TODO: maybe at least validate the well-formedness of the proof
-        KnowledgeProofVerifier::new(
+        // The indexer holds no L1 headers, so a dry run checks everything about a claim but its inclusion in L1
+        HeaderlessClaimBurnProofVerifier::new(
             config.network,
             config.indexer.sidechain_id.as_ref().map(|p| p.to_byte_type()),
         ),

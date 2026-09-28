@@ -6,16 +6,25 @@ use std::fmt::Display;
 use blake2::{Blake2b, digest::consts::U32};
 use log::*;
 use ootle_byte_type::ConvertFromByteType;
-use tari_common_types::types::{CompressedCommitment, CompressedPublicKey, CompressedSignature, FixedHash};
+use tari_common_types::types::{CompressedCommitment, CompressedPublicKey, CompressedSignature, FixedHash, PrivateKey};
 use tari_crypto::{
     commitment::HomomorphicCommitmentFactory,
     ristretto::{RistrettoSchnorr, RistrettoSecretKey, pedersen::PedersenCommitment},
     tari_utilities::ByteArray,
 };
-use tari_engine::traits::{ClaimProofError, ClaimProofRejection, ClaimProofVerifier};
-use tari_engine_types::{confidential::MinotariBurnClaimProof, crypto::get_commitment_factory};
-use tari_hashing::{TransactionHashDomain, hashers::KernelMmrHasherBlake256};
-use tari_mmr::common::LeafIndex;
+use tari_engine::traits::{ClaimProofError, ClaimProofRejection, ClaimProofVerifier, VerifiedClaim};
+use tari_engine_types::{
+    confidential::{
+        BurnOutput,
+        BurnOutputInclusionProof,
+        MAX_MMR_PROOF_HASHES,
+        MinotariBurnClaimProof,
+        MmrInclusionProof,
+    },
+    crypto::get_commitment_factory,
+};
+use tari_hashing::{TransactionHashDomain, hashers::InputMmrHasherBlake256};
+use tari_mmr::common::{LeafIndex, checked_n_leaves};
 use tari_ootle_common_types::{
     Epoch,
     base_layer_hashing::ownership_proof_hasher64,
@@ -23,17 +32,32 @@ use tari_ootle_common_types::{
 };
 use tari_ootle_storage::global::{GlobalDb, GlobalDbAdapter};
 use tari_ootle_transaction::Network;
-use tari_template_lib::types::crypto::RistrettoPublicKeyBytes;
+use tari_template_lib::types::crypto::{RistrettoPublicKeyBytes, SchnorrSignatureBytes};
 use tari_transaction_components::{
+    MicroMinotari,
     consensus::DomainSeparatedConsensusHasher,
-    transaction_components::{KernelFeatures, TransactionKernel},
+    transaction_components::{
+        CoinBaseExtra,
+        ConfidentialOutputData,
+        OutputFeatures,
+        OutputFeaturesVersion,
+        OutputType,
+        RangeProofType,
+        SideChainFeature,
+        SideChainFeatureData,
+        SideChainId,
+        TransactionOutputVersion,
+    },
 };
 
 const LOG_TARGET: &str = "tari::ootle::claim_burn_proof_verifier";
 
+/// Verifies a claim in full: the burn output rules, the ownership proof, and the output's inclusion in an L1 block
+/// whose header this node holds.
 pub struct TariClaimBurnProofVerifier<TGlobalBackend> {
+    burn_output: BurnOutputVerifier,
     knowledge_proof: KnowledgeProofVerifier,
-    kernel_merkle_proof: KernelMerkleProofVerifier<TGlobalBackend>,
+    output_inclusion: OutputInclusionVerifier<TGlobalBackend>,
 }
 
 impl<TGlobalBackend> TariClaimBurnProofVerifier<TGlobalBackend> {
@@ -43,8 +67,9 @@ impl<TGlobalBackend> TariClaimBurnProofVerifier<TGlobalBackend> {
         global_db: GlobalDb<TGlobalBackend>,
     ) -> Self {
         Self {
+            burn_output: BurnOutputVerifier::new(network, sidechain_id),
             knowledge_proof: KnowledgeProofVerifier::new(network, sidechain_id),
-            kernel_merkle_proof: KernelMerkleProofVerifier::new(global_db, network),
+            output_inclusion: OutputInclusionVerifier::new(global_db),
         }
     }
 }
@@ -57,75 +82,213 @@ where
     fn verify_claim_proof(
         &self,
         epoch: Epoch,
-        claimant: &RistrettoPublicKeyBytes,
         claim_proof: &MinotariBurnClaimProof,
-    ) -> Result<(), ClaimProofError> {
-        // 1. Verify proof of knowledge of the burn commitment opening
-        self.knowledge_proof.verify_claim_proof(epoch, claimant, claim_proof)?;
-        // 2. Verify kernel inclusion proof
-        self.kernel_merkle_proof
-            .verify_claim_proof(epoch, claimant, claim_proof)?;
-        // Claim proof is valid
-        Ok(())
+    ) -> Result<VerifiedClaim, ClaimProofError> {
+        let output_hash = self.burn_output.verify(claim_proof)?;
+        self.knowledge_proof
+            .verify(&claim_proof.output.features.claim_public_key, claim_proof)?;
+        self.output_inclusion
+            .verify(epoch, &claim_proof.inclusion_proof, &output_hash)?;
+        Ok(VerifiedClaim {
+            claim_public_key: claim_proof.output.features.claim_public_key,
+        })
     }
 }
 
-pub struct KernelMerkleProofVerifier<TGlobalBackend> {
-    global_db: GlobalDb<TGlobalBackend>,
+/// Verifies everything about a claim that needs no L1 header: the burn output rules and the ownership proof. It takes
+/// the output's inclusion in an L1 block on trust, which suits nodes that only estimate claims, such as an indexer.
+pub struct HeaderlessClaimBurnProofVerifier {
+    burn_output: BurnOutputVerifier,
+    knowledge_proof: KnowledgeProofVerifier,
+}
+
+impl HeaderlessClaimBurnProofVerifier {
+    pub fn new(network: Network, sidechain_id: Option<RistrettoPublicKeyBytes>) -> Self {
+        Self {
+            burn_output: BurnOutputVerifier::new(network, sidechain_id),
+            knowledge_proof: KnowledgeProofVerifier::new(network, sidechain_id),
+        }
+    }
+}
+
+impl ClaimProofVerifier for HeaderlessClaimBurnProofVerifier {
+    fn verify_claim_proof(
+        &self,
+        _epoch: Epoch,
+        claim_proof: &MinotariBurnClaimProof,
+    ) -> Result<VerifiedClaim, ClaimProofError> {
+        self.burn_output.verify(claim_proof)?;
+        self.knowledge_proof
+            .verify(&claim_proof.output.features.claim_public_key, claim_proof)?;
+        Ok(VerifiedClaim {
+            claim_public_key: claim_proof.output.features.claim_public_key,
+        })
+    }
+}
+
+/// Checks that a claim's burn output is one this chain mints against, and computes its L1 output hash.
+///
+/// The claim can only describe a `Burn` output whose sidechain feature is a `ConfidentialOutput`: the output hash is
+/// computed with those fixed, so a claim of any other output does not prove inclusion. What is left to check is that
+/// the output is tagged for this chain.
+pub struct BurnOutputVerifier {
     network: Network,
+    sidechain_id: Option<RistrettoPublicKeyBytes>,
 }
 
-impl<TGlobalBackend> KernelMerkleProofVerifier<TGlobalBackend> {
-    pub fn new(global_db: GlobalDb<TGlobalBackend>, network: Network) -> Self {
-        Self { global_db, network }
+impl BurnOutputVerifier {
+    pub fn new(network: Network, sidechain_id: Option<RistrettoPublicKeyBytes>) -> Self {
+        Self { network, sidechain_id }
+    }
+
+    /// Returns the L1 hash of the claim's burn output
+    pub fn verify(&self, claim: &MinotariBurnClaimProof) -> Result<FixedHash, ClaimProofError> {
+        let output_sidechain_id = claim.output.features.sidechain_id.as_ref().map(|id| &id.public_key);
+        if output_sidechain_id != self.sidechain_id.as_ref() {
+            warn!(
+                target: LOG_TARGET,
+                "Claim burn failed - burn output is tagged for sidechain {:?}, this chain is {:?}",
+                output_sidechain_id, self.sidechain_id
+            );
+            return Err(ClaimProofRejection::Invalid(format!(
+                "the burn output is tagged for sidechain {}, but this chain is {}",
+                display_sidechain_id(output_sidechain_id),
+                display_sidechain_id(self.sidechain_id.as_ref()),
+            ))
+            .into());
+        }
+
+        hash_burn_output(self.network, claim).map_err(|e| {
+            warn!(target: LOG_TARGET, "Claim burn failed - malformed burn output: {}", e);
+            ClaimProofRejection::Invalid(format!("malformed burn output: {}", e)).into()
+        })
     }
 }
 
-impl<TGlobalBackend> KernelMerkleProofVerifier<TGlobalBackend> {
-    fn hash_kernel(&self, kernel: &TransactionKernel) -> FixedHash {
-        // Ye olde CURRENT_NETWORK global means we reimplement kernel.hash() here
-        DomainSeparatedConsensusHasher::<TransactionHashDomain, Blake2b<U32>>::new_with_network(
-            "transaction_kernel",
-            self.network.as_byte(),
-        )
-        .chain(kernel)
-        .finalize()
-        .into()
+fn display_sidechain_id(id: Option<&RistrettoPublicKeyBytes>) -> String {
+    id.map_or_else(|| "none".to_string(), |id| id.to_string())
+}
+
+/// Computes the L1 `TransactionOutput::hash` of a claim's burn output.
+///
+/// The fields that the rules depend on (the features and commitment) are built into L1 types and hashed through
+/// their own consensus encoding. The opaque fields are consensus encodings already and are hashed as given: the L1
+/// hash is the concatenation of each field's encoding, and every encoding ahead of them is self-delimiting, so no
+/// choice of opaque bytes can change what the features and commitment decode to.
+fn hash_burn_output(network: Network, claim: &MinotariBurnClaimProof) -> Result<FixedHash, String> {
+    let BurnOutput {
+        version,
+        features,
+        rangeproof_hash,
+        script,
+        sender_offset_public_key,
+        metadata_signature,
+        covenant,
+        encrypted_data,
+        minimum_value_promise,
+    } = &claim.output;
+
+    let version = TransactionOutputVersion::try_from(*version).map_err(|e| format!("bad output version: {}", e))?;
+    let range_proof_type = match features.range_proof_type {
+        0 => RangeProofType::BulletProofPlus,
+        1 => RangeProofType::RevealedValue,
+        other => return Err(format!("bad range proof type {}", other)),
+    };
+    let sidechain_id = features
+        .sidechain_id
+        .as_ref()
+        .map(|id| {
+            Ok::<_, String>(SideChainId::new(
+                compressed_public_key("sidechain id", &id.public_key)?,
+                compressed_signature("sidechain id knowledge proof", &id.knowledge_proof)?,
+            ))
+        })
+        .transpose()?;
+    let features = OutputFeatures {
+        version: OutputFeaturesVersion::try_from(features.version)
+            .map_err(|e| format!("bad output features version: {}", e))?,
+        output_type: OutputType::Burn,
+        maturity: features.maturity,
+        coinbase_extra: CoinBaseExtra::default(),
+        sidechain_feature: Some(SideChainFeature {
+            data: SideChainFeatureData::ConfidentialOutput(ConfidentialOutputData {
+                claim_public_key: compressed_public_key("claim public key", &features.claim_public_key)?,
+            }),
+            sidechain_id,
+        }),
+        range_proof_type,
+    };
+    let commitment = CompressedCommitment::from_canonical_bytes(claim.commitment.as_bytes())
+        .map_err(|e| format!("bad commitment: {}", e))?;
+
+    let hash = DomainSeparatedConsensusHasher::<TransactionHashDomain, Blake2b<U32>>::new_with_network(
+        "transaction_output",
+        network.as_byte(),
+    )
+    .chain(&version)
+    .chain(&features)
+    .chain(&commitment)
+    .chain(&FixedHash::from(rangeproof_hash.into_array()))
+    .chain(&Encoded(script.as_slice()))
+    .chain(&compressed_public_key(
+        "sender offset public key",
+        sender_offset_public_key,
+    )?)
+    .chain(&Encoded(metadata_signature.as_slice()))
+    .chain(&Encoded(covenant.as_slice()))
+    .chain(&Encoded(encrypted_data.as_slice()))
+    .chain(&MicroMinotari::from(*minimum_value_promise))
+    .finalize();
+    Ok(hash.into())
+}
+
+/// Bytes that are already a consensus encoding, written to a consensus hasher as they are
+struct Encoded<'a>(&'a [u8]);
+
+impl borsh::BorshSerialize for Encoded<'_> {
+    fn serialize<W: borsh::io::Write>(&self, writer: &mut W) -> borsh::io::Result<()> {
+        writer.write_all(self.0)
     }
 }
 
-impl<TGlobalBackend> ClaimProofVerifier for KernelMerkleProofVerifier<TGlobalBackend>
+fn compressed_public_key(field: &str, key: &RistrettoPublicKeyBytes) -> Result<CompressedPublicKey, String> {
+    CompressedPublicKey::from_canonical_bytes(key.as_bytes()).map_err(|e| format!("bad {}: {}", field, e))
+}
+
+fn compressed_signature(field: &str, sig: &SchnorrSignatureBytes) -> Result<CompressedSignature, String> {
+    Ok(CompressedSignature::new(
+        CompressedPublicKey::from_canonical_bytes(sig.public_nonce().as_bytes())
+            .map_err(|e| format!("bad {} nonce: {}", field, e))?,
+        PrivateKey::from_canonical_bytes(sig.signature().as_bytes()).map_err(|e| format!("bad {}: {}", field, e))?,
+    ))
+}
+
+/// Verifies that an output hash is in an L1 block whose header this node holds, against the header's
+/// `block_output_mr`.
+pub struct OutputInclusionVerifier<TGlobalBackend> {
+    global_db: GlobalDb<TGlobalBackend>,
+}
+
+impl<TGlobalBackend> OutputInclusionVerifier<TGlobalBackend> {
+    pub fn new(global_db: GlobalDb<TGlobalBackend>) -> Self {
+        Self { global_db }
+    }
+}
+
+impl<TGlobalBackend> OutputInclusionVerifier<TGlobalBackend>
 where
     TGlobalBackend: GlobalDbAdapter,
     TGlobalBackend::Error: Display + IsNotFoundError,
 {
-    fn verify_claim_proof(
+    pub fn verify(
         &self,
         epoch: Epoch,
-        _claimant: &RistrettoPublicKeyBytes,
-        claim_proof: &MinotariBurnClaimProof,
+        proof: &BurnOutputInclusionProof,
+        output_hash: &FixedHash,
     ) -> Result<(), ClaimProofError> {
-        // 1. Decode the merkle proof
-        let (proof, read) = bincode::serde::decode_from_slice::<tari_mmr::MerkleProof, _>(
-            claim_proof.encoded_merkle_proof.encoded_merkle_proof.as_slice(),
-            // L1 uses bincode v1
-            bincode::config::legacy(),
-        )
-        .map_err(|e| {
-            warn!(target: LOG_TARGET, "Claim burn failed - malformed merkle proof: {}", e);
-            format!("malformed merkle proof: {}", e)
-        })?;
-        if read != claim_proof.encoded_merkle_proof.encoded_merkle_proof.len() {
-            warn!(target: LOG_TARGET, "Claim burn failed - malformed merkle proof: read length mismatch");
-            return Err(
-                ClaimProofRejection::Invalid("malformed merkle proof: read length mismatch".to_string()).into(),
-            );
-        }
-
-        // 2. Fetch the block header for this proof. Only headers from epochs before the current one count: a node
-        // that has reached an epoch holds every header of the epochs before it from its configured scan
-        // `start_height` on, but each node scans the current epoch's headers at its own pace, so they would disagree
-        // on whether one is present.
+        // Only headers from epochs before the current one count: a node that has reached an epoch holds every header
+        // of the epochs before it from its configured scan `start_height` on, but each node scans the current
+        // epoch's headers at its own pace, so they would disagree on whether one is present.
         let Some(max_header_epoch) = epoch.checked_sub(1) else {
             warn!(target: LOG_TARGET, "Claim burn failed - no base layer header is claimable in epoch 0");
             return Err(ClaimProofRejection::NotYetValid(
@@ -140,7 +303,7 @@ where
             })?;
             self.global_db
                 .block_headers(&mut tx)
-                .get_by_hash(max_header_epoch, &claim_proof.encoded_merkle_proof.block_hash)
+                .get_by_hash(max_header_epoch, &proof.block_hash)
                 .optional()
                 .map_err(|e| {
                     warn!(target: LOG_TARGET, "Claim burn failed - could not fetch block header: {}", e);
@@ -151,71 +314,73 @@ where
             warn!(
                 target: LOG_TARGET,
                 "Claim burn failed - block header not found for hash {} in an epoch before {}",
-                claim_proof.encoded_merkle_proof.block_hash, epoch
+                proof.block_hash, epoch
             );
             // A header from this epoch, or one not yet synced, is claimable in a later epoch, so the same proof
             // can still verify. This is the only failure here that depends on when it is checked.
             ClaimProofRejection::NotYetValid(format!(
                 "block header not found for hash {} in an epoch before {}. The claim may be invalid, or the burn may \
                  only be claimable in a later epoch.",
-                claim_proof.encoded_merkle_proof.block_hash, epoch
+                proof.block_hash, epoch
             ))
         })?;
 
-        // 3. Reconstitute the kernel to get the hash
-        let kernel = reconstitute_kernel(claim_proof)?;
-
-        // 4. Verify the merkle proof (proving that the kernel is in the block)
-        let leaf_index = claim_proof.encoded_merkle_proof.leaf_index.try_into().map_err(|e| {
-            warn!(target: LOG_TARGET, "Claim burn failed - invalid leaf index: {}", e);
-            format!("invalid leaf index: {}", e)
-        })?;
-
-        let kernel_hash = self.hash_kernel(&kernel);
-
-        proof
-            .verify_leaf::<KernelMmrHasherBlake256>(
-                block_header.kernel_merkle_root.as_slice(),
-                kernel_hash.as_slice(),
-                LeafIndex(leaf_index),
-            )
-            .map_err(|e| {
-                warn!(target: LOG_TARGET, "Claim burn failed - invalid merkle proof: {}", e);
-                format!("invalid merkle proof: {}", e)
-            })?;
-
-        Ok(())
+        verify_output_inclusion(proof, output_hash, &block_header.block_output_merkle_root).map_err(|e| {
+            warn!(target: LOG_TARGET, "Claim burn failed - invalid output inclusion proof: {}", e);
+            ClaimProofRejection::Invalid(format!("invalid output inclusion proof: {}", e)).into()
+        })
     }
 }
 
-/// Rebuilds the L1 burn kernel a claim cites, from the abridged form the claim carries.
-fn reconstitute_kernel(claim_proof: &MinotariBurnClaimProof) -> Result<TransactionKernel, String> {
-    let kernel = &claim_proof.kernel;
-    Ok(TransactionKernel {
-        version: kernel
-            .version
-            .try_into()
-            .map_err(|e| format!("bad kernel version: {}", e))?,
-        features: KernelFeatures::BURN_KERNEL,
-        fee: kernel.fee.into(),
-        lock_height: kernel.lock_height,
-        excess: CompressedCommitment::from_canonical_bytes(kernel.excess.as_bytes()).map_err(|e| {
-            warn!(target: LOG_TARGET, "Claim burn failed - malformed excess commitment: {}", e);
-            format!("malformed excess commitment: {}", e)
-        })?,
-        excess_sig: CompressedSignature::new(
-            CompressedPublicKey::from_canonical_bytes(kernel.excess_sig.public_nonce().as_bytes())
-                .map_err(|e| format!("malformed excess signature nonce: {}", e))?,
-            RistrettoSecretKey::from_canonical_bytes(kernel.excess_sig.signature().as_bytes())
-                .map_err(|e| format!("malformed excess signature: {}", e))?,
-        ),
-        burn_commitment: Some(
-            CompressedCommitment::from_canonical_bytes(claim_proof.commitment.as_bytes()).map_err(|e| {
-                warn!(target: LOG_TARGET, "Claim burn failed - malformed burn commitment: {}", e);
-                format!("malformed burn commitment: {}", e)
-            })?,
-        ),
-    })
+/// Folds `output_hash` up to `block_output_mr`: first to the normal output MMR root, then from that root, which must
+/// be the last leaf of the block output MMR, to the block output MMR root.
+fn verify_output_inclusion(
+    proof: &BurnOutputInclusionProof,
+    output_hash: &FixedHash,
+    block_output_mr: &FixedHash,
+) -> Result<(), String> {
+    let normal_output_mr = FixedHash::from(proof.normal_output_mr.into_array());
+    verify_mmr_proof(
+        "normal output",
+        &proof.normal_output_proof,
+        &normal_output_mr,
+        output_hash,
+    )?;
+
+    let block_output_proof = &proof.block_output_proof;
+    let last_leaf = usize::try_from(block_output_proof.mmr_size)
+        .ok()
+        .and_then(checked_n_leaves)
+        .and_then(|n_leaves| n_leaves.checked_sub(1))
+        .ok_or_else(|| format!("invalid block output MMR size {}", block_output_proof.mmr_size))?;
+    if u64::try_from(last_leaf).ok() != Some(block_output_proof.leaf_index) {
+        return Err(format!(
+            "the normal output MMR root is at leaf {} of the block output MMR, not its last leaf {}",
+            block_output_proof.leaf_index, last_leaf
+        ));
+    }
+    verify_mmr_proof("block output", block_output_proof, block_output_mr, &normal_output_mr)
+}
+
+fn verify_mmr_proof(mmr: &str, proof: &MmrInclusionProof, root: &FixedHash, leaf: &FixedHash) -> Result<(), String> {
+    if proof.path.len() > MAX_MMR_PROOF_HASHES || proof.peaks.len() > MAX_MMR_PROOF_HASHES {
+        return Err(format!("the {} MMR proof has too many hashes", mmr));
+    }
+    let to_usize = |value: u64, name: &str| {
+        usize::try_from(value).map_err(|_| format!("the {} MMR proof {} {} is out of range", mmr, name, value))
+    };
+    let merkle_proof = tari_mmr::MerkleProof {
+        mmr_size: to_usize(proof.mmr_size, "size")?,
+        path: proof.path.iter().map(|hash| hash.as_slice().to_vec()).collect(),
+        peaks: proof.peaks.iter().map(|hash| hash.as_slice().to_vec()).collect(),
+    };
+    merkle_proof
+        .verify_leaf::<InputMmrHasherBlake256>(
+            root.as_slice(),
+            leaf.as_slice(),
+            LeafIndex(to_usize(proof.leaf_index, "leaf index")?),
+        )
+        .map_err(|e| format!("the {} MMR proof does not verify: {}", mmr, e))
 }
 
 pub struct KnowledgeProofVerifier {
@@ -230,12 +395,9 @@ impl KnowledgeProofVerifier {
     pub fn new(network: Network, sidechain_id: Option<RistrettoPublicKeyBytes>) -> Self {
         Self { network, sidechain_id }
     }
-}
 
-impl ClaimProofVerifier for KnowledgeProofVerifier {
-    fn verify_claim_proof(
+    pub fn verify(
         &self,
-        _epoch: Epoch,
         claimant: &RistrettoPublicKeyBytes,
         claim: &MinotariBurnClaimProof,
     ) -> Result<(), ClaimProofError> {
@@ -246,9 +408,8 @@ impl ClaimProofVerifier for KnowledgeProofVerifier {
             ..
         } = claim;
 
-        // `claimant` is the stealth claim public key `C = H(r·P)·G + P`. The runtime supplies it
-        // via `seal_signer_public_key`: the L2 wallet signs the claim transaction with
-        // `s = H(R·p) + p`, so the transaction's seal-signer pubkey is `s·G = C`.
+        // `claimant` is the stealth claim public key `S = H(r·P)·G + P` that the burn output names. The L1 wallet
+        // binds the proof to it, and the engine requires `S` to sign the claim transaction.
         //
         // `sidechain_id` binds the proof to THIS chain's configured burnt-utxo sidechain id, so a
         // proof signed for another sidechain/application cannot be replayed here (tari-ootle#445).
@@ -294,16 +455,28 @@ mod tests {
         keys::{PublicKey as _, SecretKey as _},
         ristretto::{RistrettoPublicKey, RistrettoSchnorr, RistrettoSecretKey},
     };
-    use tari_engine::traits::ClaimProofVerifier;
     use tari_engine_types::{
-        confidential::{AbridgedTransactionKernel, EncodedMerkleProof, MinotariBurnClaimProof},
+        confidential::{
+            BurnOutput,
+            BurnOutputFeatures,
+            BurnOutputInclusionProof,
+            MinotariBurnClaimProof,
+            MmrInclusionProof,
+        },
         crypto::get_commitment_factory,
     };
-    use tari_ootle_common_types::{Epoch, base_layer_hashing::ownership_proof_hasher64};
+    use tari_ootle_common_types::base_layer_hashing::ownership_proof_hasher64;
     use tari_ootle_transaction::Network;
-    use tari_template_lib::types::crypto::{PedersenCommitmentBytes, RistrettoPublicKeyBytes, SchnorrSignatureBytes};
+    use tari_template_lib::types::{
+        Hash32,
+        crypto::{PedersenCommitmentBytes, RistrettoPublicKeyBytes},
+    };
 
     use super::KnowledgeProofVerifier;
+
+    fn one_byte<const N: usize>() -> bounded_vec::BoundedVec<u8, 1, N> {
+        bounded_vec::BoundedVec::<u8, 1, N>::from_vec(vec![0]).expect("valid bounded vec")
+    }
 
     /// Mints a `MinotariBurnClaimProof` whose `ownership_proof` Schnorr signature is bound to
     /// `claimant_pk` (the key the message commits to in `H(commitment ‖ claimant_pk ‖ sidechain_id)`)
@@ -326,44 +499,54 @@ mod tests {
             .finalize();
         let signature = RistrettoSchnorr::sign(&mask, &message[..], &mut rand::rng()).expect("sign with random nonce");
 
-        // Dummy merkle proof / kernel — KnowledgeProofVerifier doesn't read them.
-        let encoded_merkle_proof = EncodedMerkleProof {
-            block_hash: Default::default(),
-            encoded_merkle_proof: bounded_vec::BoundedVec::<u8, 1, 4096>::from_vec(vec![0]).expect("valid bounded vec"),
+        // Dummy burn output and inclusion proof: KnowledgeProofVerifier doesn't read them.
+        let mmr_proof = || MmrInclusionProof {
             leaf_index: 0,
+            mmr_size: 1,
+            path: vec![],
+            peaks: vec![],
         };
-        let kernel = AbridgedTransactionKernel {
-            version: 0,
-            fee: 0,
-            lock_height: 0,
-            excess: PedersenCommitmentBytes::zero(),
-            excess_sig: SchnorrSignatureBytes::zero(),
-        };
-
         MinotariBurnClaimProof {
-            burn_public_key: RistrettoPublicKeyBytes::zero(),
             commitment: commitment_bytes,
             ownership_proof: signature.to_byte_type(),
-            encoded_merkle_proof,
-            kernel,
             value,
-            sender_offset_public_key: RistrettoPublicKeyBytes::zero(),
+            output: BurnOutput {
+                version: 0,
+                features: BurnOutputFeatures {
+                    version: 0,
+                    maturity: 0,
+                    claim_public_key: RistrettoPublicKeyBytes::zero(),
+                    sidechain_id: None,
+                    range_proof_type: 0,
+                },
+                rangeproof_hash: Hash32::zero(),
+                script: one_byte(),
+                sender_offset_public_key: RistrettoPublicKeyBytes::zero(),
+                metadata_signature: one_byte(),
+                covenant: one_byte(),
+                encrypted_data: one_byte(),
+                minimum_value_promise: 0,
+            },
+            inclusion_proof: BurnOutputInclusionProof {
+                block_hash: Hash32::zero(),
+                normal_output_proof: mmr_proof(),
+                normal_output_mr: Hash32::zero(),
+                block_output_proof: mmr_proof(),
+            },
         }
     }
 
     #[test]
-    fn verifies_against_caller_supplied_claimant() {
+    fn verifies_against_the_claimant_it_is_bound_to() {
         let network = Network::LocalNet;
-        // The runtime feeds the transaction's seal-signer pubkey as the claimant. For stealth
-        // claims the wallet signs with `s = H(R·p) + p`, so this is `C = s·G`.
         let (_c_sec, c_pub) = RistrettoPublicKey::random_keypair(&mut rand::rng());
 
         let proof = build_proof(network, 2_000, c_pub.to_byte_type(), None);
         let verifier = KnowledgeProofVerifier::new(network, None);
 
         verifier
-            .verify_claim_proof(Epoch(0), &c_pub.to_byte_type(), &proof)
-            .expect("proof should verify against the seal signer C");
+            .verify(&c_pub.to_byte_type(), &proof)
+            .expect("proof should verify against the key it is bound to");
     }
 
     #[test]
@@ -376,7 +559,7 @@ mod tests {
         let proof = build_proof(network, 3_000, c_pub.to_byte_type(), None);
 
         let verifier = KnowledgeProofVerifier::new(network, None);
-        let result = verifier.verify_claim_proof(Epoch(0), &wrong_pub.to_byte_type(), &proof);
+        let result = verifier.verify(&wrong_pub.to_byte_type(), &proof);
         assert!(result.is_err(), "expected verification to reject mismatched claimant");
     }
 
@@ -419,7 +602,7 @@ mod tests {
         let verifier = KnowledgeProofVerifier::new(network, Some(sidechain_id));
 
         verifier
-            .verify_claim_proof(Epoch(0), &c_pub.to_byte_type(), &proof)
+            .verify(&c_pub.to_byte_type(), &proof)
             .expect("proof bound to this chain's sidechain id should verify");
     }
 
@@ -434,7 +617,7 @@ mod tests {
         let proof = build_proof(network, 5_000, c_pub.to_byte_type(), Some(&signed_sc.to_byte_type()));
         let verifier = KnowledgeProofVerifier::new(network, Some(other_sc.to_byte_type()));
 
-        let result = verifier.verify_claim_proof(Epoch(0), &c_pub.to_byte_type(), &proof);
+        let result = verifier.verify(&c_pub.to_byte_type(), &proof);
         assert!(result.is_err(), "replay onto a different sidechain must be rejected");
     }
 
@@ -449,7 +632,7 @@ mod tests {
         let proof = build_proof(network, 6_000, c_pub.to_byte_type(), None);
         let verifier = KnowledgeProofVerifier::new(network, Some(sc_pub.to_byte_type()));
 
-        let result = verifier.verify_claim_proof(Epoch(0), &c_pub.to_byte_type(), &proof);
+        let result = verifier.verify(&c_pub.to_byte_type(), &proof);
         assert!(
             result.is_err(),
             "an unbound proof must not verify on a chain that expects a sidechain id"
@@ -458,33 +641,82 @@ mod tests {
 }
 
 #[cfg(test)]
-mod kernel_merkle_proof_tests {
+mod burn_output_proof_tests {
     use ootle_byte_type::ToByteType;
-    use tari_common_types::types::FixedHash;
+    use tari_common_types::{
+        burn_proof::{BurnOutputProof, MmrInclusionProof as L1MmrInclusionProof, OutputHashPreimage},
+        epoch::VnEpoch,
+        types::{ComAndPubSignature, CompressedCommitment, CompressedPublicKey, FixedHash, PrivateKey},
+    };
     use tari_crypto::{
         commitment::HomomorphicCommitmentFactory,
         keys::{PublicKey as _, SecretKey as _},
         ristretto::{RistrettoPublicKey, RistrettoSchnorr, RistrettoSecretKey},
+        tari_utilities::ByteArray,
     };
     use tari_engine::traits::{ClaimProofError, ClaimProofRejection, ClaimProofVerifier};
     use tari_engine_types::{
-        confidential::{AbridgedTransactionKernel, EncodedMerkleProof, MinotariBurnClaimProof},
+        confidential::{
+            BurnOutput,
+            BurnOutputFeatures,
+            BurnOutputInclusionProof,
+            BurnSidechainId,
+            MAX_MMR_PROOF_HASHES,
+            MinotariBurnClaimProof,
+            MmrInclusionProof,
+        },
         crypto::get_commitment_factory,
     };
-    use tari_hashing::hashers::KernelMmrHasherBlake256;
-    use tari_mmr::{MerkleMountainRange, MerkleProof, common::LeafIndex};
-    use tari_ootle_common_types::Epoch;
+    use tari_hashing::hashers::InputMmrHasherBlake256;
+    use tari_mmr::{Hash, MerkleMountainRange, MerkleProof, common::LeafIndex};
+    use tari_ootle_common_types::{Epoch, base_layer_hashing::ownership_proof_hasher64};
     use tari_ootle_storage::global::{BlockHeaderModel, DbFactory, GlobalDb};
     use tari_ootle_storage_sqlite::{SqliteDbFactory, global::SqliteGlobalDbAdapter};
     use tari_ootle_transaction::Network;
-    use tari_template_lib::types::crypto::RistrettoPublicKeyBytes;
+    use tari_script::script;
+    use tari_template_lib::types::{
+        Hash32,
+        crypto::{PedersenCommitmentBytes, RistrettoPublicKeyBytes},
+    };
+    use tari_transaction_components::{
+        MicroMinotari,
+        transaction_components::{
+            ConfidentialOutputData,
+            EncryptedData,
+            OutputFeatures,
+            OutputType,
+            RangeProofType,
+            SideChainFeature,
+            SideChainFeatureData,
+            SideChainId,
+            TransactionOutput,
+            TransactionOutputVersion,
+            ValidatorNodeExit,
+            burn_output_proof::BurnOutputProofExt,
+            covenants::Covenant,
+        },
+    };
     use tempfile::TempDir;
 
-    use super::{KernelMerkleProofVerifier, reconstitute_kernel};
+    use super::{
+        HeaderlessClaimBurnProofVerifier,
+        TariClaimBurnProofVerifier,
+        compressed_signature,
+        hash_burn_output,
+        verify_output_inclusion,
+    };
+    use crate::burn_claim_proof::claim_proof_from_l1;
 
     type Adapter = SqliteGlobalDbAdapter<RistrettoPublicKeyBytes>;
+    type OutputMmr = MerkleMountainRange<InputMmrHasherBlake256, Vec<Hash>>;
 
-    const NETWORK: Network = Network::LocalNet;
+    const VALUE: u64 = 1_000;
+
+    /// The L1 hashes outputs under its process-wide network, so the tests hash under the same one
+    fn network() -> Network {
+        let l1_network = tari_common::configuration::Network::get_current_or_user_setting_or_default();
+        Network::try_from(l1_network.as_byte()).unwrap()
+    }
 
     fn open_db(dir: &TempDir, migrate: bool) -> GlobalDb<Adapter> {
         let factory = SqliteDbFactory::<RistrettoPublicKeyBytes>::new(dir.path().join("global.sqlite"));
@@ -494,100 +726,548 @@ mod kernel_merkle_proof_tests {
         factory.get_or_create_global_db().unwrap()
     }
 
-    fn new_verifier(dir: &TempDir) -> KernelMerkleProofVerifier<Adapter> {
-        KernelMerkleProofVerifier::new(open_db(dir, true), NETWORK)
+    fn random_public_key() -> CompressedPublicKey {
+        CompressedPublicKey::new_from_pk(RistrettoPublicKey::random_keypair(&mut rand::rng()).1)
     }
 
-    /// Stores a header in `header_epoch` whose kernel MMR holds a single burn kernel, and returns a claim of it.
-    fn claim_in_header(verifier: &KernelMerkleProofVerifier<Adapter>, header_epoch: Epoch) -> MinotariBurnClaimProof {
-        let mut rng = rand::rng();
-        let commitment = get_commitment_factory().commit_value(&RistrettoSecretKey::random(&mut rng), 1_000);
-        let excess = get_commitment_factory().commit_value(&RistrettoSecretKey::random(&mut rng), 0);
-        let excess_sig = RistrettoSchnorr::sign(&RistrettoSecretKey::random(&mut rng), b"kernel", &mut rng).unwrap();
-        let block_hash = FixedHash::from(rand::random::<[u8; 32]>());
-
-        let mut claim = MinotariBurnClaimProof {
-            burn_public_key: RistrettoPublicKeyBytes::zero(),
-            commitment: commitment.to_byte_type(),
-            ownership_proof: excess_sig.to_byte_type(),
-            encoded_merkle_proof: EncodedMerkleProof {
-                block_hash: block_hash.into_array().into(),
-                encoded_merkle_proof: bounded_vec::BoundedVec::<u8, 1, 4096>::from_vec(vec![0]).unwrap(),
-                leaf_index: 0,
-            },
-            kernel: AbridgedTransactionKernel {
-                version: 0,
-                fee: 0,
-                lock_height: 0,
-                excess: excess.to_byte_type(),
-                excess_sig: excess_sig.to_byte_type(),
-            },
-            value: 1_000,
-            sender_offset_public_key: RistrettoPublicKey::random_keypair(&mut rng).1.to_byte_type(),
-        };
-
-        let kernel = reconstitute_kernel(&claim).unwrap();
-        let kernel_hash = verifier.hash_kernel(&kernel);
-        let mut mmr = MerkleMountainRange::<KernelMmrHasherBlake256, Vec<Vec<u8>>>::new(Vec::new());
-        mmr.push(kernel_hash.to_vec()).unwrap();
-        let proof = MerkleProof::for_leaf_node(&mmr, LeafIndex(0)).unwrap();
-        let encoded = bincode::serde::encode_to_vec(&proof, bincode::config::legacy()).unwrap();
-        claim.encoded_merkle_proof.encoded_merkle_proof =
-            bounded_vec::BoundedVec::<u8, 1, 4096>::from_vec(encoded).unwrap();
-
-        let header = BlockHeaderModel {
-            epoch: header_epoch,
-            height: 1,
-            block_hash,
-            kernel_merkle_root: FixedHash::try_from(mmr.get_merkle_root().unwrap()).unwrap(),
-            block_output_merkle_root: FixedHash::zero(),
-            validator_node_merkle_root: FixedHash::zero(),
-        };
-        let db = &verifier.global_db;
-        let mut tx = db.create_transaction().unwrap();
-        db.block_headers(&mut tx).insert(header).unwrap();
-        db.commit(tx).unwrap();
-        claim
+    fn sidechain_id(secret: &PrivateKey, claim_public_key: &CompressedPublicKey) -> SideChainId {
+        let signature = RistrettoSchnorr::sign(secret, claim_public_key.as_bytes(), &mut rand::rng()).unwrap();
+        SideChainId::new(
+            CompressedPublicKey::new_from_pk(RistrettoPublicKey::from_secret_key(secret)),
+            tari_common_types::types::CompressedSignature::new(
+                CompressedPublicKey::new_from_pk(signature.get_public_nonce().clone()),
+                signature.get_signature().clone(),
+            ),
+        )
     }
 
-    fn verify(
-        verifier: &KernelMerkleProofVerifier<Adapter>,
-        epoch: Epoch,
-        claim: &MinotariBurnClaimProof,
-    ) -> Result<(), ClaimProofError> {
-        verifier.verify_claim_proof(epoch, &RistrettoPublicKeyBytes::zero(), claim)
+    fn confidential_output_feature(sidechain_id: Option<SideChainId>) -> Option<SideChainFeature> {
+        Some(SideChainFeature {
+            data: SideChainFeatureData::ConfidentialOutput(ConfidentialOutputData {
+                claim_public_key: random_public_key(),
+            }),
+            sidechain_id,
+        })
+    }
+
+    struct L1Burn {
+        output: TransactionOutput,
+        mask: RistrettoSecretKey,
+    }
+
+    fn l1_output(output_type: OutputType, sidechain_feature: Option<SideChainFeature>) -> L1Burn {
+        let mask = RistrettoSecretKey::random(&mut rand::rng());
+        let commitment = get_commitment_factory().commit_value(&mask, VALUE);
+        let output = TransactionOutput::new(
+            TransactionOutputVersion::V1,
+            OutputFeatures {
+                output_type,
+                maturity: 7,
+                sidechain_feature,
+                range_proof_type: RangeProofType::RevealedValue,
+                ..Default::default()
+            },
+            CompressedCommitment::from_canonical_bytes(commitment.as_bytes()).unwrap(),
+            None,
+            script!(PushPubKey(Box::new(random_public_key()))).unwrap(),
+            random_public_key(),
+            ComAndPubSignature::default(),
+            Covenant::default(),
+            EncryptedData::default(),
+            MicroMinotari::from(VALUE),
+        );
+        L1Burn { output, mask }
+    }
+
+    fn l1_burn(sidechain_id: Option<SideChainId>) -> L1Burn {
+        l1_output(OutputType::Burn, confidential_output_feature(sidechain_id))
+    }
+
+    /// The claim's view of an L1 output. The claim cannot express a non-burn output or a sidechain feature other
+    /// than `ConfidentialOutput`, so for those it carries a random claim key.
+    fn burn_output(output: &TransactionOutput) -> BurnOutput {
+        let features = &output.features;
+        let sidechain_feature = features.sidechain_feature.as_ref();
+        let claim_public_key = match sidechain_feature.map(|f| &f.data) {
+            Some(SideChainFeatureData::ConfidentialOutput(data)) => data.claim_public_key.clone(),
+            _ => random_public_key(),
+        };
+        BurnOutput {
+            version: output.version.as_u8(),
+            features: BurnOutputFeatures {
+                version: features.version.as_u8(),
+                maturity: features.maturity,
+                claim_public_key: RistrettoPublicKeyBytes::from_bytes(claim_public_key.as_bytes()).unwrap(),
+                sidechain_id: sidechain_feature
+                    .and_then(|f| f.sidechain_id.as_ref())
+                    .map(|id| BurnSidechainId {
+                        public_key: RistrettoPublicKeyBytes::from_bytes(id.public_key().as_bytes()).unwrap(),
+                        knowledge_proof: tari_template_lib::types::crypto::SchnorrSignatureBytes::from_bytes(
+                            &[
+                                id.knowledge_proof().get_compressed_public_nonce().as_bytes(),
+                                id.knowledge_proof().get_signature().as_bytes(),
+                            ]
+                            .concat(),
+                        )
+                        .unwrap(),
+                    }),
+                range_proof_type: features.range_proof_type.as_byte(),
+            },
+            rangeproof_hash: Hash32::zero(),
+            script: bytes(borsh::to_vec(&output.script).unwrap()),
+            sender_offset_public_key: RistrettoPublicKeyBytes::from_bytes(output.sender_offset_public_key.as_bytes())
+                .unwrap(),
+            metadata_signature: bytes(borsh::to_vec(&output.metadata_signature).unwrap()),
+            covenant: bytes(borsh::to_vec(&output.covenant).unwrap()),
+            encrypted_data: bytes(borsh::to_vec(&output.encrypted_data).unwrap()),
+            minimum_value_promise: output.minimum_value_promise.as_u64(),
+        }
+    }
+
+    fn bytes<const N: usize>(v: Vec<u8>) -> bounded_vec::BoundedVec<u8, 1, N> {
+        bounded_vec::BoundedVec::<u8, 1, N>::from_vec(v).unwrap()
+    }
+
+    fn mmr_proof(mmr: &OutputMmr, leaf_index: usize) -> MmrInclusionProof {
+        let proof = MerkleProof::for_leaf_node(mmr, LeafIndex(leaf_index)).unwrap();
+        let hashes = |hashes: Vec<Hash>| {
+            hashes
+                .into_iter()
+                .map(|h| Hash32::from_array(h.try_into().unwrap()))
+                .collect()
+        };
+        MmrInclusionProof {
+            leaf_index: leaf_index as u64,
+            mmr_size: proof.mmr_size as u64,
+            path: hashes(proof.path),
+            peaks: hashes(proof.peaks),
+        }
+    }
+
+    fn filler_hash(tag: u8, i: usize) -> Vec<u8> {
+        let mut hash = [tag; 32];
+        hash[..8].copy_from_slice(&(i as u64).to_le_bytes());
+        hash.to_vec()
+    }
+
+    /// Builds the block output MMRs the way the L1 `calculate_mmr_roots` does: coinbase output hashes are leaves of
+    /// the block output MMR; every other output hash is a leaf of the normal output MMR, whose root is then pushed as
+    /// the last leaf of the block output MMR. Returns the inclusion proof of `output` at `index` among `num_normal`
+    /// normal outputs, and the block output MR.
+    fn block_with(
+        output: &TransactionOutput,
+        num_coinbases: usize,
+        num_normal: usize,
+        index: usize,
+    ) -> (BurnOutputInclusionProof, FixedHash) {
+        let mut block_output_mmr = OutputMmr::new(Vec::new());
+        let mut normal_output_mmr = OutputMmr::new(Vec::new());
+        for i in 0..num_coinbases {
+            block_output_mmr.push(filler_hash(0xc0, i)).unwrap();
+        }
+        for i in 0..num_normal {
+            let hash = if i == index {
+                output.hash().to_vec()
+            } else {
+                filler_hash(0x80, i)
+            };
+            normal_output_mmr.push(hash).unwrap();
+        }
+        let normal_output_mr = normal_output_mmr.get_merkle_root().unwrap();
+        block_output_mmr.push(normal_output_mr.clone()).unwrap();
+        let block_output_mr = FixedHash::try_from(block_output_mmr.get_merkle_root().unwrap()).unwrap();
+
+        let proof = BurnOutputInclusionProof {
+            block_hash: Hash32::from_array(rand::random()),
+            normal_output_proof: mmr_proof(&normal_output_mmr, index),
+            normal_output_mr: Hash32::from_array(normal_output_mr.try_into().unwrap()),
+            block_output_proof: mmr_proof(&block_output_mmr, num_coinbases),
+        };
+        (proof, block_output_mr)
+    }
+
+    /// A claim of `burn` on the chain with `chain_sidechain_id`, with an ownership proof bound to the output's claim
+    /// key
+    fn claim_of(
+        burn: &L1Burn,
+        inclusion_proof: BurnOutputInclusionProof,
+        chain_sidechain_id: Option<&RistrettoPublicKeyBytes>,
+    ) -> MinotariBurnClaimProof {
+        let output = burn_output(&burn.output);
+        let claimant = output.features.claim_public_key;
+        claim_with(burn, output, inclusion_proof, &claimant, chain_sidechain_id)
+    }
+
+    /// A claim of `burn` as `output`, with an ownership proof bound to `claimant`
+    fn claim_with(
+        burn: &L1Burn,
+        output: BurnOutput,
+        inclusion_proof: BurnOutputInclusionProof,
+        claimant: &RistrettoPublicKeyBytes,
+        chain_sidechain_id: Option<&RistrettoPublicKeyBytes>,
+    ) -> MinotariBurnClaimProof {
+        let commitment =
+            PedersenCommitmentBytes::from(<[u8; 32]>::try_from(burn.output.commitment.as_bytes()).unwrap());
+        let sidechain_id = chain_sidechain_id.map(|id| id.as_bytes());
+        let message = ownership_proof_hasher64(network())
+            .chain(&commitment.as_bytes())
+            .chain(&claimant.as_bytes())
+            .chain(&sidechain_id)
+            .finalize();
+        let ownership_proof = RistrettoSchnorr::sign(&burn.mask, &message[..], &mut rand::rng()).unwrap();
+        MinotariBurnClaimProof {
+            commitment,
+            ownership_proof: ownership_proof.to_byte_type(),
+            value: VALUE,
+            output,
+            inclusion_proof,
+        }
+    }
+
+    struct Chain {
+        _dir: TempDir,
+        verifier: TariClaimBurnProofVerifier<Adapter>,
+        sidechain_id: Option<RistrettoPublicKeyBytes>,
+    }
+
+    impl Chain {
+        fn new(sidechain_id: Option<RistrettoPublicKeyBytes>) -> Self {
+            let dir = TempDir::new().unwrap();
+            let verifier = TariClaimBurnProofVerifier::new(network(), sidechain_id, open_db(&dir, true));
+            Self {
+                _dir: dir,
+                verifier,
+                sidechain_id,
+            }
+        }
+
+        fn add_header(&self, epoch: Epoch, block_hash: Hash32, block_output_mr: FixedHash) {
+            let db = &self.verifier.output_inclusion.global_db;
+            let mut tx = db.create_transaction().unwrap();
+            db.block_headers(&mut tx)
+                .insert(BlockHeaderModel {
+                    epoch,
+                    height: 1,
+                    block_hash: FixedHash::from(block_hash.into_array()),
+                    block_output_merkle_root: block_output_mr,
+                    validator_node_merkle_root: FixedHash::zero(),
+                })
+                .unwrap();
+            db.commit(tx).unwrap();
+        }
+
+        /// Mines `burn` in a block with a header in `header_epoch` and returns a claim of it
+        fn mine(&self, burn: &L1Burn, header_epoch: Epoch) -> MinotariBurnClaimProof {
+            let (proof, block_output_mr) = block_with(&burn.output, 2, 5, 3);
+            self.add_header(header_epoch, proof.block_hash, block_output_mr);
+            claim_of(burn, proof, self.sidechain_id.as_ref())
+        }
+
+        fn verify(
+            &self,
+            epoch: Epoch,
+            claim: &MinotariBurnClaimProof,
+        ) -> Result<RistrettoPublicKeyBytes, ClaimProofError> {
+            self.verifier
+                .verify_claim_proof(epoch, claim)
+                .map(|verified| verified.claim_public_key)
+        }
+    }
+
+    fn assert_invalid(result: Result<RistrettoPublicKeyBytes, ClaimProofError>, reason: &str) {
+        let err = result.expect_err(reason);
+        assert!(
+            matches!(err, ClaimProofError::Rejected(ClaimProofRejection::Invalid(_))),
+            "{reason}: expected Invalid, got {err:?}"
+        );
     }
 
     #[test]
-    fn accepts_a_header_from_the_previous_epoch() {
-        let dir = TempDir::new().unwrap();
-        let verifier = new_verifier(&dir);
-        let claim = claim_in_header(&verifier, Epoch(4));
+    fn output_hash_matches_the_l1_output_hash() {
+        let secret = PrivateKey::random(&mut rand::rng());
+        let claim_public_key = random_public_key();
+        for burn in [
+            l1_burn(None),
+            l1_burn(Some(sidechain_id(&secret, &claim_public_key))),
+            l1_output(OutputType::Standard, None),
+        ] {
+            let claim = claim_of(&burn, block_with(&burn.output, 0, 1, 0).0, None);
+            let hash = hash_burn_output(network(), &claim).unwrap();
+            if burn.output.features.output_type == OutputType::Burn {
+                assert_eq!(hash, burn.output.hash());
+            } else {
+                assert_ne!(hash, burn.output.hash(), "a claim cannot express a non-burn output");
+            }
+        }
+    }
 
-        verify(&verifier, Epoch(5), &claim).unwrap();
+    #[test]
+    fn opaque_fields_hash_as_their_consensus_encoding() {
+        // The L1 hasher consumes each field through its borsh encoding, so writing that encoding as raw bytes must
+        // give the same hash. Exercise a non-trivial script, covenant and encrypted data.
+        let mut burn = l1_burn(None);
+        burn.output.script = script!(Nop Nop PushPubKey(Box::new(random_public_key()))).unwrap();
+        burn.output.encrypted_data = EncryptedData::from_bytes(&[7u8; 120]).unwrap();
+        let claim = claim_of(&burn, block_with(&burn.output, 0, 1, 0).0, None);
+        assert_eq!(hash_burn_output(network(), &claim).unwrap(), burn.output.hash());
+    }
+
+    #[test]
+    fn accepts_a_burn_among_coinbases_and_normal_outputs() {
+        let chain = Chain::new(None);
+        let burn = l1_burn(None);
+        let claim = chain.mine(&burn, Epoch(4));
+
+        let claim_public_key = chain.verify(Epoch(5), &claim).unwrap();
+        assert_eq!(claim_public_key, claim.output.features.claim_public_key);
+    }
+
+    #[test]
+    fn accepts_a_burn_that_is_the_only_normal_output() {
+        let chain = Chain::new(None);
+        let burn = l1_burn(None);
+        for num_coinbases in [0, 1, 3] {
+            let (proof, block_output_mr) = block_with(&burn.output, num_coinbases, 1, 0);
+            chain.add_header(Epoch(4), proof.block_hash, block_output_mr);
+            let claim = claim_of(&burn, proof, None);
+            chain.verify(Epoch(5), &claim).unwrap();
+        }
+    }
+
+    #[test]
+    fn accepts_a_claim_converted_from_the_minotari_proof() {
+        let chain = Chain::new(None);
+        let burn = l1_burn(None);
+        let (inclusion, block_output_mr) = block_with(&burn.output, 2, 5, 3);
+        chain.add_header(Epoch(4), inclusion.block_hash, block_output_mr);
+        let expected = claim_of(&burn, inclusion.clone(), None);
+
+        let fixed = |hash: &Hash32| FixedHash::from(hash.into_array());
+        let l1_mmr_proof = |proof: &MmrInclusionProof| L1MmrInclusionProof {
+            leaf_index: proof.leaf_index,
+            mmr_size: proof.mmr_size,
+            path: proof.path.iter().map(fixed).collect(),
+            peaks: proof.peaks.iter().map(fixed).collect(),
+        };
+        let output_proof = BurnOutputProof {
+            block_hash: fixed(&inclusion.block_hash),
+            block_height: 1,
+            output: OutputHashPreimage::from(&burn.output),
+            normal_output_proof: l1_mmr_proof(&inclusion.normal_output_proof),
+            normal_output_mr: fixed(&inclusion.normal_output_mr),
+            block_output_proof: l1_mmr_proof(&inclusion.block_output_proof),
+        };
+        output_proof.verify(&block_output_mr).unwrap();
+        let l1_claim = tari_sidechain::BurnClaimProof {
+            burn_public_key: random_public_key(),
+            ownership_proof: compressed_signature("ownership proof", &expected.ownership_proof).unwrap(),
+            output_proof,
+            value: VALUE,
+        };
+
+        let claim = claim_proof_from_l1(&l1_claim).unwrap();
+        assert_eq!(claim, expected);
+        chain.verify(Epoch(5), &claim).unwrap();
+    }
+
+    #[test]
+    fn verifies_inclusion_for_varied_block_shapes() {
+        let burn = l1_burn(None);
+        // (coinbases, normal outputs, burn index)
+        for (num_coinbases, num_normal, index) in [(0, 1, 0), (1, 2, 1), (2, 3, 2), (5, 7, 3), (8, 16, 15), (3, 33, 0)]
+        {
+            let (proof, block_output_mr) = block_with(&burn.output, num_coinbases, num_normal, index);
+            verify_output_inclusion(&proof, &burn.output.hash(), &block_output_mr)
+                .unwrap_or_else(|e| panic!("({num_coinbases}, {num_normal}, {index}): {e}"));
+        }
+    }
+
+    #[test]
+    fn rejects_inclusion_against_the_wrong_root() {
+        let chain = Chain::new(None);
+        let burn = l1_burn(None);
+        let (proof, _) = block_with(&burn.output, 2, 5, 3);
+        chain.add_header(Epoch(4), proof.block_hash, FixedHash::from([1u8; 32]));
+        let claim = claim_of(&burn, proof, None);
+
+        assert_invalid(chain.verify(Epoch(5), &claim), "the wrong root must be rejected");
+    }
+
+    #[test]
+    fn rejects_a_non_burn_output() {
+        let chain = Chain::new(None);
+        let output = l1_output(OutputType::Standard, confidential_output_feature(None));
+        let claim = chain.mine(&output, Epoch(4));
+
+        assert_invalid(chain.verify(Epoch(5), &claim), "a non-burn output must be rejected");
+    }
+
+    #[test]
+    fn rejects_a_burn_without_a_sidechain_feature() {
+        let chain = Chain::new(None);
+        let burn = l1_output(OutputType::Burn, None);
+        let claim = chain.mine(&burn, Epoch(4));
+
+        assert_invalid(chain.verify(Epoch(5), &claim), "an untagged burn must be rejected");
+    }
+
+    #[test]
+    fn rejects_a_burn_with_another_sidechain_feature() {
+        let chain = Chain::new(None);
+        let exit = ValidatorNodeExit::signed(&PrivateKey::random(&mut rand::rng()), None, VnEpoch(1));
+        let burn = l1_output(
+            OutputType::Burn,
+            Some(SideChainFeature {
+                data: SideChainFeatureData::ValidatorNodeExit(exit),
+                sidechain_id: None,
+            }),
+        );
+        let claim = chain.mine(&burn, Epoch(4));
+
+        assert_invalid(
+            chain.verify(Epoch(5), &claim),
+            "a burn whose sidechain feature is not a ConfidentialOutput must be rejected",
+        );
+    }
+
+    #[test]
+    fn rejects_a_tagged_burn_on_the_default_chain() {
+        let chain = Chain::new(None);
+        let secret = PrivateKey::random(&mut rand::rng());
+        let burn = l1_burn(Some(sidechain_id(&secret, &random_public_key())));
+        let claim = chain.mine(&burn, Epoch(4));
+
+        assert_invalid(
+            chain.verify(Epoch(5), &claim),
+            "a burn tagged for a sidechain must be rejected on the default chain",
+        );
+    }
+
+    #[test]
+    fn rejects_a_burn_tagged_for_another_chain_or_untagged_on_a_tagged_chain() {
+        let this_secret = PrivateKey::random(&mut rand::rng());
+        let this_id = RistrettoPublicKey::from_secret_key(&this_secret).to_byte_type();
+        let chain = Chain::new(Some(this_id));
+
+        let accepted = l1_burn(Some(sidechain_id(&this_secret, &random_public_key())));
+        let claim = chain.mine(&accepted, Epoch(4));
+        chain.verify(Epoch(5), &claim).unwrap();
+
+        let other_secret = PrivateKey::random(&mut rand::rng());
+        let other_chain = l1_burn(Some(sidechain_id(&other_secret, &random_public_key())));
+        let claim = chain.mine(&other_chain, Epoch(4));
+        assert_invalid(
+            chain.verify(Epoch(5), &claim),
+            "a burn tagged for another chain must be rejected",
+        );
+
+        let untagged = l1_burn(None);
+        let claim = chain.mine(&untagged, Epoch(4));
+        assert_invalid(
+            chain.verify(Epoch(5), &claim),
+            "an untagged burn must be rejected on a tagged chain",
+        );
+    }
+
+    #[test]
+    fn rejects_an_ownership_proof_bound_to_another_key() {
+        let chain = Chain::new(None);
+        let burn = l1_burn(None);
+        let (proof, block_output_mr) = block_with(&burn.output, 2, 5, 3);
+        chain.add_header(Epoch(4), proof.block_hash, block_output_mr);
+        // The burner knows the commitment opening, so it can bind a valid ownership proof to its own key
+        let burner_key = RistrettoPublicKey::random_keypair(&mut rand::rng()).1.to_byte_type();
+        let claim = claim_with(&burn, burn_output(&burn.output), proof, &burner_key, None);
+
+        assert_invalid(
+            chain.verify(Epoch(5), &claim),
+            "an ownership proof not bound to the output's claim key must be rejected",
+        );
+    }
+
+    #[test]
+    fn rejects_a_commitment_mismatch() {
+        let chain = Chain::new(None);
+        let burn = l1_burn(None);
+        let other = l1_burn(None);
+        // The ownership proof opens `other`'s commitment, but the output mined is `burn`'s
+        let mut claim = chain.mine(&burn, Epoch(4));
+        let other_claim = claim_of(&other, claim.inclusion_proof.clone(), None);
+        claim.commitment = other_claim.commitment;
+        claim.ownership_proof = other_claim.ownership_proof;
+
+        assert_invalid(
+            chain.verify(Epoch(5), &claim),
+            "a claim whose commitment is not the output's must be rejected",
+        );
+    }
+
+    #[test]
+    fn rejects_a_tampered_opaque_field() {
+        let chain = Chain::new(None);
+        let burn = l1_burn(None);
+        let mut claim = chain.mine(&burn, Epoch(4));
+        claim.output.covenant = bytes(vec![1, 0]);
+
+        assert_invalid(chain.verify(Epoch(5), &claim), "a tampered output must be rejected");
+    }
+
+    #[test]
+    fn rejects_a_normal_output_root_that_is_not_the_last_leaf() {
+        let burn = l1_burn(None);
+        let (mut proof, block_output_mr) = block_with(&burn.output, 2, 3, 1);
+        proof.block_output_proof.leaf_index = 1;
+        let err = verify_output_inclusion(&proof, &burn.output.hash(), &block_output_mr).unwrap_err();
+        assert!(err.contains("last leaf"), "{err}");
+    }
+
+    #[test]
+    fn malformed_mmr_proofs_are_errors() {
+        let burn = l1_burn(None);
+        let hash = burn.output.hash();
+        let (proof, block_output_mr) = block_with(&burn.output, 2, 5, 3);
+        let tampered = |f: &dyn Fn(&mut BurnOutputInclusionProof)| {
+            let mut proof = proof.clone();
+            f(&mut proof);
+            proof
+        };
+        let cases = [
+            tampered(&|p| p.block_output_proof.mmr_size = u64::MAX),
+            tampered(&|p| p.block_output_proof.mmr_size = 0),
+            tampered(&|p| p.normal_output_proof.mmr_size = u64::MAX),
+            tampered(&|p| p.normal_output_proof.mmr_size = 0),
+            tampered(&|p| p.normal_output_proof.leaf_index = u64::MAX),
+            tampered(&|p| p.normal_output_proof.leaf_index = 1 << 62),
+            tampered(&|p| p.normal_output_proof.path = vec![Hash32::zero(); MAX_MMR_PROOF_HASHES + 1]),
+            tampered(&|p| p.normal_output_proof.path = vec![Hash32::zero(); MAX_MMR_PROOF_HASHES]),
+            tampered(&|p| p.normal_output_proof.peaks = vec![Hash32::zero(); MAX_MMR_PROOF_HASHES]),
+            tampered(&|p| p.normal_output_proof.path.clear()),
+            tampered(&|p| p.block_output_proof.peaks.push(Hash32::zero())),
+        ];
+        for (i, proof) in cases.iter().enumerate() {
+            verify_output_inclusion(proof, &hash, &block_output_mr).expect_err(&format!("case {i} must be rejected"));
+        }
     }
 
     #[test]
     fn a_header_from_the_current_epoch_is_not_yet_valid() {
-        let dir = TempDir::new().unwrap();
-        let verifier = new_verifier(&dir);
-        let claim = claim_in_header(&verifier, Epoch(5));
+        let chain = Chain::new(None);
+        let claim = chain.mine(&l1_burn(None), Epoch(5));
 
-        let err = verify(&verifier, Epoch(5), &claim).unwrap_err();
+        let err = chain.verify(Epoch(5), &claim).unwrap_err();
         assert!(
             matches!(err, ClaimProofError::Rejected(ClaimProofRejection::NotYetValid(_))),
             "expected NotYetValid, got {err:?}"
         );
-        verify(&verifier, Epoch(6), &claim).unwrap();
+        chain.verify(Epoch(6), &claim).unwrap();
     }
 
     #[test]
     fn nothing_is_claimable_in_epoch_zero() {
-        let dir = TempDir::new().unwrap();
-        let verifier = new_verifier(&dir);
-        let claim = claim_in_header(&verifier, Epoch(0));
+        let chain = Chain::new(None);
+        let claim = chain.mine(&l1_burn(None), Epoch(0));
 
-        let err = verify(&verifier, Epoch(0), &claim).unwrap_err();
+        let err = chain.verify(Epoch(0), &claim).unwrap_err();
         assert!(
             matches!(err, ClaimProofError::Rejected(ClaimProofRejection::NotYetValid(_))),
             "expected NotYetValid, got {err:?}"
@@ -596,15 +1276,47 @@ mod kernel_merkle_proof_tests {
 
     #[test]
     fn a_database_failure_is_a_verifier_fault() {
-        let claim = claim_in_header(&new_verifier(&TempDir::new().unwrap()), Epoch(4));
+        let chain = Chain::new(None);
+        let claim = chain.mine(&l1_burn(None), Epoch(4));
         // An unmigrated database has no block_headers table, so the lookup fails with a SQL error.
         let dir = TempDir::new().unwrap();
-        let verifier = KernelMerkleProofVerifier::new(open_db(&dir, false), NETWORK);
+        let verifier = TariClaimBurnProofVerifier::new(network(), None, open_db(&dir, false));
 
-        let err = verify(&verifier, Epoch(5), &claim).unwrap_err();
+        let err = verifier.verify_claim_proof(Epoch(5), &claim).unwrap_err();
         assert!(
             matches!(err, ClaimProofError::VerifierFault(_)),
             "expected VerifierFault, got {err:?}"
         );
+    }
+
+    #[test]
+    fn headerless_verifier_checks_everything_but_inclusion() {
+        let verifier = HeaderlessClaimBurnProofVerifier::new(network(), None);
+
+        let burn = l1_burn(None);
+        let claim = claim_of(&burn, block_with(&burn.output, 0, 1, 0).0, None);
+        let verified = verifier.verify_claim_proof(Epoch(0), &claim).unwrap();
+        assert_eq!(verified.claim_public_key, claim.output.features.claim_public_key);
+
+        let secret = PrivateKey::random(&mut rand::rng());
+        let tagged = l1_burn(Some(sidechain_id(&secret, &random_public_key())));
+        let claim = claim_of(&tagged, block_with(&tagged.output, 0, 1, 0).0, None);
+        let err = verifier.verify_claim_proof(Epoch(0), &claim).unwrap_err();
+        assert!(
+            matches!(err, ClaimProofError::Rejected(ClaimProofRejection::Invalid(_))),
+            "expected Invalid, got {err:?}"
+        );
+
+        let other_key = RistrettoPublicKey::random_keypair(&mut rand::rng()).1.to_byte_type();
+        let claim = claim_with(
+            &burn,
+            burn_output(&burn.output),
+            block_with(&burn.output, 0, 1, 0).0,
+            &other_key,
+            None,
+        );
+        verifier
+            .verify_claim_proof(Epoch(0), &claim)
+            .expect_err("the ownership proof must still be checked");
     }
 }

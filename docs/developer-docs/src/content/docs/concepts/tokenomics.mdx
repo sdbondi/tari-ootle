@@ -87,13 +87,13 @@ deliberate:
   {/* Forward arrow */}
   <line x1="274" y1="132" x2="396" y2="132" stroke="#484f58" stroke-width="2" marker-end="url(#tk-arrow)"/>
   <text x="335" y="112" text-anchor="middle" fill="#8b949e" font-size="9">MinotariBurnClaimProof</text>
-  <text x="335" y="124" text-anchor="middle" fill="#6e7681" font-size="9">Merkle proof vs kernels</text>
+  <text x="335" y="124" text-anchor="middle" fill="#6e7681" font-size="9">Merkle proof vs outputs</text>
 
   {/* L2 panel */}
   <rect x="400" y="74" width="470" height="180" rx="8" fill="#161b22" stroke="#388bfd" stroke-width="1"/>
   <text x="420" y="100" fill="#388bfd" font-size="12" font-weight="bold">Ootle (L2) &#8212; one atomic claim</text>
   <rect x="420" y="112" width="430" height="34" rx="6" fill="#12171f" stroke="#30363d" stroke-width="1"/>
-  <text x="432" y="134" fill="#8b949e" font-size="10">1. Verify the burn proof against the base layer's kernels</text>
+  <text x="432" y="134" fill="#8b949e" font-size="10">1. Verify the burn proof against the base layer's outputs</text>
   <rect x="420" y="152" width="430" height="34" rx="6" fill="#12171f" stroke="#30363d" stroke-width="1"/>
   <text x="432" y="174" fill="#8b949e" font-size="10">2. Tombstone the commitment &#8212; blocks a second claim of it</text>
   <rect x="420" y="192" width="430" height="34" rx="6" fill="#10261a" stroke="#3fb950" stroke-width="1"/>
@@ -123,8 +123,8 @@ else. See <a href={basePath("/concepts/overview/")}>Overview</a>.
 
 Moving value across the bridge is a **claim**: the holder proves that a base-layer output was burned
 to them, and the engine mints the matching L2 value. The claim carries a `MinotariBurnClaimProof`
-(`crates/engine_types/src/confidential/claim.rs`) — a burn public key, a commitment, an ownership
-proof, and an encoded Merkle proof against the base layer's kernel set.
+(`crates/engine_types/src/confidential/claim.rs`) — a commitment, an ownership proof, the burn
+output, and a Merkle proof of that output against the base layer block it was mined in.
 
 The engine executes a claim in three steps, atomically
 (`crates/engine/src/runtime/impl.rs`):
@@ -152,7 +152,7 @@ diff, it either completes entirely or not at all.
 <Aside type="note">
 The claim proof is checked through a pluggable `ClaimProofVerifier` trait. This repository ships a
 test mock, `AlwaysPassesProofVerifier` (`crates/template_test_tooling/src/mocks.rs`); production
-deployments supply a verifier that validates the base-layer kernel Merkle proof. The verification
+deployments supply a verifier that validates the base-layer output Merkle proof. The verification
 *step* is part of the engine's claim path; the *verifier* is injected.
 </Aside>
 
