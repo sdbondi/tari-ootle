@@ -7,6 +7,7 @@ diesel::table! {
         height -> BigInt,
         block_hash -> Binary,
         kernel_merkle_root -> Binary,
+        block_output_merkle_root -> Binary,
         validator_node_merkle_root -> Binary,
         created_at -> Timestamp,
     }

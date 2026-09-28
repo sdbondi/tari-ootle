@@ -540,6 +540,7 @@ mod kernel_merkle_proof_tests {
             height: 1,
             block_hash,
             kernel_merkle_root: FixedHash::try_from(mmr.get_merkle_root().unwrap()).unwrap(),
+            block_output_merkle_root: FixedHash::zero(),
             validator_node_merkle_root: FixedHash::zero(),
         };
         let db = &verifier.global_db;

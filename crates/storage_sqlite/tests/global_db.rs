@@ -9,6 +9,7 @@ use tari_ootle_common_types::{Epoch, NumPreshards, ShardGroup, SubstateAddress, 
 use tari_ootle_p2p::PeerAddress;
 use tari_ootle_storage::global::{BlockHeaderModel, GlobalDb, ValidatorNodeDb};
 use tari_ootle_storage_sqlite::global::SqliteGlobalDbAdapter;
+use tari_template_lib::types::Hash32;
 use tari_utilities::ByteArray;
 
 fn create_db() -> GlobalDb<SqliteGlobalDbAdapter<PeerAddress>> {
@@ -198,11 +199,17 @@ fn block_header_insert_is_idempotent() {
         height: 100,
         block_hash: FixedHash::from([1u8; 32]),
         kernel_merkle_root: FixedHash::from([2u8; 32]),
+        block_output_merkle_root: FixedHash::from([6u8; 32]),
         validator_node_merkle_root: FixedHash::from([3u8; 32]),
     };
     headers.insert(model.clone()).unwrap();
     // Second insert of the same (block_hash, epoch) must succeed without error.
     headers.insert(model).unwrap();
+
+    let stored = headers.get_by_hash(Epoch(1), &Hash32::from_array([1u8; 32])).unwrap();
+    assert_eq!(stored.kernel_merkle_root, FixedHash::from([2u8; 32]));
+    assert_eq!(stored.block_output_merkle_root, FixedHash::from([6u8; 32]));
+    assert_eq!(stored.validator_node_merkle_root, FixedHash::from([3u8; 32]));
 
     // A different epoch with the same hash should also succeed (the unique index is on the pair).
     let other_epoch = BlockHeaderModel {
@@ -210,6 +217,7 @@ fn block_header_insert_is_idempotent() {
         height: 200,
         block_hash: FixedHash::from([1u8; 32]),
         kernel_merkle_root: FixedHash::from([4u8; 32]),
+        block_output_merkle_root: FixedHash::from([7u8; 32]),
         validator_node_merkle_root: FixedHash::from([5u8; 32]),
     };
     headers.insert(other_epoch).unwrap();
@@ -229,6 +237,7 @@ fn delete_block_headers_above_removes_higher_headers() {
                 height,
                 block_hash: FixedHash::from([height as u8; 32]),
                 kernel_merkle_root: FixedHash::from([2u8; 32]),
+                block_output_merkle_root: FixedHash::from([height as u8 + 1; 32]),
                 validator_node_merkle_root: FixedHash::from([3u8; 32]),
             })
             .unwrap();
@@ -236,6 +245,9 @@ fn delete_block_headers_above_removes_higher_headers() {
 
     // Heights 102 and 103 sit above the fork point at 101 and must be removed.
     assert_eq!(headers.delete_above(101).unwrap(), 2);
+    let retained = headers.get_by_hash(Epoch(1), &Hash32::from_array([101u8; 32])).unwrap();
+    assert_eq!(retained.block_output_merkle_root, FixedHash::from([102u8; 32]));
+    assert!(headers.get_by_hash(Epoch(1), &Hash32::from_array([102u8; 32])).is_err());
     // The fork-point block and everything below it are retained.
     assert_eq!(headers.delete_above(0).unwrap(), 2);
     // Nothing left to delete.

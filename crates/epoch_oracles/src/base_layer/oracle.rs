@@ -600,6 +600,7 @@ impl<TStore: EpochOracleStore + BaseLayerBlockHeaderStore, TClient: BaseNodeClie
                 height: header_height,
                 block_hash: header_hash,
                 kernel_merkle_root: header.kernel_mr,
+                block_output_merkle_root: header.block_output_mr,
                 validator_node_merkle_root: header.validator_node_mr,
             });
 
@@ -1496,6 +1497,7 @@ mod tests {
                 height: 12,
                 block_hash: FixedHash::default(),
                 kernel_merkle_root: FixedHash::default(),
+                block_output_merkle_root: FixedHash::default(),
                 validator_node_merkle_root: FixedHash::default(),
             }])
             .unwrap();

@@ -109,6 +109,7 @@ CREATE TABLE block_headers
     height                     BIGINT                            NOT NULL,
     block_hash                 BLOB                              NOT NULL,
     kernel_merkle_root         BLOB                              NOT NULL,
+    block_output_merkle_root   BLOB                              NOT NULL,
     validator_node_merkle_root BLOB                              NOT NULL,
     created_at                 DATETIME                          NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
