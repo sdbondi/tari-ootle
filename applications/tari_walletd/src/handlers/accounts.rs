@@ -572,13 +572,21 @@ pub(crate) async fn execute_claim_burn(
         .try_from_byte_type()
         .map_err(|e| invalid_params("claim_proof.output.sender_offset_public_key", Some(e)))?;
 
-    // Stealth spend secret `s = H(R·p) + p`. The L1 ownership proof commits the burn to `C = s·G`,
-    // so this is the only key that can sign the claim transaction and satisfy the spend condition
-    // on the just-minted burn UTXO.
+    // Stealth spend secret `s = H(R·p) + p`. The burn output names `S = s·G` as its claim key, and the
+    // engine only accepts a claim that `S` signs, so the claim key signs the claim transaction.
     let stealth_secret = sdk
         .stealth_crypto_api()
         .derive_burn_claim_stealth_secret(account_owner_key.secret(), &sender_offset_pub_key);
     let stealth_claim_pk = RistrettoPublicKey::from_secret_key(&stealth_secret).to_byte_type();
+    let claim_public_key = claim_proof.output.features.claim_public_key;
+    if stealth_claim_pk != claim_public_key {
+        return Err(invalid_params(
+            "claim_proof.output.features.claim_public_key",
+            Some(format!(
+                "the burn is made out to claim key {claim_public_key}, not this account's claim key {stealth_claim_pk}"
+            )),
+        ));
+    }
 
     if !sdk.stealth_crypto_api().validate_burn_claim_ownership_proof(
         network,

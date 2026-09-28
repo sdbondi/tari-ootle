@@ -12348,6 +12348,7 @@ dependencies = [
  "ootle_serde",
  "rand 0.10.1",
  "serde",
+ "serde_json",
  "serde_json5",
  "tari_bor",
  "tari_common",

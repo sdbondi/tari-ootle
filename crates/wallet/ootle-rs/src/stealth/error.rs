@@ -1,7 +1,11 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 use tari_ootle_wallet_crypto::{StealthCryptoApiError, StealthProofError};
-use tari_template_lib_types::{Amount, UtxoAddress, crypto::PedersenCommitmentBytes};
+use tari_template_lib_types::{
+    Amount,
+    UtxoAddress,
+    crypto::{PedersenCommitmentBytes, RistrettoPublicKeyBytes},
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StealthProviderError {
@@ -34,6 +38,14 @@ pub enum StealthProviderError {
     },
     #[error("L1 burn claim ownership proof validation failed")]
     BurnClaimOwnershipProofInvalid,
+    #[error(
+        "The L1 burn is made out to claim key {claim_public_key}, not this wallet's claim key \
+         {wallet_claim_public_key}"
+    )]
+    BurnClaimNotForThisWallet {
+        claim_public_key: RistrettoPublicKeyBytes,
+        wallet_claim_public_key: RistrettoPublicKeyBytes,
+    },
     #[error("L1 burn claim fee ({max_fee}) is greater than or equal to the claimed amount ({claimed})")]
     BurnClaimFeeTooHigh { claimed: u64, max_fee: u64 },
 }

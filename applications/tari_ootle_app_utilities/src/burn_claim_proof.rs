@@ -95,3 +95,137 @@ fn mmr_proof(proof: &MmrInclusionProof) -> ClaimMmrInclusionProof {
         peaks: hashes(&proof.peaks),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tari_common_types::{
+        burn_proof::OutputHashPreimage,
+        epoch::VnEpoch,
+        types::{CompressedPublicKey, FixedHash, PrivateKey},
+    };
+    use tari_crypto::keys::{PublicKey as _, SecretKey as _};
+    use tari_sidechain::CompleteClaimBurnProof;
+    use tari_transaction_components::transaction_components::{
+        ConfidentialOutputData,
+        SideChainFeature,
+        ValidatorNodeExit,
+    };
+
+    use super::*;
+
+    fn random_public_key() -> CompressedPublicKey {
+        CompressedPublicKey::new_from_pk(tari_crypto::ristretto::RistrettoPublicKey::random_keypair(&mut rand::rng()).1)
+    }
+
+    fn l1_mmr_proof(leaf_index: u64) -> MmrInclusionProof {
+        MmrInclusionProof {
+            leaf_index,
+            mmr_size: 4,
+            path: vec![FixedHash::from([1u8; 32]), FixedHash::from([2u8; 32])],
+            peaks: vec![FixedHash::from([3u8; 32])],
+        }
+    }
+
+    /// A Minotari burn proof file, as JSON, for an output with `features`
+    fn proof_file(features: &OutputFeatures) -> String {
+        let proof = CompleteClaimBurnProof {
+            claim_proof: BurnClaimProof {
+                burn_public_key: random_public_key(),
+                ownership_proof: Default::default(),
+                output_proof: BurnOutputProof {
+                    block_hash: FixedHash::from([4u8; 32]),
+                    block_height: 100,
+                    output: OutputHashPreimage {
+                        version: 1,
+                        features: borsh::to_vec(features).unwrap(),
+                        commitment: Default::default(),
+                        rangeproof_hash: FixedHash::from([5u8; 32]),
+                        script: vec![1, 0x73],
+                        sender_offset_public_key: random_public_key(),
+                        metadata_signature: Default::default(),
+                        covenant: vec![0],
+                        encrypted_data: vec![0; 84],
+                        minimum_value_promise: 0,
+                    },
+                    normal_output_proof: l1_mmr_proof(2),
+                    normal_output_mr: FixedHash::from([6u8; 32]),
+                    block_output_proof: l1_mmr_proof(1),
+                },
+                value: 12_345,
+            },
+            encrypted_data: vec![9; 80],
+            mined_in_epoch: 3,
+        };
+        serde_json::to_string(&proof).unwrap()
+    }
+
+    fn convert(json: &str) -> Result<MinotariBurnClaimProof, String> {
+        let proof: CompleteClaimBurnProof = serde_json::from_str(json).unwrap();
+        claim_proof_from_l1(&proof.claim_proof)
+    }
+
+    fn burn_features(sidechain_feature: Option<SideChainFeature>) -> OutputFeatures {
+        OutputFeatures {
+            output_type: OutputType::Burn,
+            sidechain_feature,
+            ..Default::default()
+        }
+    }
+
+    fn confidential_output(claim_public_key: CompressedPublicKey) -> Option<SideChainFeature> {
+        Some(SideChainFeature {
+            data: SideChainFeatureData::ConfidentialOutput(ConfidentialOutputData { claim_public_key }),
+            sidechain_id: None,
+        })
+    }
+
+    #[test]
+    fn converts_a_minotari_proof_file() {
+        let claim_public_key = random_public_key();
+        let json = proof_file(&burn_features(confidential_output(claim_public_key.clone())));
+        let file: CompleteClaimBurnProof = serde_json::from_str(&json).unwrap();
+
+        let claim = convert(&json).unwrap();
+        let output = &file.claim_proof.output_proof.output;
+        assert_eq!(claim.output.features.claim_public_key, claim_public_key.to_byte_type());
+        assert_eq!(claim.output.features.sidechain_id, None);
+        assert_eq!(
+            claim.output.sender_offset_public_key,
+            output.sender_offset_public_key.to_byte_type()
+        );
+        assert_eq!(claim.output.script.as_slice(), output.script.as_slice());
+        assert_eq!(
+            claim.output.metadata_signature.as_slice(),
+            borsh::to_vec(&output.metadata_signature).unwrap().as_slice()
+        );
+        assert_eq!(claim.value, 12_345);
+        assert_eq!(claim.inclusion_proof.normal_output_proof.leaf_index, 2);
+        assert_eq!(claim.inclusion_proof.block_output_proof.path.len(), 2);
+        assert_eq!(claim.inclusion_proof.block_hash, Hash32::from_array([4u8; 32]));
+    }
+
+    #[test]
+    fn rejects_an_output_ootle_cannot_claim() {
+        let exit = ValidatorNodeExit::signed(&PrivateKey::random(&mut rand::rng()), None, VnEpoch(1));
+        for (features, reason) in [
+            (
+                OutputFeatures {
+                    sidechain_feature: confidential_output(random_public_key()),
+                    ..Default::default()
+                },
+                "not a burn",
+            ),
+            (burn_features(None), "no sidechain feature"),
+            (
+                burn_features(Some(SideChainFeature {
+                    data: SideChainFeatureData::ValidatorNodeExit(exit.clone()),
+                    sidechain_id: None,
+                })),
+                "not a confidential output",
+            ),
+        ] {
+            let err = convert(&proof_file(&features)).unwrap_err();
+            assert!(err.contains(reason), "expected '{reason}', got '{err}'");
+        }
+    }
+}

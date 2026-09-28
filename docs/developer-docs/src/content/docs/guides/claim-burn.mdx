@@ -74,6 +74,11 @@ The wallet bundles everything the Ootle needs into a **claim proof**:
   are spent into a stealth output on the Ootle.
 </Aside>
 
+The Minotari wallet fetches the inclusion proof from its base node as soon as the burn confirms, and saves it in the
+burn proof file. Building the proof needs the full block, which a pruned base node discards once the block falls
+behind its pruning horizon. To regenerate a proof later, for example after losing the proof file or restoring a
+wallet from its seed words, connect the wallet to an **archival** base node.
+
 ---
 
 ## Verification: almost stateless
