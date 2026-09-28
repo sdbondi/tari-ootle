@@ -482,18 +482,19 @@ async fn vn_is_past_burn_proof_epoch(world: &mut TariWorld, step: &Step, vn_name
     let mut client = vn.create_client();
     let mut current_epoch = Epoch(0);
     for _ in 0..TIMEOUT_SECS {
+        // The consensus epoch, which claims execute in, trails the epoch manager's until the end-of-epoch block.
         current_epoch = client
-            .get_epoch_manager_stats()
+            .get_consensus_status()
             .await
-            .expect("Failed to get stats")
-            .current_epoch;
+            .expect("Failed to get consensus status")
+            .epoch;
         if current_epoch > mined_in_epoch {
             return;
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
     panic!(
-        "Validator {vn_name} is on epoch {current_epoch}, not past epoch {mined_in_epoch} that burn proof \
+        "Validator {vn_name} consensus is on epoch {current_epoch}, not past epoch {mined_in_epoch} that burn proof \
          {proof_name} was mined in, after {TIMEOUT_SECS}s"
     );
 }
