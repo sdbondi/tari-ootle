@@ -402,6 +402,22 @@ pub fn create_chain(num_blocks: usize) -> Vec<Block> {
     blocks
 }
 
+/// An epoch's first block starts again from height zero, below blocks the previous epoch committed.
+///
+/// Returns the combined chain: `blocks_in_first_epoch` blocks, then `blocks_in_next_epoch` from the next epoch's first
+/// block. `commit_chain` commits all but its last three, so the commit block lands early in the next epoch, below the
+/// height of the previous epoch's later blocks.
+pub fn chain_across_an_epoch_change(blocks_in_first_epoch: usize, blocks_in_next_epoch: usize) -> Vec<Block> {
+    let mut chain = create_chain(blocks_in_first_epoch);
+    let mut parent = create_first_block_of_next_epoch(&chain.last().unwrap().as_leaf());
+    for _ in 1..blocks_in_next_epoch {
+        let block = create_block_with_qc(&parent.as_leaf());
+        chain.push(std::mem::replace(&mut parent, block));
+    }
+    chain.push(parent);
+    chain
+}
+
 pub fn commit_chain<TTx>(tx: &mut TTx, chain: &[Block])
 where
     TTx: StateStoreWriteTransaction + Deref,

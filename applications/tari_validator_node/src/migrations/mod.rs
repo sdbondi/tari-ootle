@@ -74,7 +74,7 @@ pub fn migrate<TAddr: NodeAddressable + 'static>(
     };
 
     match maybe_version {
-        Some(version) if version >= CURRENT_VERSION => {
+        Some(version) if version.cmp(&CURRENT_VERSION).is_ge() => {
             debug!(
                 target: LOG_TARGET,
                 "Database already bootstrapped at migration version {version} (current {CURRENT_VERSION})"

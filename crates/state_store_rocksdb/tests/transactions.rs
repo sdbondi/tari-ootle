@@ -4,7 +4,16 @@
 pub mod helpers;
 use std::time::Duration;
 
-use helpers::{assert_eq_debug, commit_chain, create_chain, create_random_substate_id, create_rocksdb, create_tx_atom};
+use helpers::{
+    assert_eq_debug,
+    chain_across_an_epoch_change,
+    commit_chain,
+    create_chain,
+    create_random_substate_id,
+    create_rocksdb,
+    create_tx_atom,
+    transaction_id_from_seed,
+};
 use tari_common_types::types::{FixedHash, PrivateKey};
 use tari_consensus_types::{Decision, PcId, ShardGroupAccumulatedData};
 use tari_engine_types::{
@@ -29,7 +38,7 @@ use tari_ootle_storage::{
         TransactionRecord,
     },
 };
-use tari_ootle_transaction::{Instruction, Transaction};
+use tari_ootle_transaction::{Instruction, Transaction, TransactionId};
 use tari_template_lib::types::Hash32;
 use tari_utilities::epoch_time::EpochTime;
 
@@ -540,6 +549,98 @@ mod transaction_execution_operations {
             matches!(res, Err(StorageError::NotFound { .. })),
             "orphan-branch execution must not be reused, got {res:?}"
         );
+
+        tx.rollback().unwrap();
+    }
+
+    fn accepted_execution(block: &Block, transaction_id: &TransactionId) -> BlockTransactionExecution {
+        BlockTransactionExecution::new(
+            block.as_leaf(),
+            *transaction_id,
+            ExecuteResult {
+                finalize: FinalizeResult::new(
+                    Hash32::default(),
+                    vec![],
+                    vec![],
+                    TransactionResult::Accept(SubstateDiff::new()),
+                    FeeReceiptBuilder {
+                        total_fee_payment: 0,
+                        total_fees_paid: 0,
+                        total_fee_overcharge: 0,
+                        cost_breakdown: FeeBreakdown::default(),
+                        exhaust_burn: 0,
+                    }
+                    .build(),
+                ),
+                execution_time: Duration::from_secs(1),
+                execute_epoch: None,
+                wasm_execution_points: 0,
+                native_execution_points: 0,
+            },
+            vec![],
+            vec![],
+        )
+    }
+
+    /// A transaction executed late in one epoch and again early in the next: the second block is lower than the first,
+    /// because heights restart at zero each epoch.
+    fn executions_across_an_epoch_change(
+        tx: &mut (impl StateStoreWriteTransaction + std::ops::Deref<Target: StateStoreReadTransaction>),
+    ) -> (Vec<Block>, TransactionId, Block, Block) {
+        let chain = chain_across_an_epoch_change(10, 5);
+        commit_chain(tx, &chain);
+        let transaction_id = transaction_id_from_seed(1);
+        let prev_epoch_block = chain[8].clone();
+        let this_epoch_block = chain[chain.len() - 2].clone();
+        assert!(prev_epoch_block.epoch() < this_epoch_block.epoch());
+        assert!(prev_epoch_block.height() > this_epoch_block.height());
+
+        assert!(
+            tx.block_transaction_executions_insert_or_ignore(&accepted_execution(&prev_epoch_block, &transaction_id))
+                .unwrap()
+        );
+        assert!(
+            tx.block_transaction_executions_insert_or_ignore(&accepted_execution(&this_epoch_block, &transaction_id))
+                .unwrap()
+        );
+        (chain, transaction_id, prev_epoch_block, this_epoch_block)
+    }
+
+    /// The execution a block reuses is its chain's most recent one, and an execution in this epoch is more recent than
+    /// any from the previous epoch.
+    #[test]
+    fn the_pending_execution_across_an_epoch_change_is_this_epochs() {
+        let (db, _tmp) = create_rocksdb();
+        let mut tx = db.create_write_tx().unwrap();
+        let (chain, transaction_id, _, this_epoch_block) = executions_across_an_epoch_change(&mut tx);
+
+        let leaf = chain.last().unwrap().as_leaf();
+        let execution = tx
+            .block_transaction_executions_get_pending_for_block(&transaction_id, &leaf)
+            .unwrap();
+        assert_eq!(execution.block_id(), this_epoch_block.id());
+
+        tx.rollback().unwrap();
+    }
+
+    /// Locking a block's execution prunes the executions its chain recorded before it, including the previous epoch's.
+    #[test]
+    fn locking_an_execution_prunes_the_previous_epochs() {
+        let (db, _tmp) = create_rocksdb();
+        let mut tx = db.create_write_tx().unwrap();
+        let (_, _, prev_epoch_block, this_epoch_block) = executions_across_an_epoch_change(&mut tx);
+
+        tx.block_transaction_executions_lock_any_for_block(&this_epoch_block.as_leaf())
+            .unwrap();
+
+        let pruned = tx
+            .block_transaction_executions_get_all_for_block(prev_epoch_block.id())
+            .unwrap();
+        assert!(pruned.is_empty(), "the previous epoch's execution survived the lock");
+        let kept = tx
+            .block_transaction_executions_get_all_for_block(this_epoch_block.id())
+            .unwrap();
+        assert_eq!(kept.len(), 1);
 
         tx.rollback().unwrap();
     }

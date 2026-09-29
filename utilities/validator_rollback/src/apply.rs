@@ -125,19 +125,21 @@ fn check_schema_version(store: &RocksDbStateStore<PeerAddress>) -> anyhow::Resul
         Ok(version)
     })?;
 
-    match version {
-        Some(version) if version == CURRENT_SCHEMA_VERSION => Ok(()),
-        Some(version) if version < CURRENT_SCHEMA_VERSION => bail!(
+    let Some(version) = version else {
+        bail!(
+            "State db has no schema version recorded, so it has never been bootstrapped by a validator. There is \
+             nothing to roll back."
+        );
+    };
+    match version.cmp(&CURRENT_SCHEMA_VERSION) {
+        std::cmp::Ordering::Equal => Ok(()),
+        std::cmp::Ordering::Less => bail!(
             "State db is at schema version {version} but this tool writes version {CURRENT_SCHEMA_VERSION}. Start the \
              validator once to migrate the database, stop it again, then re-run the rollback."
         ),
-        Some(version) => bail!(
+        std::cmp::Ordering::Greater => bail!(
             "State db is at schema version {version}, which is newer than the {CURRENT_SCHEMA_VERSION} this tool \
              understands. Use a rollback tool built from the same release as the validator."
-        ),
-        None => bail!(
-            "State db has no schema version recorded, so it has never been bootstrapped by a validator. There is \
-             nothing to roll back."
         ),
     }
 }

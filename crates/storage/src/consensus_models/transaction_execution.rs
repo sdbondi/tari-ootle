@@ -7,7 +7,7 @@ use minicbor::{CborLen, Decode, Encode};
 use serde::{Deserialize, Serialize};
 use tari_consensus_types::{BlockId, Decision, LeafBlock};
 use tari_engine_types::commit_result::{ExecuteResult, RejectReason};
-use tari_ootle_common_types::{NodeHeight, NumPreshards};
+use tari_ootle_common_types::{Epoch, NodeHeight, NumPreshards};
 use tari_ootle_transaction::TransactionId;
 use time::PrimitiveDateTime;
 
@@ -182,6 +182,10 @@ impl BlockTransactionExecution {
 
     pub fn block_id(&self) -> &BlockId {
         self.block.block_id()
+    }
+
+    pub fn block_epoch(&self) -> Epoch {
+        self.block.epoch()
     }
 
     pub fn block_height(&self) -> NodeHeight {

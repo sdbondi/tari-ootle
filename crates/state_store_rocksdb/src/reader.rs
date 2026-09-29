@@ -775,16 +775,13 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         }
         let cf = self.db().cf(block_transaction_execution::ByTransactionIdQuery)?;
         let mut iter = cf.query_prefix_range_key_iterator(Ordering::default(), tx_id);
-        let Some((tx_id, block_id, height)) = iter.next().transpose()? else {
+        let Some(key) = iter.next().transpose()? else {
             return Err(StorageError::NotFound {
                 item: "TransactionExecution",
                 key: format!("{tx_id}"),
             });
         };
-        let execution = self
-            .db()
-            .cf(BlockTransactionExecutionCf)?
-            .get(&(tx_id, block_id, height), OPERATION)?;
+        let execution = self.db().cf(BlockTransactionExecutionCf)?.get(&key, OPERATION)?;
 
         Ok(execution.into_transaction_execution())
     }
@@ -817,7 +814,12 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         // Is the execution is in the queried block
         if let Some(exec) = cf
             .get(
-                &(*transaction_id, *from_block.block_id(), from_block.height()),
+                &(
+                    *transaction_id,
+                    *from_block.block_id(),
+                    from_block.epoch(),
+                    from_block.height(),
+                ),
                 OPERATION,
             )
             .optional()?
@@ -839,22 +841,24 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         let pending_chain = self.get_pending_chain_until(from_block.block_id())?;
         let pending_index = self.db().cf(chain::PendingChainIndex)?;
 
-        let mut best: Option<(TransactionId, BlockId, NodeHeight)> = None;
+        // Heights restart at zero each epoch, so the most recent ancestor is the one with the highest (epoch, height).
+        let mut best: Option<(TransactionId, BlockId, Epoch, NodeHeight)> = None;
         let candidates = query.query_prefix_range_key_iterator(Ordering::default(), transaction_id);
         for res in candidates {
-            let (tx_id, block_id, height) = res?;
+            let (tx_id, block_id, epoch, height) = res?;
             let is_ancestor = pending_chain.contains(&block_id) || !pending_index.exists(&block_id, OPERATION)?;
-            if is_ancestor && best.as_ref().is_none_or(|(_, _, h)| *h < height) {
-                best = Some((tx_id, block_id, height));
+            if is_ancestor && best.as_ref().is_none_or(|(_, _, e, h)| (*e, *h) < (epoch, height)) {
+                best = Some((tx_id, block_id, epoch, height));
             }
         }
 
-        if let Some((tx_id, block_id, height)) = best {
+        if let Some(key) = best {
+            let (_, block_id, epoch, height) = key;
             debug!(
                 target: LOG_TARGET,
-                "{OPERATION}: Found execution for {transaction_id} in {block_id} {height}",
+                "{OPERATION}: Found execution for {transaction_id} in {block_id} {epoch}/{height}",
             );
-            let execution = cf.get(&(tx_id, block_id, height), OPERATION)?;
+            let execution = cf.get(&key, OPERATION)?;
             return Ok(execution);
         }
 
@@ -875,8 +879,8 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
 
         let mut executions = Vec::new();
         for result in query.query_prefix_range_key_iterator(Ordering::default(), block_id) {
-            let (block_id, tx_id, height) = result?;
-            let execution = cf.get(&(tx_id, block_id, height), OPERATION)?;
+            let (block_id, tx_id, epoch, height) = result?;
+            let execution = cf.get(&(tx_id, block_id, epoch, height), OPERATION)?;
             executions.push(execution);
         }
 

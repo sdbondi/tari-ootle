@@ -337,7 +337,7 @@ where
         // transaction reuses an execution pinned to already-spent input versions.
         let exec_cf = tx.db().cf(BlockTransactionExecutionCf)?;
         for tx_id in block.all_transaction_ids() {
-            exec_cf.delete(&(*tx_id, *block_id, *height), OPERATION)?;
+            exec_cf.delete(&(*tx_id, *block_id, *epoch, *height), OPERATION)?;
         }
         let finalized_link_cf = tx.db().cf(FinalizedTransactionLinkCf)?;
         // Finalising commands mark this block as where the transaction's finalize QC

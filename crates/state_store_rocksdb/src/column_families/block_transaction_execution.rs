@@ -2,12 +2,12 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use tari_consensus_types::BlockId;
-use tari_ootle_common_types::NodeHeight;
+use tari_ootle_common_types::{Epoch, NodeHeight};
 use tari_ootle_storage::consensus_models::BlockTransactionExecution;
 use tari_ootle_transaction::TransactionId;
 
 use crate::{
-    codecs::{BlockIdCodec, DefaultVersionedCodec, KeyPrefix, NumberCodec, TransactionIdCodec, UnitCodec},
+    codecs::{BlockIdCodec, DefaultVersionedCodec, EpochCodec, KeyPrefix, NumberCodec, TransactionIdCodec, UnitCodec},
     column_families::block::BlockCf,
     prefixed,
     traits::{Cf, QueryCf},
@@ -19,10 +19,10 @@ prefixed!(BlockTransactionExecutionPrefix, KeyPrefix::BlockTransactionExecutions
 pub struct BlockTransactionExecutionCf;
 
 impl Cf for BlockTransactionExecutionCf {
-    // The node height is included so that executions can be filtered by height in
-    // block_transaction_executions_get_pending_for_block.
-    type Key = (TransactionId, BlockId, NodeHeight);
-    type KeyCodec = (TransactionIdCodec, BlockIdCodec, NumberCodec<NodeHeight>);
+    // The block's epoch and height place the execution on its chain. Heights restart at zero each epoch, so the two
+    // are compared together.
+    type Key = (TransactionId, BlockId, Epoch, NodeHeight);
+    type KeyCodec = (TransactionIdCodec, BlockIdCodec, EpochCodec, NumberCodec<NodeHeight>);
     type Prefix = BlockTransactionExecutionPrefix;
     type Value = BlockTransactionExecution;
     type ValueCodec = DefaultVersionedCodec<VersionedBlockTransactionExecution>;
@@ -56,8 +56,8 @@ prefixed!(
 pub struct BlockIndex;
 
 impl Cf for BlockIndex {
-    type Key = (BlockId, TransactionId, NodeHeight);
-    type KeyCodec = (BlockIdCodec, TransactionIdCodec, NumberCodec<NodeHeight>);
+    type Key = (BlockId, TransactionId, Epoch, NodeHeight);
+    type KeyCodec = (BlockIdCodec, TransactionIdCodec, EpochCodec, NumberCodec<NodeHeight>);
     type Prefix = BlockTransactionExecutionIndexPrefix;
     type Value = ();
     type ValueCodec = UnitCodec;
