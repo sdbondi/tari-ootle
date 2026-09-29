@@ -9,7 +9,7 @@ use tari_ootle_common_types::{StateVersion, SubstateVersion};
 use tari_ootle_storage::{StorageError, time::PrimitiveDateTime};
 use tari_template_lib_types::{ResourceAddress, UtxoAddress, UtxoId, crypto::PedersenCommitmentBytes};
 
-use crate::storage_sqlite::{schema::utxos, serialization::deserialize_bincode};
+use crate::storage_sqlite::{schema::utxos, serialization::deserialize_cbor};
 
 #[derive(AsChangeset, Default)]
 #[diesel(table_name = utxos)]
@@ -83,7 +83,7 @@ impl UtxoRecord {
                 }
             },
             Some(ref output) => {
-                let output = deserialize_bincode::<UtxoOutput, _>(output).map_err(|e| StorageError::DecodingError {
+                let output = deserialize_cbor::<UtxoOutput, _>(output).map_err(|e| StorageError::DecodingError {
                     operation: "UtxoRecord::try_convert",
                     item: "Utxo",
                     details: format!("Failed to parse Utxo from string: {}", e),
@@ -103,7 +103,7 @@ impl UtxoRecord {
     pub fn try_convert_to_utxo(self) -> Result<(UtxoAddress, Utxo), StorageError> {
         let address = self.to_address()?;
         let utxo = Utxo {
-            output: self.output.as_ref().map(deserialize_bincode).transpose().map_err(|e| {
+            output: self.output.as_ref().map(deserialize_cbor).transpose().map_err(|e| {
                 StorageError::DecodingError {
                     operation: "UtxoRecord::try_convert",
                     item: "Utxo",

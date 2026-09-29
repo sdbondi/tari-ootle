@@ -6,22 +6,18 @@ use std::any::type_name;
 use serde::Serialize;
 use tari_ootle_storage::StorageError;
 
-// Function names retain the `_bincode` suffix to avoid churning a few dozen call sites;
-// on the wire the indexer now stores minicbor (via `tari_bor::serde_codec`) instead. bincode
-// v2's `deserialize_any` ban broke round-trips for any value containing tari_bor::Value, so
-// switching the indexer's sqlite blob format follows the same fix landed for the rocksdb
-// state store.
-pub fn serialize_bincode<T: Serialize + ?Sized>(t: &T) -> Result<Vec<u8>, StorageError> {
+// Blob columns are CBOR so values containing `tari_bor::Value` round-trip, which needs `deserialize_any`.
+pub fn serialize_cbor<T: Serialize + ?Sized>(t: &T) -> Result<Vec<u8>, StorageError> {
     tari_bor::serde_codec::to_vec(t).map_err(|e| StorageError::EncodingError {
-        operation: "serialize_bincode",
+        operation: "serialize_cbor",
         item: type_name::<T>(),
         details: e.to_string(),
     })
 }
 
-pub fn deserialize_bincode<T: serde::de::DeserializeOwned, S: AsRef<[u8]>>(s: S) -> Result<T, StorageError> {
+pub fn deserialize_cbor<T: serde::de::DeserializeOwned, S: AsRef<[u8]>>(s: S) -> Result<T, StorageError> {
     tari_bor::serde_codec::from_slice(s.as_ref()).map_err(|e| StorageError::DecodingError {
-        operation: "deserialize_bincode",
+        operation: "deserialize_cbor",
         item: type_name::<T>(),
         details: e.to_string(),
     })

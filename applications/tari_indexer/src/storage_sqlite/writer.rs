@@ -55,7 +55,7 @@ use crate::{
             encode_retention_epoch,
         },
         reader::SqliteStoreReadTransaction,
-        serialization::{serialize_bincode, serialize_hex, serialize_json},
+        serialization::{serialize_cbor, serialize_hex, serialize_json},
     },
     store::{IndexerStoreWriteTransaction, InsertedEvent},
 };
@@ -166,7 +166,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
                         commitment,
                         public_nonce: serialize_hex(unspent.utxo_output.output.public_nonce),
                         version: unspent.version.as_u64() as i64,
-                        output: Some(serialize_bincode(&unspent.utxo_output)?),
+                        output: Some(serialize_cbor(&unspent.utxo_output)?),
                         shard: unspent.shard.as_u32() as i32,
                         resource_address,
                         state_version: unspent.state_version.as_u64() as i64,
@@ -641,7 +641,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
             }
         }
 
-        let encoded = serialize_bincode(entry.substate_result)?;
+        let encoded = serialize_cbor(entry.substate_result)?;
 
         diesel::insert_into(substate_cache::table)
             .values((

@@ -119,8 +119,7 @@ impl<'de> Deserialize<'de> for Amount {
         }
 
         // Precision-Amount accepts a number, a string, a digit array, or raw bytes — driven by the actual shape
-        // via deserialize_any. Both JSON and `tari_bor::serde_codec` support this; bincode does not, but bincode
-        // is no longer part of the storage stack.
+        // via deserialize_any, so it needs a self-describing format such as JSON or `tari_bor::serde_codec`.
         deserializer.deserialize_any(AmountVisitor)
     }
 }
