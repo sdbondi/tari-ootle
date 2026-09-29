@@ -227,7 +227,7 @@ fn substate_head_iter() {
 
     // TODO: substate_head_iter only works correctly after pruning downed values.
     // This is because we iterate the nodes as a "flat" list, a correct iterator would need to incorporate JMT logic.
-    tx.state_tree_nodes_clear_stale(tari_ootle_common_types::NumPreshards::current())
+    tx.state_tree_nodes_clear_stale(tari_ootle_common_types::NumPreshards::current(), usize::MAX)
         .unwrap();
 
     let iter = tx

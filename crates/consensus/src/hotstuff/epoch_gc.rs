@@ -1,12 +1,22 @@
 //   Copyright 2025 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use tari_ootle_storage::{StateStore, StateStoreReadTransaction, StateStoreWriteTransaction};
+use tari_ootle_storage::{
+    EpochCleanupStep,
+    StateStore,
+    StateStoreReadTransaction,
+    StateStoreWriteTransaction,
+    StorageError,
+};
 use tokio::task;
 
 use crate::{tracing::TraceTimer, traits::PeriodicTask};
 
-const LOG_TARGET: &str = "tari::ootle::consensus::state_tree_gc";
+const LOG_TARGET: &str = "tari::ootle::consensus::epoch_gc";
+
+/// Records pruned per write transaction. The GC transactions run alongside consensus, so each is kept small enough that
+/// its locks and write batch are held only briefly.
+const EPOCH_GC_BATCH_SIZE: usize = 5_000;
 
 pub struct EpochGc<TStore> {
     store: TStore,
@@ -28,13 +38,7 @@ impl<TStore: StateStore + Send + Sync + Clone + 'static> PeriodicTask for EpochG
             .with_excessive_threshold(std::time::Duration::from_secs(5));
 
         let store = self.store.clone();
-        let result = task::spawn_blocking(move || {
-            store.with_write_tx(|tx| {
-                let db_epoch = tx.current_epoch()?;
-                tx.epoch_cleanup(db_epoch)
-            })
-        })
-        .await;
+        let result = task::spawn_blocking(move || run_epoch_cleanup(&store, EPOCH_GC_BATCH_SIZE)).await;
 
         match result {
             Ok(Ok(())) => {
@@ -48,4 +52,23 @@ impl<TStore: StateStore + Send + Sync + Clone + 'static> PeriodicTask for EpochG
             },
         }
     }
+}
+
+/// Runs every epoch cleanup step to completion, committing each batch of `batch_size` records in its own transaction.
+fn run_epoch_cleanup<TStore: StateStore>(store: &TStore, batch_size: usize) -> Result<(), StorageError> {
+    let epoch = store.with_read_tx(|tx| tx.current_epoch())?;
+    for step in EpochCleanupStep::ALL {
+        let mut total = 0usize;
+        loop {
+            let n = store.with_write_tx(|tx| tx.epoch_cleanup_step(epoch, step, batch_size))?;
+            total += n;
+            if n < batch_size {
+                break;
+            }
+        }
+        if total > 0 {
+            log::info!(target: LOG_TARGET, "🗑️ Pruned {total} {step} for epoch {epoch}");
+        }
+    }
+    Ok(())
 }

@@ -1,11 +1,13 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
+mod epoch_cleanup;
 mod pending_chain;
 mod shard_scoped_state_tree;
 mod substate_value_proof;
 use std::{collections::HashMap, ops::Deref};
 
+pub use epoch_cleanup::*;
 use indexmap::IndexMap;
 pub use pending_chain::*;
 use serde::{Deserialize, Serialize};
@@ -661,7 +663,9 @@ pub trait StateStoreWriteTransaction {
     // -------------------------------- Substates -------------------------------- //
 
     fn substates_commit_batch(&mut self, update_batch: SubstateUpdateBatch) -> Result<(), StorageError>;
-    fn substates_prune_downed_values(&mut self, epoch: Epoch) -> Result<usize, StorageError>;
+    /// Clears the values of substates downed in `epoch`, stopping at the first index entry that takes the count to
+    /// `limit` or more. Returns the number of values cleared; a result below `limit` means none remain for `epoch`.
+    fn substates_prune_downed_values(&mut self, epoch: Epoch, limit: usize) -> Result<usize, StorageError>;
 
     // -------------------------------- Foreign pledges -------------------------------- //
 
@@ -704,7 +708,14 @@ pub trait StateStoreWriteTransaction {
         nodes: Vec<StaleTreeNode>,
     ) -> Result<(), StorageError>;
 
-    fn state_tree_nodes_clear_stale(&mut self, num_preshards: NumPreshards) -> Result<usize, StorageError>;
+    /// Deletes stale state tree nodes older than the state history window, one whole stale version at a time,
+    /// stopping once `max_deletes` rows or more are deleted. Returns the number of rows deleted (nodes plus stale
+    /// version records); a result below `max_deletes` means none remain.
+    fn state_tree_nodes_clear_stale(
+        &mut self,
+        num_preshards: NumPreshards,
+        max_deletes: usize,
+    ) -> Result<usize, StorageError>;
     fn state_tree_shard_versions_set(&mut self, shard: Shard, version: Version) -> Result<(), StorageError>;
 
     // -------------------------------- Epoch checkpoint -------------------------------- //
@@ -735,7 +746,18 @@ pub trait StateStoreWriteTransaction {
     ) -> Result<(), StorageError>;
 
     // -------------------------------- Epoch cleanup -------------------------------- //
-    fn epoch_cleanup(&mut self, epoch: Epoch) -> Result<(), StorageError>;
+    /// Prunes up to `limit` records of `step` from the epochs that `epoch` places past the retention window.
+    /// Returns the number of records pruned; a result below `limit` means the step has none left.
+    fn epoch_cleanup_step(&mut self, epoch: Epoch, step: EpochCleanupStep, limit: usize)
+    -> Result<usize, StorageError>;
+
+    /// Runs every epoch cleanup step to completion within this transaction.
+    fn epoch_cleanup(&mut self, epoch: Epoch) -> Result<(), StorageError> {
+        for step in EpochCleanupStep::ALL {
+            self.epoch_cleanup_step(epoch, step, usize::MAX)?;
+        }
+        Ok(())
+    }
 
     // -------------------------------- Vote equivocation -------------------------------- //
     /// Records evidence that a validator signed two conflicting votes for one view. Returns whether

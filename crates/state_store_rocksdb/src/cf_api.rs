@@ -414,8 +414,33 @@ where
 }
 
 impl<CF: Cf, DB: RocksWriter> CfContext<'_, DB, CF> {
+    /// Reads a value and holds the key's lock until the transaction ends. Use for a read whose result decides a
+    /// write, so a concurrent writer of the same key waits until this transaction ends.
+    pub fn get_for_update(&self, key: &CF::Key, operation: &'static str) -> Result<CF::Value, RocksDbStorageError> {
+        let key = self.encode_key(key);
+        let value = self
+            .db
+            .get_pinned_for_update_cf(self.handle, &key)
+            .map_err(|e| RocksDbStorageError::RocksDbError { operation, source: e })?;
+        let bytes = value.ok_or_else(|| RocksDbStorageError::NotFound {
+            key: Box::new(key),
+            operation,
+        })?;
+        self.value_codec.decode_exact(&bytes)
+    }
+
+    /// Like [`Self::exists`], and holds the key's lock until the transaction ends.
+    pub fn exists_for_update(&self, key: &CF::Key, operation: &'static str) -> Result<bool, RocksDbStorageError> {
+        let key = self.encode_key(key);
+        let value = self
+            .db
+            .get_pinned_for_update_cf(self.handle, key)
+            .map_err(|e| RocksDbStorageError::RocksDbError { operation, source: e })?;
+        Ok(value.is_some())
+    }
+
     pub fn insert(&self, key: &CF::Key, value: &CF::Value, operation: &'static str) -> Result<(), RocksDbStorageError> {
-        if self.exists(key, operation)? {
+        if self.exists_for_update(key, operation)? {
             let key = self.encode_key(key);
             return Err(RocksDbStorageError::ConflictingInsert {
                 key: Box::new(key),
@@ -534,6 +559,48 @@ impl<'db, TQuery: QueryCf, DB: RocksReader> CfContext<'db, DB, TQuery> {
         range: Range<B>,
     ) -> Result<Vec<<TQuery::Cf as Cf>::Key>, RocksDbStorageError> {
         self.query_range_key_iterator(ordering, range).collect()
+    }
+
+    /// Collects up to the first `limit` keys of a prefix range. See [`Self::query_prefix_range_keys`] for why.
+    pub fn query_prefix_range_keys_limited(
+        &self,
+        ordering: Ordering,
+        key: &TQuery::Key,
+        limit: usize,
+    ) -> Result<Vec<<TQuery::Cf as Cf>::Key>, RocksDbStorageError> {
+        self.query_prefix_range_key_iterator(ordering, key)
+            .take(limit)
+            .collect()
+    }
+
+    /// Collects up to the first `limit` entries of a prefix range. See [`Self::query_prefix_range_keys`] for why.
+    pub fn query_prefix_range_entries_limited(
+        &self,
+        prefix: &TQuery::Key,
+        ordering: Ordering,
+        limit: usize,
+    ) -> Result<Vec<QueryCfKv<TQuery>>, RocksDbStorageError> {
+        self.query_prefix_range_iterator(ordering, prefix).take(limit).collect()
+    }
+
+    /// Collects up to the first `limit` keys of a range. See [`Self::query_prefix_range_keys`] for why.
+    pub fn query_range_keys_limited<B: Borrow<TQuery::Key>>(
+        &self,
+        ordering: Ordering,
+        range: Range<B>,
+        limit: usize,
+    ) -> Result<Vec<<TQuery::Cf as Cf>::Key>, RocksDbStorageError> {
+        self.query_range_key_iterator(ordering, range).take(limit).collect()
+    }
+
+    /// Collects up to the first `limit` entries below `end_key`. See [`Self::query_prefix_range_keys`] for why.
+    pub fn query_end_range_entries_limited(
+        &self,
+        ordering: Ordering,
+        end_key: &TQuery::Key,
+        limit: usize,
+    ) -> Result<Vec<QueryCfKv<TQuery>>, RocksDbStorageError> {
+        self.query_end_range_iterator(ordering, end_key).take(limit).collect()
     }
 
     /// Collects the entries below `end_key` before returning. See [`Self::query_prefix_range_keys`] for why.

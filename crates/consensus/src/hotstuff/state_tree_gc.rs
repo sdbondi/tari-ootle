@@ -3,12 +3,16 @@
 
 use log::{error, info};
 use tari_ootle_common_types::NumPreshards;
-use tari_ootle_storage::{StateStore, StateStoreWriteTransaction};
+use tari_ootle_storage::{StateStore, StateStoreWriteTransaction, StorageError};
 use tokio::task;
 
 use crate::traits::PeriodicTask;
 
 const LOG_TARGET: &str = "tari::ootle::consensus::state_tree_gc";
+
+/// Rows deleted per write transaction. The GC transactions run alongside consensus, so each is kept small enough that
+/// its locks and write batch are held only briefly.
+const STATE_TREE_GC_MAX_DELETES: usize = 5_000;
 
 pub struct StateTreeGc<TStore> {
     store: TStore,
@@ -39,13 +43,13 @@ impl<TStore: StateStore + Send + Sync + Clone + 'static> PeriodicTask for StateT
             // NOTE: this task writes to the state store concurrently. This is safe
             // because we are clearing keys that are no longer part of the state tree.
             // Rocks' TransactionDb locks on the key level.
-            store.with_write_tx(|tx| tx.state_tree_nodes_clear_stale(num_preshards))
+            run_state_tree_gc(&store, num_preshards, STATE_TREE_GC_MAX_DELETES)
         })
         .await;
 
         match result {
             Ok(Ok(n)) => {
-                info!(target: LOG_TARGET, "🗑️ State tree GC task completed successfully. Cleared {n} stale nodes");
+                info!(target: LOG_TARGET, "🗑️ State tree GC task completed successfully. Deleted {n} stale rows");
             },
             Ok(Err(err)) => {
                 error!(target: LOG_TARGET, "Failed to run state tree GC: {}", err);
@@ -54,6 +58,23 @@ impl<TStore: StateStore + Send + Sync + Clone + 'static> PeriodicTask for StateT
                 // This should only be from a panic
                 error!(target: LOG_TARGET, "Failed to run state tree GC: {}", e);
             },
+        }
+    }
+}
+
+/// Deletes every stale state tree node past the history window, committing at most about `max_deletes` rows per
+/// transaction. Returns the number of rows deleted.
+fn run_state_tree_gc<TStore: StateStore>(
+    store: &TStore,
+    num_preshards: NumPreshards,
+    max_deletes: usize,
+) -> Result<usize, StorageError> {
+    let mut total = 0usize;
+    loop {
+        let n = store.with_write_tx(|tx| tx.state_tree_nodes_clear_stale(num_preshards, max_deletes))?;
+        total += n;
+        if n < max_deletes {
+            return Ok(total);
         }
     }
 }

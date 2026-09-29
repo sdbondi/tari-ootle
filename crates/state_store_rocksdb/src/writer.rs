@@ -24,7 +24,7 @@
 // (query_prefix_range_keys and friends) are the way to read a range here.
 #![deny(clippy::disallowed_methods)]
 
-use std::{collections::HashSet, iter, ops::Deref, time::Instant};
+use std::{collections::HashSet, iter, ops::Deref};
 
 use indexmap::IndexMap;
 use log::*;
@@ -58,6 +58,7 @@ use tari_ootle_common_types::{
     shard::Shard,
 };
 use tari_ootle_storage::{
+    EpochCleanupStep,
     Ordering,
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
@@ -1321,28 +1322,35 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         Ok(())
     }
 
-    fn substates_prune_downed_values(&mut self, epoch: Epoch) -> Result<usize, StorageError> {
+    fn substates_prune_downed_values(&mut self, epoch: Epoch, limit: usize) -> Result<usize, StorageError> {
         const OPERATION: &str = "substates_prune_downed_values";
         let db = self.db();
         let unpruned_query = db.cf(substate::UnprunedDownedValuesEpochQuery)?;
         let unpruned_index = db.cf(substate::UnprunedDownedValuesIndex)?;
-        let entries = unpruned_query.query_prefix_range_entries(&epoch, Ordering::Ascending)?;
         let substates_cf = db.cf(SubstateCf)?;
+
+        // Every entry holds at least one address, so no more than `limit` entries are needed to reach the limit.
+        let mut entries = unpruned_query.query_prefix_range_entries_limited(&epoch, Ordering::Ascending, limit)?;
         let mut count = 0usize;
+        let mut num_entries = 0usize;
+        for (_, addresses) in &entries {
+            if count >= limit {
+                break;
+            }
+            count += addresses.len();
+            num_entries += 1;
+        }
+        entries.truncate(num_entries);
+
         for (key, addresses) in entries {
             // TODO(perf): consider storing the actual values in a separate column family to avoid get/set
             for substate_addr in addresses {
-                let mut substate = substates_cf.get(&substate_addr, OPERATION)?;
+                let mut substate = substates_cf.get_for_update(&substate_addr, OPERATION)?;
                 substate.clear_substate_value();
                 substates_cf.put(&substate_addr, &substate, OPERATION)?;
-                count += 1;
             }
             unpruned_index.delete(&key, OPERATION)?;
         }
-        info!(
-            target: LOG_TARGET,
-            "🗑️ Pruned {count} downed substates for epoch {epoch} from unpruned values index"
-        );
 
         Ok(count)
     }
@@ -1461,61 +1469,53 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         Ok(())
     }
 
-    fn state_tree_nodes_clear_stale(&mut self, num_preshards: NumPreshards) -> Result<usize, StorageError> {
-        const OPERATION: &str = "state_tree_nodes_clear_all_stale";
-        /// We buffer deletes to ensure that we delete entire subtrees at once. The number of buffered deletes may
-        /// exceed this threshold when flushed, due to whole subtrees being added.
-        const DELETE_BUFFER_FLUSH_THRESHOLD: usize = 100_000;
+    fn state_tree_nodes_clear_stale(
+        &mut self,
+        num_preshards: NumPreshards,
+        max_deletes: usize,
+    ) -> Result<usize, StorageError> {
+        const OPERATION: &str = "state_tree_nodes_clear_stale";
 
         let cf = self.db().cf(StateTreeCf)?;
         let versions_cf = self.db().cf(StateTreeShardVersionCf)?;
         let stale_cf = self.db().cf(state_tree::ByStateTreeStaleShardQuery)?;
         let stale_nodes_cf = self.db().cf(StateTreeStaleNodesCf)?;
 
-        let mut delete_buffer = Vec::new();
-        let mut total_num_deleted = 0usize;
+        let mut num_deleted = 0usize;
         let shards = iter::once(Shard::global()).chain(ShardGroup::all_shards(num_preshards).shard_iter());
         for shard in shards {
-            let timer = Instant::now();
-            let mut num_deleted = 0;
-            // Only the keys are taken up front: this loop deletes the stale-node record it is reading, and a write
-            // transaction's iterator must not be written through at the key it is standing on. The node lists stay out
-            // of memory, fetched one version at a time, so the delete buffer below still bounds what is held.
-            let stale_keys = stale_cf.query_prefix_range_keys(Ordering::Ascending, &shard)?;
+            if num_deleted >= max_deletes {
+                break;
+            }
             let max_version = versions_cf.get(&shard, OPERATION).optional()?.unwrap_or(0);
             let Some(to_version) = max_version.checked_sub(self.options.state_history_length) else {
                 trace!(target: LOG_TARGET, "Shard {shard} is at version {max_version}, skipping stale node deletion due to history length {}", self.options.state_history_length);
                 continue;
             };
+            // Only the keys are taken up front: this loop deletes the stale-node record it is reading, and a write
+            // transaction's iterator must not be written through at the key it is standing on. Every version deletes
+            // at least its own record, so no more than the remaining budget of versions can be processed.
+            let stale_keys =
+                stale_cf.query_prefix_range_keys_limited(Ordering::Ascending, &shard, max_deletes - num_deleted)?;
             for (shard, version) in stale_keys {
                 // Only delete up to history length back from the max version
-                if version > to_version {
+                if version > to_version || num_deleted >= max_deletes {
                     break;
                 }
                 let nodes = stale_nodes_cf.get(&(shard, version), OPERATION)?;
 
+                // A version's nodes are gathered before any is deleted, because the subtree walk reads the nodes it
+                // descends through.
+                let mut delete_buffer = Vec::new();
                 for node in nodes {
-                    // Deletes are buffered to ensure that we delete entire subtrees at once.
-                    if delete_buffer.len() >= DELETE_BUFFER_FLUSH_THRESHOLD {
-                        debug!(target: LOG_TARGET, "Deleting {} stale nodes from shard {}", delete_buffer.len(), shard);
-                        for key in &*delete_buffer {
-                            cf.delete(key, OPERATION)?;
-                        }
-                        num_deleted += delete_buffer.len();
-                        delete_buffer.clear();
-                    }
-
                     match node {
                         StaleTreeNode::Node(key) => {
                             trace!(target: LOG_TARGET, "Deleting stale node {key} from shard {shard}", );
-                            // Lazy allocation
-                            if delete_buffer.capacity() == 0 {
-                                delete_buffer.reserve_exact(DELETE_BUFFER_FLUSH_THRESHOLD); // ~3.3 MB for 100k entries (excl. nibble path vec)
-                            }
                             delete_buffer.push((shard, key));
                         },
                         StaleTreeNode::Subtree(parent_key) => {
                             trace!(target: LOG_TARGET, "Deleting stale substree {parent_key} from shard {shard}", );
+                            // A subtree already deleted along with an earlier version is skipped.
                             let Some(parent_node) = cf.get(&(shard, parent_key.clone()), OPERATION).optional()? else {
                                 continue;
                             };
@@ -1530,12 +1530,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
                                     ));
                                 },
                                 Node::Leaf(_) => {
-                                    // Subtree is a single leaf node
                                     trace!(target: LOG_TARGET, "Deleting stale leaf node {parent_key} from shard {shard}", );
-                                    // Lazy allocation
-                                    if delete_buffer.capacity() == 0 {
-                                        delete_buffer.reserve_exact(DELETE_BUFFER_FLUSH_THRESHOLD); // ~3.3 MB for 100k entries (excl. nibble path vec)
-                                    }
                                     delete_buffer.push((shard, parent_key));
                                 },
                                 Node::Null => {},
@@ -1544,30 +1539,16 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
                     }
                 }
 
-                if !delete_buffer.is_empty() {
-                    debug!(target: LOG_TARGET, "Deleting last {} stale nodes from shard {}", delete_buffer.len(), shard);
-                    for key in &delete_buffer {
-                        cf.delete(key, OPERATION)?;
-                    }
-                    num_deleted += delete_buffer.len();
-                    delete_buffer.clear();
+                for key in &delete_buffer {
+                    cf.delete(key, OPERATION)?;
                 }
-
-                // Finally delete the stale node record
+                // The record goes in the same transaction as its nodes, so a version is never left half-cleared.
                 stale_nodes_cf.delete(&(shard, version), OPERATION)?;
-            }
-
-            if num_deleted > 0 {
-                total_num_deleted += num_deleted;
-                debug!(
-                    target: LOG_TARGET,
-                    "Deleted {} stale nodes in shard {} in {:.2?} to version {}",
-                    num_deleted, shard, timer.elapsed(), to_version
-                );
+                num_deleted += delete_buffer.len() + 1;
             }
         }
 
-        Ok(total_num_deleted)
+        Ok(num_deleted)
     }
 
     fn state_tree_shard_versions_set(&mut self, shard: Shard, version: Version) -> Result<(), StorageError> {
@@ -1688,32 +1669,36 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         Ok(())
     }
 
-    fn epoch_cleanup(&mut self, epoch: Epoch) -> Result<(), StorageError> {
+    fn epoch_cleanup_step(
+        &mut self,
+        epoch: Epoch,
+        step: EpochCleanupStep,
+        limit: usize,
+    ) -> Result<usize, StorageError> {
         let Some(prune_epoch) = epoch.checked_sub(self.options.epoch_history_length) else {
-            return Ok(());
+            return Ok(0);
         };
 
-        // TODO: this assumes that cleanup is run every epoch - if not, some substates will not be pruned
-        let n = self.substates_prune_downed_values(prune_epoch)?;
-        if n > 0 {
-            info!(
-                target: LOG_TARGET,
-                "🗑️ Pruned {n} downed substates for epoch {} during epoch cleanup for epoch {}",
-                prune_epoch, epoch
-            );
-        }
-
         let db = self.db();
-        cleanup::cleanup_blocks_for_epoch(&db, prune_epoch)?;
-        cleanup::cleanup_qcs_for_epoch(&db, prune_epoch)?;
-        cleanup::vote_equivocations_for_epoch(&db, prune_epoch)?;
-        cleanup::validator_liveness_log_for_epoch(&db, prune_epoch)?;
-        cleanup::foreign_proposals_for_epoch(&db, prune_epoch)?;
-        if self.options.prune_transaction_history {
-            cleanup::cleanup_finalized_transactions_for_epoch(&db, prune_epoch)?;
+        match step {
+            // TODO: this assumes that cleanup is run every epoch - if not, some substates will not be pruned
+            EpochCleanupStep::DownedSubstateValues => self.substates_prune_downed_values(prune_epoch, limit),
+            EpochCleanupStep::Blocks => cleanup::blocks_for_epoch(&db, prune_epoch, limit),
+            EpochCleanupStep::ProposalCertificates => cleanup::proposal_certificates_for_epoch(&db, prune_epoch, limit),
+            EpochCleanupStep::TimeoutCertificates => cleanup::timeout_certificates_for_epoch(&db, prune_epoch, limit),
+            EpochCleanupStep::VoteEquivocations => cleanup::vote_equivocations_for_epoch(&db, prune_epoch, limit),
+            EpochCleanupStep::ValidatorLivenessLog => {
+                cleanup::validator_liveness_log_for_epoch(&db, prune_epoch, limit)
+            },
+            EpochCleanupStep::ForeignProposals => cleanup::foreign_proposals_for_epoch(&db, prune_epoch, limit),
+            EpochCleanupStep::FinalizedTransactions => {
+                if self.options.prune_transaction_history {
+                    cleanup::finalized_transactions_for_epoch(&db, prune_epoch, limit)
+                } else {
+                    Ok(0)
+                }
+            },
         }
-
-        Ok(())
     }
 
     fn vote_equivocation_record(&mut self, evidence: &VoteEquivocation) -> Result<bool, StorageError> {
@@ -1828,13 +1813,23 @@ mod cleanup {
         certificates::{proposal::ProposalCertificateCf, timeout::TimeoutCertificateCf},
     };
 
-    pub fn foreign_proposals_for_epoch(db: &DbWriteContext<'_>, up_to_epoch: Epoch) -> Result<(), StorageError> {
+    // Each function prunes at most `limit` records up to and including `up_to_epoch`, driven by an epoch-ordered
+    // index whose entries it deletes along with their records, so the next call resumes where this one stopped.
+
+    pub fn foreign_proposals_for_epoch(
+        db: &DbWriteContext<'_>,
+        up_to_epoch: Epoch,
+        limit: usize,
+    ) -> Result<usize, StorageError> {
         const OPERATION: &str = "cleanup::foreign_proposals_for_epoch";
         let up_to_epoch = up_to_epoch + Epoch(1); // Make it inclusive
-        let cf = db.cf(foreign_proposal::ByEpochQuery)?;
-        let entries = cf.query_end_range_entries(Ordering::Ascending, &up_to_epoch)?;
+        let entries = db.cf(foreign_proposal::ByEpochQuery)?.query_end_range_entries_limited(
+            Ordering::Ascending,
+            &up_to_epoch,
+            limit,
+        )?;
 
-        let mut count = 0;
+        let count = entries.len();
         for ((epoch, _), data) in entries {
             db.cf(ForeignProposalCf)?.delete(&data.block_id, OPERATION)?;
             db.cf(foreign_proposal::EpochIndex)?
@@ -1845,44 +1840,29 @@ mod cleanup {
                 db.cf(foreign_proposal::ProposedInBlockIndex)?
                     .delete(&(proposed_block_id, data.block_id), OPERATION)?;
             }
-            count += 1;
         }
-        info!(
-            target: LOG_TARGET,
-            "Cleaned up {} foreign proposals for epoch ..{}",
-            count,
-            up_to_epoch
-        );
-        Ok(())
+        Ok(count)
     }
 
-    pub fn cleanup_blocks_for_epoch(db: &DbWriteContext<'_>, up_to_epoch: Epoch) -> Result<(), StorageError> {
-        const OPERATION: &str = "cleanup::cleanup_blocks_for_epoch";
+    pub fn blocks_for_epoch(db: &DbWriteContext<'_>, up_to_epoch: Epoch, limit: usize) -> Result<usize, StorageError> {
+        const OPERATION: &str = "cleanup::blocks_for_epoch";
         let up_to_epoch = up_to_epoch + Epoch(1); // Make it inclusive
         let cf = db.cf(BlockCf)?;
         let committed_cf = db.cf(chain::CommittedParentChildChainIndex)?;
-        let query = db.cf(block::ByEpochQuery)?;
         let index_cf = db.cf(block::EpochHeightIndex)?;
 
         // Don't delete epoch 0 blocks (i.e the zero block)
-        let keys = query.query_range_keys(Ordering::Ascending, Epoch(1)..up_to_epoch)?;
+        let keys =
+            db.cf(block::ByEpochQuery)?
+                .query_range_keys_limited(Ordering::Ascending, Epoch(1)..up_to_epoch, limit)?;
 
-        let mut count = 0usize;
+        let count = keys.len();
         for (epoch, height, block_id) in keys {
             cf.delete(&block_id, OPERATION)?;
             committed_cf.delete(&block_id, OPERATION)?;
             index_cf.delete(&(epoch, height, block_id), OPERATION)?;
-            count += 1;
         }
-
-        info!(
-            target: LOG_TARGET,
-            "Cleaned up {} blocks for ..{}",
-            count,
-            up_to_epoch
-        );
-
-        Ok(())
+        Ok(count)
     }
 
     /// Prunes finalized transaction bookkeeping — the payload, finalized link, recorded executions
@@ -1892,11 +1872,12 @@ mod cleanup {
     /// remain, so committed ids stay refused via the receipt-existence check after their records are
     /// gone. The prune horizon matches block retention, so a transaction's payload outlives every
     /// retained block that references it.
-    pub fn cleanup_finalized_transactions_for_epoch(
+    pub fn finalized_transactions_for_epoch(
         db: &DbWriteContext<'_>,
         up_to_epoch: Epoch,
-    ) -> Result<(), StorageError> {
-        const OPERATION: &str = "cleanup::cleanup_finalized_transactions_for_epoch";
+        limit: usize,
+    ) -> Result<usize, StorageError> {
+        const OPERATION: &str = "cleanup::finalized_transactions_for_epoch";
         let up_to_epoch = up_to_epoch + Epoch(1); // Make it inclusive
         let tx_cf = db.cf(TransactionCf)?;
         let link_cf = db.cf(FinalizedTransactionLinkCf)?;
@@ -1905,10 +1886,13 @@ mod cleanup {
         let exec_query = db.cf(block_transaction_execution::ByTransactionIdQuery)?;
         let exec_index_cf = db.cf(block_transaction_execution::BlockIndex)?;
 
-        let query = db.cf(finalized_transaction::ByEpochQuery)?;
-        let keys = query.query_range_keys(Ordering::Ascending, Epoch::zero()..up_to_epoch)?;
+        let keys = db.cf(finalized_transaction::ByEpochQuery)?.query_range_keys_limited(
+            Ordering::Ascending,
+            Epoch::zero()..up_to_epoch,
+            limit,
+        )?;
 
-        let mut count = 0usize;
+        let count = keys.len();
         for (epoch, tx_id) in keys {
             tx_cf.delete(&tx_id, OPERATION)?;
             link_cf.delete(&tx_id, OPERATION)?;
@@ -1917,110 +1901,91 @@ mod cleanup {
                 exec_index_cf.delete(&(block_id, tx_id, epoch, height), OPERATION)?;
             }
             epoch_index_cf.delete(&(epoch, tx_id), OPERATION)?;
-            count += 1;
         }
-
-        info!(
-            target: LOG_TARGET,
-            "Cleaned up {} finalized transactions for ..{}",
-            count,
-            up_to_epoch
-        );
-
-        Ok(())
+        Ok(count)
     }
 
     /// The log answers for heights of the epoch it belongs to, so it lives exactly as long as that
     /// epoch's blocks.
-    pub fn validator_liveness_log_for_epoch(db: &DbWriteContext<'_>, up_to_epoch: Epoch) -> Result<(), StorageError> {
+    pub fn validator_liveness_log_for_epoch(
+        db: &DbWriteContext<'_>,
+        up_to_epoch: Epoch,
+        limit: usize,
+    ) -> Result<usize, StorageError> {
         const OPERATION: &str = "cleanup::validator_liveness_log_for_epoch";
         let up_to_epoch = up_to_epoch + Epoch(1); // Make it inclusive
+        let keys = db.cf(validator_liveness_log::ByEpochQuery)?.query_range_keys_limited(
+            Ordering::Ascending,
+            Epoch::zero()..up_to_epoch,
+            limit,
+        )?;
 
         let cf = db.cf(validator_liveness_log::ValidatorLivenessLogCf)?;
-        let mut count = 0usize;
-        for key in db
-            .cf(validator_liveness_log::ByEpochQuery)?
-            .query_range_keys(Ordering::Ascending, Epoch::zero()..up_to_epoch)?
-        {
-            cf.delete(&key, OPERATION)?;
-            count += 1;
+        for key in &keys {
+            cf.delete(key, OPERATION)?;
         }
-
-        if count > 0 {
-            info!(
-                target: LOG_TARGET,
-                "🗑️ Pruned {count} validator liveness log entries up to epoch {}", up_to_epoch - Epoch(1),
-            );
-        }
-
-        Ok(())
+        Ok(keys.len())
     }
 
     /// Equivocation evidence is retained for as long as the blocks of the view it indicts, so an
     /// operator reading the record can still fetch the blocks it refers to.
-    pub fn vote_equivocations_for_epoch(db: &DbWriteContext<'_>, up_to_epoch: Epoch) -> Result<(), StorageError> {
+    pub fn vote_equivocations_for_epoch(
+        db: &DbWriteContext<'_>,
+        up_to_epoch: Epoch,
+        limit: usize,
+    ) -> Result<usize, StorageError> {
         const OPERATION: &str = "cleanup::vote_equivocations_for_epoch";
         let up_to_epoch = up_to_epoch + Epoch(1); // Make it inclusive
+        let keys = db.cf(vote_equivocation::ByEpochQuery)?.query_range_keys_limited(
+            Ordering::Ascending,
+            Epoch::zero()..up_to_epoch,
+            limit,
+        )?;
 
         let cf = db.cf(vote_equivocation::VoteEquivocationCf)?;
-        let mut count = 0usize;
-        for key in db
-            .cf(vote_equivocation::ByEpochQuery)?
-            .query_range_keys(Ordering::Ascending, Epoch::zero()..up_to_epoch)?
-        {
-            cf.delete(&key, OPERATION)?;
-            count += 1;
+        for key in &keys {
+            cf.delete(key, OPERATION)?;
         }
-
-        if count > 0 {
-            info!(
-                target: LOG_TARGET,
-                "Cleaned up {} vote equivocation records for ..{}",
-                count,
-                up_to_epoch
-            );
-        }
-
-        Ok(())
+        Ok(keys.len())
     }
 
-    pub fn cleanup_qcs_for_epoch(db: &DbWriteContext<'_>, up_to_epoch: Epoch) -> Result<(), StorageError> {
-        const OPERATION: &str = "cleanup::cleanup_qcs_for_epoch";
+    pub fn proposal_certificates_for_epoch(
+        db: &DbWriteContext<'_>,
+        up_to_epoch: Epoch,
+        limit: usize,
+    ) -> Result<usize, StorageError> {
+        const OPERATION: &str = "cleanup::proposal_certificates_for_epoch";
         let up_to_epoch = up_to_epoch + Epoch(1); // Make it inclusive
+        let keys = db.cf(certificates::proposal::ByEpochQuery)?.query_range_keys_limited(
+            Ordering::Ascending,
+            Epoch(1)..up_to_epoch,
+            limit,
+        )?;
+
         let cf = db.cf(ProposalCertificateCf)?;
-        let query = db.cf(certificates::proposal::ByEpochQuery)?;
-        let keys = query.query_range_keys(Ordering::Ascending, Epoch(1)..up_to_epoch)?;
-
-        let mut count = 0usize;
-        for key in keys {
-            cf.delete(&key, OPERATION)?;
-            count += 1;
+        for key in &keys {
+            cf.delete(key, OPERATION)?;
         }
+        Ok(keys.len())
+    }
 
-        info!(
-            target: LOG_TARGET,
-            "Cleaned up {} proposal certificates for ..{}",
-            count,
-            up_to_epoch
-        );
+    pub fn timeout_certificates_for_epoch(
+        db: &DbWriteContext<'_>,
+        up_to_epoch: Epoch,
+        limit: usize,
+    ) -> Result<usize, StorageError> {
+        const OPERATION: &str = "cleanup::timeout_certificates_for_epoch";
+        let up_to_epoch = up_to_epoch + Epoch(1); // Make it inclusive
+        let keys = db.cf(certificates::timeout::ByEpochQuery)?.query_range_keys_limited(
+            Ordering::Ascending,
+            Epoch(1)..up_to_epoch,
+            limit,
+        )?;
 
         let cf = db.cf(TimeoutCertificateCf)?;
-        let query = db.cf(certificates::timeout::ByEpochQuery)?;
-        let keys = query.query_range_keys(Ordering::Ascending, Epoch(1)..up_to_epoch)?;
-
-        let mut count = 0usize;
-        for key in keys {
-            cf.delete(&key, OPERATION)?;
-            count += 1;
+        for key in &keys {
+            cf.delete(key, OPERATION)?;
         }
-
-        info!(
-            target: LOG_TARGET,
-            "Cleaned up {} timeout certificates for ..={}",
-            count,
-            up_to_epoch
-        );
-
-        Ok(())
+        Ok(keys.len())
     }
 }

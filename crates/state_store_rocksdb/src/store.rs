@@ -251,7 +251,11 @@ impl<TAddr: NodeAddressable> RocksDbStateStore<TAddr, TransactionDB> {
         let mut write_opts = WriteOptions::default();
         // A synced commit fsyncs the WAL before returning, which also makes every earlier commit durable.
         write_opts.set_sync(sync);
-        let tx = self.db.transaction_opt(&write_opts, &TransactionOptions::default());
+        let mut tx_opts = TransactionOptions::default();
+        // Consensus and the GC tasks write concurrently. A lock-order cycle between them fails the transaction that
+        // closes it with `Busy` as soon as the cycle forms.
+        tx_opts.set_deadlock_detect(true);
+        let tx = self.db.transaction_opt(&write_opts, &tx_opts);
         let tx = RocksDbStateStoreWriteTransaction::new(&self.db, tx, &self.options);
         let elapsed = timer.elapsed();
         let level = if elapsed > Duration::from_secs(1) {

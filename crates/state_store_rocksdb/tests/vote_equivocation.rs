@@ -9,6 +9,7 @@ use helpers::{create_rocksdb, create_rocksdb_with_opts};
 use tari_consensus_types::{BlockId, ProposalVote, ValidatorSignatureBytes};
 use tari_ootle_common_types::{Epoch, NodeHeight};
 use tari_ootle_storage::{
+    EpochCleanupStep,
     Ordering,
     StateStore,
     StateStoreReadTransaction,
@@ -188,4 +189,68 @@ fn epoch_cleanup_prunes_evidence_past_the_retention_window() {
 
     assert!(stored_for_epoch(&db, EPOCH).is_empty());
     assert_eq!(stored_for_epoch(&db, EPOCH + Epoch(2)).len(), 1);
+}
+
+/// Each call is its own transaction in the GC task, so a node stopping between calls leaves the rest for the next
+/// run, which picks up where this one stopped.
+#[test]
+fn epoch_cleanup_step_is_bounded_and_resumes() {
+    let (db, _tmp) = create_rocksdb_with_opts(DatabaseOptions::default().with_epoch_history_length(2));
+    for signer_byte in 1..=5 {
+        db.with_write_tx(|tx| tx.vote_equivocation_record(&evidence(signer_byte)))
+            .unwrap();
+    }
+
+    let prune = |limit| {
+        db.with_write_tx(|tx| tx.epoch_cleanup_step(EPOCH + Epoch(3), EpochCleanupStep::VoteEquivocations, limit))
+            .unwrap()
+    };
+    assert_eq!(prune(2), 2);
+    assert_eq!(stored_for_epoch(&db, EPOCH).len(), 3);
+    assert_eq!(prune(2), 2);
+    assert_eq!(stored_for_epoch(&db, EPOCH).len(), 1);
+    // Fewer than the limit signals the step is done.
+    assert_eq!(prune(2), 1);
+    assert!(stored_for_epoch(&db, EPOCH).is_empty());
+    assert_eq!(prune(2), 0);
+}
+
+/// Two writers taking the same keys in opposite orders: the one that closes the cycle fails as soon as it forms, and
+/// the other completes with nothing lost.
+#[test]
+fn a_lock_order_cycle_fails_the_writer_that_closes_it() {
+    let (db, _tmp) = create_rocksdb();
+    let a_holds_first = std::sync::Barrier::new(2);
+    let a_waiting = std::sync::Barrier::new(2);
+
+    std::thread::scope(|s| {
+        let a = s.spawn(|| {
+            let mut tx = db.create_write_tx().unwrap();
+            assert!(tx.vote_equivocation_record(&evidence(1)).unwrap());
+            a_holds_first.wait();
+            a_waiting.wait();
+            // Blocks on B's lock until B rolls back.
+            assert!(tx.vote_equivocation_record(&evidence(2)).unwrap());
+            tx.commit().unwrap();
+        });
+
+        let mut tx = db.create_write_tx().unwrap();
+        assert!(tx.vote_equivocation_record(&evidence(2)).unwrap());
+        a_holds_first.wait();
+        a_waiting.wait();
+        // Let A reach its lock wait on evidence(2).
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let timer = std::time::Instant::now();
+        let err = tx.vote_equivocation_record(&evidence(1)).unwrap_err();
+        assert!(err.to_string().contains("Deadlock"), "{err}");
+        assert!(
+            timer.elapsed() < std::time::Duration::from_millis(500),
+            "deadlock was detected only after {:?}",
+            timer.elapsed()
+        );
+        tx.rollback().unwrap();
+        a.join().unwrap();
+    });
+
+    assert_eq!(stored_for_epoch(&db, EPOCH).len(), 2);
 }

@@ -78,4 +78,12 @@ impl RocksWriter for Transaction<'_, TransactionDB> {
     fn delete_cf<K: AsRef<[u8]>>(&self, cf: &impl AsColumnFamilyRef, key: K) -> Result<(), rocksdb::Error> {
         self.delete_cf(cf, key)
     }
+
+    fn get_pinned_for_update_cf<K: AsRef<[u8]>>(
+        &self,
+        cf: &impl AsColumnFamilyRef,
+        key: K,
+    ) -> Result<Option<DBPinnableSlice<'_>>, rocksdb::Error> {
+        self.get_pinned_for_update_cf(cf, key, true)
+    }
 }

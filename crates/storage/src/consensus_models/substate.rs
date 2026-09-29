@@ -275,13 +275,6 @@ impl SubstateRecord {
         let rec = Self::get(tx, &SubstateAddress::from_substate_id(substate_id, max_version))?;
         Ok(rec)
     }
-
-    pub fn prune_downed_values<TTx: StateStoreWriteTransaction>(
-        tx: &mut TTx,
-        epoch: Epoch,
-    ) -> Result<usize, StorageError> {
-        tx.substates_prune_downed_values(epoch)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

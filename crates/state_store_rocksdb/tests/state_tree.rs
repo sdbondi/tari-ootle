@@ -69,9 +69,10 @@ fn state_tree_operations(db: impl StateStore, num_nodes: usize) {
     .unwrap();
 
     let n = db
-        .with_write_tx(|tx| tx.state_tree_nodes_clear_stale(num_preshards()))
+        .with_write_tx(|tx| tx.state_tree_nodes_clear_stale(num_preshards(), usize::MAX))
         .unwrap();
-    assert_eq!(n, 100);
+    // 100 nodes and the version's stale record
+    assert_eq!(n, 101);
     db.with_read_tx(|tx| {
         // Stale nodes are gone
         for (key, _) in &nodes[..100] {
@@ -100,6 +101,60 @@ fn gen_nodes(version: u64, num: usize) -> impl Iterator<Item = (NodeKey, Node<St
         let node_key = NodeKey::new(version, path);
         (node_key, node)
     })
+}
+
+/// A call deletes whole stale versions until it reaches `max_deletes`, so repeated calls clear everything in bounded
+/// transactions, each resuming at the first version the previous one left.
+#[test]
+fn clear_stale_is_bounded_per_call_and_resumes() {
+    const SHARD: Shard = Shard::first();
+    let (db, _tmp) = create_rocksdb_with_opts(DatabaseOptions::default().with_state_history_length(0));
+    let per_version = 10usize;
+    let all_nodes = (1u64..=5)
+        .map(|v| gen_nodes(v, per_version).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+
+    db.with_write_tx(|tx| {
+        for (v, nodes) in (1u64..).zip(&all_nodes) {
+            tx.state_tree_nodes_batch_insert(SHARD, nodes.clone()).unwrap();
+            tx.state_tree_nodes_record_stale_tree_nodes(
+                SHARD,
+                v,
+                nodes.iter().map(|(k, _)| StaleTreeNode::Node(k.clone())).collect(),
+            )
+            .unwrap();
+        }
+        tx.state_tree_shard_versions_set(SHARD, 5).unwrap();
+        Ok::<_, StorageError>(())
+    })
+    .unwrap();
+
+    let clear = |max_deletes| {
+        db.with_write_tx(|tx| tx.state_tree_nodes_clear_stale(num_preshards(), max_deletes))
+            .unwrap()
+    };
+    let is_present = |nodes: &[(NodeKey, Node<StateTreePayload>)]| {
+        db.with_read_tx(|tx| {
+            let present = nodes
+                .iter()
+                .map(|(key, _)| tx.state_tree_nodes_get(SHARD, key).optional().map(|n| n.is_some()))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok::<_, StorageError>(present)
+        })
+        .unwrap()
+    };
+
+    // Each version is 11 rows: 10 nodes and its stale record. A budget of 15 stops after the second version.
+    assert_eq!(clear(15), 22);
+    assert!(all_nodes[..2].iter().all(|nodes| !is_present(nodes).contains(&true)));
+    assert!(all_nodes[2..].iter().all(|nodes| !is_present(nodes).contains(&false)));
+
+    assert_eq!(clear(15), 22);
+    assert!(!is_present(&all_nodes[3]).contains(&true));
+    // The last version fits under the budget, which signals nothing is left.
+    assert_eq!(clear(15), 11);
+    assert_eq!(clear(15), 0);
+    assert!(all_nodes.iter().all(|nodes| !is_present(nodes).contains(&true)));
 }
 
 #[test]

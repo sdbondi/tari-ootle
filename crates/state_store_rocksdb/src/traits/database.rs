@@ -56,4 +56,12 @@ pub trait RocksWriter: RocksReader {
     ) -> Result<(), Error>;
 
     fn delete_cf<K: AsRef<[u8]>>(&self, cf: &impl AsColumnFamilyRef, key: K) -> Result<(), Error>;
+
+    /// Reads a key and takes its exclusive lock until the transaction ends, so a concurrent writer of the same key
+    /// waits for the lock or fails.
+    fn get_pinned_for_update_cf<K: AsRef<[u8]>>(
+        &self,
+        cf: &impl AsColumnFamilyRef,
+        key: K,
+    ) -> Result<Option<DBPinnableSlice<'_>>, Error>;
 }
