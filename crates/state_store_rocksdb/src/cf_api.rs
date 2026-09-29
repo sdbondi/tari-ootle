@@ -211,6 +211,39 @@ impl<'db, CF: Cf, DB: RocksReader> CfContext<'db, DB, CF> {
         Ok(values)
     }
 
+    /// Returns the value for each of the given keys, in the order given. Unlike [`Self::multi_get`], a key with no
+    /// value is an error, so the result lines up one-to-one with the keys.
+    pub fn multi_get_exact<I, T>(&self, keys: I, operation: &'static str) -> Result<Vec<CF::Value>, RocksDbStorageError>
+    where
+        I: IntoIterator<Item = T>,
+        T: Borrow<CF::Key>,
+    {
+        let encoded = keys
+            .into_iter()
+            .map(|k| self.key_codec.encode(k.borrow()))
+            .collect::<Result<Vec<_>, _>>()?;
+        if encoded.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let results = self
+            .db
+            .multi_get_cf(encoded.iter().map(|key| (self.handle, key.as_slice())));
+        results
+            .into_iter()
+            .zip(&encoded)
+            .map(|(result, key)| {
+                let value = result
+                    .map_err(|e| RocksDbStorageError::RocksDbError { operation, source: e })?
+                    .ok_or_else(|| RocksDbStorageError::NotFound {
+                        key: Box::new(key.clone()),
+                        operation,
+                    })?;
+                self.value_codec.decode_exact(&value)
+            })
+            .collect()
+    }
+
     pub fn iterator(
         &self,
         ordering: Ordering,

@@ -310,3 +310,30 @@ fn query_last_does_not_read_the_following_prefix() {
     assert_eq!(epoch, Epoch(4));
     assert_eq!(block_id, block_id_from_seed(4));
 }
+
+#[test]
+fn multi_get_exact_returns_values_in_key_order_and_rejects_a_missing_key() {
+    const OP: &str = "multi_get_exact";
+    let (db, _tmp) = create_rocksdb([TwoBlocksCf::name()]);
+    let tx = db.transaction();
+    let ctx = ctx(&db, &tx);
+    let cf = ctx.cf(TwoBlocksCf).unwrap();
+    let keys = (1..=3)
+        .map(|seed| (block_id_from_seed(seed), transaction_id_from_seed(seed)))
+        .collect::<Vec<_>>();
+    for (value, key) in keys.iter().enumerate() {
+        cf.put(key, &(value as u64), OP).unwrap();
+    }
+
+    let values = cf.multi_get_exact(keys.iter().rev(), OP).unwrap();
+    assert_eq!(values, [2, 1, 0]);
+
+    let missing = (block_id_from_seed(9), transaction_id_from_seed(9));
+    let err = cf
+        .multi_get_exact([&keys[0], &missing, &keys[2]], OP)
+        .expect_err("a missing key must not be skipped");
+    assert!(
+        matches!(err, crate::error::RocksDbStorageError::NotFound { .. }),
+        "{err}"
+    );
+}

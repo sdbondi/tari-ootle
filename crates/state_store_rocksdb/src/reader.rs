@@ -1812,12 +1812,11 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
 
         // TODO(perf): we still have to load all substates for the id and version regardless of the value filters - not
         // ideal
-        let substates = substate_cf.multi_get(data.transitions.iter().map(|t| t.substate_address), OPERATION)?;
+        let substates = substate_cf.multi_get_exact(data.transitions.iter().map(|t| t.substate_address), OPERATION)?;
 
         let mut updates = Vec::with_capacity(data.transitions.len());
         let all_hashes = value_filter.include_filtered_hashes();
         let up_only = value_filter.is_up_only();
-        // multi_get returns the substates in the same order as queried, so ordered by transitions
         for (rec, substate) in data.transitions.iter().zip(substates) {
             let update = match rec.transition {
                 StateTransitionType::Up => {
