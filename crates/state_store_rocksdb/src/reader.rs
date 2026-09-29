@@ -1461,11 +1461,10 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
             return Ok(cf.count(OPERATION)?);
         }
 
-        let lock_conflicted = if skip_lock_conflicted {
-            self.lock_conflicted_transaction_ids()?
-        } else {
-            HashSet::new()
-        };
+        let lock_conflicted = skip_lock_conflicted
+            .then(|| self.lock_conflicted_transaction_ids())
+            .transpose()?
+            .unwrap_or_default();
 
         let mut count = 0;
         for result in cf.value_iterator(Ordering::default(), OPERATION) {
@@ -1486,11 +1485,10 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
     where F: FnMut(&TransactionPoolRecord) -> bool {
         const OPERATION: &str = "transaction_pool_any";
 
-        let lock_conflicted = if skip_lock_conflicted {
-            self.lock_conflicted_transaction_ids()?
-        } else {
-            HashSet::new()
-        };
+        let lock_conflicted = skip_lock_conflicted
+            .then(|| self.lock_conflicted_transaction_ids())
+            .transpose()?
+            .unwrap_or_default();
 
         let cf = self.db().cf(TransactionPoolCf)?;
         for result in cf.value_iterator(Ordering::default(), OPERATION) {
