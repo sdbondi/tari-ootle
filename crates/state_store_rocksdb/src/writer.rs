@@ -1119,22 +1119,20 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         }
 
         // Only blocks with no missing transactions left are unparked
-        let mut still_missing = HashSet::new();
-        for block_id in &block_ids {
-            if by_block_query.exists_prefix(block_id)? {
-                still_missing.insert(*block_id);
+        let mut unparked = Vec::with_capacity(block_ids.len());
+        for block_id in block_ids {
+            if !by_block_query.exists_prefix(&block_id)? {
+                unparked.push(block_id);
             }
         }
-        block_ids.retain(|block_id| !still_missing.contains(block_id));
 
-        // If ALL of the blocks still have missing transactions, exit early
-        if block_ids.is_empty() {
+        if unparked.is_empty() {
             return Ok(vec![]);
         }
 
         // Unpark (fetch and delete) the blocks
-        let blocks = cf.multi_get(&block_ids, OPERATION)?;
-        for id in &block_ids {
+        let blocks = cf.multi_get(&unparked, OPERATION)?;
+        for id in &unparked {
             cf.delete(id, OPERATION)?;
         }
 
