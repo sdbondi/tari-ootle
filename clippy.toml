@@ -5,3 +5,14 @@ enum-variant-size-threshold = 216
 allow-indexing-slicing-in-tests = true
 suppress-restriction-lint-in-const = true
 large-error-threshold = 192
+
+# A write transaction's iterator reads through its own write batch, and RocksDB invalidates the iterator's position
+# when the batch is updated at the key it is standing on (rocksdb/utilities/write_batch_with_index.h,
+# NewIteratorWithBase). These are denied only in state_store_rocksdb's writer, which sets the lint level itself; every
+# read path allows them at its crate root, because lazy iteration is what a read wants.
+disallowed-methods = [
+  { path = "tari_state_store_rocksdb::cf_api::CfContext::query_prefix_range_iterator", reason = "collect first in a write transaction: use query_prefix_range_entries" },
+  { path = "tari_state_store_rocksdb::cf_api::CfContext::query_prefix_range_key_iterator", reason = "collect first in a write transaction: use query_prefix_range_keys" },
+  { path = "tari_state_store_rocksdb::cf_api::CfContext::query_range_key_iterator", reason = "collect first in a write transaction: use query_range_keys" },
+  { path = "tari_state_store_rocksdb::cf_api::CfContext::query_end_range_iterator", reason = "collect first in a write transaction: use query_end_range_entries" },
+]

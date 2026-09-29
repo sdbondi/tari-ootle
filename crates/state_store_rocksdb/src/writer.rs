@@ -20,6 +20,10 @@
 //  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+// A write transaction must not be written through at the key its iterator is standing on. The eager accessors
+// (query_prefix_range_keys and friends) are the way to read a range here.
+#![deny(clippy::disallowed_methods)]
+
 use std::{collections::HashSet, iter, ops::Deref, time::Instant};
 
 use indexmap::IndexMap;
@@ -1023,6 +1027,8 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
 
         let query_cf = self.db().cf(missing_transactions::ByTransactionIdQuery)?;
 
+        // Safe to iterate lazily: the iterator is dropped before anything is written
+        #[allow(clippy::disallowed_methods)]
         let mut iter = query_cf.query_prefix_range_key_iterator(Ordering::Ascending, transaction_id);
 
         let Some(key) = iter.next().transpose()? else {
@@ -1041,6 +1047,8 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
 
         {
             let query = self.db().cf(missing_transactions::ByBlockIdQuery)?;
+            // Safe to iterate lazily: this scope only reads
+            #[allow(clippy::disallowed_methods)]
             let mut iter = query.query_prefix_range_key_iterator(Ordering::default(), &block_id);
 
             // Are there more missing transactions for this block?
