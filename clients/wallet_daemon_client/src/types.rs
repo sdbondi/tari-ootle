@@ -983,7 +983,7 @@ pub struct AccountsGetFaucetBalanceRequest {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct AccountsGetFaucetBalanceResponse {
-    /// The faucet's available balance. Zero on a network without a faucet.
+    /// The faucet's available balance.
     pub balance: Amount,
     /// The amount a single claim takes from the faucet. A claim fails while `balance` is below it.
     pub claim_amount: Amount,

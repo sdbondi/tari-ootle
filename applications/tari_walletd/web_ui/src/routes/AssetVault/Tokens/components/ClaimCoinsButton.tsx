@@ -41,12 +41,12 @@ function ClaimCoinsButton() {
   const [hasClaimed, setHasClaimed] = useState(false);
   const { data: walletInfo } = useWalletInfo();
   const isTestnet = !!walletInfo && walletInfo.network !== "mainnet";
-  const { data: faucet } = useFaucetBalance(isTestnet);
 
   const theme = useTheme();
   const isLg = useMediaQuery(theme.breakpoints.up("md"));
 
   const accountAddress = account ? substateIdToString(account.component_address) : null;
+  const { data: faucet } = useFaucetBalance(isTestnet && !!accountAddress && !hasClaimed);
 
   useEffect(() => {
     if (!accountAddress) return;
@@ -120,7 +120,6 @@ function ClaimCoinsButton() {
         onError: (error: any) => {
           console.error("Error claiming coins:", error);
           if ((error?.cause as any)?.code === 1002) {
-            queryClient.invalidateQueries({ queryKey: ["faucet_balance"] });
             showError("The testnet faucet is empty. Burn on L1 to claim tTARI instead.");
           } else if ((error?.cause as any)?.code === 1001) {
             markClaimed();

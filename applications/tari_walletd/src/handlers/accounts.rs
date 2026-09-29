@@ -769,18 +769,14 @@ pub async fn handle_get_faucet_balance(
     })
 }
 
-/// The faucet vault's balance on the network, or zero on a network that has no faucet.
 async fn fetch_faucet_balance(context: &HandlerContext) -> Result<Amount, anyhow::Error> {
     let vault = context
         .wallet_sdk()
         .substate_api()
         .fetch_substate_from_network(&XTR_FAUCET_VAULT_ADDRESS.into(), None)
         .await
-        .optional()?;
-
-    let Some(vault) = vault else {
-        return Ok(Amount::zero());
-    };
+        .optional()?
+        .ok_or_else(|| not_found("The indexer has no testnet faucet vault for this network"))?;
     let vault = vault
         .substate
         .into_vault()
@@ -815,10 +811,6 @@ pub async fn handle_create_free_test_coins(
             Some("cannot create free test coins for an account without an owner key"),
         )
     })?;
-
-    if fetch_faucet_balance(context).await? < amount {
-        return Err(faucet_empty());
-    }
 
     info!(
         target: LOG_TARGET,
@@ -912,6 +904,14 @@ pub async fn handle_create_free_test_coins(
             RejectReason::ExecutionFailure { message, .. } => {
                 if message.contains("Duplicate NFT token id") {
                     return Err(faucet_already_claimed());
+                }
+                // The faucet records the claim before it withdraws, so an account that already claimed is
+                // reported as such even when the faucet is also empty.
+                if fetch_faucet_balance(context)
+                    .await
+                    .is_ok_and(|balance| balance < amount)
+                {
+                    return Err(faucet_empty());
                 }
                 Err(transaction_rejected(message))
             },

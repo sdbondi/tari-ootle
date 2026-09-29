@@ -3,7 +3,7 @@ import type { Amount } from "../Amount";
 
 export type AccountsGetFaucetBalanceResponse = {
   /**
-   * The faucet's available balance. Zero on a network without a faucet.
+   * The faucet's available balance.
    */
   balance: Amount;
   /**
