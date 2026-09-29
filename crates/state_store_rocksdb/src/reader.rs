@@ -1702,7 +1702,7 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
 
         let query = self.db().cf(substate_locks::ByChainOrderQuery)?;
         for result in query.query_prefix_range_iterator(Ordering::Descending, substate_id) {
-            let ((_, block_height, block_id, _), transaction_id) = result?;
+            let ((_, block_height, block_id, grant_seq), transaction_id) = result?;
             if !self.is_in_chain_scope(&scope, &block_id, block_height)? {
                 continue;
             }
@@ -1712,6 +1712,7 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
                 block_height,
                 substate_id: substate_id.clone(),
                 transaction_id,
+                grant_seq,
             };
             let Some(lock) = cf.get(&lock_key, OPERATION).optional()? else {
                 // The index entry and the record it names are written and removed together. Reporting the substate as

@@ -39,26 +39,33 @@ use crate::{
         SubstateIdCodec,
         SubstateLockKeyCodec,
         TransactionIdCodec,
+        UnitCodec,
     },
     column_families::cf_names,
     prefixed,
     traits::{Cf, QueryCf},
 };
 
+/// Identifies one lock a block granted.
+///
+/// A transaction can hold more than one lock on a substate from one block: a mutated input is locked for write at its
+/// current version and as an output at its next. `grant_seq`, the lock's position in the sequence its block granted for
+/// the substate, tells those locks apart.
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct SubstateLockKey {
     pub block_id: BlockId,
     pub block_height: NodeHeight,
     pub substate_id: SubstateId,
     pub transaction_id: TransactionId,
+    pub grant_seq: u32,
 }
 
 impl Display for SubstateLockKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "SubstateLockKey {{ block: {}/{}, substate_id: {}, transaction_id: {} }}",
-            self.block_height, self.block_id, self.substate_id, self.transaction_id
+            "SubstateLockKey {{ block: {}/{}, substate_id: {}, transaction_id: {}, grant_seq: {} }}",
+            self.block_height, self.block_id, self.substate_id, self.transaction_id, self.grant_seq
         )
     }
 }
@@ -69,7 +76,7 @@ pub struct SubstateLockModel;
 
 impl Cf for SubstateLockModel {
     type Key = SubstateLockKey;
-    type KeyCodec = SubstateLockKeyCodec<(TransactionId, SubstateId, BlockId, NodeHeight)>;
+    type KeyCodec = SubstateLockKeyCodec<(TransactionId, SubstateId, BlockId, NodeHeight, u32)>;
     type Prefix = SubstateLockPrefix;
     type Value = SubstateLock;
     type ValueCodec = DefaultCodec<Self::Value>;
@@ -125,14 +132,12 @@ prefixed!(SubstatesBlockIdIndexPrefix, KeyPrefix::SubstateLocksBlockIdIndex);
 
 pub struct BlockIdIndex;
 
-/// The value is the lock's `grant_seq`, which completes its [`ChainOrderIndex`] key. Holding it here lets a lock be
-/// removed from that index by exact key, since every path that removes a lock reaches it by block or by transaction.
 impl Cf for BlockIdIndex {
     type Key = SubstateLockKey;
-    type KeyCodec = SubstateLockKeyCodec<(BlockId, SubstateId, TransactionId, NodeHeight)>;
+    type KeyCodec = SubstateLockKeyCodec<(BlockId, SubstateId, TransactionId, NodeHeight, u32)>;
     type Prefix = SubstatesBlockIdIndexPrefix;
-    type Value = u32;
-    type ValueCodec = NumberCodec<u32>;
+    type Value = ();
+    type ValueCodec = UnitCodec;
 
     fn name() -> &'static str {
         cf_names::SUBSTATES
@@ -153,7 +158,7 @@ pub struct SubstateIdIndex;
 
 impl Cf for SubstateIdIndex {
     type Key = SubstateLockKey;
-    type KeyCodec = SubstateLockKeyCodec<(SubstateId, TransactionId, BlockId, NodeHeight)>;
+    type KeyCodec = SubstateLockKeyCodec<(SubstateId, TransactionId, BlockId, NodeHeight, u32)>;
     type Prefix = SubstateIdIndexPrefix;
     type Value = SubstateLockType;
     type ValueCodec = DefaultCodec<Self::Value>;
@@ -174,7 +179,8 @@ impl QueryCf for BySubstateIdQuery {
 /// The [`SubstateIdIndex`] key shape from before the index carried its table prefix.
 ///
 /// These keys are namespaced only by the leading borsh `SubstateId` discriminant, so they sort below every prefixed
-/// table sharing the column family. Exists so the migration that rewrites them can address them; remove it once no
+/// table sharing the column family. They also predate `grant_seq`, so a key read through this table has a `grant_seq`
+/// of zero. Exists so the migration that rewrites them can address them; remove it once no
 /// supported database can still be at a version that predates that migration.
 pub struct LegacyUnprefixedSubstateIdIndex;
 

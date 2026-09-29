@@ -372,7 +372,7 @@ fn a_lock_from_a_branch_below_the_commit_height_is_not_found() {
 
 /// Releasing locks must clear every index entry, over a loop long enough to matter.
 ///
-/// Each release path rebuilds a lock's chain-order key from a `grant_seq` it reads back, so it can address the wrong
+/// Each release path rebuilds a lock's chain-order key from the `grant_seq` in its lock key, so it can address the wrong
 /// entry and leave one behind. A record whose index entry outlives it is caught here because the lookup raises
 /// `DataInconsistency` rather than reporting the substate as unlocked.
 #[test]
@@ -514,4 +514,82 @@ fn a_conflicting_write_lock_is_scoped_to_one_chain() {
     assert_eq!(conflict, Some(branch_tx));
 
     tx.rollback().unwrap();
+}
+
+/// A transaction that mutates a substate locks its input version for write and its next version as an output, both in
+/// the block that prepares it. Both locks are held: the write lock backs the pledge sent to foreign committees, and the
+/// output lock backs the substate's next version.
+#[test]
+fn a_transaction_keeps_both_its_input_and_output_lock_on_one_substate() {
+    let (db, _tmp) = create_rocksdb();
+    let mut tx = db.create_write_tx().unwrap();
+
+    let chain = create_chain(10);
+    commit_chain(&mut tx, &chain);
+    let b8 = chain[8].as_leaf();
+    let b9 = chain[9].as_leaf();
+
+    let tx_id = transaction_id_from_seed(1);
+    let substate_id = create_random_substate_id();
+    tx.substate_locks_insert_all(
+        &b8,
+        &IndexMap::from([(substate_id.clone(), vec![
+            SubstateLock::new(tx_id, SubstateVersion::new(0), SubstateLockType::Write, false),
+            SubstateLock::new(tx_id, SubstateVersion::new(1), SubstateLockType::Output, false),
+        ])]),
+    )
+    .unwrap();
+
+    let mut locked = tx
+        .substate_locks_get_locked_substates_for_transaction(&b9, &tx_id)
+        .unwrap()
+        .into_iter()
+        .map(|l| (l.substate_id, l.lock.lock_type(), l.lock.version()))
+        .collect::<Vec<_>>();
+    locked.sort_by_key(|(_, _, v)| *v);
+    assert_eq!(locked, vec![
+        (substate_id.clone(), SubstateLockType::Write, SubstateVersion::new(0)),
+        (substate_id.clone(), SubstateLockType::Output, SubstateVersion::new(1)),
+    ]);
+
+    let latest = tx.substate_locks_get_latest_for_substate(&b9, &substate_id).unwrap();
+    assert_eq!(latest.lock_type(), SubstateLockType::Output);
+
+    let conflict = tx
+        .substate_locks_has_any_write_locks_for_substates(&b9, None, Some(&substate_id))
+        .unwrap();
+    assert_eq!(conflict, Some(tx_id));
+    tx.rollback().unwrap();
+
+    for by_block in [true, false] {
+        let mut tx = db.create_write_tx().unwrap();
+        commit_chain(&mut tx, &chain);
+        tx.substate_locks_insert_all(
+            &b8,
+            &IndexMap::from([(substate_id.clone(), vec![
+                SubstateLock::new(tx_id, SubstateVersion::new(0), SubstateLockType::Write, false),
+                SubstateLock::new(tx_id, SubstateVersion::new(1), SubstateLockType::Output, false),
+            ])]),
+        )
+        .unwrap();
+        if by_block {
+            tx.substate_locks_remove_any_by_block_id(b8.block_id()).unwrap();
+        } else {
+            tx.substate_locks_remove_many_for_transactions(Some(&tx_id)).unwrap();
+        }
+        assert!(
+            tx.substate_locks_get_latest_for_substate(&b9, &substate_id)
+                .optional()
+                .unwrap()
+                .is_none(),
+            "a lock was left behind (by_block={by_block})"
+        );
+        assert!(
+            tx.substate_locks_has_any_write_locks_for_substates(&b9, None, Some(&substate_id))
+                .unwrap()
+                .is_none(),
+            "a write lock was left behind (by_block={by_block})"
+        );
+        tx.rollback().unwrap();
+    }
 }

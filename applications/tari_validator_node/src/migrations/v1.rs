@@ -68,6 +68,7 @@ mod tests {
             block_height: NodeHeight(u64::from(seed)),
             substate_id: ComponentAddress::from_array([seed; ObjectKey::LENGTH]).into(),
             transaction_id: TransactionId::new([seed; 32]),
+            grant_seq: 0,
         }
     }
 
