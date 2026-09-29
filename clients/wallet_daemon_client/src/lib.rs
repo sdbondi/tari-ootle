@@ -42,6 +42,8 @@ use tari_ootle_wallet_sdk::models::{KeyBranch, KeyType};
 use types::{
     AccountsCreateFreeTestCoinsRequest,
     AccountsCreateFreeTestCoinsResponse,
+    AccountsGetFaucetBalanceRequest,
+    AccountsGetFaucetBalanceResponse,
     AccountsTransferRequest,
     AccountsTransferResponse,
     AuthCreateApiKeyRequest,
@@ -628,6 +630,14 @@ impl WalletDaemonClient {
         req: T,
     ) -> Result<AccountsCreateFreeTestCoinsResponse, WalletDaemonClientError> {
         self.send_request("accounts.create_free_test_coins", req.borrow()).await
+    }
+
+    /// Returns the testnet faucet's balance and the amount a claim takes from it.
+    pub async fn get_faucet_balance<T: Borrow<AccountsGetFaucetBalanceRequest>>(
+        &mut self,
+        req: T,
+    ) -> Result<AccountsGetFaucetBalanceResponse, WalletDaemonClientError> {
+        self.send_request("accounts.get_faucet_balance", req.borrow()).await
     }
 
     /// Mints one or more NFTs from the faucet into an account.

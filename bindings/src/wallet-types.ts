@@ -21,6 +21,8 @@ export * from "./types/wallet-types/AccountSetDefaultRequest";
 export * from "./types/wallet-types/AccountSetDefaultResponse";
 export * from "./types/wallet-types/AccountsGetBalanceChangesRequest";
 export * from "./types/wallet-types/AccountsGetBalanceChangesResponse";
+export * from "./types/wallet-types/AccountsGetFaucetBalanceRequest";
+export * from "./types/wallet-types/AccountsGetFaucetBalanceResponse";
 export * from "./types/wallet-types/AccountsGetBalancesRequest";
 export * from "./types/wallet-types/AccountsGetBalancesResponse";
 export * from "./types/wallet-types/AccountsListRequest";

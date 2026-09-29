@@ -14,7 +14,7 @@ use tari_engine_types::{
 use tari_ootle_app_utilities::{
     genesis_governance::GenesisCouncil,
     genesis_resources::{get_public_identity_resource, get_stealth_tari_resource},
-    shared_consts::TXTR_FAUCET_INITIAL_SUPPLY,
+    shared_consts::txtr_faucet_initial_supply,
 };
 use tari_ootle_common_types::{
     Epoch,
@@ -95,7 +95,7 @@ where
 
     if network.is_testnet() {
         // Create tXTR faucet
-        substates.extend(xtr_faucet_substates());
+        substates.extend(xtr_faucet_substates(network));
         // Create NFT faucet
         substates.extend(nft_faucet_substates());
     }
@@ -131,10 +131,10 @@ fn burn_rate_governance_substate(council: &GenesisCouncil) -> (SubstateId, Subst
     (BURN_RATE_GOVERNANCE_COMPONENT_ADDRESS.into(), component.into())
 }
 
-fn xtr_faucet_substates() -> Vec<(SubstateId, SubstateValue)> {
+fn xtr_faucet_substates(network: Network) -> Vec<(SubstateId, SubstateValue)> {
     let vault = Vault::new(ResourceContainer::Stealth {
         address: STEALTH_TARI_RESOURCE_ADDRESS,
-        revealed_amount: TXTR_FAUCET_INITIAL_SUPPLY,
+        revealed_amount: txtr_faucet_initial_supply(network),
         locked_amount: Default::default(),
     });
 

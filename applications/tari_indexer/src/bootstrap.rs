@@ -71,7 +71,7 @@ use tari_ootle_app_utilities::{
     keypair::RistrettoKeypair,
     protocol_activation::check_and_record_activation_schedule,
     seed_peer::SeedPeer,
-    shared_consts::TXTR_FAUCET_INITIAL_SUPPLY,
+    shared_consts::txtr_faucet_initial_supply,
 };
 use tari_ootle_common_types::{diagnostics::NoopSink, optional::Optional};
 use tari_ootle_p2p::{PeerAddress, TRANSACTION_TOPIC, TariMessagingSpec, max_gossip_message_size};
@@ -223,10 +223,7 @@ pub async fn spawn_services(
 
     seed_builtin_template_catalogue(&store).await?;
 
-    if config.network.is_testnet() {
-        // TODO: We happen to know that the testnet faucet mints u64::MAX tXTR. This is hacky.
-        hack_xtr_initial_supply(&store).await?;
-    }
+    record_faucet_genesis_supply(&store, txtr_faucet_initial_supply(config.network)).await?;
 
     check_and_record_activation_schedule(
         config.network,
@@ -632,16 +629,21 @@ async fn seed_builtin_template_catalogue<TStore: IndexerStore>(store: &TStore) -
         .await
 }
 
-async fn hack_xtr_initial_supply<TStore: IndexerStore>(store: &TStore) -> anyhow::Result<()> {
+/// Counts the faucet's genesis supply as claimed. Genesis state is minted outside any transaction, so state sync never
+/// observes it.
+async fn record_faucet_genesis_supply<TStore: IndexerStore>(store: &TStore, supply: Amount) -> anyhow::Result<()> {
+    if supply.is_zero() {
+        return Ok(());
+    }
     store
-        .with_write_tx(|tx| {
+        .with_write_tx(move |tx| {
             // Check if the initial supply is already set
             let existing_supply: Option<Amount> = tx.key_value_get_value(Key::TariAccumulatedClaimed).optional()?;
             if existing_supply.is_some() {
                 return Ok(());
             }
 
-            tx.key_value_set(Key::TariAccumulatedClaimed, TXTR_FAUCET_INITIAL_SUPPLY)
+            tx.key_value_set(Key::TariAccumulatedClaimed, supply)
                 .map_err(|e| anyhow!("Failed to set XTR initial supply in the store: {}", e))
         })
         .await

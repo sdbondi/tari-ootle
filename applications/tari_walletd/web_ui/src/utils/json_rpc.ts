@@ -37,6 +37,7 @@ import type {
   AccountsGetBalanceChangesResponse,
   AccountsGetBalancesRequest,
   AccountsGetBalancesResponse,
+  AccountsGetFaucetBalanceResponse,
   AccountsListRequest,
   AccountsListResponse,
   AccountsRenameRequest,
@@ -310,6 +311,8 @@ export const accountsSetDefault = (request: AccountSetDefaultRequest): Promise<A
 export const accountsCreateFreeTestCoins = (
   request: AccountsCreateFreeTestCoinsRequest,
 ): Promise<AccountsCreateFreeTestCoinsResponse> => client().then((c) => c.createFreeTestCoins(request));
+export const accountsGetFaucetBalance = (): Promise<AccountsGetFaucetBalanceResponse> =>
+  client().then((c) => c.getFaucetBalance({}));
 export const mintFaucetNfts = (request: MintFaucetNftRequest): Promise<MintFaucetNftResponse> =>
   client().then((c) => c.mintFaucetNfts(request));
 export const accountsGetDefault = (request: AccountGetDefaultRequest): Promise<AccountGetResponse> =>

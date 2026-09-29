@@ -53,6 +53,13 @@ See [standard-version](https://github.com/conventional-changelog/standard-versio
   failure.** `/network/stats` nests each validator's snapshot under `snapshot`, beside
   `probed_at_unix_s` and `probe_error`. (#2691)
 
+### Wallet
+
+- `feat!` — **Public testnets start with an empty tTARI faucet.** Claim tTARI by burning on L1; anyone can
+  refill the faucet through its `deposit` method. LocalNet keeps a funded faucet.
+- `feat` — **The web UI disables "Claim Testnet Funds" while the faucet is empty.** `accounts.get_faucet_balance`
+  reports the balance, and a claim against an empty faucet fails with error code `1002`.
+
 ## [0.41.2](https://github.com/tari-project/tari-ootle/compare/v0.41.1...v0.41.2) (2026-09-23)
 
 The engine and wallet security review release. It closes the ways a crafted template or payload

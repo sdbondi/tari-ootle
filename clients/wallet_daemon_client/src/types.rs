@@ -974,6 +974,21 @@ pub struct AccountsCreateFreeTestCoinsResponse {
     pub address: OotleAddress,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct AccountsGetFaucetBalanceRequest {
+    // Intentionally empty. Fields may be added in the future.
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+pub struct AccountsGetFaucetBalanceResponse {
+    /// The faucet's available balance. Zero on a network without a faucet.
+    pub balance: Amount,
+    /// The amount a single claim takes from the faucet. A claim fails while `balance` is below it.
+    pub claim_amount: Amount,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct WebRtcStart {

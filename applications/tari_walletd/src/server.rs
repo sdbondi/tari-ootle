@@ -212,6 +212,7 @@ async fn handler(
             "create_free_test_coins" => {
                 call_handler(context, value, token, accounts::handle_create_free_test_coins).await
             },
+            "get_faucet_balance" => call_handler(context, value, token, accounts::handle_get_faucet_balance).await,
             _ => value.method_not_found(&value.method).into_response(),
         },
         Some(("confidential", method)) => match method {
@@ -416,6 +417,7 @@ pub enum ApplicationErrorCode {
     Unauthorized = 401,
     TransactionRejected = 1000,
     FaucetAlreadyClaimed = 1001,
+    FaucetEmpty = 1002,
     GeneralError = 500,
 }
 

@@ -50,6 +50,7 @@ import {
   accountsGetBalanceChanges,
   accountsGetBalances,
   accountsGetDefault,
+  accountsGetFaucetBalance,
   accountsList,
   accountsRename,
   accountsSetDefault,
@@ -264,9 +265,18 @@ export const useAccountsCreateFreeTestCoins = () => {
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["transactions"] });
       queryClient.invalidateQueries({ queryKey: ["accounts_balances"] });
+      queryClient.invalidateQueries({ queryKey: ["faucet_balance"] });
     },
   });
 };
+
+export const useFaucetBalance = (enabled: boolean) =>
+  useQuery({
+    queryKey: ["faucet_balance"],
+    queryFn: accountsGetFaucetBalance,
+    enabled,
+    refetchInterval: 30_000,
+  });
 
 export const useMintTestnetFaucetNfts = () => {
   const callApi = async ({

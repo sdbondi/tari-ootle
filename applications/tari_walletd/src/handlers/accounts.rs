@@ -47,7 +47,7 @@ use tari_ootle_wallet_sdk::{
 use tari_ootle_wallet_sdk_services::transaction_service::TransactionServiceHandle;
 use tari_ootle_walletd_client::{
     ComponentAddressOrName,
-    permissions::{Crud, Permission},
+    permissions::{Crud, Permission, ReadOnly},
     types::{
         AccountGetByKeyIndexRequest,
         AccountGetDefaultRequest,
@@ -70,6 +70,8 @@ use tari_ootle_walletd_client::{
         AccountsGetBalanceChangesResponse,
         AccountsGetBalancesRequest,
         AccountsGetBalancesResponse,
+        AccountsGetFaucetBalanceRequest,
+        AccountsGetFaucetBalanceResponse,
         AccountsListRequest,
         AccountsListResponse,
         AccountsRenameRequest,
@@ -109,6 +111,7 @@ use crate::handlers::{
     helpers::{
         complete_burn_proof_to_contents,
         faucet_already_claimed,
+        faucet_empty,
         general_error,
         get_account,
         get_account_by_key_index,
@@ -753,6 +756,38 @@ async fn resolve_claim_proof<P: AsRef<Path>>(
     }
 }
 
+/// Returns the testnet faucet's balance, so that a client can tell whether a claim can succeed.
+pub async fn handle_get_faucet_balance(
+    context: &HandlerContext,
+    token: Option<&Bearer>,
+    _req: AccountsGetFaucetBalanceRequest,
+) -> Result<AccountsGetFaucetBalanceResponse, anyhow::Error> {
+    context.authorize(token, &[Permission::Substates(ReadOnly::Read)])?;
+    Ok(AccountsGetFaucetBalanceResponse {
+        balance: fetch_faucet_balance(context).await?,
+        claim_amount: Amount::from(XTR_FAUCET_AMOUNT),
+    })
+}
+
+/// The faucet vault's balance on the network, or zero on a network that has no faucet.
+async fn fetch_faucet_balance(context: &HandlerContext) -> Result<Amount, anyhow::Error> {
+    let vault = context
+        .wallet_sdk()
+        .substate_api()
+        .fetch_substate_from_network(&XTR_FAUCET_VAULT_ADDRESS.into(), None)
+        .await
+        .optional()?;
+
+    let Some(vault) = vault else {
+        return Ok(Amount::zero());
+    };
+    let vault = vault
+        .substate
+        .into_vault()
+        .ok_or_else(|| anyhow!("Indexer returned a non-vault substate for the faucet vault"))?;
+    Ok(vault.balance())
+}
+
 /// Takes tXTR from the testnet faucet and deposits them into an existing account.
 #[allow(clippy::too_many_lines)]
 pub async fn handle_create_free_test_coins(
@@ -780,6 +815,10 @@ pub async fn handle_create_free_test_coins(
             Some("cannot create free test coins for an account without an owner key"),
         )
     })?;
+
+    if fetch_faucet_balance(context).await? < amount {
+        return Err(faucet_empty());
+    }
 
     info!(
         target: LOG_TARGET,

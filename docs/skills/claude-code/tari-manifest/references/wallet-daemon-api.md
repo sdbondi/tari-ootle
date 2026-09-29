@@ -230,6 +230,15 @@ Create free test coins (test networks only).
 }
 ```
 
+### accounts.get_faucet_balance
+
+The testnet faucet's balance and the amount one claim takes. Public testnets start with an empty faucet; a claim
+fails with error code `1002` while `balance` is below `claim_amount`.
+
+**Request:** `{"jsonrpc":"2.0","id":25,"method":"accounts.get_faucet_balance","params":{}}`
+
+**Response:** `{"balance": 0, "claim_amount": 1000000000}`
+
 ## Substate and Template Endpoints
 
 ### substates.get

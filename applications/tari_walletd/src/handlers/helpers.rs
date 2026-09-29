@@ -226,6 +226,13 @@ pub(super) fn faucet_already_claimed() -> anyhow::Error {
     )
 }
 
+pub(super) fn faucet_empty() -> anyhow::Error {
+    application_error(
+        ApplicationErrorCode::FaucetEmpty,
+        "The testnet faucet does not hold enough funds for a claim. Claim tTARI by burning on L1 instead",
+    )
+}
+
 pub(super) fn general_error<T: Display>(details: T) -> anyhow::Error {
     application_error(ApplicationErrorCode::GeneralError, details)
 }
