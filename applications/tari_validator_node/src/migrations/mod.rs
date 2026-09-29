@@ -83,7 +83,7 @@ pub fn migrate<TAddr: NodeAddressable + 'static>(
         Some(version) => {
             anyhow::bail!(
                 "Database is at migration version {version}, and no migration upgrades it to version \
-                 {CURRENT_VERSION}. It predates the testnet reset: delete it and resync."
+                 {CURRENT_VERSION}. Delete the database and resync."
             );
         },
         // A fresh database: lay down the genesis state and stamp the current version.
