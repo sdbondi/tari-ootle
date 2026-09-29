@@ -19,6 +19,8 @@ use rocksdb::{
     SnapshotWithThreadMode,
     TransactionDB,
     TransactionDBOptions,
+    TransactionOptions,
+    WriteOptions,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use tari_ootle_common_types::NodeAddressable;
@@ -81,6 +83,8 @@ pub(crate) fn build_default_store_opts(options: &DatabaseOptions) -> (rocksdb::O
     // Better suggested defaults: https://github.com/facebook/rocksdb/wiki/Setup-Options-and-Basic-Tuning
     opts.set_max_background_jobs(6);
     opts.set_bytes_per_sync(1_048_576);
+    // Write the WAL back in the background, so a synced commit only has to flush what arrived since the last 1MiB.
+    opts.set_wal_bytes_per_sync(1_048_576);
     opts.set_compaction_pri(rocksdb::CompactionPri::MinOverlappingRatio);
     opts.set_level_compaction_dynamic_level_bytes(true);
     // Memtable memory is bounded across all column families by the write buffer manager, which
@@ -239,6 +243,29 @@ impl<TAddr, DB> fmt::Debug for RocksDbStateStore<TAddr, DB> {
     }
 }
 
+impl<TAddr: NodeAddressable> RocksDbStateStore<TAddr, TransactionDB> {
+    fn begin_write_tx(&self, sync: bool) -> RocksDbStateStoreWriteTransaction<'_, TAddr> {
+        let timer = Instant::now();
+        let mut write_opts = WriteOptions::default();
+        // A synced commit fsyncs the WAL before returning, which also makes every earlier commit durable.
+        write_opts.set_sync(sync);
+        let tx = self.db.transaction_opt(&write_opts, &TransactionOptions::default());
+        let tx = RocksDbStateStoreWriteTransaction::new(&self.db, tx, &self.options);
+        let elapsed = timer.elapsed();
+        let level = if elapsed > Duration::from_secs(1) {
+            log::Level::Warn
+        } else {
+            log::Level::Trace
+        };
+        log!(
+            target: LOG_TARGET,
+            level,
+            "Write transaction obtained in {:?}", elapsed
+        );
+        tx
+    }
+}
+
 impl<TAddr: NodeAddressable + Serialize + DeserializeOwned> StateStore for RocksDbStateStore<TAddr, TransactionDB> {
     type Addr = TAddr;
     type ReadTransaction<'a>
@@ -257,21 +284,11 @@ impl<TAddr: NodeAddressable + Serialize + DeserializeOwned> StateStore for Rocks
     }
 
     fn create_write_tx(&self) -> Result<Self::WriteTransaction<'_>, StorageError> {
-        let timer = Instant::now();
-        let tx = self.db.transaction();
-        let tx = RocksDbStateStoreWriteTransaction::new(&self.db, tx, &self.options);
-        let elapsed = timer.elapsed();
-        let level = if elapsed > Duration::from_secs(1) {
-            log::Level::Warn
-        } else {
-            log::Level::Trace
-        };
-        log!(
-            target: LOG_TARGET,
-            level,
-            "Write transaction obtained in {:?}", elapsed
-        );
-        Ok(tx)
+        Ok(self.begin_write_tx(false))
+    }
+
+    fn create_durable_write_tx(&self) -> Result<Self::WriteTransaction<'_>, StorageError> {
+        Ok(self.begin_write_tx(true))
     }
 }
 

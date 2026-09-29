@@ -176,7 +176,9 @@ where TConsensusSpec: ConsensusSpec
         let on_propose = self.clone();
 
         let (next_block, foreign_proposals) = task::spawn_blocking(move || {
-            on_propose.store.with_write_tx(|tx| {
+            // Durable because the block is broadcast once this returns: a restarted leader with no record of
+            // `LastProposed` could propose a competing block at the same height.
+            on_propose.store.with_durable_write_tx(|tx| {
                 let high_qc = HighPc::get(&**tx, epoch)?;
                 let high_qc_cert = ProposalCertificate::get(&**tx, epoch, high_qc.id())?;
                 let next_block = on_propose.build_next_block(

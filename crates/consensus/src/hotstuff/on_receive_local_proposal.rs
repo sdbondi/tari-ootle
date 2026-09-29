@@ -731,7 +731,7 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
         // leaves a restarted node with no record that it voted at this height, free to vote again at
         // that height for a competing block; a crash the other way round only loses a message, which
         // the network may drop anyway and which the next NEWVIEW carries again.
-        self.store.with_write_tx(|tx| {
+        self.store.with_durable_write_tx(|tx| {
             block.as_last_voted().set(tx)?;
             last_sent_vote.set(tx)
         })?;

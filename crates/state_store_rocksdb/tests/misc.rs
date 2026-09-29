@@ -27,6 +27,7 @@ use tari_ootle_storage::{
 };
 use tari_ootle_transaction::Network;
 use tari_sidechain::{CommandCommitProof, QuorumDecision, SidechainBlockCommitProof, SidechainBlockHeader};
+use tari_state_store_rocksdb::{DatabaseOptions, RocksDbStateStore};
 use tari_state_tree::{TreeHash, compute_proof_for_hashes};
 use tari_template_lib_types::crypto::{RistrettoPublicKeyBytes, SchnorrSignatureBytes};
 
@@ -224,4 +225,25 @@ fn miscellaneous_rocksdb() {
     // assert!(res);
 
     tx.rollback().unwrap();
+}
+
+/// A durable write transaction commits like any other, and what it wrote is there after the store is reopened.
+#[test]
+fn a_durable_write_survives_reopening_the_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("rocksdb");
+    let last_voted = LastVoted {
+        block_id: BlockId::zero(),
+        height: NodeHeight(7),
+        epoch: Epoch(1),
+    };
+
+    {
+        let db = RocksDbStateStore::<String>::open(&path, DatabaseOptions::default()).unwrap();
+        db.with_durable_write_tx(|tx| tx.last_voted_set(&last_voted)).unwrap();
+    }
+
+    let db = RocksDbStateStore::<String>::open(&path, DatabaseOptions::default()).unwrap();
+    let res = db.with_read_tx(|tx| tx.last_voted_get(Epoch(1))).unwrap();
+    assert_eq_debug(&res, &last_voted);
 }

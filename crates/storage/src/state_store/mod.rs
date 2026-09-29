@@ -94,22 +94,25 @@ pub trait StateStore {
 
     fn create_read_tx(&self) -> Result<Self::ReadTransaction<'_>, StorageError>;
     fn create_write_tx(&self) -> Result<Self::WriteTransaction<'_>, StorageError>;
+    /// A write transaction whose commit returns only once it is on stable storage, so it survives a power loss or
+    /// host crash as well as a process crash. It costs an fsync per commit; reserve it for writes that must be durable
+    /// before the node acts on them, such as recording a vote before sending it.
+    fn create_durable_write_tx(&self) -> Result<Self::WriteTransaction<'_>, StorageError>;
 
     fn with_write_tx<F: FnOnce(&mut Self::WriteTransaction<'_>) -> Result<R, E>, R, E>(&self, f: F) -> Result<R, E>
     where E: From<StorageError> {
-        let mut tx = self.create_write_tx()?;
-        match f(&mut tx) {
-            Ok(r) => {
-                tx.commit()?;
-                Ok(r)
-            },
-            Err(e) => {
-                if let Err(err) = tx.rollback() {
-                    log::error!(target: LOG_TARGET, "Failed to rollback transaction: {}", err);
-                }
-                Err(e)
-            },
-        }
+        run_write_tx(self.create_write_tx()?, f)
+    }
+
+    /// [`Self::with_write_tx`] over a [`Self::create_durable_write_tx`] transaction.
+    fn with_durable_write_tx<F: FnOnce(&mut Self::WriteTransaction<'_>) -> Result<R, E>, R, E>(
+        &self,
+        f: F,
+    ) -> Result<R, E>
+    where
+        E: From<StorageError>,
+    {
+        run_write_tx(self.create_durable_write_tx()?, f)
     }
 
     fn with_read_tx<F: FnOnce(&Self::ReadTransaction<'_>) -> Result<R, E>, R, E>(&self, f: F) -> Result<R, E>
@@ -117,6 +120,26 @@ pub trait StateStore {
         let tx = self.create_read_tx()?;
         let ret = f(&tx)?;
         Ok(ret)
+    }
+}
+
+fn run_write_tx<TTx, F, R, E>(mut tx: TTx, f: F) -> Result<R, E>
+where
+    TTx: StateStoreWriteTransaction,
+    F: FnOnce(&mut TTx) -> Result<R, E>,
+    E: From<StorageError>,
+{
+    match f(&mut tx) {
+        Ok(r) => {
+            tx.commit()?;
+            Ok(r)
+        },
+        Err(e) => {
+            if let Err(err) = tx.rollback() {
+                log::error!(target: LOG_TARGET, "Failed to rollback transaction: {}", err);
+            }
+            Err(e)
+        },
     }
 }
 
