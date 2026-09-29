@@ -17,8 +17,8 @@ See [standard-version](https://github.com/conventional-changelog/standard-versio
   is written `{"String": ".."}`; `EventSummary::payload` and the indexer's GraphQL event `payload`
   carry each value's JSON form. (#2679)
 - **Testnet reset: every network starts at `ProtocolVersion::V0`.** The V0 substate preimage now
-  covers `exhaust_burn` and `auth_hook_updater`, so a node must wipe its data; one that keeps
-  esmeralda history refuses to start.
+  covers `exhaust_burn` and `auth_hook_updater`, so every node must wipe its data before
+  upgrading.
 
 ### Engine
 

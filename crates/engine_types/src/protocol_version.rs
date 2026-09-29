@@ -50,7 +50,7 @@ impl ProtocolVersion {
     }
 
     /// The version `network` starts under. A network with no chain to preserve may be launched at any
-    /// version, so this is not `V0` for every network.
+    /// version.
     pub fn genesis(network: Network) -> Self {
         Self::activations(network)[0].1
     }
