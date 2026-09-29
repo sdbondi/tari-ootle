@@ -16,7 +16,10 @@ use tari_engine_types::{
 };
 use tari_ootle_common_types::{Epoch, SubstateRequirementRef};
 use tari_ootle_transaction::Network;
-use tari_template_lib_types::{constants::BURN_RATE_GOVERNANCE_COMPONENT_ADDRESS, governance::BurnRateGovernanceState};
+use tari_template_lib_types::{
+    constants::BURN_RATE_GOVERNANCE_COMPONENT_ADDRESS,
+    governance::{BurnRateChange, BurnRateGovernanceState},
+};
 
 use crate::substate_manager::SubstateManager;
 
@@ -33,22 +36,61 @@ pub async fn resolve_exhaust_burn_rate_for_epoch(
     network: Network,
     epoch: Epoch,
 ) -> ExhaustBurnRate {
-    match read_governance_rate(substate_manager, epoch).await {
-        Ok(governance) => resolve_exhaust_burn_rate(network, epoch, governance),
+    resolve_burn_rate_outlook(substate_manager, network, epoch)
+        .await
+        .current
+}
+
+/// The rate `epoch` runs at, and what the council has scheduled beyond it.
+#[derive(Debug, Clone)]
+pub struct BurnRateOutlook {
+    pub current: ExhaustBurnRate,
+    /// Changes that activate after `epoch`, ascending. Entries that have already activated are
+    /// folded into `current`.
+    pub scheduled: Vec<BurnRateChange>,
+    /// The first epoch the release-scheduled table governs again, once the council has retired.
+    pub retired_from: Option<u64>,
+}
+
+/// One read of the governance component serving both the rate in force and the schedule ahead.
+/// Falls back to the release-scheduled table with nothing scheduled, as
+/// [`resolve_exhaust_burn_rate_for_epoch`] does.
+pub async fn resolve_burn_rate_outlook(
+    substate_manager: &SubstateManager,
+    network: Network,
+    epoch: Epoch,
+) -> BurnRateOutlook {
+    match read_governance_state(substate_manager).await {
+        Ok(state) => {
+            let governance = state.rate_at(epoch.as_u64()).and_then(ExhaustBurnRate::try_new);
+            let scheduled = state
+                .schedule
+                .iter()
+                .copied()
+                .filter(|change| change.activation_epoch > epoch.as_u64())
+                .filter(|change| state.retired_from.is_none_or(|from| change.activation_epoch < from))
+                .collect();
+            BurnRateOutlook {
+                current: resolve_exhaust_burn_rate(network, epoch, governance),
+                scheduled,
+                retired_from: state.retired_from,
+            }
+        },
         Err(err) => {
             debug!(
                 target: LOG_TARGET,
                 "Burn rate governance component unavailable ({err}). Reporting {epoch} at the scheduled rate."
             );
-            ExhaustBurnRateSchedule::at(network, epoch)
+            BurnRateOutlook {
+                current: ExhaustBurnRateSchedule::at(network, epoch),
+                scheduled: Vec::new(),
+                retired_from: None,
+            }
         },
     }
 }
 
-async fn read_governance_rate(
-    substate_manager: &SubstateManager,
-    epoch: Epoch,
-) -> Result<Option<ExhaustBurnRate>, anyhow::Error> {
+async fn read_governance_state(substate_manager: &SubstateManager) -> Result<BurnRateGovernanceState, anyhow::Error> {
     let substate_id = SubstateId::Component(BURN_RATE_GOVERNANCE_COMPONENT_ADDRESS);
     let substate = substate_manager
         .get_substate(SubstateRequirementRef::unversioned(&substate_id))
@@ -58,6 +100,5 @@ async fn read_governance_rate(
         anyhow::bail!("{substate_id} is not a component");
     };
 
-    let state: BurnRateGovernanceState = tari_bor::from_value(component.state())?;
-    Ok(state.rate_at(epoch.as_u64()).and_then(ExhaustBurnRate::try_new))
+    Ok(tari_bor::from_value(component.state())?)
 }

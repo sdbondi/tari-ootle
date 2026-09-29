@@ -8,7 +8,7 @@ import Stack from "@mui/material/Stack";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import { alpha, useTheme } from "@mui/material/styles";
-import type { Amount } from "@tari-project/ootle-ts-bindings";
+import type { Amount, ScheduledBurnRate } from "@tari-project/ootle-ts-bindings";
 import { useRef, type ReactNode } from "react";
 import { IoCashOutline, IoFlameOutline, IoReceiptOutline, IoWalletOutline } from "react-icons/io5";
 import FetchStatusCheck from "../../Components/FetchStatusCheck";
@@ -114,8 +114,8 @@ function BurnRateMeter({ achievedBps, targetBps }: { achievedBps: number | null;
   const targetPct = Math.min((targetBps / maxBps) * 100, 100);
   const tickColor = theme.palette.text.secondary;
 
-  const achievedLabel = achievedBps === null ? "—" : `${(achievedBps / 100).toFixed(2)}%`;
-  const targetLabel = `${(targetBps / 100).toFixed(2)}%`;
+  const achievedLabel = achievedBps === null ? "—" : formatBps(achievedBps);
+  const targetLabel = formatBps(targetBps);
 
   return (
     <Box>
@@ -177,6 +177,49 @@ function BurnRateMeter({ achievedBps, targetBps }: { achievedBps: number | null;
         </Typography>
       </Stack>
     </Box>
+  );
+}
+
+function formatBps(bps: number): string {
+  return `${(bps / 100).toFixed(2)}%`;
+}
+
+// What the council has scheduled beyond the current epoch. Nothing pending renders nothing, so the
+// meter stands alone on a network whose council has not acted.
+function BurnRateOutlook({
+  currentEpoch,
+  scheduled,
+  retiredFrom,
+}: {
+  currentEpoch: number;
+  scheduled: ScheduledBurnRate[];
+  retiredFrom: bigint | null;
+}) {
+  if (scheduled.length === 0 && retiredFrom === null) {
+    return null;
+  }
+  return (
+    <Stack spacing={0.5} sx={{ mt: 1.5 }}>
+      {scheduled.map((change) => {
+        const activation = Number(change.activation_epoch);
+        const remaining = activation - currentEpoch;
+        return (
+          <Typography key={activation} variant="body2" color="textSecondary">
+            Changes to{" "}
+            <Box component="span" sx={{ color: "text.primary", fontWeight: 600 }}>
+              {formatBps(change.rate_bps)}
+            </Box>{" "}
+            at epoch {activation}
+            {remaining > 0 ? ` (in ${remaining} ${remaining === 1 ? "epoch" : "epochs"})` : ""}
+          </Typography>
+        );
+      })}
+      {retiredFrom !== null && (
+        <Typography variant="body2" color="textSecondary">
+          Council retired: the release-scheduled rate governs from epoch {Number(retiredFrom)}
+        </Typography>
+      )}
+    </Stack>
   );
 }
 
@@ -307,6 +350,11 @@ function EconomicsContent({ data }: { data: NonNullable<ReturnType<typeof useNet
             </Stack>
             <Box sx={{ flexGrow: 1 }}>
               <BurnRateMeter achievedBps={achievedBps} targetBps={data.target_burn_rate_bps} />
+              <BurnRateOutlook
+                currentEpoch={Number(data.current_epoch)}
+                scheduled={data.scheduled_burn_rates}
+                retiredFrom={data.burn_rate_retired_from}
+              />
             </Box>
           </Stack>
         </StyledPaper>

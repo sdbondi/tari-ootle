@@ -1022,6 +1022,22 @@ pub struct GetNetworkEconomicsResponse {
     pub transaction_receipt_count: u64,
     /// The share of collected fees burned rather than paid to leaders, in basis points, in effect at `current_epoch`.
     pub target_burn_rate_bps: u16,
+    /// Rate changes the council has scheduled to activate after `current_epoch`, ascending by epoch.
+    /// Empty when nothing is pending.
+    #[serde(default)]
+    pub scheduled_burn_rates: Vec<ScheduledBurnRate>,
+    /// The first epoch the release-scheduled rate governs again, when the council has retired.
+    #[serde(default)]
+    pub burn_rate_retired_from: Option<u64>,
+}
+
+/// A burn rate the council has scheduled, taking effect from `activation_epoch`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "tari-indexer-client/"))]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct ScheduledBurnRate {
+    pub activation_epoch: u64,
+    pub rate_bps: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

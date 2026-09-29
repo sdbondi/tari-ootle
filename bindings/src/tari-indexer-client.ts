@@ -56,6 +56,7 @@ export * from "./types/tari-indexer-client/NetworkDescription";
 export * from "./types/tari-indexer-client/NonFungibleSubstate";
 export * from "./types/tari-indexer-client/QueryTransactionEventsRequest";
 export * from "./types/tari-indexer-client/QueryTransactionEventsResponse";
+export * from "./types/tari-indexer-client/ScheduledBurnRate";
 export * from "./types/tari-indexer-client/StreamTransactionEventsRequest";
 export * from "./types/tari-indexer-client/SyncProgress";
 export * from "./types/tari-indexer-client/TemplateCatalogueItem";
