@@ -11,5 +11,5 @@ mod writer;
 
 pub use handle::DiagnosticsHandle;
 pub use hooks::DiagnosticHooks;
-pub use panic::{install_panic_recorder, record_panic};
+pub use panic::{PanicRecorderGuard, install_panic_recorder, record_panic};
 pub use writer::spawn;

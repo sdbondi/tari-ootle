@@ -125,7 +125,7 @@ use crate::{
         TariBlockTransactionValidator,
         spec::ValidatorTemplateProvider,
     },
-    diagnostics::{self, DiagnosticHooks, DiagnosticsHandle},
+    diagnostics::{self, DiagnosticHooks, DiagnosticsHandle, PanicRecorderGuard},
     file_l1_submitter::FileLayerOneSubmitter,
     memory_budget,
     migrations,
@@ -279,9 +279,11 @@ pub async fn spawn_services(
         &config.validator_node.diagnostics,
         shutdown.clone(),
     );
-    if config.validator_node.diagnostics.enabled {
-        diagnostics::install_panic_recorder(state_store.clone());
-    }
+    let panic_recorder = config
+        .validator_node
+        .diagnostics
+        .enabled
+        .then(|| diagnostics::install_panic_recorder(state_store.clone()));
     handles.extend(diagnostics_join_handle);
     diagnostics.emit(diag_event!(info, "node.started", "Validator node starting",
         version => env!("CARGO_PKG_VERSION"),
@@ -486,6 +488,7 @@ pub async fn spawn_services(
         handles,
         layer_one_transaction_submitter,
         diagnostics,
+        _panic_recorder: panic_recorder,
     })
 }
 
@@ -513,6 +516,7 @@ pub struct Services<TStore> {
     pub global_db: GlobalDb<SqliteGlobalDbAdapter<PeerAddress>>,
     pub layer_one_transaction_submitter: FileLayerOneSubmitter,
     pub diagnostics: DiagnosticsHandle,
+    _panic_recorder: Option<PanicRecorderGuard>,
 
     pub handles: Vec<JoinHandle<Result<(), anyhow::Error>>>,
 }
