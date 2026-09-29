@@ -111,13 +111,21 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
     ) -> Result<Option<R>, RuntimeError> {
         let lock = self.locked_substates.get(lock_id, LockFlag::Write)?;
         if let Some(mut substate) = self.loaded_substates.remove(lock.substate_id()) {
+            if self.read_declared_inputs.contains(lock.substate_id()) {
+                // A kept mutation is refused, and a rolled-back one must leave the loaded value as it
+                // was, so the callback runs on a copy that is only ever discarded.
+                let mut scratch = substate.clone();
+                let kept = callback(lock.substate_id(), scratch.substate_value_mut());
+                self.loaded_substates.insert(lock.substate_id().clone(), substate);
+                return match kept? {
+                    Some(_) => Err(RuntimeError::WriteToReadDeclaredInput {
+                        id: lock.substate_id().clone(),
+                    }),
+                    None => Ok(None),
+                };
+            }
             return match callback(lock.substate_id(), substate.substate_value_mut())? {
                 Some(ret) => {
-                    if let Err(err) = self.ensure_writable(lock.substate_id()) {
-                        // The lock stays held, so the substate stays loaded under it.
-                        self.loaded_substates.insert(lock.substate_id().clone(), substate);
-                        return Err(err);
-                    }
                     self.new_substates
                         .insert(lock.substate_id().clone(), substate.into_substate_value());
                     Ok(Some(ret))
@@ -444,12 +452,16 @@ mod tests {
 
         let lock_id = store.try_lock(id.clone(), LockFlag::Write).unwrap();
         let err = store
-            .mutate_locked_substate_with(lock_id, |_, _| Ok(Some(())))
+            .mutate_locked_substate_with(lock_id, |_, value| {
+                *value = ClaimedOutputTombstone { value: 2 }.into();
+                Ok(Some(()))
+            })
             .unwrap_err();
         assert_write_to_read_declared(err, &id);
         assert!(store.mutated_substates().is_empty());
-        // The lock is still held and the substate still loaded under it.
-        store.get_locked_substate(lock_id).unwrap();
+        // The lock is still held, and what is loaded under it is the value before the refused call.
+        let (_, loaded) = store.get_locked_substate(lock_id).unwrap();
+        assert_eq!(loaded.as_claimed_output_tombstone().unwrap().value, 1);
 
         let err = store.get_locked_substate_mut(lock_id).unwrap_err();
         assert_write_to_read_declared(err, &id);
