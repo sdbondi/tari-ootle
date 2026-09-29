@@ -15,15 +15,22 @@
 //!
 //! 1. Add `v{N+1}.rs` with `pub fn migrate(...) -> ...` performing the upgrade, and declare it here with `mod v{N+1};`.
 //! 2. Bump `CURRENT_SCHEMA_VERSION` (in the state store, beside `DatabaseMigrationVersion`) to `N + 1`.
-//! 3. Add the arm that applies it to the step loop in [`migrate`], keyed by the version it upgrades *from*:
+//! 3. Apply it from [`migrate`]'s step loop, in an arm keyed by the version it upgrades *from*. The loop steps the
+//!    stored version up one migration at a time, persisting each version it reaches:
 //!
 //! ```ignore
-//! match version {
-//!     0 => v1::migrate(tx)?,
-//!     1 => v2::migrate(tx, network)?,
-//!     other => unreachable!("no migration defined for database version {other}"),
+//! while version < CURRENT_VERSION {
+//!     match version {
+//!         2 => v3::migrate(tx)?,
+//!         other => anyhow::bail!("no migration defined for database version {other}"),
+//!     }
+//!     version += 1;
+//!     tx.db().cf(DatabaseMigrationVersion)?.put(&ByteColumn, &version, OPERATION)?;
 //! }
 //! ```
+//!
+//! No database below [`CURRENT_VERSION`] is supported, so there are no migrations yet and [`migrate`] refuses such a
+//! database.
 //!
 //! A migration must be able to run against a database at any earlier supported version, so it may not assume the
 //! current schema of anything it does not itself write.
@@ -33,11 +40,6 @@
 //! reads of them fail. Mirror [`crate::genesis_state::create_genesis_state`], which commits each
 //! substate to both the store and the state tree. (Note that, unlike genesis, adding state-tree
 //! entries to a live chain shifts its state root, so such a migration is itself consensus-affecting.)
-
-mod common;
-mod v2;
-
-use std::time::Instant;
 
 use log::*;
 use tari_consensus::consensus_constants::ConsensusConstants;
@@ -72,34 +74,16 @@ pub fn migrate<TAddr: NodeAddressable + 'static>(
     };
 
     match maybe_version {
-        // An already-bootstrapped database: step it up to `CURRENT_VERSION`, applying each upgrade and
-        // persisting the new version as it goes.
         Some(version) if version >= CURRENT_VERSION => {
             debug!(
                 target: LOG_TARGET,
                 "Database already bootstrapped at migration version {version} (current {CURRENT_VERSION})"
             );
         },
-        Some(mut version) => {
-            info!(
-                target: LOG_TARGET,
-                "🔀 Migrating database from version {version} to {CURRENT_VERSION}"
-            );
-            let timer = Instant::now();
-            while version < CURRENT_VERSION {
-                match version {
-                    1 => v2::migrate(tx)?,
-                    other => unreachable!("no migration defined for database version {other}"),
-                }
-                version += 1;
-                tx.db()
-                    .cf(DatabaseMigrationVersion)?
-                    .put(&ByteColumn, &version, OPERATION)?;
-            }
-            info!(
-                target: LOG_TARGET,
-                "🔀 Database migrated to version {CURRENT_VERSION} in {:.2?}",
-                timer.elapsed()
+        Some(version) => {
+            anyhow::bail!(
+                "Database is at migration version {version}, and no migration upgrades it to version \
+                 {CURRENT_VERSION}. It predates the testnet reset: delete it and resync."
             );
         },
         // A fresh database: lay down the genesis state and stamp the current version.
@@ -113,15 +97,4 @@ pub fn migrate<TAddr: NodeAddressable + 'static>(
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod test_helpers {
-    use tari_ootle_p2p::PeerAddress;
-    use tari_state_store_rocksdb::{DatabaseOptions, RocksDbStateStore};
-
-    /// Opens a store with the production options, so migrations run against the same prefix extractor as a real node.
-    pub fn open_store(tmp: &tempfile::TempDir) -> RocksDbStateStore<PeerAddress> {
-        RocksDbStateStore::open(tmp.path(), DatabaseOptions::default()).unwrap()
-    }
 }
