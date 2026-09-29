@@ -2,8 +2,8 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use std::sync::{
+    Mutex,
     PoisonError,
-    RwLock,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
@@ -13,7 +13,7 @@ use tari_ootle_storage::DiagnosticEventStore;
 type Recorder = Box<dyn Fn(&str, &str) + Send + Sync>;
 
 /// The installed recorder, tagged with the id of the guard that owns it.
-static PANIC_RECORDER: RwLock<Option<(u64, Recorder)>> = RwLock::new(None);
+static PANIC_RECORDER: Mutex<Option<(u64, Recorder)>> = Mutex::new(None);
 static NEXT_RECORDER_ID: AtomicU64 = AtomicU64::new(0);
 static RECORDING: AtomicBool = AtomicBool::new(false);
 
@@ -39,7 +39,7 @@ where TStore: DiagnosticEventStore + Send + Sync + 'static {
         );
         let _ignore = store.diagnostic_events_append(&[event]);
     });
-    *PANIC_RECORDER.write().unwrap_or_else(PoisonError::into_inner) = Some((id, recorder));
+    *PANIC_RECORDER.lock().unwrap_or_else(PoisonError::into_inner) = Some((id, recorder));
     PanicRecorderGuard { id }
 }
 
@@ -52,7 +52,7 @@ pub struct PanicRecorderGuard {
 impl Drop for PanicRecorderGuard {
     fn drop(&mut self) {
         let removed = {
-            let mut slot = PANIC_RECORDER.write().unwrap_or_else(PoisonError::into_inner);
+            let mut slot = PANIC_RECORDER.lock().unwrap_or_else(PoisonError::into_inner);
             if slot.as_ref().is_some_and(|(id, _)| *id == self.id) {
                 slot.take()
             } else {
@@ -69,7 +69,7 @@ impl Drop for PanicRecorderGuard {
 /// Only the first panic is recorded: a panic raised from inside the store while recording would
 /// re-enter here and could deadlock on the same lock it panicked holding.
 pub fn record_panic(location: &str, message: &str) {
-    let Ok(slot) = PANIC_RECORDER.try_read() else {
+    let Ok(slot) = PANIC_RECORDER.try_lock() else {
         return;
     };
     let Some((_, recorder)) = slot.as_ref() else {
