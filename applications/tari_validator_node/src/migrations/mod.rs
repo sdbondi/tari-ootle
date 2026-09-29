@@ -35,7 +35,6 @@
 //! entries to a live chain shifts its state root, so such a migration is itself consensus-affecting.)
 
 mod common;
-mod v1;
 mod v2;
 
 use std::time::Instant;
@@ -89,7 +88,6 @@ pub fn migrate<TAddr: NodeAddressable + 'static>(
             let timer = Instant::now();
             while version < CURRENT_VERSION {
                 match version {
-                    0 => v1::migrate(tx)?,
                     1 => v2::migrate(tx)?,
                     other => unreachable!("no migration defined for database version {other}"),
                 }

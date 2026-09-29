@@ -175,23 +175,3 @@ impl QueryCf for BySubstateIdQuery {
     type Key = SubstateId;
     type KeyCodec = SubstateIdCodec;
 }
-
-/// The [`SubstateIdIndex`] key shape from before the index carried its table prefix.
-///
-/// These keys are namespaced only by the leading borsh `SubstateId` discriminant, so they sort below every prefixed
-/// table sharing the column family. They also predate `grant_seq`, so a key read through this table has a `grant_seq`
-/// of zero. Exists so the migration that rewrites them can address them; remove it once no
-/// supported database can still be at a version that predates that migration.
-pub struct LegacyUnprefixedSubstateIdIndex;
-
-impl Cf for LegacyUnprefixedSubstateIdIndex {
-    type Key = SubstateLockKey;
-    type KeyCodec = SubstateLockKeyCodec<(SubstateId, TransactionId, BlockId, NodeHeight)>;
-    type Prefix = ();
-    type Value = SubstateLockType;
-    type ValueCodec = DefaultCodec<Self::Value>;
-
-    fn name() -> &'static str {
-        cf_names::SUBSTATES
-    }
-}

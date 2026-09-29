@@ -372,8 +372,8 @@ fn a_lock_from_a_branch_below_the_commit_height_is_not_found() {
 
 /// Releasing locks must clear every index entry, over a loop long enough to matter.
 ///
-/// Each release path rebuilds a lock's chain-order key from the `grant_seq` in its lock key, so it can address the wrong
-/// entry and leave one behind. A record whose index entry outlives it is caught here because the lookup raises
+/// Each release path rebuilds a lock's chain-order key from the `grant_seq` in its lock key, so it can address the
+/// wrong entry and leave one behind. A record whose index entry outlives it is caught here because the lookup raises
 /// `DataInconsistency` rather than reporting the substate as unlocked.
 #[test]
 fn releasing_many_locks_leaves_none_behind() {

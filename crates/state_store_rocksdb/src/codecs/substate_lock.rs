@@ -69,14 +69,11 @@ impl<T> SubstateLockKeyCodec<T> {
     }
 
     fn get_encoded_len(&self, value: &SubstateLockKey) -> Result<usize, RocksDbStorageError> {
-        Ok(self.get_legacy_encoded_len(value)? + 4) // grant_seq
-    }
-
-    fn get_legacy_encoded_len(&self, value: &SubstateLockKey) -> Result<usize, RocksDbStorageError> {
         let len = BlockId::byte_size() + // block_id
             self.substate_id_codec.encode_len(&value.substate_id)? + // substate_id
             TransactionId::byte_size() + // transaction_id
-            8; // block_height
+            8 + // block_height
+            4; // grant_seq
         Ok(len)
     }
 }
@@ -240,63 +237,6 @@ impl DbDecoder<SubstateLockKey> for SubstateLockKeyCodec<(SubstateId, Transactio
                 transaction_id,
                 block_height,
                 grant_seq,
-            },
-            offset,
-        ))
-    }
-}
-
-/// The key shape of `LegacyUnprefixedSubstateIdIndex`, which predates `grant_seq`. A decoded key has a `grant_seq` of
-/// zero, and encoding ignores it.
-impl DbEncoder<SubstateLockKey> for SubstateLockKeyCodec<(SubstateId, TransactionId, BlockId, NodeHeight)> {
-    fn encode_len(&self, value: &SubstateLockKey) -> Result<usize, RocksDbStorageError> {
-        self.get_legacy_encoded_len(value)
-    }
-
-    fn encode_into<W: Write>(&self, value: &SubstateLockKey, writer: &mut W) -> Result<(), RocksDbStorageError> {
-        writer
-            .write_all(&self.substate_id_codec.encode(&value.substate_id)?)
-            .map_err(|e| RocksDbStorageError::EncodeError {
-                source: anyhow!("SubstateLockKeyCodec: Failed to write substate_id: {}", e),
-            })?;
-        writer
-            .write_all(value.transaction_id.as_bytes())
-            .map_err(|e| RocksDbStorageError::EncodeError {
-                source: anyhow!("SubstateLockKeyCodec: Failed to write transaction_id: {}", e),
-            })?;
-        writer
-            .write_all(value.block_id.as_bytes())
-            .map_err(|e| RocksDbStorageError::EncodeError {
-                source: anyhow!("SubstateLockKeyCodec: Failed to write block_id: {}", e),
-            })?;
-        writer
-            .write_all(&value.block_height.as_u64().to_be_bytes())
-            .map_err(|e| RocksDbStorageError::EncodeError {
-                source: anyhow!("SubstateLockKeyCodec: Failed to write block_height: {}", e),
-            })?;
-        Ok(())
-    }
-}
-
-impl DbDecoder<SubstateLockKey> for SubstateLockKeyCodec<(SubstateId, TransactionId, BlockId, NodeHeight)> {
-    fn decode(&self, bytes: &[u8]) -> Result<(SubstateLockKey, usize), RocksDbStorageError> {
-        let mut offset = 0;
-        let (substate_id, n) = self.decode_substate_id(&bytes[offset..])?;
-        offset += n;
-        let (transaction_id, n) = self.decode_transaction_id(&bytes[offset..])?;
-        offset += n;
-        let (block_id, n) = self.decode_block_id(&bytes[offset..])?;
-        offset += n;
-        let (block_height, n) = self.decode_block_height(&bytes[offset..])?;
-        offset += n;
-
-        Ok((
-            SubstateLockKey {
-                block_id,
-                substate_id,
-                transaction_id,
-                block_height,
-                grant_seq: 0,
             },
             offset,
         ))
