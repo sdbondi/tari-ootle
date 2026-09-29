@@ -96,6 +96,7 @@ pub async fn run(context: HandlerContext) -> anyhow::Result<()> {
         column_families::parked_block::ParkedBlockCf,
         column_families::foreign_parked_blocks::ForeignParkedBlockCf,
         column_families::foreign_parked_blocks::MissingTransactionsModel,
+        column_families::foreign_parked_blocks::MissingTransactionsBlockIdIndex,
         column_families::substate_locks::SubstateLockModel,
         column_families::substate_locks::BlockIdIndex,
         column_families::substate_locks::SubstateIdIndex,
@@ -190,6 +191,7 @@ pub fn register_all_cfs(context: &mut HandlerContext) -> &mut HandlerContext {
         .register_cf(column_families::finalized_transaction::FinalizedTransactionLinkCf)
         .register_cf(column_families::foreign_parked_blocks::ForeignParkedBlockCf)
         .register_cf(column_families::foreign_parked_blocks::MissingTransactionsModel)
+        .register_cf(column_families::foreign_parked_blocks::MissingTransactionsBlockIdIndex)
         .register_cf(column_families::foreign_proposal::ForeignProposalCf)
         .register_cf(column_families::foreign_proposal::EpochIndex)
         .register_cf(column_families::foreign_proposal::ProposedInBlockIndex)

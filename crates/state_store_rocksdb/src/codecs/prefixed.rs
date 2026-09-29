@@ -61,6 +61,7 @@ pub enum KeyPrefix {
     VoteEquivocations = 47,
     ValidatorLivenessLog = 48,
     SubstateLockChainOrderIndex = 49,
+    ForeignProposalMissingTransactionsBlockIdIndex = 50,
 }
 
 impl KeyPrefix {

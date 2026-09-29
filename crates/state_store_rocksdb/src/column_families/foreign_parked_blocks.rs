@@ -72,3 +72,31 @@ impl QueryCf for ByTransactionIdQuery {
     type Key = TransactionId;
     type KeyCodec = TransactionIdCodec;
 }
+
+prefixed!(
+    ForeignProposalMissingTransactionsBlockIdIndexPrefix,
+    KeyPrefix::ForeignProposalMissingTransactionsBlockIdIndex
+);
+
+/// [`MissingTransactionsModel`] keyed by parked block first. Every row in one has its mirror in the other.
+pub struct MissingTransactionsBlockIdIndex;
+
+impl Cf for MissingTransactionsBlockIdIndex {
+    type Key = (BlockId, TransactionId);
+    type KeyCodec = (BlockIdCodec, TransactionIdCodec);
+    type Prefix = ForeignProposalMissingTransactionsBlockIdIndexPrefix;
+    type Value = ();
+    type ValueCodec = UnitCodec;
+
+    fn name() -> &'static str {
+        cf_names::FOREIGN_PROPOSALS
+    }
+}
+
+pub struct ByBlockIdQuery;
+
+impl QueryCf for ByBlockIdQuery {
+    type Cf = MissingTransactionsBlockIdIndex;
+    type Key = BlockId;
+    type KeyCodec = BlockIdCodec;
+}

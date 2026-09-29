@@ -1090,8 +1090,10 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         }
 
         let cf = self.db().cf(foreign_parked_blocks::MissingTransactionsModel)?;
+        let index_cf = self.db().cf(foreign_parked_blocks::MissingTransactionsBlockIdIndex)?;
         for tx_id in missing_transaction_ids {
             cf.put(&(*tx_id, *park_block_id), &(), OPERATION)?;
+            index_cf.put(&(*park_block_id, *tx_id), &(), OPERATION)?;
         }
         Ok(())
     }
@@ -1104,6 +1106,8 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         let cf = self.db().cf(ForeignParkedBlockCf)?;
         let query = self.db().cf(foreign_parked_blocks::ByTransactionIdQuery)?;
         let missing_cf = self.db().cf(foreign_parked_blocks::MissingTransactionsModel)?;
+        let missing_index_cf = self.db().cf(foreign_parked_blocks::MissingTransactionsBlockIdIndex)?;
+        let by_block_query = self.db().cf(foreign_parked_blocks::ByBlockIdQuery)?;
         let keys = query.query_prefix_range_keys(Ordering::default(), transaction_id)?;
 
         // Remove the transaction ids from the missing list
@@ -1111,20 +1115,17 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         for (transaction_id, block_id) in keys {
             block_ids.insert(block_id);
             missing_cf.delete(&(transaction_id, block_id), OPERATION)?;
+            missing_index_cf.delete(&(block_id, transaction_id), OPERATION)?;
         }
 
-        if block_ids.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // Check if there are any remaining for this block - TODO: consider optimising, loops through all entries
-        let iter = missing_cf.key_iterator(Ordering::default(), OPERATION);
-        for result in iter {
-            let (_, block_id) = result?;
-            if block_ids.contains(&block_id) {
-                block_ids.remove(&block_id);
+        // Only blocks with no missing transactions left are unparked
+        let mut still_missing = HashSet::new();
+        for block_id in &block_ids {
+            if by_block_query.exists_prefix(block_id)? {
+                still_missing.insert(*block_id);
             }
         }
+        block_ids.retain(|block_id| !still_missing.contains(block_id));
 
         // If ALL of the blocks still have missing transactions, exit early
         if block_ids.is_empty() {
