@@ -25,7 +25,7 @@ use std::fmt::Display;
 use serde::Serialize;
 use tari_consensus_types::BlockId;
 use tari_engine_types::substate::SubstateId;
-use tari_ootle_common_types::{NodeHeight, SubstateLockType};
+use tari_ootle_common_types::{Epoch, NodeHeight, SubstateLockType};
 use tari_ootle_storage::consensus_models::SubstateLock;
 use tari_ootle_transaction::TransactionId;
 
@@ -33,6 +33,7 @@ use crate::{
     codecs::{
         BlockIdCodec,
         DefaultCodec,
+        EpochCodec,
         KeyPrefix,
         NodeHeightCodec,
         NumberCodec,
@@ -54,18 +55,31 @@ use crate::{
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct SubstateLockKey {
     pub block_id: BlockId,
+    pub block_epoch: Epoch,
     pub block_height: NodeHeight,
     pub substate_id: SubstateId,
     pub transaction_id: TransactionId,
     pub grant_seq: u32,
 }
 
+impl SubstateLockKey {
+    pub fn to_chain_order_key(&self) -> ChainOrderKey {
+        (
+            self.substate_id.clone(),
+            self.block_epoch,
+            self.block_height,
+            self.block_id,
+            self.grant_seq,
+        )
+    }
+}
+
 impl Display for SubstateLockKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "SubstateLockKey {{ block: {}/{}, substate_id: {}, transaction_id: {}, grant_seq: {} }}",
-            self.block_height, self.block_id, self.substate_id, self.transaction_id, self.grant_seq
+            "SubstateLockKey {{ block: {}/{}/{}, substate_id: {}, transaction_id: {}, grant_seq: {} }}",
+            self.block_epoch, self.block_height, self.block_id, self.substate_id, self.transaction_id, self.grant_seq
         )
     }
 }
@@ -76,7 +90,7 @@ pub struct SubstateLockModel;
 
 impl Cf for SubstateLockModel {
     type Key = SubstateLockKey;
-    type KeyCodec = SubstateLockKeyCodec<(TransactionId, SubstateId, BlockId, NodeHeight, u32)>;
+    type KeyCodec = SubstateLockKeyCodec<(TransactionId, SubstateId, BlockId, Epoch, NodeHeight, u32)>;
     type Prefix = SubstateLockPrefix;
     type Value = SubstateLock;
     type ValueCodec = DefaultCodec<Self::Value>;
@@ -88,20 +102,30 @@ impl Cf for SubstateLockModel {
 
 prefixed!(SubstateLockChainOrderPrefix, KeyPrefix::SubstateLockChainOrderIndex);
 
-/// Orders a substate's locks the way a chain grants them: by block height, then by the order the block granted them.
+/// Orders a substate's locks the way a chain grants them: by block epoch and height, then by the order the block
+/// granted them.
 ///
-/// `grant_seq` is a lock's position in the sequence its block granted for the substate. A chain holds one block per
-/// height, so `(block_height, grant_seq)` totally orders every lock a chain holds on the substate, and a descending
-/// scan filtered to one chain's blocks yields its most recently granted lock first.
+/// `grant_seq` is a lock's position in the sequence its block granted for the substate. Heights restart at zero each
+/// epoch, and a chain holds one block per height within an epoch, so `(block_epoch, block_height, grant_seq)` totally
+/// orders every lock a chain holds on the substate, and a descending scan filtered to one chain's blocks yields its
+/// most recently granted lock first.
 ///
 /// `block_id` is what makes the key unique: sibling blocks at one height each number their grants from zero, so without
 /// it the second block written would overwrite the first block's entries for the substate. Its position between the two
 /// ordering components also keeps one block's entries contiguous.
 pub struct ChainOrderIndex;
 
+pub type ChainOrderKey = (SubstateId, Epoch, NodeHeight, BlockId, u32);
+
 impl Cf for ChainOrderIndex {
-    type Key = (SubstateId, NodeHeight, BlockId, u32);
-    type KeyCodec = (SubstateIdCodec, NodeHeightCodec, BlockIdCodec, NumberCodec<u32>);
+    type Key = ChainOrderKey;
+    type KeyCodec = (
+        SubstateIdCodec,
+        EpochCodec,
+        NodeHeightCodec,
+        BlockIdCodec,
+        NumberCodec<u32>,
+    );
     type Prefix = SubstateLockChainOrderPrefix;
     type Value = TransactionId;
     type ValueCodec = TransactionIdCodec;
@@ -134,7 +158,7 @@ pub struct BlockIdIndex;
 
 impl Cf for BlockIdIndex {
     type Key = SubstateLockKey;
-    type KeyCodec = SubstateLockKeyCodec<(BlockId, SubstateId, TransactionId, NodeHeight, u32)>;
+    type KeyCodec = SubstateLockKeyCodec<(BlockId, SubstateId, TransactionId, Epoch, NodeHeight, u32)>;
     type Prefix = SubstatesBlockIdIndexPrefix;
     type Value = ();
     type ValueCodec = UnitCodec;
@@ -158,7 +182,7 @@ pub struct SubstateIdIndex;
 
 impl Cf for SubstateIdIndex {
     type Key = SubstateLockKey;
-    type KeyCodec = SubstateLockKeyCodec<(SubstateId, TransactionId, BlockId, NodeHeight, u32)>;
+    type KeyCodec = SubstateLockKeyCodec<(SubstateId, TransactionId, BlockId, Epoch, NodeHeight, u32)>;
     type Prefix = SubstateIdIndexPrefix;
     type Value = SubstateLockType;
     type ValueCodec = DefaultCodec<Self::Value>;

@@ -7,7 +7,7 @@ use anyhow::anyhow;
 use tari_common_types::types::FixedHash;
 use tari_consensus_types::BlockId;
 use tari_engine_types::substate::SubstateId;
-use tari_ootle_common_types::NodeHeight;
+use tari_ootle_common_types::{Epoch, NodeHeight};
 use tari_ootle_transaction::TransactionId;
 
 use crate::{
@@ -53,6 +53,21 @@ impl<T> SubstateLockKeyCodec<T> {
         Ok((NodeHeight(u64::from_be_bytes(height)), 8))
     }
 
+    fn decode_block_epoch(&self, bytes: &[u8]) -> Result<(Epoch, usize), RocksDbStorageError> {
+        let epoch: [u8; 8] = take_fixed(bytes).ok_or_else(|| RocksDbStorageError::DecodeError {
+            source: anyhow!("SubstateLockKeyCodec: Invalid bytes for Epoch"),
+        })?;
+        Ok((Epoch(u64::from_be_bytes(epoch)), 8))
+    }
+
+    fn encode_block_epoch<W: Write>(&self, value: &SubstateLockKey, writer: &mut W) -> Result<(), RocksDbStorageError> {
+        writer
+            .write_all(&value.block_epoch.to_be_bytes())
+            .map_err(|e| RocksDbStorageError::EncodeError {
+                source: anyhow!("SubstateLockKeyCodec: Failed to write block_epoch: {}", e),
+            })
+    }
+
     fn decode_grant_seq(&self, bytes: &[u8]) -> Result<(u32, usize), RocksDbStorageError> {
         let grant_seq: [u8; 4] = take_fixed(bytes).ok_or_else(|| RocksDbStorageError::DecodeError {
             source: anyhow!("SubstateLockKeyCodec: Invalid bytes for grant_seq"),
@@ -72,13 +87,14 @@ impl<T> SubstateLockKeyCodec<T> {
         let len = BlockId::byte_size() + // block_id
             self.substate_id_codec.encode_len(&value.substate_id)? + // substate_id
             TransactionId::byte_size() + // transaction_id
+            8 + // block_epoch
             8 + // block_height
             4; // grant_seq
         Ok(len)
     }
 }
 
-impl DbEncoder<SubstateLockKey> for SubstateLockKeyCodec<(TransactionId, SubstateId, BlockId, NodeHeight, u32)> {
+impl DbEncoder<SubstateLockKey> for SubstateLockKeyCodec<(TransactionId, SubstateId, BlockId, Epoch, NodeHeight, u32)> {
     fn encode_len(&self, value: &SubstateLockKey) -> Result<usize, RocksDbStorageError> {
         self.get_encoded_len(value)
     }
@@ -95,6 +111,7 @@ impl DbEncoder<SubstateLockKey> for SubstateLockKeyCodec<(TransactionId, Substat
             .map_err(|e| RocksDbStorageError::EncodeError {
                 source: anyhow!("SubstateLockKeyCodec: Failed to write block_id: {}", e),
             })?;
+        self.encode_block_epoch(value, writer)?;
         writer
             .write_all(&value.block_height.as_u64().to_be_bytes())
             .map_err(|e| RocksDbStorageError::EncodeError {
@@ -105,7 +122,7 @@ impl DbEncoder<SubstateLockKey> for SubstateLockKeyCodec<(TransactionId, Substat
     }
 }
 
-impl DbDecoder<SubstateLockKey> for SubstateLockKeyCodec<(TransactionId, SubstateId, BlockId, NodeHeight, u32)> {
+impl DbDecoder<SubstateLockKey> for SubstateLockKeyCodec<(TransactionId, SubstateId, BlockId, Epoch, NodeHeight, u32)> {
     fn decode(&self, bytes: &[u8]) -> Result<(SubstateLockKey, usize), RocksDbStorageError> {
         let mut offset = 0;
         let (transaction_id, n) = self.decode_transaction_id(&bytes[offset..])?;
@@ -113,6 +130,8 @@ impl DbDecoder<SubstateLockKey> for SubstateLockKeyCodec<(TransactionId, Substat
         let (substate_id, n) = self.decode_substate_id(&bytes[offset..])?;
         offset += n;
         let (block_id, n) = self.decode_block_id(&bytes[offset..])?;
+        offset += n;
+        let (block_epoch, n) = self.decode_block_epoch(&bytes[offset..])?;
         offset += n;
         let (block_height, n) = self.decode_block_height(&bytes[offset..])?;
         offset += n;
@@ -123,6 +142,7 @@ impl DbDecoder<SubstateLockKey> for SubstateLockKeyCodec<(TransactionId, Substat
                 block_id,
                 substate_id,
                 transaction_id,
+                block_epoch,
                 block_height,
                 grant_seq,
             },
@@ -131,7 +151,7 @@ impl DbDecoder<SubstateLockKey> for SubstateLockKeyCodec<(TransactionId, Substat
     }
 }
 
-impl DbEncoder<SubstateLockKey> for SubstateLockKeyCodec<(BlockId, SubstateId, TransactionId, NodeHeight, u32)> {
+impl DbEncoder<SubstateLockKey> for SubstateLockKeyCodec<(BlockId, SubstateId, TransactionId, Epoch, NodeHeight, u32)> {
     fn encode_len(&self, value: &SubstateLockKey) -> Result<usize, RocksDbStorageError> {
         self.get_encoded_len(value)
     }
@@ -148,6 +168,7 @@ impl DbEncoder<SubstateLockKey> for SubstateLockKeyCodec<(BlockId, SubstateId, T
             .map_err(|e| RocksDbStorageError::EncodeError {
                 source: anyhow!("SubstateLockKeyCodec: Failed to write transaction_id: {}", e),
             })?;
+        self.encode_block_epoch(value, writer)?;
         writer
             .write_all(&value.block_height.as_u64().to_be_bytes())
             .map_err(|e| RocksDbStorageError::EncodeError {
@@ -158,7 +179,7 @@ impl DbEncoder<SubstateLockKey> for SubstateLockKeyCodec<(BlockId, SubstateId, T
     }
 }
 
-impl DbDecoder<SubstateLockKey> for SubstateLockKeyCodec<(BlockId, SubstateId, TransactionId, NodeHeight, u32)> {
+impl DbDecoder<SubstateLockKey> for SubstateLockKeyCodec<(BlockId, SubstateId, TransactionId, Epoch, NodeHeight, u32)> {
     fn decode(&self, bytes: &[u8]) -> Result<(SubstateLockKey, usize), RocksDbStorageError> {
         let mut offset = 0;
         let (block_id, n) = self.decode_block_id(&bytes[offset..])?;
@@ -166,6 +187,8 @@ impl DbDecoder<SubstateLockKey> for SubstateLockKeyCodec<(BlockId, SubstateId, T
         let (substate_id, n) = self.decode_substate_id(&bytes[offset..])?;
         offset += n;
         let (transaction_id, n) = self.decode_transaction_id(&bytes[offset..])?;
+        offset += n;
+        let (block_epoch, n) = self.decode_block_epoch(&bytes[offset..])?;
         offset += n;
         let (block_height, n) = self.decode_block_height(&bytes[offset..])?;
         offset += n;
@@ -177,6 +200,7 @@ impl DbDecoder<SubstateLockKey> for SubstateLockKeyCodec<(BlockId, SubstateId, T
                 block_id,
                 substate_id,
                 transaction_id,
+                block_epoch,
                 block_height,
                 grant_seq,
             },
@@ -185,7 +209,7 @@ impl DbDecoder<SubstateLockKey> for SubstateLockKeyCodec<(BlockId, SubstateId, T
     }
 }
 
-impl DbEncoder<SubstateLockKey> for SubstateLockKeyCodec<(SubstateId, TransactionId, BlockId, NodeHeight, u32)> {
+impl DbEncoder<SubstateLockKey> for SubstateLockKeyCodec<(SubstateId, TransactionId, BlockId, Epoch, NodeHeight, u32)> {
     fn encode_len(&self, value: &SubstateLockKey) -> Result<usize, RocksDbStorageError> {
         self.get_encoded_len(value)
     }
@@ -206,6 +230,7 @@ impl DbEncoder<SubstateLockKey> for SubstateLockKeyCodec<(SubstateId, Transactio
             .map_err(|e| RocksDbStorageError::EncodeError {
                 source: anyhow!("SubstateLockKeyCodec: Failed to write block_id: {}", e),
             })?;
+        self.encode_block_epoch(value, writer)?;
         writer
             .write_all(&value.block_height.as_u64().to_be_bytes())
             .map_err(|e| RocksDbStorageError::EncodeError {
@@ -216,7 +241,7 @@ impl DbEncoder<SubstateLockKey> for SubstateLockKeyCodec<(SubstateId, Transactio
     }
 }
 
-impl DbDecoder<SubstateLockKey> for SubstateLockKeyCodec<(SubstateId, TransactionId, BlockId, NodeHeight, u32)> {
+impl DbDecoder<SubstateLockKey> for SubstateLockKeyCodec<(SubstateId, TransactionId, BlockId, Epoch, NodeHeight, u32)> {
     fn decode(&self, bytes: &[u8]) -> Result<(SubstateLockKey, usize), RocksDbStorageError> {
         let mut offset = 0;
         let (substate_id, n) = self.decode_substate_id(&bytes[offset..])?;
@@ -224,6 +249,8 @@ impl DbDecoder<SubstateLockKey> for SubstateLockKeyCodec<(SubstateId, Transactio
         let (transaction_id, n) = self.decode_transaction_id(&bytes[offset..])?;
         offset += n;
         let (block_id, n) = self.decode_block_id(&bytes[offset..])?;
+        offset += n;
+        let (block_epoch, n) = self.decode_block_epoch(&bytes[offset..])?;
         offset += n;
         let (block_height, n) = self.decode_block_height(&bytes[offset..])?;
         offset += n;
@@ -235,6 +262,7 @@ impl DbDecoder<SubstateLockKey> for SubstateLockKeyCodec<(SubstateId, Transactio
                 block_id,
                 substate_id,
                 transaction_id,
+                block_epoch,
                 block_height,
                 grant_seq,
             },

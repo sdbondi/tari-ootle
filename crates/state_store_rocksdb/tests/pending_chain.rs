@@ -27,7 +27,7 @@ fn it_runs_from_the_leaf_down_to_the_commit_block() {
     assert!(!pending.contains_pending(chain[7].id()));
     assert!(pending.contains_with_base(chain[7].id()));
     assert!(!pending.contains_with_base(chain[6].id()));
-    assert_eq!(pending.commit_height(), Some(chain[7].height()));
+    assert_eq!(pending.commit_position(), Some((chain[7].epoch(), chain[7].height())));
 
     tx.rollback().unwrap();
 }

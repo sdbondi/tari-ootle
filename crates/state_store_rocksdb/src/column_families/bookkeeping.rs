@@ -16,7 +16,7 @@ use tari_consensus_types::{
     LeafBlock,
     LockedBlock,
 };
-use tari_ootle_common_types::NodeHeight;
+use tari_ootle_common_types::{Epoch, NodeHeight};
 
 use crate::{
     codecs::{ByteColumn, ColumnCodec, DefaultCodec, NumberCodec},
@@ -76,7 +76,7 @@ impl BookKeepingKey {
 /// here because it describes the on-disk schema rather than any one binary. Tools that write to a database directly
 /// must check the stored [`DatabaseMigrationVersion`] against it first: writing through the current key encodings to a
 /// database still at an older version silently misses the rows that a pending migration has yet to rewrite.
-pub const CURRENT_SCHEMA_VERSION: u64 = 3;
+pub const CURRENT_SCHEMA_VERSION: u64 = 4;
 
 pub struct DatabaseMigrationVersion;
 
@@ -156,6 +156,8 @@ pub struct CommitBlock {
     pub block_id: BlockId,
     #[n(2)]
     pub parent_id: BlockId,
+    #[n(3)]
+    pub epoch: Epoch,
 }
 
 pub struct CommitBlockCf;

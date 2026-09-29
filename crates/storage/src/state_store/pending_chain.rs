@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use tari_consensus_types::BlockId;
-use tari_ootle_common_types::NodeHeight;
+use tari_ootle_common_types::{Epoch, NodeHeight};
 
 /// The uncommitted blocks from a leaf block back to the commit block, read once so that many branch-scoped reads at
 /// the same leaf can share it.
@@ -21,7 +21,7 @@ pub struct PendingChain {
     pending: HashSet<BlockId>,
     /// `pending` plus the blocks the walk reached beneath it: the commit block, or the zero block.
     ancestry: HashSet<BlockId>,
-    commit_height: Option<NodeHeight>,
+    commit_position: Option<(Epoch, NodeHeight)>,
 }
 
 impl PendingChain {
@@ -30,10 +30,10 @@ impl PendingChain {
     /// `walk` starts at `leaf` and follows parent links until the index has no entry or the zero block is reached,
     /// including that final parent. It is empty when `leaf` is not in the index. The chain's blocks are the walk up to
     /// the commit block or the zero block; the leaf is always one of them when the walk is non-empty. `commit` is the
-    /// commit block's id and height, absent before any block has committed.
-    pub fn from_walk(leaf: BlockId, walk: Vec<BlockId>, commit: Option<(BlockId, NodeHeight)>) -> Self {
+    /// commit block's id, epoch and height, absent before any block has committed.
+    pub fn from_walk(leaf: BlockId, walk: Vec<BlockId>, commit: Option<(BlockId, Epoch, NodeHeight)>) -> Self {
         let ancestry = walk.iter().copied().collect();
-        let commit_block_id = commit.map(|(id, _)| id);
+        let commit_block_id = commit.map(|(id, _, _)| id);
         let pending_len = walk
             .iter()
             .skip(1)
@@ -47,7 +47,7 @@ impl PendingChain {
             blocks,
             pending,
             ancestry,
-            commit_height: commit.map(|(_, height)| height),
+            commit_position: commit.map(|(_, epoch, height)| (epoch, height)),
         }
     }
 
@@ -79,9 +79,10 @@ impl PendingChain {
         &self.ancestry
     }
 
-    /// The height of the commit block when the chain was read, or `None` if no block had committed.
-    pub fn commit_height(&self) -> Option<NodeHeight> {
-        self.commit_height
+    /// The epoch and height of the commit block when the chain was read, or `None` if no block had committed. Heights
+    /// restart at zero each epoch, so a block's place in the chain is its epoch and height together.
+    pub fn commit_position(&self) -> Option<(Epoch, NodeHeight)> {
+        self.commit_position
     }
 }
 
@@ -95,7 +96,7 @@ mod tests {
 
     #[test]
     fn it_stops_the_pending_blocks_at_the_commit_block() {
-        let chain = PendingChain::from_walk(id(3), vec![id(3), id(2), id(1)], Some((id(1), NodeHeight(1))));
+        let chain = PendingChain::from_walk(id(3), vec![id(3), id(2), id(1)], Some((id(1), Epoch(1), NodeHeight(1))));
         assert_eq!(chain.blocks(), &[id(3), id(2)]);
         assert!(chain.contains_pending(&id(2)));
         assert!(!chain.contains_pending(&id(1)));
@@ -112,13 +113,13 @@ mod tests {
 
     #[test]
     fn it_keeps_a_leaf_that_is_the_commit_block() {
-        let chain = PendingChain::from_walk(id(1), vec![id(1), id(5)], Some((id(1), NodeHeight(1))));
+        let chain = PendingChain::from_walk(id(1), vec![id(1), id(5)], Some((id(1), Epoch(1), NodeHeight(1))));
         assert_eq!(chain.blocks(), &[id(1), id(5)]);
     }
 
     #[test]
     fn it_is_empty_for_a_leaf_outside_the_index() {
-        let chain = PendingChain::from_walk(id(1), vec![], Some((id(1), NodeHeight(1))));
+        let chain = PendingChain::from_walk(id(1), vec![], Some((id(1), Epoch(1), NodeHeight(1))));
         assert!(chain.is_empty());
         assert!(!chain.contains_with_base(&id(1)));
     }

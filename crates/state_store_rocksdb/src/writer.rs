@@ -365,6 +365,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
             self.db().cf(CommitBlockCf)?.put(
                 &ByteColumn,
                 &CommitBlock {
+                    epoch: block.epoch(),
                     height: block.height(),
                     block_id: *block.id(),
                     parent_id: *block.parent(),
@@ -1155,6 +1156,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
                 let grant_seq = grant_seq as u32;
                 let key = SubstateLockKey {
                     block_id: *block.block_id(),
+                    block_epoch: block.epoch(),
                     block_height: block.height(),
                     substate_id: substate_id.clone(),
                     transaction_id: *lock.transaction_id(),
@@ -1163,11 +1165,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
                 cf.put(&key, lock, OPERATION)?;
                 index_cf.put(&key, &(), OPERATION)?;
                 substate_index_cf.put(&key, &lock.lock_type(), OPERATION)?;
-                chain_order_cf.put(
-                    &(substate_id.clone(), block.height(), *block.block_id(), grant_seq),
-                    lock.transaction_id(),
-                    OPERATION,
-                )?;
+                chain_order_cf.put(&key.to_chain_order_key(), lock.transaction_id(), OPERATION)?;
             }
         }
 
@@ -1199,10 +1197,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
                 cf.delete(&key, OPERATION)?;
                 index_cf.delete(&key, OPERATION)?;
                 substate_index_cf.delete(&key, OPERATION)?;
-                chain_order_cf.delete(
-                    &(key.substate_id.clone(), key.block_height, key.block_id, key.grant_seq),
-                    OPERATION,
-                )?;
+                chain_order_cf.delete(&key.to_chain_order_key(), OPERATION)?;
             }
         }
 
@@ -1221,10 +1216,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
             cf.delete(&key, OPERATION)?;
             index_cf.delete(&key, OPERATION)?;
             substate_index_cf.delete(&key, OPERATION)?;
-            chain_order_cf.delete(
-                &(key.substate_id.clone(), key.block_height, key.block_id, key.grant_seq),
-                OPERATION,
-            )?;
+            chain_order_cf.delete(&key.to_chain_order_key(), OPERATION)?;
         }
 
         Ok(())

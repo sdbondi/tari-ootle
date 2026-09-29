@@ -335,6 +335,15 @@ pub fn create_block(parent: Option<&Block>) -> Block {
 }
 
 pub fn create_block_with_qc(parent: &LeafBlock) -> Block {
+    create_block_at(parent, parent.height() + NodeHeight(1), parent.epoch())
+}
+
+/// The first block of the epoch after `parent`'s. Heights restart at zero each epoch.
+pub fn create_first_block_of_next_epoch(parent: &LeafBlock) -> Block {
+    create_block_at(parent, NodeHeight::zero(), parent.epoch().saturating_add(1u64))
+}
+
+fn create_block_at(parent: &LeafBlock, height: NodeHeight, epoch: Epoch) -> Block {
     let network = Network::LocalNet;
 
     let atom1 = create_tx_atom();
@@ -351,8 +360,8 @@ pub fn create_block_with_qc(parent: &LeafBlock) -> Block {
         *parent.block_id(),
         qc,
         None,
-        parent.height() + NodeHeight(1),
-        parent.epoch(),
+        height,
+        epoch,
         shard_group,
         Default::default(),
         // Need to have a command in, otherwise this block will not be included internally in the query because it
