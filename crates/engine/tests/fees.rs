@@ -1178,15 +1178,11 @@ fn a_fee_account_declared_as_a_read_still_pays_the_fee() {
     );
 
     test.set_dry_run(false);
-    let inputs = [InputDeclaration::write(account)].into_iter().map(|decl| {
-        if downed.contains(decl.substate_id()) {
-            decl
-        } else {
-            decl.with_is_write(false)
-        }
-    });
-    let result = test.execute_expect_success(build(&test).with_inputs(inputs).build_and_seal(&private_key), vec![
-        owner_token,
-    ]);
+    let result = test.execute_expect_success(
+        build(&test)
+            .add_input(InputDeclaration::read(account))
+            .build_and_seal(&private_key),
+        vec![owner_token],
+    );
     assert!(result.finalize.fee_receipt.is_paid_in_full());
 }

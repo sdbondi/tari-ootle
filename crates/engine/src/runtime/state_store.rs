@@ -44,11 +44,10 @@ pub struct WorkingStateStore<TStore> {
     /// a promise the rest of the network has already acted on: the transaction produces no new
     /// version of it, does not remove it, and records no change for consensus to apply to it.
     ///
-    /// The promise is about what the transaction persists, not about locks. A write lock is an
-    /// intra-transaction exclusivity claim taken for every `&mut self` call, and a method that leaves
-    /// its component unchanged rolls that call back without persisting anything, which is what a
-    /// fee payment through an account does. So a read-declared input may be write-locked, and is
-    /// refused at the point a mutation is about to be kept.
+    /// A write lock is an intra-transaction exclusivity claim taken for every `&mut self` call, and
+    /// a call that leaves its component unchanged is rolled back, as a fee payment through an
+    /// account is. So a read-declared input may be write-locked, and is refused where a mutation is
+    /// kept.
     read_declared_inputs: HashSet<SubstateId>,
     /// The underlying state store that is used to load substates that are not in the working state maps.
     state_store: TStore,
@@ -114,7 +113,11 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
         if let Some(mut substate) = self.loaded_substates.remove(lock.substate_id()) {
             return match callback(lock.substate_id(), substate.substate_value_mut())? {
                 Some(ret) => {
-                    self.ensure_writable(lock.substate_id())?;
+                    if let Err(err) = self.ensure_writable(lock.substate_id()) {
+                        // The lock stays held, so the substate stays loaded under it.
+                        self.loaded_substates.insert(lock.substate_id().clone(), substate);
+                        return Err(err);
+                    }
                     self.new_substates
                         .insert(lock.substate_id().clone(), substate.into_substate_value());
                     Ok(Some(ret))
@@ -422,7 +425,7 @@ mod tests {
     /// A `&mut self` call takes a write lock whether or not it changes anything, and a call that
     /// changes nothing is rolled back rather than persisted, so the lock itself breaks no promise.
     #[test]
-    fn a_read_declared_substate_takes_a_write_lock_a_rolled_back_mutation_keeps() {
+    fn a_read_declared_substate_takes_a_write_lock_and_rolls_back_a_no_op() {
         let id = tombstone_id(1);
         let mut store = store_holding(slice::from_ref(&id), slice::from_ref(&id));
 
@@ -445,6 +448,8 @@ mod tests {
             .unwrap_err();
         assert_write_to_read_declared(err, &id);
         assert!(store.mutated_substates().is_empty());
+        // The lock is still held and the substate still loaded under it.
+        store.get_locked_substate(lock_id).unwrap();
 
         let err = store.get_locked_substate_mut(lock_id).unwrap_err();
         assert_write_to_read_declared(err, &id);
