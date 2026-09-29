@@ -101,7 +101,7 @@ fn run_test(db: impl StateStore) {
         assert_eq!(s.version(), l.version());
 
         let locked_by_tx = tx
-            .substate_locks_get_locked_substates_for_transaction(l.transaction_id())
+            .substate_locks_get_locked_substates_for_transaction(&b9, l.transaction_id())
             .unwrap();
         assert_eq!(locked_by_tx.len(), *tx_id_counts.get(l.transaction_id()).unwrap());
     }
@@ -111,13 +111,19 @@ fn run_test(db: impl StateStore) {
     }
 
     tx.substate_locks_remove_many_for_transactions(Some(&tx_1)).unwrap();
-    let locked_by_tx = tx.substate_locks_get_locked_substates_for_transaction(&tx_1).unwrap();
+    let locked_by_tx = tx
+        .substate_locks_get_locked_substates_for_transaction(&b9, &tx_1)
+        .unwrap();
     assert_eq!(locked_by_tx.len(), 0);
 
     tx.substate_locks_remove_any_by_block_id(b9.block_id()).unwrap();
-    let locked_by_tx = tx.substate_locks_get_locked_substates_for_transaction(&tx_3).unwrap();
+    let locked_by_tx = tx
+        .substate_locks_get_locked_substates_for_transaction(&b9, &tx_3)
+        .unwrap();
     assert_eq!(locked_by_tx.len(), 0);
-    let locked_by_tx = tx.substate_locks_get_locked_substates_for_transaction(&tx_4).unwrap();
+    let locked_by_tx = tx
+        .substate_locks_get_locked_substates_for_transaction(&b9, &tx_4)
+        .unwrap();
     assert_eq!(locked_by_tx.len(), 0);
 
     tx.rollback().unwrap();
@@ -408,10 +414,104 @@ fn releasing_many_locks_leaves_none_behind() {
             assert!(lock.is_none(), "lock left behind for {id} (by_block={by_block})");
         }
         for tx_id in [&granted_first, &granted_last] {
-            let locked = tx.substate_locks_get_locked_substates_for_transaction(tx_id).unwrap();
+            let locked = tx
+                .substate_locks_get_locked_substates_for_transaction(&b9, tx_id)
+                .unwrap();
             assert!(locked.is_empty(), "{tx_id} still holds locks (by_block={by_block})");
         }
 
         tx.rollback().unwrap();
     }
+}
+
+/// A transaction's locks are read per chain: a branch we are not extending has not locked anything for us.
+///
+/// This read backs the local pledges a transaction ships to foreign committees. Pledging a lock another branch granted
+/// would offer a foreign shard group a value this chain never locked.
+#[test]
+fn a_transactions_locks_are_scoped_to_one_chain() {
+    let (db, _tmp) = create_rocksdb();
+    let mut tx = db.create_write_tx().unwrap();
+
+    let chain = create_chain(10);
+    commit_chain(&mut tx, &chain);
+    let b8 = chain[8].as_leaf();
+    let b9 = chain[9].as_leaf();
+
+    let branch = create_block_with_qc(&b8);
+    tx.proposal_certificates_save(branch.justify()).unwrap();
+    branch.insert(&mut tx).unwrap();
+
+    let tx_id = transaction_id_from_seed(1);
+    let on_b9 = create_random_substate_id();
+    let on_branch = create_random_substate_id();
+
+    let lock = |id: &SubstateId| {
+        IndexMap::from([(id.clone(), vec![SubstateLock::new(
+            tx_id,
+            SubstateVersion::new(0),
+            SubstateLockType::Write,
+            false,
+        )])])
+    };
+    tx.substate_locks_insert_all(&b9, &lock(&on_b9)).unwrap();
+    tx.substate_locks_insert_all(&branch.as_leaf(), &lock(&on_branch))
+        .unwrap();
+
+    let from_b9 = tx
+        .substate_locks_get_locked_substates_for_transaction(&b9, &tx_id)
+        .unwrap();
+    assert_eq!(from_b9.len(), 1);
+    assert_eq!(from_b9[0].substate_id, on_b9);
+
+    let from_branch = tx
+        .substate_locks_get_locked_substates_for_transaction(&branch.as_leaf(), &tx_id)
+        .unwrap();
+    assert_eq!(from_branch.len(), 1);
+    assert_eq!(from_branch[0].substate_id, on_branch);
+
+    tx.rollback().unwrap();
+}
+
+/// A write lock another branch granted is not a conflict for the chain asking.
+#[test]
+fn a_conflicting_write_lock_is_scoped_to_one_chain() {
+    let (db, _tmp) = create_rocksdb();
+    let mut tx = db.create_write_tx().unwrap();
+
+    let chain = create_chain(10);
+    commit_chain(&mut tx, &chain);
+    let b8 = chain[8].as_leaf();
+    let b9 = chain[9].as_leaf();
+
+    let branch = create_block_with_qc(&b8);
+    tx.proposal_certificates_save(branch.justify()).unwrap();
+    branch.insert(&mut tx).unwrap();
+
+    let branch_tx = transaction_id_from_seed(1);
+    let asking_tx = transaction_id_from_seed(2);
+    let substate_id = create_random_substate_id();
+
+    tx.substate_locks_insert_all(
+        &branch.as_leaf(),
+        &IndexMap::from([(substate_id.clone(), vec![SubstateLock::new(
+            branch_tx,
+            SubstateVersion::new(0),
+            SubstateLockType::Write,
+            false,
+        )])]),
+    )
+    .unwrap();
+
+    let conflict = tx
+        .substate_locks_has_any_write_locks_for_substates(&b9, Some(&asking_tx), Some(&substate_id))
+        .unwrap();
+    assert!(conflict.is_none(), "a branch's write lock conflicted for b9");
+
+    let conflict = tx
+        .substate_locks_has_any_write_locks_for_substates(&branch.as_leaf(), Some(&asking_tx), Some(&substate_id))
+        .unwrap();
+    assert_eq!(conflict, Some(branch_tx));
+
+    tx.rollback().unwrap();
 }

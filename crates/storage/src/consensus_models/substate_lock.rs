@@ -5,6 +5,7 @@ use std::{fmt, fmt::Display};
 
 use minicbor::{CborLen, Decode, Encode};
 use serde::{Deserialize, Serialize};
+use tari_consensus_types::LeafBlock;
 use tari_engine_types::{
     SubstateVersion,
     substate::{SubstateId, SubstateValue},
@@ -124,15 +125,20 @@ impl LockedSubstateValue {
 }
 
 impl LockedSubstateValue {
+    /// The locks the chain ending at `leaf_block` holds for a transaction.
     pub fn get_all_for_transaction<TTx: StateStoreReadTransaction>(
         tx: &TTx,
+        leaf_block: &LeafBlock,
         transaction_id: &TransactionId,
     ) -> Result<Vec<LockedSubstateValue>, StorageError> {
-        tx.substate_locks_get_locked_substates_for_transaction(transaction_id)
+        tx.substate_locks_get_locked_substates_for_transaction(leaf_block, transaction_id)
     }
 
+    /// A transaction other than `exclude_transaction_id` that the chain ending at `leaf_block` has given a write lock
+    /// over any of `substate_ids`.
     pub fn get_transaction_id_that_conflicts_with_write_locks<'a, TTx, I>(
         tx: &TTx,
+        leaf_block: &LeafBlock,
         exclude_transaction_id: &TransactionId,
         substate_ids: I,
     ) -> Result<Option<TransactionId>, StorageError>
@@ -140,7 +146,7 @@ impl LockedSubstateValue {
         TTx: StateStoreReadTransaction,
         I: IntoIterator<Item = &'a SubstateId>,
     {
-        tx.substate_locks_has_any_write_locks_for_substates(Some(exclude_transaction_id), substate_ids)
+        tx.substate_locks_has_any_write_locks_for_substates(leaf_block, Some(exclude_transaction_id), substate_ids)
     }
 }
 

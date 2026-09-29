@@ -9,7 +9,7 @@ use std::{
 use log::*;
 use minicbor::{CborLen, Decode, Encode};
 use serde::{Deserialize, Serialize};
-use tari_consensus_types::Decision;
+use tari_consensus_types::{Decision, LeafBlock};
 use tari_engine_types::substate::SubstateId;
 use tari_ootle_common_types::{
     Epoch,
@@ -171,8 +171,13 @@ impl TransactionRecord {
         Ok(missing)
     }
 
-    pub fn get_local_pledges<TTx: StateStoreReadTransaction>(&self, tx: &TTx) -> Result<SubstatePledges, StorageError> {
-        let locked_values = LockedSubstateValue::get_all_for_transaction(tx, self.id())?;
+    /// The pledges this chain's locks support. Locks granted by a branch we are not extending are not ours to pledge.
+    pub fn get_local_pledges<TTx: StateStoreReadTransaction>(
+        &self,
+        tx: &TTx,
+        leaf_block: &LeafBlock,
+    ) -> Result<SubstatePledges, StorageError> {
+        let locked_values = LockedSubstateValue::get_all_for_transaction(tx, leaf_block, self.id())?;
         locked_values
             .into_iter()
             .filter(|lock| !lock.lock.is_output())
@@ -268,13 +273,14 @@ impl TransactionRecord {
     pub fn has_all_required_input_pledges<TTx: StateStoreReadTransaction>(
         &self,
         tx: &TTx,
+        leaf_block: &LeafBlock,
         local_committee_info: &CommitteeInfo,
     ) -> Result<bool, StorageError> {
         let inputs = self
             .transaction()
             .all_inputs_iter()
             .map(|req| (local_committee_info.includes_substate_id(req.substate_id()), req));
-        let locks = LockedSubstateValue::get_all_for_transaction(tx, self.id())?;
+        let locks = LockedSubstateValue::get_all_for_transaction(tx, leaf_block, self.id())?;
         let pledges = tx.foreign_substate_pledges_get_all_by_transaction_id(self.id())?;
         for (is_local, input) in inputs {
             if is_local {

@@ -1106,7 +1106,7 @@ where TConsensusSpec: ConsensusSpec
             return Ok(execution.into_transaction_execution());
         }
 
-        let mut pledged = PledgedTransaction::load_pledges(tx, transaction)?;
+        let mut pledged = PledgedTransaction::load_pledges(tx, state_anchor, transaction)?;
         let transaction_id = *pledged.id();
         pledged
             .foreign_pledges

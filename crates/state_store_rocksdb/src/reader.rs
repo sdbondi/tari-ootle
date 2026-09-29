@@ -209,6 +209,12 @@ impl<'a, TAddr> RocksDbStateStoreReadTransaction<'a, TAddr, ReadOnlyTransaction<
     }
 }
 
+/// The blocks a chain-scoped read accepts rows from: its pending blocks, plus the committed chain beneath them.
+pub(super) struct ChainScope {
+    pending: HashSet<BlockId>,
+    commit_height: NodeHeight,
+}
+
 impl<'a, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'a, R: RocksReader>
     RocksDbStateStoreReadTransaction<'a, TAddr, R>
 {
@@ -241,6 +247,38 @@ impl<'a, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'a, R: RocksRea
 
     /// Returns the blocks until the end_block (inclusive) ordered from the end_block to the commit block (height
     /// descending).
+    /// The blocks whose rows belong to the chain ending at `leaf_block`.
+    ///
+    /// A lock, and anything else a block writes and a later block reads back, is a property of one branch. Rows written
+    /// by a block on another branch must not answer a question asked about this one.
+    pub(super) fn chain_scope(&self, leaf_block: &BlockId) -> Result<ChainScope, RocksDbStorageError> {
+        Ok(ChainScope {
+            pending: self.get_pending_chain_ordered(leaf_block)?.into_iter().collect(),
+            commit_height: self.get_commit_block()?.height,
+        })
+    }
+
+    /// Whether `block` is on the scoped chain.
+    ///
+    /// Committing a block removes it from the pending chain, and every pending block sits above the commit block. So a
+    /// block at or below the commit height that has left the pending chain was committed by the chain that committed
+    /// that height, while a branch block still lingering there was not.
+    pub(super) fn is_in_chain_scope(
+        &self,
+        scope: &ChainScope,
+        block: &BlockId,
+        height: NodeHeight,
+    ) -> Result<bool, RocksDbStorageError> {
+        const OPERATION: &str = "is_in_chain_scope";
+        if scope.pending.contains(block) {
+            return Ok(true);
+        }
+        if height > scope.commit_height {
+            return Ok(false);
+        }
+        Ok(!self.db().cf(chain::PendingChainIndex)?.exists(block, OPERATION)?)
+    }
+
     pub(super) fn get_pending_chain_ordered(&self, end_block: &BlockId) -> Result<Vec<BlockId>, RocksDbStorageError> {
         // TODO: only difference between get_pending_chain_until is that this returns a Vec - worth DRYing up
         const OPERATION: &str = "get_pending_chain_ordered";
@@ -1568,12 +1606,14 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
     /// - fetching the local pledges for a transaction, so that they can be sent as a foreign proposal to the network
     fn substate_locks_get_locked_substates_for_transaction(
         &self,
+        leaf_block: &LeafBlock,
         transaction_id: &TransactionId,
     ) -> Result<Vec<LockedSubstateValue>, StorageError> {
         const OPERATION: &str = "substate_locks_get_locked_substates_for_transaction";
 
         let substates_cf = self.db().cf(SubstateCf)?;
         let query = self.db().cf(substate_locks::ByTransactionIdQuery)?;
+        let scope = self.chain_scope(leaf_block.block_id())?;
 
         let mut locked_substates = Vec::new();
 
@@ -1581,6 +1621,9 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
 
         for result in iter {
             let (key, lock) = result?;
+            if !self.is_in_chain_scope(&scope, &key.block_id, key.block_height)? {
+                continue;
+            }
             let substate = substates_cf
                 .get(
                     &SubstateAddress::from_substate_id(&key.substate_id, lock.version()),
@@ -1605,16 +1648,17 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
     /// another locally proposed transaction.
     fn substate_locks_has_any_write_locks_for_substates<'a, I: IntoIterator<Item = &'a SubstateId>>(
         &self,
+        leaf_block: &LeafBlock,
         exclude_transaction_id: Option<&TransactionId>,
         substate_ids: I,
     ) -> Result<Option<TransactionId>, StorageError> {
-        // const OPERATION: &str = "substate_locks_has_any_write_locks_for_substates";
         let mut substate_ids = substate_ids.into_iter().peekable();
         if substate_ids.peek().is_none() {
             return Ok(None);
         }
 
         let query = self.db().cf(substate_locks::BySubstateIdQuery)?;
+        let scope = self.chain_scope(leaf_block.block_id())?;
 
         for substate_id in substate_ids {
             let iter = query.query_prefix_range_iterator(Ordering::default(), substate_id);
@@ -1624,6 +1668,9 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
                     continue;
                 }
                 if exclude_transaction_id.is_some_and(|ex| *ex == key.transaction_id) {
+                    continue;
+                }
+                if !self.is_in_chain_scope(&scope, &key.block_id, key.block_height)? {
                     continue;
                 }
 
@@ -1651,25 +1698,12 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         const OPERATION: &str = "substate_locks_get_latest_for_substate";
         let cf = self.db().cf(SubstateLockModel)?;
 
-        let pending_chain = self
-            .get_pending_chain_ordered(leaf_block.block_id())?
-            .into_iter()
-            .collect::<HashSet<_>>();
-        let commit_block = self.get_commit_block()?;
-        let pending_chain_idx = self.db().cf(chain::PendingChainIndex)?;
+        let scope = self.chain_scope(leaf_block.block_id())?;
 
         let query = self.db().cf(substate_locks::ByChainOrderQuery)?;
         for result in query.query_prefix_range_iterator(Ordering::Descending, substate_id) {
             let ((_, block_height, block_id, _), transaction_id) = result?;
-            let is_on_chain = if pending_chain.contains(&block_id) {
-                true
-            } else {
-                // Committing a block removes it from the pending chain, and every pending block sits above the commit
-                // block. So a lock at or below the commit height whose block has left the pending chain was granted by
-                // the one chain that committed that height; a branch block that still lingers there was not.
-                block_height <= commit_block.height && !pending_chain_idx.exists(&block_id, OPERATION)?
-            };
-            if !is_on_chain {
+            if !self.is_in_chain_scope(&scope, &block_id, block_height)? {
                 continue;
             }
 

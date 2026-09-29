@@ -210,6 +210,7 @@ pub fn process_foreign_block<TTx: StateStoreReadTransaction>(
                     let Some(conflicting_transaction_id) =
                         LockedSubstateValue::get_transaction_id_that_conflicts_with_write_locks(
                             substate_store.read_transaction(),
+                            local_leaf,
                             tx_rec.id(),
                             inputs,
                         )?

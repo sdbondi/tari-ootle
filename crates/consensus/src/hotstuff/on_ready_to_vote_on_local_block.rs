@@ -1094,7 +1094,7 @@ where TConsensusSpec: ConsensusSpec
             }
 
             let transaction = tx_rec.get_transaction(tx)?;
-            if !transaction.has_all_required_input_pledges(tx, local_committee_info)? {
+            if !transaction.has_all_required_input_pledges(tx, &block.as_leaf(), local_committee_info)? {
                 warn!(
                     target: LOG_TARGET,
                     "❌ NO VOTE AllPrepare: transaction {} in block {} has not received all foreign input pledges",
@@ -1653,7 +1653,7 @@ where TConsensusSpec: ConsensusSpec
             return Ok(execution);
         }
 
-        let mut pledged = PledgedTransaction::load_pledges(tx, transaction)?;
+        let mut pledged = PledgedTransaction::load_pledges(tx, &block, transaction)?;
         let transaction_id = *pledged.id();
         pledged
             .foreign_pledges

@@ -316,11 +316,13 @@ pub trait StateStoreReadTransaction: Sized {
 
     fn substate_locks_get_locked_substates_for_transaction(
         &self,
+        leaf_block: &LeafBlock,
         transaction_id: &TransactionId,
     ) -> Result<Vec<LockedSubstateValue>, StorageError>;
 
     fn substate_locks_has_any_write_locks_for_substates<'a, I: IntoIterator<Item = &'a SubstateId>>(
         &self,
+        leaf_block: &LeafBlock,
         exclude_transaction_id: Option<&TransactionId>,
         substate_ids: I,
     ) -> Result<Option<TransactionId>, StorageError>;

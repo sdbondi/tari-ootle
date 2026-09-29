@@ -1,6 +1,7 @@
 //   Copyright 2024 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
+use tari_consensus_types::LeafBlock;
 use tari_ootle_storage::{
     StateStoreReadTransaction,
     StorageError,
@@ -37,9 +38,10 @@ impl PledgedTransaction {
 impl PledgedTransaction {
     pub fn load_pledges<TTx: StateStoreReadTransaction>(
         tx: &TTx,
+        leaf_block: &LeafBlock,
         transaction: TransactionRecord,
     ) -> Result<PledgedTransaction, StorageError> {
-        let local_pledges = transaction.get_local_pledges(tx)?;
+        let local_pledges = transaction.get_local_pledges(tx, leaf_block)?;
         let foreign_pledges = transaction.get_foreign_pledges(tx)?;
         Ok(PledgedTransaction::new(transaction, local_pledges, foreign_pledges))
     }
