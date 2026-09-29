@@ -41,8 +41,14 @@ pub struct WorkingStateStore<TStore> {
     downed: IndexSet<SubstateId>,
     /// Inputs the transaction declared as reads. A shard group that does not hold an input locks it
     /// from that declaration without executing, so by the time execution runs, a read declaration is
-    /// a promise the rest of the network has already acted on: no write lock may be taken against
-    /// one.
+    /// a promise the rest of the network has already acted on: the transaction produces no new
+    /// version of it, does not remove it, and records no change for consensus to apply to it.
+    ///
+    /// The promise is about what the transaction persists, not about locks. A write lock is an
+    /// intra-transaction exclusivity claim taken for every `&mut self` call, and a method that leaves
+    /// its component unchanged rolls that call back without persisting anything, which is what a
+    /// fee payment through an account does. So a read-declared input may be write-locked, and is
+    /// refused at the point a mutation is about to be kept.
     read_declared_inputs: HashSet<SubstateId>,
     /// The underlying state store that is used to load substates that are not in the working state maps.
     state_store: TStore,
@@ -67,9 +73,6 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
         if !self.exists(&id)? {
             return Err(RuntimeError::SubstateNotFound { id: id.clone() });
         }
-        if lock_flag.is_write() && self.read_declared_inputs.contains(&id) {
-            return Err(RuntimeError::WriteToReadDeclaredInput { id });
-        }
         let lock_id = self.locked_substates.try_lock(id.clone(), lock_flag)?;
         self.load_and_cache(id)?;
         Ok(lock_id)
@@ -85,8 +88,18 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
         lock_id: LockId,
     ) -> Result<(SubstateId, &mut SubstateValue), RuntimeError> {
         let lock = self.locked_substates.get(lock_id, LockFlag::Write)?;
+        self.ensure_writable(lock.substate_id())?;
         let substate = self.get_for_mut(lock.substate_id())?;
         Ok((lock.substate_id().clone(), substate))
+    }
+
+    /// Refuses to keep a mutation of an input the transaction declared as a read. See
+    /// `read_declared_inputs`.
+    fn ensure_writable(&self, id: &SubstateId) -> Result<(), RuntimeError> {
+        if self.read_declared_inputs.contains(id) {
+            return Err(RuntimeError::WriteToReadDeclaredInput { id: id.clone() });
+        }
+        Ok(())
     }
 
     pub fn mutate_locked_substate_with<
@@ -101,6 +114,7 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
         if let Some(mut substate) = self.loaded_substates.remove(lock.substate_id()) {
             return match callback(lock.substate_id(), substate.substate_value_mut())? {
                 Some(ret) => {
+                    self.ensure_writable(lock.substate_id())?;
                     self.new_substates
                         .insert(lock.substate_id().clone(), substate.into_substate_value());
                     Ok(Some(ret))
@@ -233,6 +247,7 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
         callback: impl FnOnce(&mut SubstateValue) -> Result<R, RuntimeError>,
     ) -> Result<R, RuntimeError> {
         let lock = self.locked_substates.get(lock_id, LockFlag::Write)?;
+        self.ensure_writable(lock.substate_id())?;
         let substate =
             self.loaded_substates
                 .get_mut(lock.substate_id())
@@ -255,6 +270,7 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
     fn down(&mut self, lock_id: LockId) -> Result<SubstateValue, RuntimeError> {
         let lock = self.locked_substates.get(lock_id, LockFlag::Write)?;
         let substate_id = lock.substate_id().clone();
+        self.ensure_writable(&substate_id)?;
         if let Some(value) = self.new_substates.shift_remove(&substate_id) {
             if self.get_unmodified_substate(&substate_id).optional()?.is_some() {
                 self.downed.insert(substate_id);
@@ -396,13 +412,63 @@ mod tests {
         WorkingStateStore::new(backing, read_declared.iter().cloned().collect())
     }
 
+    fn assert_write_to_read_declared(err: RuntimeError, id: &SubstateId) {
+        assert!(
+            matches!(&err, RuntimeError::WriteToReadDeclaredInput { id: got } if got == id),
+            "{err}"
+        );
+    }
+
+    /// A `&mut self` call takes a write lock whether or not it changes anything, and a call that
+    /// changes nothing is rolled back rather than persisted, so the lock itself breaks no promise.
     #[test]
-    fn a_read_declared_substate_refuses_a_write_lock() {
+    fn a_read_declared_substate_takes_a_write_lock_a_rolled_back_mutation_keeps() {
         let id = tombstone_id(1);
         let mut store = store_holding(slice::from_ref(&id), slice::from_ref(&id));
 
-        let err = store.try_lock(id.clone(), LockFlag::Write).unwrap_err();
-        assert!(matches!(err, RuntimeError::WriteToReadDeclaredInput { id: got } if got == id));
+        let lock_id = store.try_lock(id.clone(), LockFlag::Write).unwrap();
+        let kept = store
+            .mutate_locked_substate_with(lock_id, |_, _| Ok(None::<()>))
+            .unwrap();
+        assert!(kept.is_none());
+        assert!(store.mutated_substates().is_empty());
+    }
+
+    #[test]
+    fn a_read_declared_substate_refuses_a_kept_mutation() {
+        let id = tombstone_id(4);
+        let mut store = store_holding(slice::from_ref(&id), slice::from_ref(&id));
+
+        let lock_id = store.try_lock(id.clone(), LockFlag::Write).unwrap();
+        let err = store
+            .mutate_locked_substate_with(lock_id, |_, _| Ok(Some(())))
+            .unwrap_err();
+        assert_write_to_read_declared(err, &id);
+        assert!(store.mutated_substates().is_empty());
+
+        let err = store.get_locked_substate_mut(lock_id).unwrap_err();
+        assert_write_to_read_declared(err, &id);
+    }
+
+    #[test]
+    fn a_read_declared_substate_refuses_an_unpersisted_mutation() {
+        let id = tombstone_id(5);
+        let mut store = store_holding(slice::from_ref(&id), slice::from_ref(&id));
+
+        let lock_id = store.try_lock(id.clone(), LockFlag::Write).unwrap();
+        let err = store.mutate_unpersisted(lock_id, |_| Ok(())).unwrap_err();
+        assert_write_to_read_declared(err, &id);
+    }
+
+    #[test]
+    fn a_read_declared_substate_refuses_a_down() {
+        let id = tombstone_id(6);
+        let mut store = store_holding(slice::from_ref(&id), slice::from_ref(&id));
+
+        let lock_id = store.try_lock(id.clone(), LockFlag::Write).unwrap();
+        let err = store.down(lock_id).unwrap_err();
+        assert_write_to_read_declared(err, &id);
+        assert!(store.downed().is_empty());
     }
 
     #[test]

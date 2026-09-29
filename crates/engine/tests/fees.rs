@@ -1144,3 +1144,49 @@ fn template_load_fee_charged_once_per_template_per_transaction() {
         "TemplateLoad fee must be deduped per (template, transaction); single={single_load} many={many_load}",
     );
 }
+
+/// A wallet dry-runs a transaction and declares as reads every input the dry run did not persist.
+/// Paying the fee leaves the account's own state unchanged, so the account is not among them and is
+/// declared a read, and the real run still has to be able to pay from it.
+#[test]
+fn a_fee_account_declared_as_a_read_still_pays_the_fee() {
+    use tari_engine_types::substate::SubstateId;
+    use tari_ootle_common_types::InputDeclaration;
+
+    let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
+    let (account, owner_token, private_key) = test.create_funded_account();
+    test.enable_fees();
+
+    let build = |test: &TemplateTest| {
+        test.transaction()
+            .pay_fee_from_component(account, 20_000u64)
+            .call_function(test.get_template_address("State"), "new", args![])
+    };
+
+    test.set_dry_run(true);
+    let dry_run = test
+        .try_execute(build(&test).build_and_seal(&private_key), vec![owner_token.clone()])
+        .unwrap();
+    let diff = dry_run
+        .finalize
+        .accept()
+        .unwrap_or_else(|| panic!("dry run rejected: {:?}", dry_run.finalize.result));
+    let downed: Vec<_> = diff.down_iter().map(|(id, _)| id.clone()).collect();
+    assert!(
+        !downed.contains(&SubstateId::Component(account)),
+        "paying the fee changed the account: {downed:?}"
+    );
+
+    test.set_dry_run(false);
+    let inputs = [InputDeclaration::write(account)].into_iter().map(|decl| {
+        if downed.contains(decl.substate_id()) {
+            decl
+        } else {
+            decl.with_is_write(false)
+        }
+    });
+    let result = test.execute_expect_success(build(&test).with_inputs(inputs).build_and_seal(&private_key), vec![
+        owner_token,
+    ]);
+    assert!(result.finalize.fee_receipt.is_paid_in_full());
+}
