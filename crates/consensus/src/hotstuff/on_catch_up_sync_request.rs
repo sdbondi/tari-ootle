@@ -1,6 +1,8 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
+use std::time::Duration;
+
 use log::*;
 use tari_consensus_types::{LastProposed, LeafBlock};
 use tari_ootle_common_types::{Epoch, NodeHeight, optional::Optional};
@@ -10,7 +12,7 @@ use tari_ootle_storage::{
 };
 
 use crate::{
-    bounded_spawn::BoundedSpawn,
+    bounded_spawn::PerKeyBoundedSpawn,
     hotstuff::HotStuffError,
     messages::{CatchUpRequestMessage, HotstuffMessage, ProposalMessage},
     traits::{ConsensusSpec, OutboundMessaging},
@@ -21,12 +23,17 @@ const LOG_TARGET: &str = "tari::ootle::consensus::hotstuff::on_sync_request";
 /// Number of catch-up requests served concurrently. Each one walks the block store and streams every block up
 /// to our leaf, so the work this node does must not scale with the number of peers asking.
 const MAX_CONCURRENT_SYNC_REQUESTS: usize = 5;
+/// A peer only ever needs one response at a time, and holding it to one keeps the rest of the pool for its committee.
+const MAX_SYNC_REQUESTS_PER_PEER: usize = 1;
+/// A response streams every block up to our leaf, so it is allowed to be slow. Past this the peer is not keeping up
+/// with what it asked for, and its permit is worth more to someone else.
+const SYNC_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug)]
 pub struct OnSyncRequest<TConsensusSpec: ConsensusSpec> {
     store: TConsensusSpec::StateStore,
     outbound_messaging: TConsensusSpec::OutboundMessaging,
-    bounded_spawner: BoundedSpawn,
+    bounded_spawner: PerKeyBoundedSpawn<TConsensusSpec::Addr>,
 }
 
 impl<TConsensusSpec: ConsensusSpec> OnSyncRequest<TConsensusSpec> {
@@ -34,7 +41,11 @@ impl<TConsensusSpec: ConsensusSpec> OnSyncRequest<TConsensusSpec> {
         Self {
             store,
             outbound_messaging,
-            bounded_spawner: BoundedSpawn::new(MAX_CONCURRENT_SYNC_REQUESTS),
+            bounded_spawner: PerKeyBoundedSpawn::new(
+                MAX_CONCURRENT_SYNC_REQUESTS,
+                MAX_SYNC_REQUESTS_PER_PEER,
+                SYNC_RESPONSE_TIMEOUT,
+            ),
         }
     }
 
@@ -55,7 +66,7 @@ impl<TConsensusSpec: ConsensusSpec> OnSyncRequest<TConsensusSpec> {
 
         if self
             .bounded_spawner
-            .try_spawn({
+            .try_spawn(from.clone(), {
                 let from = from.clone();
                 Self::handle_request_task(store, outbound_messaging, from, epoch, msg)
             })
@@ -63,7 +74,7 @@ impl<TConsensusSpec: ConsensusSpec> OnSyncRequest<TConsensusSpec> {
         {
             warn!(
                 target: LOG_TARGET,
-                "⚠️ Too many concurrent catch-up requests, dropping request from {}",
+                "⚠️ No catch-up request slot available for {}, dropping the request",
                 from
             );
         }

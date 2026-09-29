@@ -25,7 +25,7 @@ use tari_ootle_storage::{
 };
 
 use crate::{
-    bounded_spawn::BoundedSpawn,
+    bounded_spawn::PerKeyBoundedSpawn,
     hotstuff::{
         ProposalValidationError,
         commit_proofs::generate_block_commit_proof,
@@ -44,13 +44,22 @@ use crate::{
 
 const LOG_TARGET: &str = "tari::ootle::consensus::hotstuff::on_receive_foreign_proposal";
 
+/// Number of foreign proposal requests served concurrently. Each one reads a block and sends it on.
+const MAX_CONCURRENT_PROPOSAL_REQUESTS: usize = 20;
+/// Two in flight lets a peer pipeline without letting one peer's committee starve the others.
+const MAX_PROPOSAL_REQUESTS_PER_PEER: usize = 2;
+/// How long we wait for a foreign proposal we asked for before asking again.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// The same deadline the requester applies, so a permit is never held for a response its asker has given up on.
+const PROPOSAL_RESPONSE_TIMEOUT: Duration = REQUEST_TIMEOUT;
+
 pub struct OnReceiveForeignProposalHandler<TConsensusSpec: ConsensusSpec> {
     store: TConsensusSpec::StateStore,
     epoch_manager: TConsensusSpec::EpochManager,
     pacemaker: PaceMakerHandle,
     outbound_messaging: TConsensusSpec::OutboundMessaging,
     pending_requests: PendingRequests<TConsensusSpec::Addr>,
-    bounded_spawner: BoundedSpawn,
+    bounded_spawner: PerKeyBoundedSpawn<TConsensusSpec::Addr>,
 }
 
 impl<TConsensusSpec> OnReceiveForeignProposalHandler<TConsensusSpec>
@@ -68,7 +77,11 @@ where TConsensusSpec: ConsensusSpec
             pacemaker,
             outbound_messaging,
             pending_requests: PendingRequests::new(),
-            bounded_spawner: BoundedSpawn::new(20),
+            bounded_spawner: PerKeyBoundedSpawn::new(
+                MAX_CONCURRENT_PROPOSAL_REQUESTS,
+                MAX_PROPOSAL_REQUESTS_PER_PEER,
+                PROPOSAL_RESPONSE_TIMEOUT,
+            ),
         }
     }
 
@@ -229,7 +242,7 @@ where TConsensusSpec: ConsensusSpec
         // Spawn: Dont block consensus when processing requests.
         if self
             .bounded_spawner
-            .try_spawn({
+            .try_spawn(from.clone(), {
                 let from = from.clone();
                 async move {
                     let _timer = TraceTimer::debug(LOG_TARGET, "OnReceiveForeignProposalRequest");
@@ -242,7 +255,7 @@ where TConsensusSpec: ConsensusSpec
         {
             warn!(
                 target: LOG_TARGET,
-                "⚠️ FOREIGN PROPOSAL: too many concurrent foreign proposal requests, dropping request from {}",
+                "⚠️ FOREIGN PROPOSAL: no request slot available for {}, dropping the request",
                 from
             );
         }
@@ -316,10 +329,9 @@ where TConsensusSpec: ConsensusSpec
         &mut self,
         local_committee_info: &CommitteeInfo,
     ) -> Result<(), HotStuffError> {
-        const TIMEOUT: Duration = Duration::from_secs(30);
         let timed_out = self
             .pending_requests
-            .drain_timed_out(TIMEOUT)
+            .drain_timed_out(REQUEST_TIMEOUT)
             .take(10)
             .collect::<Vec<_>>();
         if !timed_out.is_empty() {

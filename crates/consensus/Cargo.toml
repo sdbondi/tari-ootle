@@ -36,3 +36,5 @@ tokio = { workspace = true, default-features = false, features = ["sync", "time"
 tari_state_store_rocksdb = { workspace = true }
 tempfile = { workspace = true }
 time = { workspace = true }
+# test-util drives the clock, so the deadline tests do not wait in real time
+tokio = { workspace = true, default-features = false, features = ["sync", "time", "macros", "rt", "test-util"] }
