@@ -61,11 +61,7 @@ impl RocksReader for Transaction<'_, TransactionDB> {
         I: IntoIterator<Item = (&'b W, K)>,
         W: 'b + AsColumnFamilyRef,
     {
-        let mut read_opts = ReadOptions::default();
-        // We always use bulk scans with multi_get, so we disable cache to avoid unnecessary overhead.
-        read_opts.fill_cache(false);
-        read_opts.set_verify_checksums(false);
-        self.multi_get_cf_opt(keys, &read_opts)
+        self.multi_get_cf(keys)
     }
 }
 

@@ -222,7 +222,7 @@ impl<'db, CF: Cf, DB: RocksReader> CfContext<'db, DB, CF> {
             Some(ref b) => b.as_slice(),
             None => &[],
         };
-        let opts = create_prefixed_read_opts(prefix_bytes, mode);
+        let opts = create_prefixed_read_opts(prefix_bytes);
         self.db.iterator_cf_opt(self.handle, opts, mode, move |res| {
             res.map_err(|e| RocksDbStorageError::RocksDbError { operation, source: e })
                 .and_then(|(k, v)| Ok((self.key_codec.decode_exact(k)?, self.value_codec.decode_exact(v)?)))
@@ -240,7 +240,7 @@ impl<'db, CF: Cf, DB: RocksReader> CfContext<'db, DB, CF> {
             Some(ref b) => b.as_slice(),
             None => &[],
         };
-        let opts = create_prefixed_read_opts(prefix_bytes, mode);
+        let opts = create_prefixed_read_opts(prefix_bytes);
         self.db.iterator_cf_opt(self.handle, opts, mode, move |res| {
             res.map_err(|e| RocksDbStorageError::RocksDbError { operation, source: e })
                 .and_then(|(k, _)| self.key_codec.decode_exact(k))
@@ -258,7 +258,7 @@ impl<'db, CF: Cf, DB: RocksReader> CfContext<'db, DB, CF> {
             Some(ref b) => b.as_slice(),
             None => &[],
         };
-        let opts = create_prefixed_read_opts(prefix_bytes, mode);
+        let opts = create_prefixed_read_opts(prefix_bytes);
         self.db.iterator_cf_opt(self.handle, opts, mode, move |res| {
             res.map_err(|e| RocksDbStorageError::RocksDbError { operation, source: e })
                 .and_then(|(_, v)| self.value_codec.decode_exact(v))
@@ -271,7 +271,7 @@ impl<'db, CF: Cf, DB: RocksReader> CfContext<'db, DB, CF> {
         range: impl IterateBounds,
     ) -> impl Iterator<Item = Result<(CF::Key, CF::Value), RocksDbStorageError>> + '_ {
         let mode = ordering_to_mode(ordering);
-        let opts = range_opts::<CF>(range, mode);
+        let opts = range_opts(range);
         self.db.iterator_cf_opt(self.handle, opts, mode, move |res| {
             res.map_err(|e| RocksDbStorageError::RocksDbError {
                 operation: "range_iterator_with_codecs",
@@ -293,7 +293,7 @@ impl<'db, CF: Cf, DB: RocksReader> CfContext<'db, DB, CF> {
         VC: DbCodec<V> + Default,
     {
         let mode = ordering_to_mode(ordering);
-        let opts = range_opts::<CF>(range, mode);
+        let opts = range_opts(range);
         self.db.iterator_cf_opt(self.handle, opts, mode, |res| {
             res.map_err(|e| RocksDbStorageError::RocksDbError {
                 operation: "range_iterator_with_codecs",
@@ -700,14 +700,9 @@ fn ordering_to_mode(ordering: Ordering) -> IteratorMode<'static> {
     }
 }
 
-fn create_prefixed_read_opts<P: Into<Vec<u8>>>(prefix: P, mode: IteratorMode) -> rocksdb::ReadOptions {
+fn create_prefixed_read_opts<P: Into<Vec<u8>>>(prefix: P) -> rocksdb::ReadOptions {
     let mut opts = rocksdb::ReadOptions::default();
     opts.set_iterate_range(rocksdb::PrefixRange(prefix));
-    // Enable total order seek for reverse iteration to ensure correct behaviour. Note: this can negatively impact
-    // performance. https://github.com/facebook/rocksdb/wiki/RocksDB-FAQ see "Q: After using options.prefix_extractor, I sometimes see wrong results. What's wrong?"
-    if matches!(mode, IteratorMode::End) {
-        opts.set_total_order_seek(true);
-    }
     opts
 }
 
@@ -737,13 +732,8 @@ impl IterateBounds for TableBounds {
     }
 }
 
-fn range_opts<CF: Cf>(range: impl IterateBounds, mode: IteratorMode) -> rocksdb::ReadOptions {
+fn range_opts(range: impl IterateBounds) -> rocksdb::ReadOptions {
     let mut opts = rocksdb::ReadOptions::default();
     opts.set_iterate_range(range);
-    if CF::key_prefix().is_some() && matches!(mode, IteratorMode::End) {
-        // See `Q: After using options.prefix_extractor, I sometimes see wrong results. What's wrong?`
-        // https://github.com/facebook/rocksdb/wiki/rocksdb-faq
-        opts.set_total_order_seek(true);
-    }
     opts
 }

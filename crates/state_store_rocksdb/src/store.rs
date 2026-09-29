@@ -15,7 +15,6 @@ use rocksdb::{
     DB,
     IteratorMode,
     SingleThreaded,
-    SliceTransform,
     SnapshotWithThreadMode,
     TransactionDB,
     TransactionDBOptions,
@@ -74,10 +73,12 @@ pub(crate) fn build_default_store_opts(options: &DatabaseOptions) -> (rocksdb::O
     opts.create_missing_column_families(true);
     // Schedule background workers instead of using the main worker thread for long-latency operations
     opts.set_avoid_unnecessary_blocking_io(true);
-    // All CFs will use a 1-byte prefix extractor
-    opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(1));
-    // Use a small memtable prefix bloom filter to speed up prefix lookups
+    // Filters are keyed on whole keys, so a point lookup that misses skips the memtable and every SST without reading
+    // a data block. Logical tables are namespaced by a single leading key byte, which is too coarse to filter on.
     opts.set_memtable_prefix_bloom_ratio(0.05);
+    opts.set_memtable_whole_key_filtering(true);
+    opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+    opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
     // Better suggested defaults: https://github.com/facebook/rocksdb/wiki/Setup-Options-and-Basic-Tuning
     opts.set_max_background_jobs(6);
     opts.set_bytes_per_sync(1_048_576);
@@ -96,6 +97,7 @@ pub(crate) fn build_default_store_opts(options: &DatabaseOptions) -> (rocksdb::O
     bb_opts.set_cache_index_and_filter_blocks(true);
     bb_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
     bb_opts.set_format_version(6);
+    bb_opts.set_ribbon_filter(10.0);
     bb_opts.set_optimize_filters_for_memory(true);
     bb_opts.set_block_cache(budget.cache());
 
