@@ -268,13 +268,16 @@ pub trait StateStoreReadTransaction: Sized {
     ) -> Result<Vec<TransactionPoolRecord>, StorageError>;
     fn transaction_pool_has_pending_state_updates(&self, block_id: &BlockId) -> Result<bool, StorageError>;
 
-    // TODO: just check for existence
     fn transaction_pool_count(
         &self,
         stage: Option<TransactionPoolStage>,
         is_ready: Option<bool>,
         skip_lock_conflicted: bool,
     ) -> Result<usize, StorageError>;
+    /// Returns true as soon as one pool record satisfies `predicate`. Records with a lock conflict are never offered to
+    /// `predicate` when `skip_lock_conflicted` is set.
+    fn transaction_pool_any<F>(&self, skip_lock_conflicted: bool, predicate: F) -> Result<bool, StorageError>
+    where F: FnMut(&TransactionPoolRecord) -> bool;
 
     //---------------------------------- Substates --------------------------------------------//
     fn substates_get(&self, address: &SubstateAddress) -> Result<SubstateRecord, StorageError>;

@@ -157,66 +157,39 @@ impl<TStateStore: StateStore> TransactionPool<TStateStore> {
             "has_ready_or_pending_transaction_updates: No pending state updates",
         );
 
-        // Check if any transactions are marked as ready to propose
-        let count = tx.transaction_pool_count(None, Some(true), true)?;
-        if count > 0 {
+        // A transaction is worth proposing for if it is ready, or if it has been locked but not yet finalized and
+        // needs further proposals until it is.
+        let mut reason = None;
+        let found = tx.transaction_pool_any(true, |rec| {
+            if rec.is_ready() {
+                reason = Some("marked as ready");
+                return true;
+            }
+            let needs_finalizing = matches!(
+                rec.current_stage(),
+                TransactionPoolStage::LocalOnly |
+                    TransactionPoolStage::AllAccepted |
+                    TransactionPoolStage::SomeAccepted
+            );
+            if needs_finalizing {
+                reason = Some("needs to be finalized");
+            }
+            needs_finalizing
+        })?;
+
+        if let Some(reason) = reason {
             debug!(
                 target: LOG_TARGET,
-                "has_ready_or_pending_transaction_updates: {} transactions marked as ready",
-                count,
+                "has_ready_or_pending_transaction_updates: a transaction {reason}",
             );
-            return Ok(true);
-        }
-        debug!(
-            target: LOG_TARGET,
-            "has_ready_or_pending_transaction_updates: No transactions marked as ready",
-        );
-
-        // Check if we have transactions that have not yet been confirmed (locked). In this case we should propose
-        // until this stage is locked.
-        // let count = tx.transaction_pool_count(None, None, Some(None))?;
-        // if count > 0 {
-        //     return Ok(true);
-        // }
-
-        let count = tx.transaction_pool_count(Some(TransactionPoolStage::LocalOnly), None, true)?;
-        if count > 0 {
+        } else {
             debug!(
                 target: LOG_TARGET,
-                "has_ready_or_pending_transaction_updates: {} transactions that need to be finalized (LocalOnly)",
-                count,
+                "has_ready_or_pending_transaction_updates: No ready transactions or transactions that need to be finalized",
             );
-            return Ok(true);
         }
 
-        // Check if we have multishard transactions that need to be finalized. These checks apply to transactions that
-        // have been locked but not committed.
-        let count = tx.transaction_pool_count(Some(TransactionPoolStage::AllAccepted), None, true)?;
-        if count > 0 {
-            debug!(
-                target: LOG_TARGET,
-                "has_ready_or_pending_transaction_updates: {} transactions that need to be finalized (AllAccepted)",
-                count,
-            );
-            return Ok(true);
-        }
-
-        let count = tx.transaction_pool_count(Some(TransactionPoolStage::SomeAccepted), None, true)?;
-        if count > 0 {
-            debug!(
-                target: LOG_TARGET,
-                "has_ready_or_pending_transaction_updates: {} transactions that need to be finalized (SomeAccepted)",
-                count,
-            );
-            return Ok(true);
-        }
-
-        debug!(
-            target: LOG_TARGET,
-            "has_ready_or_pending_transaction_updates: No transactions that need to be finalized",
-        );
-
-        Ok(false)
+        Ok(found)
     }
 
     pub fn count(&self, tx: &impl StateStoreReadTransaction) -> Result<usize, TransactionPoolError> {

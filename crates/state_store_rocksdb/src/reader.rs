@@ -245,6 +245,15 @@ impl<'a, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'a, R: RocksRea
         Ok(block_ids)
     }
 
+    /// Every transaction that has a lock conflict recorded against it in any block.
+    fn lock_conflicted_transaction_ids(&self) -> Result<HashSet<TransactionId>, RocksDbStorageError> {
+        self.db()
+            .cf(lock_conflict::LockConflictCf)?
+            .key_iterator(Ordering::default(), "lock_conflicted_transaction_ids")
+            .map(|res| res.map(|(transaction_id, _, _)| transaction_id))
+            .collect()
+    }
+
     /// Returns the blocks until the end_block (inclusive) ordered from the end_block to the commit block (height
     /// descending).
     /// The blocks whose rows belong to the chain ending at `leaf_block`.
@@ -633,7 +642,15 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
 
         let cf = self.db().cf(ForeignProposalCf)?;
         let unconfirmed_cf = self.db().cf(foreign_proposal::UnconfirmedIndex)?;
-        let proposed_in_block_cf = self.db().cf(foreign_proposal::ProposedInBlockIndex)?;
+        let proposed_in_block_query = self.db().cf(foreign_proposal::ByProposedInBlockIndexQuery)?;
+        let mut proposed_in_chain = HashSet::new();
+        for pending_block_id in &pending_block_ids {
+            for result in proposed_in_block_query.query_prefix_range_key_iterator(Ordering::default(), pending_block_id)
+            {
+                let (_, fp_block_id) = result?;
+                proposed_in_chain.insert(fp_block_id);
+            }
+        }
         let iter = unconfirmed_cf.key_iterator(Ordering::Ascending, OPERATION);
 
         let mut proposals = vec![];
@@ -646,15 +663,7 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
                 break;
             }
 
-            // Any pending proposed this block?
-            let mut already_proposed_in_chain = false;
-            for pending_block_id in &pending_block_ids {
-                if proposed_in_block_cf.exists(&(*pending_block_id, block_id), OPERATION)? {
-                    already_proposed_in_chain = true;
-                    break;
-                }
-            }
-            if already_proposed_in_chain {
+            if proposed_in_chain.contains(&block_id) {
                 continue;
             }
 
@@ -1304,8 +1313,7 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         );
 
         for block_id in pending_chain {
-            let mut iter = query.prefix_range_value_iterator(Ordering::default(), &(block_id, *transaction_id));
-            if let Some(update) = iter.next().transpose()? {
+            if let Some(update) = query.get(&(block_id, *transaction_id), OPERATION).optional()? {
                 debug!(
                     target: LOG_TARGET,
                     "{OPERATION}: found update {} for block {}: {:#} -> {:#}",
@@ -1350,9 +1358,8 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
             }
         }
 
-        let n = cf.count(OPERATION)?;
         let iter = cf.value_iterator(Ordering::Ascending, OPERATION);
-        let mut transactions = Vec::with_capacity(n.min(limit));
+        let mut transactions = Vec::new();
         for result in iter {
             let mut tx = result?;
             if let Some(update) = updates.remove(tx.id()) {
@@ -1382,19 +1389,16 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         let cf = self.db().cf(TransactionPoolCf)?;
 
         let query = self.db().cf(transaction_pool_state_update::ByBlockIdQuery)?;
-        let lock_conflicts_cf = self.db().cf(lock_conflict::ByTransactionIdQuery)?;
+        let lock_conflicted = self.lock_conflicted_transaction_ids()?;
 
         let pending_chain = self.get_pending_chain_ordered(block_id)?;
 
-        // TODO: optimise
         let mut updates = HashMap::new();
-        let mut lock_conflicted = HashSet::new();
         for block_id in pending_chain.into_iter().rev() {
             let iter = query.query_prefix_range_iterator(Ordering::default(), &block_id);
             for result in iter {
                 let ((_, tx_id), update) = result?;
-                if lock_conflicts_cf.exists_prefix(&tx_id)? {
-                    lock_conflicted.insert(tx_id);
+                if lock_conflicted.contains(&tx_id) {
                     continue;
                 }
                 updates.insert(tx_id, update);
@@ -1408,10 +1412,6 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         for result in iter {
             let mut tx = result?;
             if lock_conflicted.contains(tx.id()) {
-                continue;
-            }
-
-            if lock_conflicts_cf.exists_prefix(tx.id())? {
                 continue;
             }
             if let Some(update) = updates.remove(tx.id()) {
@@ -1457,50 +1457,50 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         const OPERATION: &str = "transaction_pool_count";
 
         let cf = self.db().cf(TransactionPoolCf)?;
+        if stage.is_none() && is_ready.is_none() && !skip_lock_conflicted {
+            return Ok(cf.count(OPERATION)?);
+        }
 
-        let lock_conflict_query = self.db().cf(lock_conflict::ByTransactionIdQuery)?;
-        let iter = cf.key_iterator(Ordering::default(), OPERATION);
+        let lock_conflicted = if skip_lock_conflicted {
+            self.lock_conflicted_transaction_ids()?
+        } else {
+            HashSet::new()
+        };
+
         let mut count = 0;
-
-        let must_query = stage.is_some() || is_ready.is_some() || skip_lock_conflicted;
-
-        for result in iter {
-            let tx_id = result?;
-            if must_query {
-                let Some(tx_pool_rec) = cf.get(&tx_id, OPERATION).optional()? else {
-                    // It's possible that the transaction has been removed from the pool in another thread 😱 - observed
-                    // in consensus_tests
-                    continue;
-                };
-
-                if let Some(stage) = stage &&
-                    tx_pool_rec.current_stage() != stage
-                {
-                    continue;
-                }
-
-                if let Some(is_ready) = is_ready &&
-                    tx_pool_rec.is_ready() != is_ready
-                {
-                    continue;
-                }
-
-                if skip_lock_conflicted && lock_conflict_query.exists_prefix(&tx_id)? {
-                    continue;
-                    // let iter = lock_conflict_query.query_prefix_range_iterator(Ordering::default(), &tx_id);
-                    // for result in iter {
-                    //     let (_, value) = result?;
-                    //     if !value.is_local_only {
-                    //         continue;
-                    //     }
-                    // }
-                }
+        for result in cf.value_iterator(Ordering::default(), OPERATION) {
+            let rec = result?;
+            if stage.is_some_and(|stage| rec.current_stage() != stage) ||
+                is_ready.is_some_and(|is_ready| rec.is_ready() != is_ready) ||
+                lock_conflicted.contains(rec.id())
+            {
+                continue;
             }
-
             count += 1;
         }
 
         Ok(count)
+    }
+
+    fn transaction_pool_any<F>(&self, skip_lock_conflicted: bool, mut predicate: F) -> Result<bool, StorageError>
+    where F: FnMut(&TransactionPoolRecord) -> bool {
+        const OPERATION: &str = "transaction_pool_any";
+
+        let lock_conflicted = if skip_lock_conflicted {
+            self.lock_conflicted_transaction_ids()?
+        } else {
+            HashSet::new()
+        };
+
+        let cf = self.db().cf(TransactionPoolCf)?;
+        for result in cf.value_iterator(Ordering::default(), OPERATION) {
+            let rec = result?;
+            if !lock_conflicted.contains(rec.id()) && predicate(&rec) {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 
     fn substates_get(&self, address: &SubstateAddress) -> Result<SubstateRecord, StorageError> {

@@ -12,7 +12,7 @@ use tari_engine_types::{
     fees::FeeBreakdown,
     substate::SubstateDiff,
 };
-use tari_ootle_common_types::{Epoch, ExtraData, NodeHeight, ProtocolVersion, SubstateRequirement};
+use tari_ootle_common_types::{Epoch, ExtraData, NodeHeight, ProtocolVersion, SubstateLockType, SubstateRequirement};
 use tari_ootle_storage::{
     StateStore,
     StateStoreReadTransaction,
@@ -23,6 +23,7 @@ use tari_ootle_storage::{
         BookkeepingModel,
         Command,
         Evidence,
+        LockConflict,
         TransactionPoolStage,
         TransactionPoolStatusUpdate,
         TransactionRecord,
@@ -797,5 +798,37 @@ mod get_many_ready_weight_budget {
         // Weight is effectively unbounded but the count cap limits the batch.
         let recs = tx.transaction_pool_get_many_ready(u64::MAX, 2, &block_id).unwrap();
         assert_eq!(recs.len(), 2);
+    }
+
+    #[test]
+    fn it_skips_lock_conflicted_transactions_rocksdb() {
+        let (db, _tmp) = create_rocksdb();
+        let block_id = setup_ready_pool(&db, &[1, 1, 1]);
+
+        let pool = db.with_read_tx(|tx| tx.transaction_pool_get_all(usize::MAX)).unwrap();
+        let conflicted = *pool[0].id();
+        let conflict = LockConflict {
+            transaction_id: *pool[1].id(),
+            existing_lock: SubstateLockType::Write,
+            requested_lock: SubstateLockType::Write,
+            is_local_only: false,
+        };
+        let mut tx = db.create_write_tx().unwrap();
+        tx.lock_conflicts_insert_all(&block_id, [(&conflicted, &vec![conflict])])
+            .unwrap();
+        tx.commit().unwrap();
+
+        let tx = db.create_read_tx().unwrap();
+        let recs = tx.transaction_pool_get_many_ready(u64::MAX, 10, &block_id).unwrap();
+        assert_eq!(recs.len(), 2);
+        assert!(recs.iter().all(|rec| *rec.id() != conflicted));
+
+        assert_eq!(tx.transaction_pool_count(None, Some(true), true).unwrap(), 2);
+        assert_eq!(tx.transaction_pool_count(None, Some(true), false).unwrap(), 3);
+        assert_eq!(tx.transaction_pool_count(None, None, false).unwrap(), 3);
+
+        assert!(tx.transaction_pool_any(true, |rec| *rec.id() != conflicted).unwrap());
+        assert!(!tx.transaction_pool_any(true, |rec| *rec.id() == conflicted).unwrap());
+        assert!(tx.transaction_pool_any(false, |rec| *rec.id() == conflicted).unwrap());
     }
 }
