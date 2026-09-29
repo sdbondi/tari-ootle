@@ -1275,7 +1275,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
                         SubstateTransition::Down { id } => {
                             let address = id.to_substate_address();
 
-                            let mut substate = cf.get(&address, OPERATION)?;
+                            let mut substate = cf.get_for_update(&address, OPERATION)?;
                             substate.set_destroyed(SubstateDestroyed {
                                 at_epoch: update_batch.epoch,
                                 at_state_version: state_version,
@@ -1330,7 +1330,8 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         let substates_cf = db.cf(SubstateCf)?;
 
         // Every entry holds at least one address, so no more than `limit` entries are needed to reach the limit.
-        let mut entries = unpruned_query.query_prefix_range_entries_limited(&epoch, Ordering::Ascending, limit)?;
+        let mut entries =
+            unpruned_query.query_end_range_entries_limited(Ordering::Ascending, &(epoch + Epoch(1)), limit)?;
         let mut count = 0usize;
         let mut num_entries = 0usize;
         for (_, addresses) in &entries {
@@ -1478,7 +1479,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
 
         let cf = self.db().cf(StateTreeCf)?;
         let versions_cf = self.db().cf(StateTreeShardVersionCf)?;
-        let stale_cf = self.db().cf(state_tree::ByStateTreeStaleShardQuery)?;
+        let stale_cf = self.db().cf(state_tree::ByStateTreeStaleShardVersionQuery)?;
         let stale_nodes_cf = self.db().cf(StateTreeStaleNodesCf)?;
 
         let mut num_deleted = 0usize;
@@ -1495,11 +1496,13 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
             // Only the keys are taken up front: this loop deletes the stale-node record it is reading, and a write
             // transaction's iterator must not be written through at the key it is standing on. Every version deletes
             // at least its own record, so no more than the remaining budget of versions can be processed.
-            let stale_keys =
-                stale_cf.query_prefix_range_keys_limited(Ordering::Ascending, &shard, max_deletes - num_deleted)?;
+            let stale_keys = stale_cf.query_range_keys_limited(
+                Ordering::Ascending,
+                (shard, 0)..(shard, to_version.saturating_add(1)),
+                max_deletes - num_deleted,
+            )?;
             for (shard, version) in stale_keys {
-                // Only delete up to history length back from the max version
-                if version > to_version || num_deleted >= max_deletes {
+                if num_deleted >= max_deletes {
                     break;
                 }
                 let nodes = stale_nodes_cf.get(&(shard, version), OPERATION)?;
@@ -1681,7 +1684,6 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
 
         let db = self.db();
         match step {
-            // TODO: this assumes that cleanup is run every epoch - if not, some substates will not be pruned
             EpochCleanupStep::DownedSubstateValues => self.substates_prune_downed_values(prune_epoch, limit),
             EpochCleanupStep::Blocks => cleanup::blocks_for_epoch(&db, prune_epoch, limit),
             EpochCleanupStep::ProposalCertificates => cleanup::proposal_certificates_for_epoch(&db, prune_epoch, limit),
@@ -1705,10 +1707,10 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         const OPERATION: &str = "vote_equivocation_record";
         let key = (evidence.epoch, evidence.height, evidence.public_key);
         let cf = self.db().cf(vote_equivocation::VoteEquivocationCf)?;
-        if cf.exists(&key, OPERATION)? {
+        if cf.exists_for_update(&key, OPERATION)? {
             return Ok(false);
         }
-        cf.insert(&key, evidence, OPERATION)?;
+        cf.put(&key, evidence, OPERATION)?;
         Ok(true)
     }
 

@@ -215,42 +215,44 @@ fn epoch_cleanup_step_is_bounded_and_resumes() {
     assert_eq!(prune(2), 0);
 }
 
-/// Two writers taking the same keys in opposite orders: the one that closes the cycle fails as soon as it forms, and
-/// the other completes with nothing lost.
+/// Two writers taking the same keys in opposite orders: whichever closes the cycle fails as soon as it forms, and the
+/// other completes with nothing lost.
 #[test]
 fn a_lock_order_cycle_fails_the_writer_that_closes_it() {
     let (db, _tmp) = create_rocksdb();
-    let a_holds_first = std::sync::Barrier::new(2);
-    let a_waiting = std::sync::Barrier::new(2);
+    let both_hold_first = std::sync::Barrier::new(2);
 
-    std::thread::scope(|s| {
-        let a = s.spawn(|| {
-            let mut tx = db.create_write_tx().unwrap();
-            assert!(tx.vote_equivocation_record(&evidence(1)).unwrap());
-            a_holds_first.wait();
-            a_waiting.wait();
-            // Blocks on B's lock until B rolls back.
-            assert!(tx.vote_equivocation_record(&evidence(2)).unwrap());
-            tx.commit().unwrap();
-        });
-
+    let run = |own: u8, other: u8| {
         let mut tx = db.create_write_tx().unwrap();
-        assert!(tx.vote_equivocation_record(&evidence(2)).unwrap());
-        a_holds_first.wait();
-        a_waiting.wait();
-        // Let A reach its lock wait on evidence(2).
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(tx.vote_equivocation_record(&evidence(own)).unwrap());
+        both_hold_first.wait();
         let timer = std::time::Instant::now();
-        let err = tx.vote_equivocation_record(&evidence(1)).unwrap_err();
-        assert!(err.to_string().contains("Deadlock"), "{err}");
-        assert!(
-            timer.elapsed() < std::time::Duration::from_millis(500),
-            "deadlock was detected only after {:?}",
-            timer.elapsed()
-        );
-        tx.rollback().unwrap();
-        a.join().unwrap();
+        match tx.vote_equivocation_record(&evidence(other)) {
+            Ok(recorded) => {
+                assert!(recorded);
+                tx.commit().unwrap();
+                None
+            },
+            Err(err) => {
+                let elapsed = timer.elapsed();
+                tx.rollback().unwrap();
+                Some((err, elapsed))
+            },
+        }
+    };
+    let (a, b) = std::thread::scope(|s| {
+        let a = s.spawn(|| run(1, 2));
+        let b = s.spawn(|| run(2, 1));
+        (a.join().unwrap(), b.join().unwrap())
     });
 
+    let mut failures = a.into_iter().chain(b).collect::<Vec<_>>();
+    assert_eq!(failures.len(), 1, "exactly one writer closes the cycle: {failures:?}");
+    let (err, elapsed) = failures.pop().unwrap();
+    assert!(err.to_string().contains("Deadlock"), "{err}");
+    assert!(
+        elapsed < std::time::Duration::from_millis(500),
+        "deadlock was detected only after {elapsed:?}"
+    );
     assert_eq!(stored_for_epoch(&db, EPOCH).len(), 2);
 }

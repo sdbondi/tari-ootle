@@ -663,8 +663,8 @@ pub trait StateStoreWriteTransaction {
     // -------------------------------- Substates -------------------------------- //
 
     fn substates_commit_batch(&mut self, update_batch: SubstateUpdateBatch) -> Result<(), StorageError>;
-    /// Clears the values of substates downed in `epoch`, stopping at the first index entry that takes the count to
-    /// `limit` or more. Returns the number of values cleared; a result below `limit` means none remain for `epoch`.
+    /// Clears the values of substates downed in or before `epoch`, stopping at the first index entry that takes the
+    /// count to `limit` or more. Returns the number of values cleared; a result below `limit` means none remain.
     fn substates_prune_downed_values(&mut self, epoch: Epoch, limit: usize) -> Result<usize, StorageError>;
 
     // -------------------------------- Foreign pledges -------------------------------- //

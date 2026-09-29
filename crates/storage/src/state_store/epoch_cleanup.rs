@@ -9,7 +9,7 @@ use std::fmt::Display;
 /// to, so a step can be run in many small transactions and resumes where the previous one stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EpochCleanupStep {
-    /// Clears the values of substates downed in the pruned epoch, keeping their records.
+    /// Clears the values of substates downed in pruned epochs, keeping their records.
     DownedSubstateValues,
     Blocks,
     ProposalCertificates,

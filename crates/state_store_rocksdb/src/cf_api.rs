@@ -561,28 +561,6 @@ impl<'db, TQuery: QueryCf, DB: RocksReader> CfContext<'db, DB, TQuery> {
         self.query_range_key_iterator(ordering, range).collect()
     }
 
-    /// Collects up to the first `limit` keys of a prefix range. See [`Self::query_prefix_range_keys`] for why.
-    pub fn query_prefix_range_keys_limited(
-        &self,
-        ordering: Ordering,
-        key: &TQuery::Key,
-        limit: usize,
-    ) -> Result<Vec<<TQuery::Cf as Cf>::Key>, RocksDbStorageError> {
-        self.query_prefix_range_key_iterator(ordering, key)
-            .take(limit)
-            .collect()
-    }
-
-    /// Collects up to the first `limit` entries of a prefix range. See [`Self::query_prefix_range_keys`] for why.
-    pub fn query_prefix_range_entries_limited(
-        &self,
-        prefix: &TQuery::Key,
-        ordering: Ordering,
-        limit: usize,
-    ) -> Result<Vec<QueryCfKv<TQuery>>, RocksDbStorageError> {
-        self.query_prefix_range_iterator(ordering, prefix).take(limit).collect()
-    }
-
     /// Collects up to the first `limit` keys of a range. See [`Self::query_prefix_range_keys`] for why.
     pub fn query_range_keys_limited<B: Borrow<TQuery::Key>>(
         &self,

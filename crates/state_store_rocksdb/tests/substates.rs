@@ -8,11 +8,12 @@ use helpers::{assert_eq_debug, build_substate_record, create_rocksdb, create_sub
 use tari_engine_types::substate::SubstateId;
 use tari_ootle_common_types::{Epoch, SubstateVersion, VersionedSubstateId, VersionedSubstateIdRef, shard::Shard};
 use tari_ootle_storage::{
+    EpochCleanupStep,
     ShardScopedTreeStoreWriter,
     StateStore,
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
-    consensus_models::{Block, SubstateTransition, SubstateUpdateBatch, SubstateValueFilterFlags},
+    consensus_models::{Block, SubstateDestroyed, SubstateTransition, SubstateUpdateBatch, SubstateValueFilterFlags},
 };
 use tari_ootle_transaction::Network;
 use tari_state_store_rocksdb::DatabaseOptions;
@@ -247,4 +248,45 @@ fn substate_head_iter() {
     assert_eq!(count, 100);
 
     tx.rollback().unwrap();
+}
+
+/// Pruning reaches every epoch at or before the prune epoch, so values downed in an epoch whose GC never ran, or was
+/// interrupted, are cleared by a later run.
+#[test]
+fn downed_values_of_earlier_epochs_are_pruned_in_batches() {
+    let (db, _tmp) = create_rocksdb_with_opts(DatabaseOptions::default().with_epoch_history_length(1));
+    let ups = [10, 11].map(|seed| build_substate_record(&substate_id(seed), SubstateVersion::ZERO, 1));
+    db.with_write_tx(|tx| tx.substates_commit_batch(create_substate_update_batch(Epoch(1), &ups)))
+        .unwrap();
+    for (epoch, up) in [Epoch(1), Epoch(2)].into_iter().zip(&ups) {
+        let mut down = up.clone();
+        down.set_destroyed(SubstateDestroyed {
+            at_epoch: epoch,
+            at_state_version: 1 + epoch.as_u64(),
+        });
+        db.with_write_tx(|tx| tx.substates_commit_batch(create_substate_update_batch(epoch, [&down])))
+            .unwrap();
+    }
+
+    let prune = || {
+        db.with_write_tx(|tx| tx.epoch_cleanup_step(Epoch(3), EpochCleanupStep::DownedSubstateValues, 1))
+            .unwrap()
+    };
+    assert_eq!(prune(), 1);
+    assert_eq!(prune(), 1);
+    assert_eq!(prune(), 0);
+
+    db.with_read_tx(|tx| {
+        for up in &ups {
+            let rec = tx.substates_get(&up.to_substate_address())?;
+            assert!(rec.is_destroyed());
+            assert!(
+                rec.substate_value().is_none(),
+                "value of {} was not pruned",
+                rec.substate_id
+            );
+        }
+        Ok::<_, tari_ootle_storage::StorageError>(())
+    })
+    .unwrap();
 }
