@@ -402,10 +402,16 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
                 committees::shard_start.eq(shard_group.start().as_u32() as i32),
                 committees::shard_end.eq(shard_group.end().as_u32() as i32),
             ))
+            .on_conflict((committees::validator_node_id, committees::epoch))
+            .do_update()
+            .set((
+                committees::shard_start.eq(shard_group.start().as_u32() as i32),
+                committees::shard_end.eq(shard_group.end().as_u32() as i32),
+            ))
             .execute(tx.connection())
             .map_err(|source| SqliteStorageError::DieselError {
                 source,
-                operation: "insert::committee_bucket",
+                operation: "upsert::committee_bucket",
             })?;
         Ok(())
     }
