@@ -300,6 +300,13 @@ fn migration_keeps_the_latest_of_duplicate_committee_assignments() {
     // Only the initial schema, as it was when the duplicates were written.
     conn.run_next_migration(MIGRATIONS).unwrap();
 
+    sql_query("PRAGMA foreign_keys = ON").execute(&mut conn).unwrap();
+    sql_query(
+        "INSERT INTO validator_nodes (id, public_key, address, shard_key, start_epoch, fee_claim_public_key, power) \
+         VALUES (1, x'01', 'vn1', x'01', 0, x'01', 1), (2, x'02', 'vn2', x'02', 0, x'02', 1)",
+    )
+    .execute(&mut conn)
+    .unwrap();
     sql_query(
         "INSERT INTO committees (validator_node_id, epoch, shard_start, shard_end) VALUES (1, 5, 0, 255), (2, 5, 0, \
          255), (1, 5, 128, 255), (1, 6, 0, 255)",
