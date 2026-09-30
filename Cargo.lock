@@ -11928,6 +11928,7 @@ name = "tari_epoch_manager"
 version = "0.42.0"
 dependencies = [
  "anyhow",
+ "diesel",
  "log",
  "minotari_app_grpc",
  "ootle_byte_type",

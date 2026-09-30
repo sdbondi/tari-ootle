@@ -374,6 +374,22 @@ impl<TAddr: NodeAddressable> GlobalDbAdapter for SqliteGlobalDbAdapter<TAddr> {
         Ok(count as u64)
     }
 
+    fn validator_nodes_clear_committees(
+        &self,
+        tx: &mut Self::DbTransaction<'_>,
+        epoch: Epoch,
+    ) -> Result<(), Self::Error> {
+        use crate::global::schema::committees;
+
+        diesel::delete(committees::table.filter(committees::epoch.eq(epoch.as_u64() as i64)))
+            .execute(tx.connection())
+            .map_err(|source| SqliteStorageError::DieselError {
+                source,
+                operation: "delete::committees",
+            })?;
+        Ok(())
+    }
+
     fn validator_nodes_set_committee_shard(
         &self,
         tx: &mut Self::DbTransaction<'_>,

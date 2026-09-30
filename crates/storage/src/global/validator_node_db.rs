@@ -151,6 +151,11 @@ impl<'a, 'tx, TGlobalDbAdapter: GlobalDbAdapter> ValidatorNodeDb<'a, 'tx, TGloba
         self.backend.validator_nodes_get_committees_for_epoch(self.tx, epoch)
     }
 
+    /// Removes every committee assignment for `epoch`.
+    pub fn clear_committees(&mut self, epoch: Epoch) -> Result<(), TGlobalDbAdapter::Error> {
+        self.backend.validator_nodes_clear_committees(self.tx, epoch)
+    }
+
     pub fn set_committee_shard(
         &mut self,
         substate_address: SubstateAddress,

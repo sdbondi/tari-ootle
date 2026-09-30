@@ -604,7 +604,7 @@ impl<TStore: EpochOracleStore + BaseLayerBlockHeaderStore, TClient: BaseNodeClie
             });
 
             // Record validator node MR changes BEFORE epoch changes so that new registrations are
-            // ordered ahead of the boundary's EpochChanged — assign_validators_for_epoch must see
+            // ordered ahead of the boundary's EpochChanged — committee assignment must see
             // them first. This matters when the base layer updates the validator_node_mr at epoch
             // boundary blocks.
             if last_validator_node_mr != Some(current_validator_node_mr) {

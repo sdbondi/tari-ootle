@@ -96,6 +96,12 @@ pub trait GlobalDbAdapter: AtomicDb + Send + Sync + Clone {
         shard_group: ShardGroup,
     ) -> Result<u64, Self::Error>;
 
+    fn validator_nodes_clear_committees(
+        &self,
+        tx: &mut Self::DbTransaction<'_>,
+        epoch: Epoch,
+    ) -> Result<(), Self::Error>;
+
     fn validator_nodes_set_committee_shard(
         &self,
         tx: &mut Self::DbTransaction<'_>,

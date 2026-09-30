@@ -315,8 +315,7 @@ impl<TSpec: EpochManagerSpec> EpochManagerService<TSpec> {
                 ));
                 // In the base layer case, the epoch_hash is the first block of the epoch
                 // persist the epoch data including the validator node set
-                self.inner.insert_current_epoch(epoch, epoch_hash)?;
-                self.inner.assign_validators_for_epoch(epoch)?;
+                self.inner.advance_to_epoch(epoch, epoch_hash)?;
                 // Committees are immutable within an epoch; bust the shared cache so subsequent
                 // handle reads pick up the freshly assigned committee rows for the new epoch.
                 self.committee_cache.clear().await;

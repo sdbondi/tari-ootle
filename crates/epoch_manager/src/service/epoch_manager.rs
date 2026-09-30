@@ -109,14 +109,20 @@ where TSpec: EpochManagerSpec
         Ok(())
     }
 
-    /// Assigns validators for the given epoch (makes them active) from the database.
-    /// Max number of validators must be passed to limit the number of validators to make active in the given epoch.
-    pub fn assign_validators_for_epoch(&mut self, epoch: Epoch) -> Result<(), EpochManagerError> {
+    /// Makes `epoch` current and assigns its committees from the validators registered for it. Both commit
+    /// together, so an epoch is never current without its committees. The assignment replaces every row a
+    /// previous run left for the epoch, including those of a validator that has since re-registered under a
+    /// new row or exited.
+    pub fn advance_to_epoch(&mut self, epoch: Epoch, epoch_hash: FixedHash) -> Result<(), EpochManagerError> {
         let mut tx = self.global_db.create_transaction()?;
+        self.global_db.epochs(&mut tx).insert_epoch(epoch, epoch_hash)?;
+        let mut metadata = self.global_db.metadata(&mut tx);
+        metadata.set_metadata(MetadataKey::EpochManagerCurrentEpoch.as_key_bytes(), &epoch)?;
+        metadata.set_metadata(MetadataKey::EpochManagerLastEpochHash.as_key_bytes(), &epoch_hash)?;
+
         let mut validator_nodes = self.global_db.validator_nodes(&mut tx);
-
+        validator_nodes.clear_committees(epoch)?;
         let vns = validator_nodes.get_all_registered_within_start_epoch(epoch)?;
-
         let num_committees = calculate_num_committees(vns.len() as u64, self.config.committee_size);
         for vn in vns {
             validator_nodes.set_committee_shard(
@@ -127,7 +133,8 @@ where TSpec: EpochManagerSpec
         }
 
         tx.commit()?;
-
+        self.set_current_epoch(epoch);
+        self.current_epoch_hash = epoch_hash;
         Ok(())
     }
 
@@ -516,4 +523,92 @@ fn calculate_num_committees(num_vns: u64, committee_size: NonZeroU32) -> u32 {
         cmp::max(1, num_vns / u64::from(committee_size.get())),
         u64::from(u32::MAX),
     ) as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use diesel::{Connection, SqliteConnection};
+    use tari_ootle_common_types::{NumPreshards, VotePower};
+
+    use super::*;
+    use crate::epoch_event_oracle::{EpochEvent, EpochEventOracle};
+
+    struct NoOracle;
+
+    impl EpochEventOracle for NoOracle {
+        async fn next_epoch_event(&mut self) -> Option<EpochEvent> {
+            None
+        }
+    }
+
+    struct TestSpec;
+
+    impl EpochManagerSpec for TestSpec {
+        type Addr = RistrettoPublicKeyBytes;
+        type EpochEventOracle = NoOracle;
+    }
+
+    fn create_epoch_manager() -> EpochManager<TestSpec> {
+        let global_db = GlobalDb::new(SqliteGlobalDbAdapter::new(
+            SqliteConnection::establish(":memory:").unwrap(),
+        ));
+        global_db.adapter().migrate().unwrap();
+        let config = EpochManagerConfig {
+            base_layer_confirmations: 0,
+            committee_size: NonZeroU32::new(10).unwrap(),
+            validator_node_sidechain_id: None,
+            num_preshards: NumPreshards::P256,
+            fee_claim_public_key: RistrettoPublicKeyBytes::zero(),
+        };
+        EpochManager::new(
+            config,
+            global_db,
+            RistrettoPublicKeyBytes::zero(),
+            Arc::new(AtomicU64::new(0)),
+        )
+    }
+
+    fn public_key(byte: u8) -> RistrettoPublicKeyBytes {
+        RistrettoPublicKeyBytes::from_bytes(&[byte; 32]).unwrap()
+    }
+
+    fn register(manager: &EpochManager<TestSpec>, byte: u8, start_epoch: Epoch) {
+        let mut tx = manager.global_db.create_transaction().unwrap();
+        manager
+            .global_db
+            .validator_nodes(&mut tx)
+            .insert_validator_node(
+                public_key(byte),
+                public_key(byte),
+                SubstateAddress::from_array([byte; SubstateAddress::LENGTH]),
+                start_epoch,
+                public_key(byte),
+                VotePower::of(1),
+            )
+            .unwrap();
+        tx.commit().unwrap();
+    }
+
+    /// A second assignment for an epoch must leave exactly the validators registered for it at that point: a
+    /// validator that re-registered is a new row, and one whose exit was recorded is no longer registered.
+    #[test]
+    fn reassigning_an_epoch_drops_rows_the_validator_set_no_longer_holds() {
+        let mut manager = create_epoch_manager();
+        register(&manager, 1, Epoch(1));
+        register(&manager, 2, Epoch(1));
+        manager.advance_to_epoch(Epoch(2), FixedHash::zero()).unwrap();
+
+        register(&manager, 1, Epoch(2));
+        manager.deactivate_validator_node(public_key(2), Epoch(2)).unwrap();
+        manager.advance_to_epoch(Epoch(2), FixedHash::zero()).unwrap();
+
+        let mut tx = manager.global_db.create_transaction().unwrap();
+        let mut validator_nodes = manager.global_db.validator_nodes(&mut tx);
+        let all_shards = ShardGroup::all_shards(NumPreshards::P256);
+        assert_eq!(validator_nodes.count_in_shard_group(Epoch(2), all_shards).unwrap(), 1);
+        let committee = validator_nodes
+            .get_committee_for_shard_group(Epoch(2), all_shards, 100)
+            .unwrap();
+        assert_eq!(committee.into_public_keys().collect::<Vec<_>>(), vec![public_key(1)]);
+    }
 }
