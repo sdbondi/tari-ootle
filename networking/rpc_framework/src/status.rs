@@ -95,6 +95,15 @@ impl RpcStatus {
         }
     }
 
+    /// The server is not yet in a state to answer the request. The same request may succeed later, or
+    /// against another peer.
+    pub fn unavailable<T: Into<String>>(details: T) -> Self {
+        Self {
+            code: RpcStatusCode::Unavailable,
+            details: details.into(),
+        }
+    }
+
     /// Returns a closure that logs the given error and returns a generic general error that does not leak any
     /// potentially sensitive error information. Use this function with map_err to catch "miscellaneous" errors.
     pub fn log_internal_error<'a, E: std::error::Error + 'a>(target: &'a str) -> impl Fn(E) -> Self + 'a {
@@ -133,6 +142,10 @@ impl RpcStatus {
 
     pub fn is_not_found(&self) -> bool {
         self.code.is_not_found()
+    }
+
+    pub fn is_unavailable(&self) -> bool {
+        self.code.is_unavailable()
     }
 }
 
@@ -230,6 +243,8 @@ pub enum RpcStatusCode {
     Conflict = 10,
     /// RPC handshake denied
     HandshakeDenied = 11,
+    /// The server is not yet in a state to answer the request
+    Unavailable = 12,
     // The following status represents anything that is not recognised (i.e not one of the above codes).
     /// Unrecognised RPC status code
     InvalidRpcStatusCode,
@@ -250,6 +265,10 @@ impl RpcStatusCode {
 
     pub fn is_handshake_denied(self) -> bool {
         self == Self::HandshakeDenied
+    }
+
+    pub fn is_unavailable(self) -> bool {
+        self == Self::Unavailable
     }
 
     pub fn as_u32(&self) -> u32 {
@@ -278,6 +297,7 @@ impl From<u32> for RpcStatusCode {
             9 => Forbidden,
             10 => Conflict,
             11 => HandshakeDenied,
+            12 => Unavailable,
             _ => InvalidRpcStatusCode,
         }
     }
@@ -303,6 +323,8 @@ mod test {
         assert_eq!(RpcStatusCode::from(ProtocolError as u32), ProtocolError);
         assert_eq!(RpcStatusCode::from(Forbidden as u32), Forbidden);
         assert_eq!(RpcStatusCode::from(Conflict as u32), Conflict);
+        assert_eq!(RpcStatusCode::from(HandshakeDenied as u32), HandshakeDenied);
+        assert_eq!(RpcStatusCode::from(Unavailable as u32), Unavailable);
         assert_eq!(RpcStatusCode::from(123), InvalidRpcStatusCode);
     }
 

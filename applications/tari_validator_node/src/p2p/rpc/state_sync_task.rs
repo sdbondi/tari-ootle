@@ -420,7 +420,7 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
         // A tip claim needs more than the history check that admitted the request: only a node
         // participating in consensus is receiving the transitions it is claiming to be level on.
         if !self.consensus.is_running() {
-            return Err(RpcStatus::general(CONSENSUS_NOT_RUNNING));
+            return Err(RpcStatus::unavailable(CONSENSUS_NOT_RUNNING));
         }
 
         if authority.is_stale_at(epoch) {

@@ -128,7 +128,7 @@ impl<TStateStore: StateStore> ValidatorNodeRpcServiceImpl<TStateStore> {
         if self.consensus.can_serve_committed_state() {
             Ok(())
         } else {
-            Err(RpcStatus::general(CONSENSUS_NOT_RUNNING))
+            Err(RpcStatus::unavailable(CONSENSUS_NOT_RUNNING))
         }
     }
 
@@ -540,7 +540,7 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
             .await
             .map_err(RpcStatus::log_internal_error(LOG_TARGET))?
         {
-            return Err(RpcStatus::general("Node is still catching up to the epoch"));
+            return Err(RpcStatus::unavailable("Node is still catching up to the epoch"));
         }
         let current_epoch = self
             .epoch_manager
@@ -549,7 +549,7 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
             .map_err(RpcStatus::log_internal_error(LOG_TARGET))?;
         let consensus_epoch = self.epoch_manager.get_current_epoch();
         if consensus_epoch != current_epoch {
-            return Err(RpcStatus::general(format!(
+            return Err(RpcStatus::unavailable(format!(
                 "Node is not in sync with the consensus epoch. Current epoch: {}, Consensus epoch: {}",
                 current_epoch, consensus_epoch
             )));
@@ -561,7 +561,7 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
 
         if from_epoch >= consensus_epoch {
             // This may occur if one of the nodes has not fully scanned the base layer
-            return Err(RpcStatus::bad_request(format!(
+            return Err(RpcStatus::unavailable(format!(
                 "Peer requested checkpoint with epoch {} but the current epoch is {}",
                 from_epoch, consensus_epoch
             )));
@@ -637,12 +637,12 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
             // A tip claim needs more than the history check that admitted the request: only a node
             // participating in consensus is receiving the transitions it would claim to be level on.
             if !self.consensus.is_running() {
-                return Err(RpcStatus::general(CONSENSUS_NOT_RUNNING));
+                return Err(RpcStatus::unavailable(CONSENSUS_NOT_RUNNING));
             }
             let epoch = self.consensus.current_epoch();
             // A node that has not entered a view has no committee to answer for.
             if epoch.is_zero() {
-                return Err(RpcStatus::general("Consensus has not started on this node"));
+                return Err(RpcStatus::unavailable("Consensus has not started on this node"));
             }
             let local_committee_info = self
                 .epoch_manager
