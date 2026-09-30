@@ -348,43 +348,6 @@ overflow-checks = true
 inherits = "release"
 opt-level = 1
 
-# TODO: remove once all 6.0.1-pre.2 crates are published to crates.io
-[patch.crates-io]
-minotari_app_grpc = { path = "../tari/applications/minotari_app_grpc" }
-minotari_app_utilities = { path = "../tari/applications/minotari_app_utilities" }
-minotari_console_wallet = { path = "../tari/applications/minotari_console_wallet" }
-minotari_ledger_wallet_common = { path = "../tari/applications/minotari_ledger_wallet/common" }
-minotari_ledger_wallet_comms = { path = "../tari/applications/minotari_ledger_wallet/comms" }
-minotari_node = { path = "../tari/applications/minotari_node" }
-minotari_node_grpc_client = { path = "../tari/clients/rust/base_node_grpc_client" }
-minotari_node_wallet_client = { path = "../tari/clients/rust/base_node_wallet_client" }
-minotari_wallet = { path = "../tari/base_layer/wallet" }
-minotari_wallet_grpc_client = { path = "../tari/clients/rust/wallet_grpc_client" }
-tari_common = { path = "../tari/common" }
-tari_common_sqlite = { path = "../tari/common_sqlite" }
-tari_common_types = { path = "../tari/base_layer/common_types" }
-tari_comms = { path = "../tari/comms/core" }
-tari_comms_dht = { path = "../tari/comms/dht" }
-tari_comms_rpc_macros = { path = "../tari/comms/rpc_macros" }
-tari_core = { path = "../tari/base_layer/core" }
-tari_features = { path = "../tari/common/tari_features" }
-tari_hashing = { path = "../tari/hashing" }
-tari_jellyfish = { path = "../tari/infrastructure/jellyfish" }
-tari_libtor = { path = "../tari/infrastructure/libtor" }
-tari_max_size = { path = "../tari/infrastructure/max_size" }
-tari_metrics = { path = "../tari/infrastructure/metrics" }
-tari_mmr = { path = "../tari/base_layer/mmr" }
-tari_node_components = { path = "../tari/base_layer/node_components" }
-tari_p2p = { path = "../tari/base_layer/p2p" }
-tari_script = { path = "../tari/infrastructure/tari_script" }
-tari_service_framework = { path = "../tari/base_layer/service_framework" }
-tari_shutdown = { path = "../tari/infrastructure/shutdown" }
-tari_sidechain = { path = "../tari/base_layer/sidechain" }
-tari_storage = { path = "../tari/infrastructure/storage" }
-tari_test_utils = { path = "../tari/infrastructure/test_utils" }
-tari_transaction_components = { path = "../tari/base_layer/transaction_components" }
-tari_transaction_key_manager = { path = "../tari/base_layer/transaction_key_manager" }
-
 ## Make a copy of this code, uncomment and replace account and my-branch with the name of your fork and the branch you want to temporarily use
 #[patch."https://github.com/tari-project/tari.git"]
 #minotari_app_grpc = { git = "https://github.com/account/tari.git", branch = "my-branch" }
