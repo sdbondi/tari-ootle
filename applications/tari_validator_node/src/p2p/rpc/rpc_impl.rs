@@ -94,7 +94,7 @@ use crate::{
         rpc::{
             CONSENSUS_NOT_RUNNING,
             block_sync_task::BlockSyncTask,
-            state_sync_task::{ShardCursor, StateSyncTask, TipAuthority},
+            state_sync_task::{HeldHistory, ShardCursor, StateSyncTask, TipAuthority},
         },
         services::mempool::MempoolHandle,
     },
@@ -122,6 +122,36 @@ impl<TStateStore: StateStore> ValidatorNodeRpcServiceImpl<TStateStore> {
             mempool,
             consensus,
         }
+    }
+
+    /// Resolves which shards' committed history through `epoch` this node holds.
+    async fn held_history(&self, epoch: Epoch) -> Result<HeldHistory, RpcStatus> {
+        let checkpoint_shard_groups = self
+            .state_store
+            .with_read_tx(|tx| EpochCheckpoint::get_all_from_epoch(tx, epoch, NumPreshards::MAX.num_shards()))
+            .map_err(RpcStatus::log_internal_error(LOG_TARGET))?
+            .into_iter()
+            .filter(|checkpoint| checkpoint.epoch() == epoch)
+            .map(|checkpoint| checkpoint.checked_shard_group())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(RpcStatus::log_internal_error(LOG_TARGET))?;
+        let committed_as = self.local_shard_group_at(epoch).await?;
+        let synced_as = self.local_shard_group_at(epoch + Epoch(1)).await?;
+        Ok(HeldHistory {
+            checkpoint_shard_groups,
+            committed_as,
+            synced_as,
+        })
+    }
+
+    async fn local_shard_group_at(&self, epoch: Epoch) -> Result<Option<ShardGroup>, RpcStatus> {
+        Ok(self
+            .epoch_manager
+            .get_local_committee_info(epoch)
+            .await
+            .optional()
+            .map_err(RpcStatus::log_internal_error(LOG_TARGET))?
+            .map(|info| info.shard_group()))
     }
 
     fn check_consensus_state(&self) -> Result<(), RpcStatus> {
@@ -607,7 +637,6 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
     }
 
     async fn sync_state(&self, request: Request<SyncStateRequest>) -> Result<Streaming<SyncStateResponse>, RpcStatus> {
-        self.check_consensus_state()?;
         let req = request.into_message();
 
         let (sender, receiver) = mpsc::channel(10);
@@ -633,9 +662,14 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
         // this node receives, and can lag the epoch reached by scanning the base layer. The completion
         // marker names the epoch its claim is made as of, so the claim and the marker must be anchored
         // to the same one.
-        let tip_authority = if end_epoch.is_none() {
-            // A tip claim needs more than the history check that admitted the request: only a node
-            // participating in consensus is receiving the transitions it would claim to be level on.
+        let tip_authority = if let Some(end_epoch) = end_epoch {
+            self.held_history(end_epoch)
+                .await?
+                .ensure_holds_all(&cursors, end_epoch)?;
+            None
+        } else {
+            // Only a node participating in consensus is receiving the transitions it would claim to be
+            // level on.
             if !self.consensus.is_running() {
                 return Err(RpcStatus::unavailable(CONSENSUS_NOT_RUNNING));
             }
@@ -651,8 +685,6 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
                 .map_err(RpcStatus::log_internal_error(LOG_TARGET))?;
             ShardCursor::ensure_all_stored(&cursors, &local_committee_info)?;
             Some(TipAuthority::new(epoch, local_committee_info))
-        } else {
-            None
         };
 
         let value_filter_flags = SubstateValueFilterFlags::from_bits_truncate(req.value_filters);

@@ -75,6 +75,10 @@ pub struct RpcStateSyncClientProtocol<TConsensusSpec: ConsensusSpec> {
     signer_service: TConsensusSpec::SignerService,
     stats: StateSyncStats,
     skip_sync: bool,
+    /// Checkpoints fetched and validated during the current sync, by shard group. A checkpoint is stored only
+    /// once every shard synced from it matches it, since a stored checkpoint tells peers this node holds that
+    /// state.
+    unsaved_checkpoints: HashMap<ShardGroup, EpochCheckpoint>,
 }
 
 impl<TConsensusSpec> RpcStateSyncClientProtocol<TConsensusSpec>
@@ -95,6 +99,7 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
             signer_service,
             stats: StateSyncStats::default(),
             skip_sync: false,
+            unsaved_checkpoints: HashMap::new(),
         }
     }
 
@@ -122,8 +127,11 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
             .optional()?;
 
         if let Some(cp) = valid_checkpoint {
-            info!(target: LOG_TARGET, "🛜 Checkpoint already fetched and valid: {cp}");
+            info!(target: LOG_TARGET, "🛜 Checkpoint already stored: {cp}");
             return Ok(Some(cp));
+        }
+        if let Some(cp) = self.unsaved_checkpoints.get(&for_shard_group) {
+            return Ok(Some(cp.clone()));
         }
 
         self.stats.total_requests += 1;
@@ -160,7 +168,7 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
         }
         info!(target: LOG_TARGET, "🛜 Checkpoint: {checkpoint}");
         self.validate_checkpoint(&checkpoint, prev_committee, prev_epoch)?;
-        self.state_store.with_write_tx(|tx| checkpoint.save(tx))?;
+        self.unsaved_checkpoints.insert(for_shard_group, checkpoint.clone());
         Ok(Some(checkpoint))
     }
 
@@ -393,8 +401,8 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
 
     /// True if this node's committed state already matches `checkpoint` for every shard it is responsible for (its
     /// local shard group plus the global shard). Distinguishes a rolled-back node (complete state, checkpoint
-    /// retained) from one whose first-time state sync was interrupted after the checkpoint was persisted but before
-    /// the state finished streaming (checkpoint present, state incomplete).
+    /// retained) from one whose first-time state sync was interrupted after one shard group's checkpoint was stored
+    /// but before the others finished streaming (checkpoint present, state incomplete).
     async fn local_state_matches_checkpoint(&self, checkpoint: &EpochCheckpoint) -> Result<bool, RpcStateSyncError> {
         let local_info = self.epoch_manager.get_local_committee_info(checkpoint.epoch()).await?;
         self.state_store.with_read_tx(|tx| {
@@ -663,6 +671,7 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
 
     async fn sync_inner(&mut self, target_epoch: Option<Epoch>) -> Result<(), RpcStateSyncError> {
         let timer = Instant::now();
+        self.unsaved_checkpoints.clear();
         // Use the caller-provided target if any (typically the highest epoch resolved by a
         // stall-recovery probe), otherwise fall back to the oracle's current epoch.
         let current_epoch = match target_epoch {
@@ -719,6 +728,10 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
             };
             for shard in intersect_shard_group.shard_iter() {
                 self.sync_shard(shard, shard_group, current_epoch, &source).await?;
+            }
+            // The global shard synced first, so every shard this node takes from the checkpoint now matches it.
+            if let Some(checkpoint) = self.unsaved_checkpoints.remove(&shard_group) {
+                self.state_store.with_write_tx(|tx| checkpoint.save(tx))?;
             }
         }
 
@@ -1001,9 +1014,9 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress> + Send + Sync + 'static
             // route it to `Syncing`, which fails because every committee member rolled back together holds the same
             // (absent) state, wedging consensus in `Sleeping`.
             //
-            // The state-root match is required, not merely the checkpoint's presence: state sync persists the
-            // checkpoint before streaming state (`get_or_fetch_valid_epoch_checkpoint`), so a first-time sync
-            // interrupted mid-stream also leaves a leaf-less node holding a checkpoint — but with incomplete state.
+            // The state-root match is required, not merely the checkpoint's presence: state sync stores each shard
+            // group's checkpoint as soon as that group's shards match it, so a first-time sync interrupted before
+            // the remaining groups also leaves a leaf-less node holding a checkpoint — but with incomplete state.
             // Its roots will not match, so it correctly falls through here and resumes the sync.
             let maybe_checkpoint = self
                 .state_store

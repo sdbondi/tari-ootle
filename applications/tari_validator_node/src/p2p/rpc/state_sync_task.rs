@@ -6,7 +6,14 @@ use std::num::NonZeroUsize;
 use log::*;
 use tari_consensus::hotstuff::HotstuffEvent;
 use tari_epoch_manager::{EpochManagerReader, service::EpochManagerHandle};
-use tari_ootle_common_types::{Epoch, NumPreshards, committee::CommitteeInfo, optional::Optional, shard::Shard};
+use tari_ootle_common_types::{
+    Epoch,
+    NumPreshards,
+    ShardGroup,
+    committee::CommitteeInfo,
+    optional::Optional,
+    shard::Shard,
+};
 use tari_ootle_p2p::{PeerAddress, proto::rpc};
 use tari_ootle_storage::{
     StateStore,
@@ -92,6 +99,45 @@ impl ShardCursor {
         cursors
             .iter()
             .try_for_each(|cursor| ensure_shard_is_stored(cursor.shard, committee_info))
+    }
+}
+
+/// The shards whose history through an epoch this node holds, final and complete. It is final once the committee
+/// storing the shard committed the epoch, which a stored checkpoint for that epoch attests. It is complete if this
+/// node committed the epoch for the shard itself, as a member of the committee storing it at that epoch, or
+/// state-synced the shard from the checkpoint, as a member of the committee storing it at the next epoch. State
+/// sync stores a checkpoint only once every shard it takes from it matches it, the global shard first.
+#[derive(Debug, Clone)]
+pub struct HeldHistory {
+    /// The shard groups of the checkpoints stored for the epoch.
+    pub checkpoint_shard_groups: Vec<ShardGroup>,
+    /// This node's shard group at the epoch, if it was registered.
+    pub committed_as: Option<ShardGroup>,
+    /// This node's shard group at the next epoch, if it was registered.
+    pub synced_as: Option<ShardGroup>,
+}
+
+impl HeldHistory {
+    pub fn holds(&self, shard: Shard) -> bool {
+        let is_member = [self.committed_as, self.synced_as]
+            .into_iter()
+            .flatten()
+            .any(|sg| sg.contains_or_global(&shard));
+        is_member &&
+            self.checkpoint_shard_groups
+                .iter()
+                .any(|sg| sg.contains_or_global(&shard))
+    }
+
+    /// Rejects the request unless this node holds the history of every requested shard.
+    pub fn ensure_holds_all(&self, cursors: &[ShardCursor], epoch: Epoch) -> Result<(), RpcStatus> {
+        match cursors.iter().find(|cursor| !self.holds(cursor.shard)) {
+            Some(cursor) => Err(RpcStatus::unavailable(format!(
+                "This node does not hold committed state for {} through epoch {epoch}",
+                cursor.shard
+            ))),
+            None => Ok(()),
+        }
     }
 }
 
@@ -417,8 +463,8 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
             return Ok(epoch);
         };
 
-        // A tip claim needs more than the history check that admitted the request: only a node
-        // participating in consensus is receiving the transitions it is claiming to be level on.
+        // Only a node participating in consensus is receiving the transitions it is claiming to be
+        // level on, and it can stop participating while the stream is open.
         if !self.consensus.is_running() {
             return Err(RpcStatus::unavailable(CONSENSUS_NOT_RUNNING));
         }
@@ -485,7 +531,7 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
 
 #[cfg(test)]
 mod tests {
-    use tari_ootle_common_types::{ShardGroup, VotePower};
+    use tari_ootle_common_types::VotePower;
 
     use super::*;
 
@@ -505,6 +551,59 @@ mod tests {
             shard,
             start_state_version,
         }
+    }
+
+    fn held(
+        checkpoints: &[(u32, u32)],
+        committed_as: Option<(u32, u32)>,
+        synced_as: Option<(u32, u32)>,
+    ) -> HeldHistory {
+        HeldHistory {
+            checkpoint_shard_groups: checkpoints.iter().map(|&(s, e)| ShardGroup::new(s, e)).collect(),
+            committed_as: committed_as.map(|(s, e)| ShardGroup::new(s, e)),
+            synced_as: synced_as.map(|(s, e)| ShardGroup::new(s, e)),
+        }
+    }
+
+    #[test]
+    fn a_member_that_committed_the_epoch_holds_its_shards() {
+        let history = held(&[(1, 32)], Some((1, 32)), None);
+        assert!(history.holds(Shard::from(1u32)));
+        assert!(history.holds(Shard::global()));
+        assert!(!history.holds(Shard::from(33u32)));
+    }
+
+    #[test]
+    fn a_synced_node_holds_only_its_own_slice_of_a_checkpoint() {
+        // The checkpoint covers 1..=32, but a node joining 17..=32 synced only that slice of it.
+        let history = held(&[(1, 32)], None, Some((17, 32)));
+        assert!(history.holds(Shard::from(17u32)));
+        assert!(!history.holds(Shard::from(1u32)));
+    }
+
+    #[test]
+    fn membership_without_a_checkpoint_holds_nothing() {
+        let history = held(&[], Some((1, 32)), Some((1, 32)));
+        assert!(!history.holds(Shard::from(1u32)));
+        assert!(!history.holds(Shard::global()));
+    }
+
+    #[test]
+    fn it_names_the_first_shard_it_does_not_hold() {
+        let history = held(&[(1, 32)], Some((1, 32)), None);
+        let cursors = [
+            ShardCursor {
+                shard: Shard::from(1u32),
+                start_state_version: 1,
+            },
+            ShardCursor {
+                shard: Shard::from(40u32),
+                start_state_version: 1,
+            },
+        ];
+        let err = history.ensure_holds_all(&cursors, Epoch(3)).unwrap_err();
+        assert!(err.is_unavailable());
+        assert!(err.details().contains("Shard(40)"), "{err}");
     }
 
     #[test]
