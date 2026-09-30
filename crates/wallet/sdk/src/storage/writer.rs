@@ -126,6 +126,10 @@ pub trait WalletStoreWriter: CommittableStore {
         resource_address: ResourceAddress,
     ) -> Result<(), WalletStorageError>;
 
+    /// Deletes the account and its scan state. The account must have no activity (see
+    /// `accounts_has_activity`); events that reference it are kept and detached from it.
+    fn accounts_delete(&mut self, account_addr: &ComponentAddress) -> Result<(), WalletStorageError>;
+
     // Vaults
     fn vaults_insert(&mut self, vault: VaultModel) -> Result<(), WalletStorageError>;
     fn vaults_update(

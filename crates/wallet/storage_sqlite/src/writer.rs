@@ -1029,6 +1029,36 @@ impl WalletStoreWriter for WriteTransaction<'_> {
         Ok(())
     }
 
+    fn accounts_delete(&mut self, account_addr: &ComponentAddress) -> Result<(), WalletStorageError> {
+        const OPERATION: &str = "accounts_delete";
+        use crate::schema::{accounts, wallet_events};
+
+        let account_id = accounts::table
+            .select(accounts::id)
+            .filter(accounts::address.eq(account_addr.to_string()))
+            .first::<i32>(self.connection())
+            .optional()
+            .map_err(|e| WalletStorageError::general(OPERATION, e))?
+            .ok_or_else(|| WalletStorageError::NotFound {
+                operation: OPERATION,
+                entity: "account".to_string(),
+                key: account_addr.to_string(),
+            })?;
+
+        diesel::update(wallet_events::table)
+            .set(wallet_events::account_id.eq(None::<i32>))
+            .filter(wallet_events::account_id.eq(account_id))
+            .execute(self.connection())
+            .map_err(|e| WalletStorageError::general(OPERATION, e))?;
+
+        diesel::delete(accounts::table)
+            .filter(accounts::id.eq(account_id))
+            .execute(self.connection())
+            .map_err(|e| WalletStorageError::general(OPERATION, e))?;
+
+        Ok(())
+    }
+
     fn vaults_insert(&mut self, vault: VaultModel) -> Result<(), WalletStorageError> {
         use crate::schema::{accounts, vaults};
 

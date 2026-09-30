@@ -28,6 +28,10 @@ pub enum StealthScannerApiError {
     KeyManagerError(#[from] KeyManagerApiError),
     #[error("Account API error: {0}")]
     AccountApiError(#[from] AccountsApiError),
+    #[error("The UTXO scanner has shut down")]
+    ScannerShutdown,
+    #[error("The UTXO scan did not finish within {timeout:.0?}")]
+    ScanTimedOut { timeout: std::time::Duration },
 }
 
 impl IsNotFoundError for StealthScannerApiError {

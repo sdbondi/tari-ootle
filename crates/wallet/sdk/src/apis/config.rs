@@ -77,6 +77,8 @@ pub enum ConfigKey {
     AdvancedUiFeatures,
     /// Accounts that have successfully claimed testnet faucet funds. type: Vec<String>
     ClaimedAccounts,
+    /// The highest account key index that seed recovery checked. type: u64
+    RecoveryMaxProbedKeyIndex,
 }
 
 impl ConfigKey {
@@ -89,6 +91,7 @@ impl ConfigKey {
             Self::KeyringPasswordEntryKey => "keyring_password_entry_key",
             Self::AdvancedUiFeatures => "advanced_ui_features",
             Self::ClaimedAccounts => "claimed_accounts",
+            Self::RecoveryMaxProbedKeyIndex => "recovery_max_probed_key_index",
         }
     }
 }

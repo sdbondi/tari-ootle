@@ -522,6 +522,56 @@ impl WalletStoreReader for ReadTransaction<'_> {
         deserialize_json(&stealth_resources)
     }
 
+    fn accounts_has_activity(&mut self, address: &ComponentAddress) -> Result<bool, WalletStorageError> {
+        const OPERATION: &str = "accounts_has_activity";
+        use diesel::dsl::exists;
+
+        use crate::schema::{
+            account_balance_changes,
+            accounts,
+            confidential_outputs,
+            stealth_outputs,
+            transaction_accounts,
+            utxo_process_queue,
+            vaults,
+        };
+
+        let account_id = accounts::table
+            .select(accounts::id)
+            .filter(accounts::address.eq(address.to_string()))
+            .first::<i32>(self.connection())
+            .optional()
+            .map_err(|e| WalletStorageError::general(OPERATION, e))?
+            .ok_or_else(|| WalletStorageError::NotFound {
+                operation: OPERATION,
+                entity: "account".to_string(),
+                key: address.to_string(),
+            })?;
+
+        let has_activity = diesel::select(
+            exists(vaults::table.filter(vaults::account_id.eq(account_id)))
+                .or(exists(
+                    confidential_outputs::table.filter(confidential_outputs::account_id.eq(account_id)),
+                ))
+                .or(exists(
+                    stealth_outputs::table.filter(stealth_outputs::owner_account_id.eq(account_id)),
+                ))
+                .or(exists(
+                    utxo_process_queue::table.filter(utxo_process_queue::account_id.eq(account_id)),
+                ))
+                .or(exists(
+                    account_balance_changes::table.filter(account_balance_changes::account_id.eq(account_id)),
+                ))
+                .or(exists(
+                    transaction_accounts::table.filter(transaction_accounts::account_id.eq(account_id)),
+                )),
+        )
+        .get_result::<bool>(self.connection())
+        .map_err(|e| WalletStorageError::general(OPERATION, e))?;
+
+        Ok(has_activity)
+    }
+
     // -------------------------------- Vaults -------------------------------- //
     fn vaults_get(&mut self, vault_id: &VaultId) -> Result<VaultModel, WalletStorageError> {
         const OPERATION: &str = "vaults_get";

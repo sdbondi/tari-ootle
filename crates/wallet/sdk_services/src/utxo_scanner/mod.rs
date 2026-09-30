@@ -9,6 +9,7 @@ mod worker;
 
 pub use error::*;
 pub use scanner::*;
+pub use scanner_round::UtxoScanRoundStats;
 pub(crate) use scanner_round::*;
 pub use utxo_recovery::*;
 pub use worker::*;

@@ -30,6 +30,7 @@ use tari_template_lib::types::{
 use crate::{
     apis::{
         confidential_transfer::{ConfidentialTransferApiError, ResolvedAccountDetails},
+        config::{ConfigApi, ConfigApiError, ConfigKey},
         key_manager::{KeyManagerApi, KeyManagerApiError},
         substate::{SubstatesApi, ValidatorScanResult},
     },
@@ -94,6 +95,22 @@ impl<'a, TSpec: WalletSdkSpec> AccountsApi<'a, TSpec> {
         derive_component_address_from_public_key(&ACCOUNT_TEMPLATE_ADDRESS, public_key)
     }
 
+    /// Seed recovery may have checked this key index and deleted it as unused. Payments sent to it after recovery
+    /// are only found if the scan starts from the seed birthday.
+    fn birthday_epoch_for_new_account(&self, owner_key_id: &KeyId) -> Result<Epoch, AccountsApiError> {
+        let max_probed_index = ConfigApi::new(self.store)
+            .get::<u64>(ConfigKey::RecoveryMaxProbedKeyIndex)
+            .optional()?;
+        let was_probed = owner_key_id
+            .derived_index()
+            .zip(max_probed_index)
+            .is_some_and(|(index, max_probed)| index <= max_probed);
+        if was_probed {
+            return Ok(self.key_manager_api.get_cipher_seed_birthday_epoch()?);
+        }
+        Ok(self.epoch_birthday.calculate_current_epoch())
+    }
+
     pub fn create_account(
         &self,
         account_name: Option<&str>,
@@ -103,7 +120,7 @@ impl<'a, TSpec: WalletSdkSpec> AccountsApi<'a, TSpec> {
         let account_public_key = account_address.address.account_key().to_byte_type();
         let account_component_address = self.derive_account_address_from_public_key(&account_public_key);
 
-        let birthday_epoch = self.epoch_birthday.calculate_current_epoch();
+        let birthday_epoch = self.birthday_epoch_for_new_account(&account_address.owner_key_id)?;
 
         self.add_account(
             account_name,
@@ -411,6 +428,30 @@ impl<'a, TSpec: WalletSdkSpec> AccountsApi<'a, TSpec> {
         Ok(())
     }
 
+    /// Returns true if the account has vaults, outputs, queued UTXOs, balance changes or transactions.
+    pub fn has_activity(&self, address: &ComponentAddress) -> Result<bool, AccountsApiError> {
+        let has_activity = self.store.with_read_tx(|tx| tx.accounts_has_activity(address))?;
+        Ok(has_activity)
+    }
+
+    /// Deletes the account if it is not confirmed on chain and has no activity. If it was the default account, the
+    /// first remaining account becomes the default. Returns true if the account was deleted.
+    pub fn delete_if_unused(&self, address: &ComponentAddress) -> Result<bool, AccountsApiError> {
+        self.store.with_write_tx(|tx| {
+            let account = tx.accounts_get(address)?;
+            if account.is_confirmed_on_chain || tx.accounts_has_activity(address)? {
+                return Ok(false);
+            }
+            tx.accounts_delete(address)?;
+            if account.is_default &&
+                let Some(next_default) = tx.accounts_get_many(0, 1)?.first()
+            {
+                tx.accounts_set_default(next_default.component_address())?;
+            }
+            Ok(true)
+        })
+    }
+
     pub fn get_associated_stealth_resources(
         &self,
         address: &ComponentAddress,
@@ -619,6 +660,8 @@ pub enum AccountsApiError {
     KeyManagerApiError(#[from] KeyManagerApiError),
     #[error("Account name already exists: {name}")]
     AccountNameAlreadyExists { name: String },
+    #[error("Config API error: {0}")]
+    ConfigApiError(#[from] ConfigApiError),
 }
 
 impl AccountsApiError {

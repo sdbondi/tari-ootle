@@ -25,7 +25,7 @@ use tari_ootle_wallet_sdk_services::{
     account_monitor::{AccountMonitor, AccountMonitorHandle},
     notify::Notify,
     transaction_service::{TransactionService, TransactionServiceHandle},
-    utxo_scanner::{StealthUtxoScannerWorker, UtxoRecovery},
+    utxo_scanner::{StealthUtxoScannerWorker, UtxoRecovery, UtxoScannerHandle},
 };
 use tari_shutdown::ShutdownSignal;
 use tokio::task::JoinHandle;
@@ -65,8 +65,12 @@ pub fn spawn_services(
         tokio::spawn(UtxoRecovery::new(sdk).with_notify(notify.clone()).run(notify_sub))
     };
 
-    let (account_monitor, account_monitor_handle) =
-        AccountMonitor::new(notify, wallet_sdk.clone(), utxo_scanner_handle, shutdown_signal.clone());
+    let (account_monitor, account_monitor_handle) = AccountMonitor::new(
+        notify,
+        wallet_sdk.clone(),
+        utxo_scanner_handle.clone(),
+        shutdown_signal.clone(),
+    );
     let account_monitor_join_handle = tokio::spawn(account_monitor.run());
 
     let mut join_handles = vec![
@@ -90,6 +94,7 @@ pub fn spawn_services(
 
     Services {
         account_monitor_handle,
+        utxo_scanner_handle,
         transaction_service_handle,
         services_fut: try_select_any(join_handles).boxed(),
     }
@@ -98,6 +103,7 @@ pub fn spawn_services(
 pub struct Services {
     pub services_fut: BoxFuture<'static, Result<(), anyhow::Error>>,
     pub account_monitor_handle: AccountMonitorHandle,
+    pub utxo_scanner_handle: UtxoScannerHandle,
     pub transaction_service_handle: TransactionServiceHandle,
 }
 

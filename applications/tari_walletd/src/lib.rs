@@ -125,6 +125,7 @@ pub async fn run_tari_ootle_walletd(
         let scanner = AccountRecoveryService::new(
             wallet_sdk.clone(),
             services.account_monitor_handle.clone(),
+            services.utxo_scanner_handle.clone(),
             config.ootle_wallet_daemon.recovery_abandon_count,
             cipher_seed_birthday,
         );

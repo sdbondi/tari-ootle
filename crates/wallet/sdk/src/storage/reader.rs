@@ -90,6 +90,8 @@ pub trait WalletStoreReader {
         &mut self,
         address: &ComponentAddress,
     ) -> Result<HashSet<ResourceAddress>, WalletStorageError>;
+    /// Returns true if the account has vaults, outputs, queued UTXOs, balance changes or transactions.
+    fn accounts_has_activity(&mut self, address: &ComponentAddress) -> Result<bool, WalletStorageError>;
 
     // Vaults
     fn vaults_get(&mut self, vault_id: &VaultId) -> Result<VaultModel, WalletStorageError>;

@@ -59,11 +59,12 @@ impl AccountMonitorHandle {
             .await
     }
 
+    /// Refreshes the account's vaults and records the balance changes as recovered. The caller scans for stealth UTXOs.
     pub(crate) async fn refresh_account_for_recovery(
         &self,
         account: ComponentAddress,
     ) -> Result<bool, AccountMonitorError> {
-        self.refresh_account_with_source(account, true, BalanceChangeSource::Recovery)
+        self.refresh_account_with_source(account, false, BalanceChangeSource::Recovery)
             .await
     }
 
@@ -140,7 +141,7 @@ mod tests {
         assert_refresh_source(
             |handle, account| async move { handle.refresh_account_for_recovery(account).await },
             BalanceChangeSource::Recovery,
-            true,
+            false,
         )
         .await;
     }

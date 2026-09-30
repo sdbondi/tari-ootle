@@ -6,7 +6,7 @@ use tari_ootle_wallet_sdk::{
     storage::WalletStorageError,
 };
 
-use crate::account_monitor::AccountMonitorError;
+use crate::{account_monitor::AccountMonitorError, utxo_scanner::StealthScannerApiError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AccountRecoveryError {
@@ -20,6 +20,8 @@ pub enum AccountRecoveryError {
     NetworkInterfaceError { details: String },
     #[error("Account monitor error: {0}")]
     AccountMonitorError(#[from] AccountMonitorError),
+    #[error("Stealth UTXO scan error: {0}")]
+    StealthScannerError(#[from] StealthScannerApiError),
     #[error("Invalid response: {details}")]
     InvalidResponse { details: String },
 }
