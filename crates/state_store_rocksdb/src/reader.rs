@@ -2020,6 +2020,15 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         Ok(epoch_checkpoints)
     }
 
+    fn epoch_checkpoint_get_all_for_epoch(&self, epoch: Epoch) -> Result<Vec<EpochCheckpoint>, StorageError> {
+        let query = self.db().cf(epoch_checkpoint::ByEpochQuery)?;
+        let iter = query.query_range_iterator(Ordering::Ascending, epoch..epoch + Epoch(1));
+        let epoch_checkpoints = iter
+            .map(|result| result.map(|(_, checkpoint)| checkpoint))
+            .collect::<Result<_, _>>()?;
+        Ok(epoch_checkpoints)
+    }
+
     fn epoch_checkpoint_get_by_shard_group(
         &self,
         epoch: Epoch,

@@ -194,6 +194,16 @@ fn miscellaneous_rocksdb() {
         },
         proof_elements: vec![],
     };
+    let mut next_commit_proof = commit_proof.clone();
+    next_commit_proof.header.epoch = 1;
+    let next_epoch_checkpoint = EpochCheckpoint::new(
+        CommandCommitProof::new(
+            EndOfEpochCommand::new(FixedHash::default()),
+            next_commit_proof,
+            inclusion_proof.clone(),
+        ),
+        shard_summary.clone(),
+    );
     let proof = CommandCommitProof::new(
         EndOfEpochCommand::new(FixedHash::default()),
         commit_proof,
@@ -202,12 +212,16 @@ fn miscellaneous_rocksdb() {
     let epoch_checkpoint = EpochCheckpoint::new(proof, shard_summary);
 
     tx.epoch_checkpoint_save(&epoch_checkpoint).unwrap();
+    tx.epoch_checkpoint_save(&next_epoch_checkpoint).unwrap();
     let res = tx
         .epoch_checkpoint_get_all_from_epoch(block.epoch(), 1)
         .unwrap()
         .pop()
         .unwrap();
     assert_eq_debug(&res, &epoch_checkpoint);
+    let for_epoch = tx.epoch_checkpoint_get_all_for_epoch(block.epoch()).unwrap();
+    assert_eq!(for_epoch.len(), 1);
+    assert_eq_debug(&for_epoch[0], &epoch_checkpoint);
 
     // foreign parked blocks
     // let justify_qc = QuorumCertificate::genesis(epoch, shard_group);

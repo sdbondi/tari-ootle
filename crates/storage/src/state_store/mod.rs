@@ -445,6 +445,7 @@ pub trait StateStoreReadTransaction: Sized {
         epoch: Epoch,
         limit: usize,
     ) -> Result<Vec<EpochCheckpoint>, StorageError>;
+    fn epoch_checkpoint_get_all_for_epoch(&self, epoch: Epoch) -> Result<Vec<EpochCheckpoint>, StorageError>;
     fn epoch_checkpoint_get_by_shard_group(
         &self,
         epoch: Epoch,

@@ -186,6 +186,13 @@ impl EpochCheckpoint {
         tx.epoch_checkpoint_get_all_from_epoch(from_epoch, limit)
     }
 
+    pub fn get_all_for_epoch<TTx: StateStoreReadTransaction>(
+        tx: &TTx,
+        epoch: Epoch,
+    ) -> Result<Vec<Self>, StorageError> {
+        tx.epoch_checkpoint_get_all_for_epoch(epoch)
+    }
+
     pub fn get_last_checkpoint<TTx: StateStoreReadTransaction>(tx: &TTx) -> Result<Self, StorageError> {
         tx.epoch_checkpoint_get_last()
     }

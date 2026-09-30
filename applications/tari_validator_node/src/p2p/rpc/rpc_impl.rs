@@ -128,10 +128,9 @@ impl<TStateStore: StateStore> ValidatorNodeRpcServiceImpl<TStateStore> {
     async fn held_history(&self, epoch: Epoch) -> Result<HeldHistory, RpcStatus> {
         let checkpoint_shard_groups = self
             .state_store
-            .with_read_tx(|tx| EpochCheckpoint::get_all_from_epoch(tx, epoch, NumPreshards::MAX.num_shards()))
+            .with_read_tx(|tx| EpochCheckpoint::get_all_for_epoch(tx, epoch))
             .map_err(RpcStatus::log_internal_error(LOG_TARGET))?
             .into_iter()
-            .filter(|checkpoint| checkpoint.epoch() == epoch)
             .map(|checkpoint| checkpoint.checked_shard_group())
             .collect::<Result<Vec<_>, _>>()
             .map_err(RpcStatus::log_internal_error(LOG_TARGET))?;
