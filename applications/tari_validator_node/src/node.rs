@@ -52,7 +52,7 @@ impl ValidatorNode {
         Self { services }
     }
 
-    pub async fn start(mut self, mut shutdown: Shutdown) -> Result<(), anyhow::Error> {
+    pub async fn start(mut self, shutdown: Shutdown) -> Result<(), anyhow::Error> {
         let mut hotstuff_events = self.services.consensus_handle.subscribe_to_hotstuff_events()?;
         let mut epoch_manager_events = self.services.epoch_manager.subscribe();
 

@@ -226,7 +226,7 @@ async fn start(cli: &Cli) -> anyhow::Result<()> {
         config.start_port
     );
 
-    let mut shutdown = Shutdown::new();
+    let shutdown = Shutdown::new();
     let signal = shutdown.to_signal().select(exit_signal().context("exit_signal")?);
     let (task_handle, pm_handle) = process_manager::spawn(&config, config_path.clone(), shutdown.to_signal());
     let webserver = webserver::spawn(config, shutdown.to_signal(), pm_handle.clone());

@@ -58,7 +58,7 @@ async fn main() {
     initialize_logging(log_path.as_path(), &base_path, include_str!("./log4rs/cucumber.yml")).unwrap();
 
     // Start the mock server that continues to run for the duration of the tests
-    let mut shutdown = Shutdown::new();
+    let shutdown = Shutdown::new();
 
     let file = fs::File::create("cucumber-output-junit.xml").unwrap();
     let cucumber_fut = TariWorld::cucumber()

@@ -80,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn start(config: Config) -> anyhow::Result<()> {
-    let mut shutdown = Shutdown::new();
+    let shutdown = Shutdown::new();
     let signal = shutdown.to_signal().select(exit_signal()?);
     fs::create_dir_all(&config.base_dir)
         .await

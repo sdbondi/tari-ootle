@@ -62,7 +62,7 @@ async fn main_inner() -> anyhow::Result<()> {
     }
     // Remove the file if it was left behind by a previous run
     let _file = fs::remove_file(config.common.base_path.join("pid"));
-    let mut shutdown = Shutdown::new();
+    let shutdown = Shutdown::new();
     let _guard = init_tracing_subscriber(&cli)?;
 
     run_indexer(config, stream::empty(), shutdown.to_signal()).await?;

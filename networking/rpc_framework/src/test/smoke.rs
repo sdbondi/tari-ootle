@@ -128,7 +128,7 @@ impl TestRpcServer {
         )
     }
 
-    async fn shutdown(mut self) {
+    async fn shutdown(self) {
         self.shutdown.trigger();
         self.handle.await.unwrap();
     }

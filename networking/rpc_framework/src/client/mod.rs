@@ -473,7 +473,7 @@ impl ClientConnector {
     }
 
     pub async fn close(&mut self) {
-        let mut lock = self.shutdown.lock().await;
+        let lock = self.shutdown.lock().await;
         lock.trigger();
     }
 

@@ -2043,7 +2043,7 @@ mod balance_change_handler_tests {
             .unwrap();
 
         let notify = Notify::new(10);
-        let mut shutdown = Shutdown::new();
+        let shutdown = Shutdown::new();
         let (transaction_service, transaction_service_handle) =
             TransactionService::new(notify.clone(), sdk.clone(), shutdown.to_signal());
         let (utxo_worker, utxo_scanner_handle) = StealthUtxoScannerWorker::new(sdk.clone(), notify.clone()).spawn();
@@ -2328,7 +2328,7 @@ mod create_stealth_transfer_statement_handler_tests {
             .unwrap();
 
         let notify = Notify::new(10);
-        let mut shutdown = Shutdown::new();
+        let shutdown = Shutdown::new();
         let (transaction_service, transaction_service_handle) =
             TransactionService::new(notify.clone(), sdk.clone(), shutdown.to_signal());
         let (utxo_worker, utxo_scanner_handle) = StealthUtxoScannerWorker::new(sdk.clone(), notify.clone()).spawn();
