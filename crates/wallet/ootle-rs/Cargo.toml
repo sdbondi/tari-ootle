@@ -34,10 +34,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 async-stream = { workspace = true }
+url = { workspace = true }
 signature = "3.0.0"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "net", "io-util", "time"] }
 env_logger = { workspace = true }
 tracing = { workspace = true, features = ["log-always"] }
 

@@ -1,13 +1,14 @@
 //   Copyright 2025 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use reqwest::{IntoUrl, Url, header, header::HeaderMap};
 use serde::{Serialize, de::DeserializeOwned};
 use tari_engine_types::substate::SubstateId;
 use tari_ootle_transaction::TransactionId;
 use tari_template_lib_types::{ResourceAddress, TemplateAddress, TransactionReceiptAddress};
+use tokio::sync::watch;
 
 use crate::{
     error::IndexerRestClientError,
@@ -60,10 +61,14 @@ use crate::{
     },
 };
 
+/// A REST client for the Ootle indexer.
+///
+/// Clones share one endpoint: [`set_endpoint`](Self::set_endpoint) on any clone redirects every clone's
+/// subsequent requests to the new indexer.
 #[derive(Debug, Clone)]
 pub struct IndexerRestApiClient {
     client: reqwest::Client,
-    endpoint: Url,
+    endpoint: Arc<watch::Sender<Url>>,
 }
 
 impl IndexerRestApiClient {
@@ -90,10 +95,41 @@ impl IndexerRestApiClient {
 
         let client = client_builder.build()?;
 
+        let (endpoint, _) = watch::channel(endpoint.into_url()?);
         Ok(Self {
             client,
-            endpoint: endpoint.into_url()?,
+            endpoint: Arc::new(endpoint),
         })
+    }
+
+    /// The indexer URL that requests are currently sent to.
+    pub fn endpoint(&self) -> Url {
+        self.endpoint.borrow().clone()
+    }
+
+    /// Sends all subsequent requests, from this client and every clone of it, to `endpoint`.
+    ///
+    /// Requests and streams already in flight stay on the previous indexer. Subscribers from
+    /// [`subscribe_endpoint_changes`](Self::subscribe_endpoint_changes) are notified only when the URL actually
+    /// changes.
+    pub fn set_endpoint<T: IntoUrl>(&self, endpoint: T) -> Result<(), IndexerRestClientError> {
+        let endpoint = endpoint.into_url()?;
+        self.endpoint.send_if_modified(|current| {
+            if *current == endpoint {
+                return false;
+            }
+            *current = endpoint;
+            true
+        });
+        Ok(())
+    }
+
+    /// Returns a handle that resolves each time [`set_endpoint`](Self::set_endpoint) moves this client to a
+    /// different indexer, so that long-lived streams can reconnect to it.
+    pub fn subscribe_endpoint_changes(&self) -> EndpointChanges {
+        EndpointChanges {
+            rx: self.endpoint.subscribe(),
+        }
     }
 
     pub async fn get_connections(&self) -> Result<GetConnectionsResponse, IndexerRestClientError> {
@@ -211,7 +247,7 @@ impl IndexerRestApiClient {
         req: GetUtxoUpdatesRequest,
     ) -> Result<ProtobufStream<protobuf::UtxoUpdatePayload>, IndexerRestClientError> {
         const PATH: &str = "utxos/stream";
-        let url = format!("{}{}", self.endpoint, PATH);
+        let url = self.url_for(PATH);
 
         let resp = self
             .client
@@ -303,6 +339,12 @@ impl IndexerRestApiClient {
         sse.into_stream()
     }
 
+    /// Joins `path` onto the current endpoint. The endpoint is read once, so a request built from the result goes
+    /// to a single indexer even if [`set_endpoint`](Self::set_endpoint) runs while it is in flight.
+    fn url_for(&self, path: &str) -> String {
+        format!("{}{}", *self.endpoint.borrow(), path)
+    }
+
     async fn send_sse<P: Into<String>, T: Serialize>(
         &self,
         path: P,
@@ -316,7 +358,7 @@ impl IndexerRestApiClient {
             source: e.into(),
         })?;
 
-        let mut url = format!("{}{}", self.endpoint, path);
+        let mut url = self.url_for(&path);
         if !query.is_empty() {
             url.push('?');
             url.push_str(&query);
@@ -339,7 +381,7 @@ impl IndexerRestApiClient {
             source: e.into(),
         })?;
 
-        let mut url = format!("{}{}", self.endpoint, path);
+        let mut url = self.url_for(&path);
         if !query.is_empty() {
             url.push('?');
             url.push_str(&query);
@@ -356,14 +398,30 @@ impl IndexerRestApiClient {
     ) -> Result<R, IndexerRestClientError> {
         let path = path.into();
 
-        let resp = self
-            .client
-            .post(format!("{}{}", self.endpoint, path))
-            .json(&request)
-            .send()
-            .await?;
+        let url = self.url_for(&path);
+        let resp = self.client.post(url).json(&request).send().await?;
 
         handle_json_response(resp, path).await
+    }
+}
+
+/// Notifies of endpoint changes on an [`IndexerRestApiClient`]. Created by
+/// [`IndexerRestApiClient::subscribe_endpoint_changes`].
+#[derive(Debug, Clone)]
+pub struct EndpointChanges {
+    rx: watch::Receiver<Url>,
+}
+
+impl EndpointChanges {
+    /// Waits until the client's endpoint changes and returns the new URL. Changes made before this handle was
+    /// created are not reported.
+    ///
+    /// Once every clone of the client has been dropped the endpoint can no longer change, and this never resolves.
+    pub async fn changed(&mut self) -> Url {
+        if self.rx.changed().await.is_err() {
+            return std::future::pending().await;
+        }
+        self.rx.borrow_and_update().clone()
     }
 }
 
@@ -386,5 +444,60 @@ async fn handle_json_response<T: DeserializeOwned>(
     match resp.json().await {
         Ok(r) => Ok(r),
         Err(e) => Err(IndexerRestClientError::DeserializeResponse { path, source: e.into() }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn set_endpoint_redirects_every_clone() {
+        let client = IndexerRestApiClient::connect("http://indexer-a.example:18300").unwrap();
+        let clone = client.clone();
+
+        clone.set_endpoint("http://indexer-b.example:18300").unwrap();
+
+        assert_eq!(client.endpoint().as_str(), "http://indexer-b.example:18300/");
+        assert_eq!(
+            client.url_for("substates/fetch"),
+            "http://indexer-b.example:18300/substates/fetch"
+        );
+    }
+
+    #[tokio::test]
+    async fn subscribers_hear_a_change_to_a_different_endpoint() {
+        let client = IndexerRestApiClient::connect("http://indexer-a.example:18300").unwrap();
+        let mut changes = client.subscribe_endpoint_changes();
+
+        client.set_endpoint("http://indexer-b.example:18300").unwrap();
+
+        let url = tokio::time::timeout(Duration::from_secs(1), changes.changed())
+            .await
+            .expect("change was not reported");
+        assert_eq!(url.as_str(), "http://indexer-b.example:18300/");
+    }
+
+    #[tokio::test]
+    async fn setting_the_current_endpoint_is_not_a_change() {
+        let client = IndexerRestApiClient::connect("http://indexer-a.example:18300").unwrap();
+        let mut changes = client.subscribe_endpoint_changes();
+
+        client.set_endpoint("http://indexer-a.example:18300/").unwrap();
+
+        tokio::time::timeout(Duration::from_millis(50), changes.changed())
+            .await
+            .unwrap_err();
+    }
+
+    #[test]
+    fn an_unparseable_endpoint_is_refused_and_the_current_one_kept() {
+        let client = IndexerRestApiClient::connect("http://indexer-a.example:18300").unwrap();
+
+        client.set_endpoint("not a url").unwrap_err();
+
+        assert_eq!(client.endpoint().as_str(), "http://indexer-a.example:18300/");
     }
 }

@@ -121,6 +121,7 @@ impl EventStream {
                     return;
                 },
             };
+            let mut endpoint_changes = client.subscribe_endpoint_changes();
             loop {
                 let _enter = self.span.enter();
                 if self.paused.wait_unpaused().await {
@@ -143,6 +144,10 @@ impl EventStream {
                             debug!("event stream paused");
                             break;
                         },
+                        new_endpoint = endpoint_changes.changed() => {
+                            debug!(%new_endpoint, "indexer endpoint changed, reconnecting event stream");
+                            break;
+                        },
                         event = events.next() =>  {
                             match event {
                                 Some(Ok(evt)) => {
@@ -155,8 +160,9 @@ impl EventStream {
                                     break;
                                 },
                                 None => {
-                                    debug!("event stream ended");
-                                    return;
+                                    debug!("event stream closed by the indexer, reconnecting");
+                                    time::sleep(Duration::from_secs(1)).await;
+                                    break;
                                 }
                             }
                         }
@@ -164,5 +170,43 @@ impl EventStream {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use futures::{StreamExt, pin_mut};
+    use tari_indexer_client::rest_api_client::IndexerRestApiClient;
+
+    use super::*;
+    use crate::provider::test_sse_server::spawn_sse_server;
+
+    async fn next_event_type(
+        stream: &mut (impl Stream<Item = Result<sse::Event, EventStreamError>> + Unpin),
+    ) -> String {
+        let event = time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("no event arrived")
+            .expect("stream ended")
+            .expect("stream errored");
+        event.event_type
+    }
+
+    #[tokio::test]
+    async fn the_stream_follows_the_client_to_a_new_endpoint() {
+        let (url_a, _) = spawn_sse_server(Some("FromA")).await;
+        let (url_b, _) = spawn_sse_server(Some("FromB")).await;
+        let client = Arc::new(IndexerRestApiClient::connect(url_a).unwrap());
+        let paused = Paused::default();
+        paused.set_paused(false);
+
+        let stream = EventStream::new(Arc::downgrade(&client), paused.waiter()).into_stream();
+        pin_mut!(stream);
+        assert_eq!(next_event_type(&mut stream).await, "FromA");
+
+        client.set_endpoint(url_b).unwrap();
+        assert_eq!(next_event_type(&mut stream).await, "FromB");
     }
 }

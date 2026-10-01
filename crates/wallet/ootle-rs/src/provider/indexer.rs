@@ -8,6 +8,7 @@ use std::{
 };
 
 use tari_indexer_client::{
+    error::IndexerRestClientError,
     rest_api_client::IndexerRestApiClient,
     types::{GetSubstateRequest, GetSubstatesRequest, GetUtxosRequest, SubmitTransactionRequest},
 };
@@ -29,6 +30,7 @@ use tari_template_lib_types::{
     crypto::{RistrettoPublicKeyBytes, UtxoTag},
 };
 use tracing::debug;
+use url::Url;
 
 use crate::{
     Address,
@@ -81,6 +83,26 @@ impl<Wallet> IndexerProvider<Wallet> {
 
     pub(crate) fn client(&self) -> &IndexerRestApiClient {
         &self.client
+    }
+
+    /// The indexer URL this provider currently sends requests to.
+    pub fn indexer_url(&self) -> Url {
+        self.client.endpoint()
+    }
+
+    /// Sends all subsequent requests from this provider, its clones and the streams it created to the indexer at
+    /// `url`. This is the hook for applications that implement their own indexer failover.
+    ///
+    /// Pending transactions keep being watched: the finalization stream reconnects to the new indexer. A transaction
+    /// that finalizes during the reconnect is resolved by the direct result query that
+    /// [`PendingTransaction::watch`] makes once its timeout elapses. Streams
+    /// from [`watch_events`](Self::watch_events) end with
+    /// [`EventWatcherError::EndpointChanged`](crate::provider::EventWatcherError::EndpointChanged), because event ids
+    /// are assigned by each indexer and cannot resume a stream on another one. A
+    /// [`watch_stealth_utxos`](Self::watch_stealth_utxos) pass in flight finishes against the previous indexer; its
+    /// shard cursor is valid on any indexer, so the next pass picks up the new one.
+    pub fn set_indexer_url<T: AsRef<str>>(&self, url: T) -> Result<(), IndexerRestClientError> {
+        self.client.set_endpoint(url.as_ref())
     }
 
     pub async fn get_network(&self) -> ProviderResult<Network> {

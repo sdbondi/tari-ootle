@@ -31,6 +31,9 @@ mod tx_watcher;
 mod utxo_watcher;
 mod want_input;
 
+#[cfg(test)]
+mod test_sse_server;
+
 pub use balance::*;
 pub use builder::*;
 pub use error::*;

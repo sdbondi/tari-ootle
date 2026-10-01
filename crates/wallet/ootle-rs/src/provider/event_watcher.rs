@@ -14,6 +14,7 @@ use tari_indexer_client::{
 use tari_ootle_common_types::engine_types::substate::SubstateId;
 use tari_template_lib_types::{ResourceAddress, TemplateAddress};
 use tracing::error;
+use url::Url;
 
 /// Filter for subscribing to transaction events via SSE.
 #[derive(Debug, Clone, Default)]
@@ -56,6 +57,13 @@ pub enum EventWatcherError {
     StreamError(#[from] SseStreamError),
     #[error("Failed to parse transaction event: {0}")]
     ParseError(#[from] serde_json::Error),
+    /// The provider was switched to another indexer. Event ids are assigned by each indexer, so the last id
+    /// received cannot resume on the new one; open a new stream and choose its starting point afresh.
+    #[error(
+        "The provider switched to the indexer at {new_endpoint}; event ids from the previous indexer do not apply to \
+         it"
+    )]
+    EndpointChanged { new_endpoint: Url },
 }
 
 /// A stream of transaction events from the indexer.
@@ -82,6 +90,7 @@ impl TransactionEventStream {
                 },
             };
 
+            let mut endpoint_changes = client.subscribe_endpoint_changes();
             let req = self.filter.into_request();
             let mut events = match client.sse_transaction_events(req).await {
                 Ok(stream) => stream,
@@ -93,7 +102,14 @@ impl TransactionEventStream {
             };
 
             loop {
-                match events.next().await {
+                let event = tokio::select! {
+                    new_endpoint = endpoint_changes.changed() => {
+                        yield Err(EventWatcherError::EndpointChanged { new_endpoint });
+                        return;
+                    },
+                    event = events.next() => event,
+                };
+                match event {
                     Some(Ok(evt)) => {
                         match evt.try_parse_event::<TransactionEvent>() {
                             Ok(mut tx_event) => {
@@ -122,5 +138,44 @@ impl TransactionEventStream {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::Arc, time::Duration};
+
+    use futures::{StreamExt, pin_mut};
+
+    use super::*;
+    use crate::provider::test_sse_server::spawn_sse_server;
+
+    #[tokio::test]
+    async fn switching_endpoint_ends_the_stream() {
+        let (url_a, mut connected_a) = spawn_sse_server(None).await;
+        let (url_b, _) = spawn_sse_server(None).await;
+        let client = Arc::new(IndexerRestApiClient::connect(url_a).unwrap());
+
+        let stream =
+            TransactionEventStream::new(Arc::downgrade(&client), TransactionEventFilter::default()).into_stream();
+        pin_mut!(stream);
+        let first = stream.next();
+        pin_mut!(first);
+        tokio::select! {
+            _ = connected_a.recv() => {},
+            _ = &mut first => panic!("stream yielded before the endpoint changed"),
+        }
+
+        client.set_endpoint(url_b.as_str()).unwrap();
+        let err = tokio::time::timeout(Duration::from_secs(5), first)
+            .await
+            .expect("stream did not end")
+            .expect("stream ended without an error")
+            .unwrap_err();
+        assert!(
+            matches!(&err, EventWatcherError::EndpointChanged { new_endpoint } if new_endpoint.as_str() == url_b),
+            "unexpected error: {err}"
+        );
+        assert!(stream.next().await.is_none());
     }
 }

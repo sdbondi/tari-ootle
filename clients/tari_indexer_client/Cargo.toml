@@ -28,16 +28,17 @@ thiserror = { workspace = true, optional = true }
 ts-rs = { workspace = true, optional = true }
 prost = { workspace = true }
 serde_urlencoded = { version = "0.7.1", optional = true }
+tokio = { workspace = true, features = ["sync"], optional = true }
 futures = { workspace = true }
 utoipa = { workspace = true, optional = true, features = ["time"] }
 time = { workspace = true, features = ["serde", "serde-human-readable"] }
 memchr = "2.7.6"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [features]
 default = ["client"]
 ts = ["ts-rs", "tari_template_lib_types/ts", "tari_engine_types/ts", "tari_ootle_common_types/ts"]
-client = ["dep:reqwest", "dep:thiserror", "dep:serde_urlencoded", "dep:bytes"]
+client = ["dep:reqwest", "dep:thiserror", "dep:serde_urlencoded", "dep:bytes", "dep:tokio"]
 utoipa = ["dep:utoipa"]
