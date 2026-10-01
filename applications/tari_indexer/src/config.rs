@@ -471,19 +471,20 @@ impl SubConfigPath for IndexerConfig {
 pub struct IndexerRateLimitsConfig {
     /// On by default, since the API is public. Local networks such as the swarm turn it off.
     pub enabled: bool,
-    /// POST /transactions – default 20 req / 10s burst (~120/min sustained)
+    /// POST /transactions – default 50 req / 10s burst (5/s sustained)
     pub transactions_submit_rate: RefillRate,
-    /// POST /transactions/dry-run – default 20 req / 10s burst (~120/min sustained)
+    /// POST /transactions/dry-run – default 30 req / 10s burst (3/s sustained). Below submit: a dry-run fetches
+    /// every input and executes the transaction on this indexer.
     pub transactions_dry_run_submit_rate: RefillRate,
-    /// POST /substates/fetch – default 10 req / 10s burst (~60/min sustained)
+    /// /substates/* – default 300 req / 10s burst (30/s sustained)
     pub substates_rate: RefillRate,
-    /// POST /utxos/fetch – default 20 req / 10s burst (~120/min sustained)
+    /// /utxos/* – default 300 req / 10s burst (30/s sustained)
     pub utxos_fetch_rate: RefillRate,
-    /// GET /non-fungibles – default 10 req / 10s burst (~60/min sustained)
+    /// GET /non-fungibles – default 200 req / 10s burst (20/s sustained)
     pub non_fungibles_rate: RefillRate,
-    /// GET /transactions/* read endpoints – default 5 req / 10s burst (~30/min sustained)
+    /// GET /transactions/* read endpoints – default 200 req / 10s burst (20/s sustained)
     pub transactions_rate: RefillRate,
-    /// Maximum concurrent SSE connections per IP (default: 5)
+    /// Maximum concurrent SSE connections per IP (default: 10)
     pub sse_max_connections_per_ip: usize,
     /// Trust X-Forwarded-For / X-Real-IP proxy headers (default: false).
     /// Only enable when the indexer is behind a trusted reverse proxy.
@@ -495,13 +496,13 @@ impl Default for IndexerRateLimitsConfig {
         let window = Duration::from_secs(10);
         Self {
             enabled: true,
-            transactions_submit_rate: RefillRate::new(20.0, window).unwrap(),
-            transactions_dry_run_submit_rate: RefillRate::new(20.0, window).unwrap(),
-            substates_rate: RefillRate::new(20.0, Duration::from_secs(20)).unwrap(),
-            utxos_fetch_rate: RefillRate::new(20.0, window).unwrap(),
-            non_fungibles_rate: RefillRate::new(10.0, window).unwrap(),
-            transactions_rate: RefillRate::new(5.0, window).unwrap(),
-            sse_max_connections_per_ip: 5,
+            transactions_submit_rate: RefillRate::new(50.0, window).unwrap(),
+            transactions_dry_run_submit_rate: RefillRate::new(30.0, window).unwrap(),
+            substates_rate: RefillRate::new(300.0, window).unwrap(),
+            utxos_fetch_rate: RefillRate::new(300.0, window).unwrap(),
+            non_fungibles_rate: RefillRate::new(200.0, window).unwrap(),
+            transactions_rate: RefillRate::new(200.0, window).unwrap(),
+            sse_max_connections_per_ip: 10,
             trust_proxy_headers: false,
         }
     }
