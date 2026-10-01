@@ -3,6 +3,69 @@
 All notable changes to this project will be documented in this file.
 See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [0.43.0](https://github.com/tari-project/tari-ootle/compare/v0.42.0...v0.43.0) (2026-10-01)
+
+A security release on v0.42.0. Empty proofs no longer pass resource access rules, covenant balance
+proofs are metered, transactions declare at most 1,024 inputs, and consensus drops malformed and
+unauthorised peer messages. The indexer bounds dry-runs and event queries.
+
+### ⚠️ Upgrade notes
+
+- **Every validator upgrades and restarts together. No reset, no data migration.** Execution and
+  validation rules change without a protocol version gate, so validators on different binaries
+  compute different results for the same transaction.
+- **Transactions may declare at most 1,024 inputs.** Every node rejects a transaction with more at
+  ingress and in block validation. The wallet selects at most 992 stealth inputs. (#2744)
+- **Covenant spends cost more.** A covenant balance proof is charged native points, and a statement
+  with a duplicate or out-of-range covenant claim is rejected. The wallet fee estimate does not yet
+  include the proof charge. (#2739)
+- **A zero-amount or empty proof is an error.** Creating one fails with `OperationNotAllowed`, and
+  an empty proof no longer satisfies a `resource(..)` access rule.
+- **Operators — indexer rate limits are on by default.** An indexer behind a reverse proxy must set
+  `indexer.rate_limits.trust_proxy_headers = true`, or every client shares the proxy's bucket.
+  (#2744)
+- **Indexer dry-runs fail on a missing or down input** with a 400, as consensus does, and a rejected
+  transaction is a 400 rather than a 500. (#2744)
+- **The C FFI ABI tag is `ootle-sdk-ffi-c/17`.** Hosts must expect the new tag. (#2736)
+
+### Consensus
+
+- `fix` — **Foreign proposals are verified against the committee of the shard group they name.**
+  (#2737)
+- `fix` — **Malformed and unauthorised peer messages are dropped** before they reach consensus.
+  (#2738)
+- `fix` — **A validator restarted across an epoch boundary resumes its unfinished leaf epoch**
+  instead of stalling at height 0. (#2746)
+- `fix` — **A node serves bounded state sync only for the epochs and shards it holds**, and a
+  syncing node stores a checkpoint only once its state has synced. (#2733)
+
+### Engine
+
+- `fix!` — **An empty proof no longer counts as holding its resource.** A proof of amount 0 or of no
+  token ids could pass any rule gated on the resource, including mint, burn, withdraw and owner
+  rules.
+- `fix!` — **Covenant balance proofs are charged and verified once per partition**, so repeated
+  covenant atoms cost a cache lookup. (#2739)
+- `fix!` — **A transaction declares at most 1,024 inputs.** (#2744)
+
+### Indexer
+
+- `fix!` — **Dry-runs are validated and their inputs fetched in batches**, and per-IP rate limits are
+  on by default. (#2744)
+- `fix` — **An event query examines a bounded number of rows**, paging with a `before_id` cursor.
+  (#2742)
+- `fix` — **Wildcard topic filters containing `_` match**, e.g. `my_template.*`. (#2740)
+
+### Wallet
+
+- `fix` — **Seed recovery finds stealth-only keys and removes the accounts it found unused**, and
+  `accounts.create` works after recovery. (#2735)
+- `fix!` — **The C FFI ABI tag is bumped to `ootle-sdk-ffi-c/17`.** (#2736)
+
+### Other
+
+- `fix` — **The swarm creates the claim key before starting any validator.** (#2741)
+
 ## [0.42.0](https://github.com/tari-project/tari-ootle/compare/v0.41.4...v0.42.0) (2026-09-30)
 
 The testnet reset release. Every network restarts at `ProtocolVersion::V0` with a wiped state.
