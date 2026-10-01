@@ -110,6 +110,16 @@ impl InstanceManager {
                 )
             })?;
 
+            // The key outlives a restart, and creating it again fails because the account name is taken
+            if instance.instance_type.is_wallet_daemon_create_key() &&
+                fs::try_exists(self.base_path.join("processes").join("claim_key.json"))
+                    .await
+                    .unwrap_or(false)
+            {
+                info!("Claim key already exists, skipping {}", instance.name);
+                continue;
+            }
+
             let mut settings = self.global_settings.clone();
             settings.extend(instance.settings.drain());
             for i in 0..instance.num_instances {
