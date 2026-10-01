@@ -150,7 +150,9 @@ fn get_base_config(cli: &Cli) -> anyhow::Result<Config> {
             .use_execution_for(InstanceType::TariWalletDaemon)
             // This relies on the wallet daemon name being "Wallet Daemon" and the wallet daemon base path not being overridden
             .with_base_path_override("wallet-daemon-00")
-            .with_num_instances(1),
+            .with_num_instances(1)
+            // Validators read the key when they start, so it must exist before the first one does
+            .run_to_completion(),
         InstanceConfig::new(InstanceType::MinoTariNode).with_name("Minotari Node"),
         // WARN: more than one wallet will break things because a random wallet is selected each time (hashmaps) for
         // mining and registrations, so a given wallet is not guaranteed to have funds. There is no big need to fix

@@ -113,15 +113,24 @@ impl InstanceManager {
             let mut settings = self.global_settings.clone();
             settings.extend(instance.settings.drain());
             for i in 0..instance.num_instances {
-                self.fork_new(
-                    executable,
-                    instance.instance_type,
-                    instance.instance_name(i),
-                    instance.base_path_override().cloned(),
-                    instance.envs.clone(),
-                    settings.clone(),
-                )
-                .await?;
+                let name = instance.instance_name(i);
+                let instance_id = self
+                    .fork_new(
+                        executable,
+                        instance.instance_type,
+                        name.clone(),
+                        instance.base_path_override().cloned(),
+                        instance.envs.clone(),
+                        settings.clone(),
+                    )
+                    .await?;
+                if instance.run_to_completion {
+                    info!("Waiting for {name} to complete before starting further instances");
+                    let status = self.wait(instance_id).await?;
+                    if !status.success() {
+                        return Err(anyhow!("{name} did not complete successfully: {status}"));
+                    }
+                }
             }
         }
         Ok(())

@@ -126,6 +126,10 @@ pub struct InstanceConfig {
     /// Override the initial port-allocation port for this instance.
     #[serde(default, rename = "start_port")]
     pub start_port_override: Option<u16>,
+    /// Start-up waits for each of these instances to exit successfully before starting the instances
+    /// configured after it, for a one-shot whose output those instances read when they start.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub run_to_completion: bool,
 }
 
 impl InstanceConfig {
@@ -139,6 +143,7 @@ impl InstanceConfig {
             settings: HashMap::new(),
             start_port_override: None,
             envs: Vec::new(),
+            run_to_completion: false,
         }
     }
 
@@ -160,6 +165,11 @@ impl InstanceConfig {
     #[allow(dead_code)]
     pub fn with_setting<K: Into<String>, V: ToString>(mut self, key: K, value: V) -> Self {
         self.settings.insert(key.into(), value.to_string());
+        self
+    }
+
+    pub fn run_to_completion(mut self) -> Self {
+        self.run_to_completion = true;
         self
     }
 
@@ -275,5 +285,35 @@ fn add_ext(path: PathBuf) -> PathBuf {
         path.with_extension("exe")
     } else {
         path
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_to_completion_is_read_from_the_config_and_off_by_default() {
+        let one_shot: InstanceConfig = toml::from_str(
+            r#"
+            name = "Wallet Daemon Create Key"
+            instance_type = "TariWalletDaemonCreateKey"
+            num_instances = 1
+            run_to_completion = true
+            "#,
+        )
+        .unwrap();
+        assert!(one_shot.run_to_completion);
+
+        let node: InstanceConfig = toml::from_str(
+            r#"
+            name = "Validator node"
+            instance_type = "TariValidatorNode"
+            num_instances = 1
+            "#,
+        )
+        .unwrap();
+        assert!(!node.run_to_completion);
+        assert!(!toml::to_string(&node).unwrap().contains("run_to_completion"));
     }
 }
