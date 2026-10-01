@@ -35,6 +35,7 @@ use tari_ootle_storage::{
     StateStore,
     consensus_models::{
         Block,
+        BookkeepingEpochAgnosticRead,
         BookkeepingModel,
         EpochCheckpoint,
         ForeignProposalRecord,
@@ -285,20 +286,15 @@ impl<TConsensusSpec: ConsensusSpec> HotstuffWorker<TConsensusSpec> {
 
     async fn get_starting_epoch(&self) -> Result<(Epoch, FixedHash), HotStuffError> {
         // NOTE: we assume the latest checkpoint has been synced already
-        let checkpoint = self
-            .state_store
-            .with_read_tx(|tx| EpochCheckpoint::get_last_checkpoint(tx))
-            .optional()?;
+        let (last_finalised_epoch, leaf_epoch) = self.state_store.with_read_tx(|tx| {
+            let checkpoint = EpochCheckpoint::get_last_checkpoint(tx).optional()?;
+            let leaf = LeafBlock::get_any(tx).optional()?;
+            Ok::<_, HotStuffError>((checkpoint.map(|ch| ch.epoch()), leaf.map(|leaf| leaf.epoch())))
+        })?;
 
-        let last_finalised_epoch = checkpoint.map(|ch| ch.epoch());
-
-        let current_epoch = {
-            // Typically, the current epoch = last finalised epoch + 1. Unless, the epoch was not finalised yet at
-            // startup.
-            match last_finalised_epoch {
-                Some(epoch) => epoch + Epoch(1),
-                None => self.epoch_manager.current_epoch().await?,
-            }
+        let current_epoch = match select_starting_epoch(last_finalised_epoch, leaf_epoch) {
+            Some(epoch) => epoch,
+            None => self.epoch_manager.current_epoch().await?,
         };
 
         let epoch_hash = self.epoch_manager.get_epoch_hash(current_epoch).await?;
@@ -1764,5 +1760,48 @@ impl<TAddr> CatchUp<TAddr> {
 
     pub fn has_timed_out(&self) -> bool {
         Instant::now() >= self.timeout_at
+    }
+}
+
+/// The epoch consensus resumes in, or `None` for a node with no consensus state, which joins at the oracle's epoch.
+///
+/// A finalised checkpoint means its epoch ended, so consensus resumes in the next one. Without one, the persisted
+/// leaf's epoch has not ended: its committee either stalled there or moved on, and state sync has already decided
+/// which (a committee that moved on is synced from, leaving a checkpoint). Resuming at the leaf keeps this node on its
+/// committee's chain; `seed_next_epoch_from_oracle` then drives the transition to the next epoch. Starting at the
+/// oracle's epoch instead would create a genesis block the rest of the committee does not share.
+fn select_starting_epoch(last_finalised_epoch: Option<Epoch>, leaf_epoch: Option<Epoch>) -> Option<Epoch> {
+    let after_checkpoint = last_finalised_epoch.map(|epoch| epoch + Epoch(1));
+    after_checkpoint.max(leaf_epoch)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod select_starting_epoch {
+        use super::*;
+
+        #[test]
+        fn a_node_without_consensus_state_joins_at_the_oracle_epoch() {
+            assert_eq!(select_starting_epoch(None, None), None);
+        }
+
+        #[test]
+        fn an_unfinalised_leaf_epoch_is_resumed() {
+            assert_eq!(select_starting_epoch(None, Some(Epoch(1))), Some(Epoch(1)));
+        }
+
+        #[test]
+        fn the_epoch_after_a_checkpoint_is_resumed() {
+            assert_eq!(select_starting_epoch(Some(Epoch(1)), None), Some(Epoch(2)));
+            assert_eq!(select_starting_epoch(Some(Epoch(1)), Some(Epoch(1))), Some(Epoch(2)));
+            assert_eq!(select_starting_epoch(Some(Epoch(1)), Some(Epoch(2))), Some(Epoch(2)));
+        }
+
+        #[test]
+        fn a_checkpoint_synced_past_the_leaf_wins() {
+            assert_eq!(select_starting_epoch(Some(Epoch(3)), Some(Epoch(1))), Some(Epoch(4)));
+        }
     }
 }
