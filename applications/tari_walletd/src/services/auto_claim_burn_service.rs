@@ -577,7 +577,12 @@ fn stored_outcome(transaction: &WalletTransaction) -> Option<ClaimOutcome> {
     match transaction.status {
         TransactionStatus::New | TransactionStatus::DryRun | TransactionStatus::Pending => None,
         TransactionStatus::Accepted | TransactionStatus::Rejected | TransactionStatus::OnlyFeeAccepted => {
-            transaction.finalize.as_ref().map(finalized_outcome)
+            Some(match &transaction.finalize {
+                Some(finalize) => finalized_outcome(finalize),
+                None if transaction.status.is_accepted() => ClaimOutcome::Accepted,
+                // A consensus abort is final with no execution result.
+                None => ClaimOutcome::Failed(transaction.status.to_string()),
+            })
         },
         TransactionStatus::InvalidTransaction | TransactionStatus::DryRunFailed => Some(ClaimOutcome::Failed(
             transaction
