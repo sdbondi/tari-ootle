@@ -22,10 +22,10 @@
 
 use libp2p::PeerId;
 use log::*;
-use tari_consensus::hotstuff::HotstuffEvent;
+use tari_consensus::{hotstuff::HotstuffEvent, messages::HotstuffMessage};
 use tari_epoch_manager::EpochManagerEvent;
 use tari_networking::{GossipMessage, NetworkingHandle};
-use tari_ootle_p2p::{TariMessagingSpec, proto};
+use tari_ootle_p2p::TariMessagingSpec;
 use tokio::{
     sync::{broadcast, mpsc},
     task,
@@ -44,7 +44,7 @@ pub fn spawn(
 ) -> (
     ConsensusGossipHandle,
     JoinHandle<anyhow::Result<()>>,
-    mpsc::Receiver<(PeerId, proto::consensus::HotStuffMessage)>,
+    mpsc::Receiver<(PeerId, HotstuffMessage)>,
 ) {
     let (tx_consensus_gossip, rx_consensus_gossip) = mpsc::channel(10);
 

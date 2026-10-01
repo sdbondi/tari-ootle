@@ -22,7 +22,7 @@
 
 use libp2p::{PeerId, gossipsub::MessageAcceptance};
 use log::*;
-use tari_consensus::hotstuff::HotstuffEvent;
+use tari_consensus::{hotstuff::HotstuffEvent, messages::HotstuffMessage};
 use tari_epoch_manager::EpochManagerEvent;
 use tari_networking::{GossipMessage, NetworkingHandle, NetworkingService};
 use tari_ootle_p2p::{TariMessagingSpec, proto};
@@ -46,7 +46,7 @@ pub(super) struct ConsensusGossipService {
     networking: NetworkingHandle<TariMessagingSpec>,
     codec: ProstCodec<proto::consensus::HotStuffMessage>,
     rx_gossip: mpsc::Receiver<GossipMessage>,
-    tx_consensus_gossip: mpsc::Sender<(PeerId, proto::consensus::HotStuffMessage)>,
+    tx_consensus_gossip: mpsc::Sender<(PeerId, HotstuffMessage)>,
 }
 
 impl ConsensusGossipService {
@@ -55,7 +55,7 @@ impl ConsensusGossipService {
         consensus_events: broadcast::Receiver<HotstuffEvent>,
         networking: NetworkingHandle<TariMessagingSpec>,
         rx_gossip: mpsc::Receiver<GossipMessage>,
-        tx_consensus_gossip: mpsc::Sender<(PeerId, proto::consensus::HotStuffMessage)>,
+        tx_consensus_gossip: mpsc::Sender<(PeerId, HotstuffMessage)>,
     ) -> Self {
         Self {
             epoch_manager_events,
@@ -106,11 +106,16 @@ impl ConsensusGossipService {
         let (message_id, propagation_source) = gossip.validation_key();
         let from = gossip.source;
 
-        let decoded = self.codec.decode_from(&mut gossip.message.data.as_slice()).await;
+        let decoded = self
+            .codec
+            .decode_from(&mut gossip.message.data.as_slice())
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|(_, msg)| HotstuffMessage::try_from(msg));
 
-        // gossipsub withholds the message from the mesh until a verdict is reported. A message we
-        // cannot decode is withheld and counted against the peer that sent it; anything well-formed
-        // is accepted so it continues to propagate.
+        // gossipsub withholds the message from the mesh until a verdict is reported. A message that
+        // does not convert to a HotstuffMessage is withheld and counted against the peer that sent it;
+        // anything well-formed is accepted so it continues to propagate.
         let acceptance = if decoded.is_ok() {
             MessageAcceptance::Accept
         } else {
@@ -124,7 +129,7 @@ impl ConsensusGossipService {
             warn!(target: LOG_TARGET, "Failed to report gossip validation result: {e}");
         }
 
-        let (_, msg) = decoded.map_err(|e| ConsensusGossipError::InvalidMessage(e.into()))?;
+        let msg = decoded.map_err(ConsensusGossipError::InvalidMessage)?;
 
         self.tx_consensus_gossip
             .send((from, msg))

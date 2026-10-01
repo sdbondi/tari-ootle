@@ -133,6 +133,7 @@ pub struct TestInboundMessaging {
     local_address: TestAddress,
     receiver: mpsc::Receiver<(TestAddress, HotstuffMessage)>,
     loopback_receiver: mpsc::Receiver<HotstuffMessage>,
+    malformed_receiver: mpsc::Receiver<InboundMessagingError>,
 }
 
 impl TestInboundMessaging {
@@ -140,11 +141,13 @@ impl TestInboundMessaging {
         local_address: TestAddress,
         receiver: mpsc::Receiver<(TestAddress, HotstuffMessage)>,
         loopback_receiver: mpsc::Receiver<HotstuffMessage>,
+        malformed_receiver: mpsc::Receiver<InboundMessagingError>,
     ) -> Self {
         Self {
             local_address,
             receiver,
             loopback_receiver,
+            malformed_receiver,
         }
     }
 }
@@ -156,6 +159,7 @@ impl InboundMessaging for TestInboundMessaging {
         tokio::select! {
             msg = self.receiver.recv() => msg.map(Ok),
             msg = self.loopback_receiver.recv() => msg.map(|msg| Ok((self.local_address.clone(), msg))),
+            Some(err) = self.malformed_receiver.recv() => Some(Err(err)),
         }
     }
 }

@@ -153,6 +153,7 @@ impl ValidatorBuilder {
         let (tx_new_transactions, rx_new_transactions) = mpsc::channel(100);
         let (tx_hs_message, rx_hs_message) = mpsc::channel(100);
         let (tx_leader, rx_leader) = mpsc::channel(100);
+        let (tx_malformed_message, rx_malformed_message) = mpsc::channel(100);
 
         let epoch_manager = self.epoch_manager.as_ref().unwrap().clone_for(
             self.address.clone(),
@@ -177,7 +178,8 @@ impl ValidatorBuilder {
         });
         let (outbound_messaging, rx_loopback) =
             TestOutboundMessaging::create(epoch_manager.clone(), tx_leader, tx_broadcast, observer);
-        let inbound_messaging = TestInboundMessaging::new(self.address.clone(), rx_hs_message, rx_loopback);
+        let inbound_messaging =
+            TestInboundMessaging::new(self.address.clone(), rx_hs_message, rx_loopback, rx_malformed_message);
 
         // Add XTR to the store, since this is implicit for all transactions.
         let (addr, xtr) = tari_ootle_app_utilities::genesis_resources::get_stealth_tari_resource(
@@ -224,6 +226,7 @@ impl ValidatorBuilder {
         let mut worker = ConsensusWorker::new(shutdown_signal).no_initial_delay();
         let handle = tokio::spawn(async move { worker.run(context).await });
 
+        let tx_inbound_message = tx_hs_message.clone();
         let channels = ValidatorChannels {
             address: self.address.clone(),
             shard_group: self.shard_group,
@@ -247,6 +250,8 @@ impl ValidatorBuilder {
             epoch_manager,
             events: tx_events.subscribe(),
             current_state_machine_state: rx_current_state,
+            tx_inbound_message,
+            tx_malformed_message,
             handle,
         };
         (channels, validator)

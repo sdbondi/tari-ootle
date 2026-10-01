@@ -4,6 +4,7 @@
 use tari_consensus::{
     hotstuff::{ConsensusCurrentState, CurrentView, HotstuffEvent},
     messages::HotstuffMessage,
+    traits::InboundMessagingError,
 };
 use tari_consensus_types::{BlockId, LeafBlock};
 use tari_ootle_common_types::{NodeHeight, ShardGroup, SubstateAddress, VersionedSubstateIdRef, optional::Optional};
@@ -51,6 +52,10 @@ pub struct Validator {
     pub epoch_manager: TestEpochManager,
     pub events: broadcast::Receiver<HotstuffEvent>,
     pub current_state_machine_state: watch::Receiver<ConsensusCurrentState>,
+    /// Delivers an inbound message directly, bypassing the test network, so a test can impersonate any sender.
+    pub tx_inbound_message: mpsc::Sender<(TestAddress, HotstuffMessage)>,
+    /// Delivers an inbound message that failed to decode, as a peer sending garbage would produce.
+    pub tx_malformed_message: mpsc::Sender<InboundMessagingError>,
 
     pub handle: JoinHandle<()>,
 }

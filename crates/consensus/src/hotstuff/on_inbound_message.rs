@@ -154,7 +154,15 @@ impl<TConsensusSpec: ConsensusSpec> MessageBuffer<TConsensusSpec> {
         }
 
         while let Some(result) = self.inbound_messaging.next_message().await {
-            let (from, msg) = result?;
+            // A malformed message is the sender's fault and says nothing about local state, so it is dropped and
+            // the worker carries on.
+            let (from, msg) = match result {
+                Ok(msg) => msg,
+                Err(err) => {
+                    warn!(target: LOG_TARGET, "🗑️ Discard malformed inbound message: {err}");
+                    continue;
+                },
+            };
 
             // Probe BEFORE the discard gate so a validator that has fallen many epochs behind
             // (e.g., long network partition) can still escalate to state sync when *any*

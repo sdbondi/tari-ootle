@@ -12,7 +12,7 @@ use crate::p2p::logging::MessageLogger;
 pub struct ConsensusInboundMessaging<TMsgLogger> {
     local_address: PeerAddress,
     rx_inbound_msg: mpsc::Receiver<InboundMessage<proto::consensus::HotStuffMessage>>,
-    rx_gossip: mpsc::Receiver<(PeerId, proto::consensus::HotStuffMessage)>,
+    rx_gossip: mpsc::Receiver<(PeerId, HotstuffMessage)>,
     rx_loopback: mpsc::UnboundedReceiver<HotstuffMessage>,
     msg_logger: TMsgLogger,
 }
@@ -21,7 +21,7 @@ impl<TMsgLogger: MessageLogger> ConsensusInboundMessaging<TMsgLogger> {
     pub fn new(
         local_address: PeerAddress,
         rx_inbound_msg: mpsc::Receiver<InboundMessage<proto::consensus::HotStuffMessage>>,
-        rx_gossip: mpsc::Receiver<(PeerId, proto::consensus::HotStuffMessage)>,
+        rx_gossip: mpsc::Receiver<(PeerId, HotstuffMessage)>,
         rx_loopback: mpsc::UnboundedReceiver<HotstuffMessage>,
         msg_logger: TMsgLogger,
     ) -> Self {
@@ -46,7 +46,7 @@ impl<TMsgLogger: MessageLogger> ConsensusInboundMessaging<TMsgLogger> {
                 Some(Ok((from.into(), msg)))
             },
             Err(err) => Some(Err(InboundMessagingError::InvalidMessage {
-                reason: err.to_string(),
+                reason: format!("from peer {from}: {err}"),
             })),
         }
     }
@@ -76,7 +76,9 @@ impl<TMsgLogger: MessageLogger + Send> tari_consensus::traits::InboundMessaging
             },
             maybe_msg = self.rx_gossip.recv() => {
                 let (from, msg) = maybe_msg?;
-                self.handle_message(from, msg)
+                self.msg_logger
+                    .log_inbound_message(&from.to_string(), msg.as_type_str(), "", &msg);
+                Some(Ok((from.into(), msg)))
             },
         }
     }
