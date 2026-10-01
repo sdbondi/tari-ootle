@@ -220,7 +220,7 @@ jobs:
         if: startsWith(runner.os,'macOS')
         run: |
           # cmake and autoconf already installed
-          brew install zip coreutils automake protobuf openssl@3
+          brew install zip coreutils automake protobuf
           rustup target add ${{ matrix.builds.target }}
 
       - name: Install macOS-14 missing dependencies - hack
@@ -303,10 +303,6 @@ jobs:
         run: |
           echo "PLATFORM_SPECIFIC_DIR=osx" >> $GITHUB_ENV
           echo "LIB_EXT=.dylib" >> $GITHUB_ENV
-          # webauthn-rs links OpenSSL. A hardened-runtime binary may only load dylibs signed by the
-          # same team or by Apple, so Homebrew's libssl.dylib must not be a load-time dependency.
-          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
-          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
 
       # Hardcoded sdk for MacOSX on ARM64
       - name: Set environment variables - macOS - ARM64 (pin/sdk)

@@ -85,6 +85,9 @@ zeroize = { workspace = true, features = ["derive"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { workspace = true, features = ["keychain"] }
+# webauthn-rs links OpenSSL. A hardened-runtime binary may only load dylibs signed by the same team
+# or by Apple, so the binary carries its own statically linked OpenSSL.
+openssl = { workspace = true, features = ["vendored"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 dbus-secret-service-keyring-store = { workspace = true, features = ["crypto-rust"] }
@@ -106,6 +109,8 @@ ignored = [
     "log4rs",
     # Added due to a limitation with machete - this is used in attributes without a `use` import.
     "humantime-serde",
+    # Only enables the `vendored` feature on macOS
+    "openssl",
 ]
 
 [features]

@@ -54,3 +54,12 @@ url = { workspace = true, features = ["default", "serde"] }
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.28.0", default-features = false, features = ["signal"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# webauthn-rs links OpenSSL. A hardened-runtime binary may only load dylibs signed by the same team
+# or by Apple, so the binary carries its own statically linked OpenSSL.
+openssl = { workspace = true, features = ["vendored"] }
+
+[package.metadata.cargo-machete]
+# Only enables the `vendored` feature on macOS
+ignored = ["openssl"]
+
