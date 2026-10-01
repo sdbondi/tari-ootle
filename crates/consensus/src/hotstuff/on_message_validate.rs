@@ -5,6 +5,7 @@ use std::collections::{HashSet, VecDeque};
 
 use log::*;
 use tari_consensus_types::BlockId;
+use tari_epoch_manager::EpochManagerReader;
 use tari_ootle_common_types::{
     Epoch,
     NodeHeight,
