@@ -92,7 +92,7 @@ use crate::{
     dry_run::processor::DryRunTransactionProcessor,
     network_client::TariNetworkClient,
     network_state_sync,
-    network_state_sync::{NetworkWideStateSyncConfig, ValidatorStatusMonitor},
+    network_state_sync::{ConsensusEpoch, NetworkWideStateSyncConfig, ValidatorStatusMonitor},
     notify::Notify,
     storage_sqlite::{SqliteIndexerStore, models::Key},
     store::{IndexerStore, IndexerStoreReadTransaction, IndexerStoreWriteTransaction},
@@ -275,6 +275,9 @@ pub async fn spawn_services(
     // Shared between the state sync (which confirms how far each shard is synced) and the substate
     // cache (which serves an entry only while its shard is being kept up with).
     let shard_watermarks = Arc::new(network_state_sync::ShardWatermarks::new());
+    // Written by the state sync, which observes the committees' verified tips; read by the dry run
+    // and the REST API.
+    let consensus_epoch = ConsensusEpoch::new();
 
     // Substate manager
     let substate_cache = SqliteSubstateCache::new(
@@ -317,6 +320,7 @@ pub async fn spawn_services(
         transaction_event_notifier.clone(),
         validator_status.clone(),
         shard_watermarks,
+        consensus_epoch.clone(),
         #[cfg(feature = "metrics")]
         network_state_metrics,
         #[cfg(feature = "metrics")]
@@ -357,6 +361,7 @@ pub async fn spawn_services(
         config.network,
         fee_table.clone(),
         epoch_manager.clone(),
+        consensus_epoch.clone(),
         dry_run_substate_manager,
         wasm_cache,
         &config.indexer.templates,
@@ -448,6 +453,7 @@ pub async fn spawn_services(
         transaction_event_notifier,
         watched_templates,
         validator_status,
+        consensus_epoch,
     })
 }
 
@@ -469,6 +475,7 @@ pub struct Services {
     pub transaction_event_notifier: Notify<TransactionEvent>,
     pub watched_templates: Arc<HashSet<TemplateAddress>>,
     pub validator_status: ValidatorStatusMonitor,
+    pub consensus_epoch: ConsensusEpoch,
 }
 
 fn ensure_directories_exist(config: &ApplicationConfig) -> io::Result<()> {

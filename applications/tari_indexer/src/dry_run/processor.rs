@@ -32,7 +32,7 @@ use tari_engine_types::{
 };
 use tari_epoch_manager::{EpochManagerReader, service::EpochManagerHandle};
 use tari_ootle_app_utilities::transaction_executor::{TariTransactionProcessor, TransactionExecutor as _};
-use tari_ootle_common_types::SubstateRequirementRef;
+use tari_ootle_common_types::{Epoch, SubstateRequirementRef};
 use tari_ootle_p2p::PeerAddress;
 use tari_ootle_template_provider::TemplateConfig;
 use tari_ootle_transaction::Transaction;
@@ -46,6 +46,7 @@ use crate::{
         template_provider::{DryRunTemplateProvider, build_dry_run_template_provider},
     },
     exhaust_burn_rate::resolve_exhaust_burn_rate_for_epoch,
+    network_state_sync::ConsensusEpoch,
     substate_manager::SubstateManager,
 };
 
@@ -56,6 +57,7 @@ pub struct DryRunTransactionProcessor {
     network: Network,
     fee_table: FeeTable,
     epoch_manager: EpochManagerHandle<PeerAddress>,
+    consensus_epoch: ConsensusEpoch,
     template_provider: DryRunTemplateProvider,
     substate_manager: SubstateManager,
     claim_burn_proof_verifier: Arc<dyn ClaimProofVerifier + Send + Sync + 'static>,
@@ -68,6 +70,7 @@ impl DryRunTransactionProcessor {
         network: Network,
         fee_table: FeeTable,
         epoch_manager: EpochManagerHandle<PeerAddress>,
+        consensus_epoch: ConsensusEpoch,
         substate_manager: SubstateManager,
         wasm_cache: WasmModuleCache,
         template_config: &TemplateConfig,
@@ -82,6 +85,7 @@ impl DryRunTransactionProcessor {
             network,
             fee_table,
             epoch_manager,
+            consensus_epoch,
             template_provider,
             substate_manager,
             claim_burn_proof_verifier: Arc::new(claim_burn_proof_verifier),
@@ -118,11 +122,11 @@ impl DryRunTransactionProcessor {
             found_substates.insert(TARI_TOKEN.into(), tari_token);
         }
 
-        let virtual_substates = self.get_virtual_substates().await?;
+        let epoch = self.execution_epoch().await?;
+        let virtual_substates = self.get_virtual_substates(epoch).await?;
 
-        // Estimate the burn at the rate in effect for the current epoch.
-        let current_epoch = self.epoch_manager.current_epoch().await?;
-        let burn_rate = resolve_exhaust_burn_rate_for_epoch(&self.substate_manager, self.network, current_epoch).await;
+        // Estimate the burn at the rate in effect for the epoch the transaction executes in.
+        let burn_rate = resolve_exhaust_burn_rate_for_epoch(&self.substate_manager, self.network, epoch).await;
 
         let mut state_store = new_memory_store();
         state_store.set_many(found_substates)?;
@@ -162,11 +166,19 @@ impl DryRunTransactionProcessor {
             .collect())
     }
 
-    async fn get_virtual_substates(&self) -> Result<VirtualSubstates, DryRunTransactionProcessorError> {
-        let epoch = self.epoch_manager.current_epoch().await?;
+    /// The epoch the validators would execute the transaction in. Until the state sync has observed
+    /// every committee, the epoch manager's epoch stands in for it.
+    async fn execution_epoch(&self) -> Result<Epoch, DryRunTransactionProcessorError> {
+        match self.consensus_epoch.current() {
+            Some(epoch) => Ok(epoch),
+            None => Ok(self.epoch_manager.current_epoch().await?),
+        }
+    }
+
+    async fn get_virtual_substates(&self, epoch: Epoch) -> Result<VirtualSubstates, DryRunTransactionProcessorError> {
         let epoch_hash = self
             .epoch_manager
-            .get_current_epoch_hash()
+            .get_epoch_hash(epoch)
             .await
             .map_err(DryRunTransactionProcessorError::EpochManager)?;
         Ok(VirtualSubstates::from_iter([

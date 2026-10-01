@@ -532,6 +532,11 @@ pub struct GetEpochManagerStatsResponse {
     #[cfg_attr(feature = "utoipa", schema(value_type = u64))]
     /// The current epoch according to the indexer's epoch oracle view
     pub current_epoch: Epoch,
+    /// The epoch the validators execute transactions in, as the indexer has observed from their
+    /// committed blocks. It trails `current_epoch` after each epoch boundary until every committee
+    /// has committed its end-of-epoch block. `None` until the indexer has observed every committee.
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<u64>))]
+    pub consensus_epoch: Option<Epoch>,
     pub current_block_height: u64,
     #[cfg_attr(feature = "utoipa", schema(value_type = String))]
     pub current_block_hash: Hash32,

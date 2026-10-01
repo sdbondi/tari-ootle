@@ -120,6 +120,7 @@ pub async fn get_epoch_manager_stats(
 
     let response = GetEpochManagerStatsResponse {
         current_epoch,
+        consensus_epoch: context.consensus_epoch().current(),
         current_block_height: current_block_height.unwrap_or(0),
         current_block_hash: current_epoch_hash.into_array().into(),
     };

@@ -3,6 +3,7 @@
 
 mod committee_client;
 mod config;
+mod consensus_epoch;
 mod error;
 mod event_filter;
 #[cfg(feature = "metrics")]
@@ -15,6 +16,7 @@ mod validator_status;
 mod worker;
 
 pub use config::*;
+pub use consensus_epoch::ConsensusEpoch;
 pub use event_filter::*;
 #[cfg(feature = "metrics")]
 pub use metrics::NetworkStateMetrics;

@@ -23,7 +23,7 @@ use crate::{
     bootstrap::Services,
     config::PublishedIndexerConfig,
     dry_run::processor::DryRunTransactionProcessor,
-    network_state_sync::ValidatorStatusMonitor,
+    network_state_sync::{ConsensusEpoch, ValidatorStatusMonitor},
     notify::Subscriber,
     rest_api::cache::HttpCacheConfig,
     storage_sqlite::SqliteIndexerStore,
@@ -56,6 +56,7 @@ impl HandlerContext {
                 transaction_event_subscriber: services.transaction_event_notifier.to_subscriber(),
                 watched_templates: services.watched_templates.clone(),
                 validator_status: services.validator_status.clone(),
+                consensus_epoch: services.consensus_epoch.clone(),
             }),
         }
     }
@@ -135,6 +136,10 @@ impl HandlerContext {
     pub fn validator_status(&self) -> &ValidatorStatusMonitor {
         &self.inner.validator_status
     }
+
+    pub fn consensus_epoch(&self) -> &ConsensusEpoch {
+        &self.inner.consensus_epoch
+    }
 }
 
 struct InnerContext {
@@ -154,4 +159,5 @@ struct InnerContext {
     transaction_event_subscriber: Subscriber<TransactionEvent>,
     watched_templates: Arc<HashSet<TemplateAddress>>,
     validator_status: ValidatorStatusMonitor,
+    consensus_epoch: ConsensusEpoch,
 }

@@ -3,8 +3,10 @@
 
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
+    convert::Infallible,
     pin::pin,
     sync::Arc,
+    time::Duration,
 };
 
 use futures::{StreamExt, future::Either, stream::FuturesUnordered};
@@ -56,6 +58,7 @@ use crate::{
     network_state_sync::{
         committee_client::{ValidatorCommitteeRpcPool, ValidatorRpcSession},
         config::NetworkWideStateSyncConfig,
+        consensus_epoch::ConsensusEpoch,
         error::NetworkStateSyncError,
         shard_watermarks::ShardWatermarks,
         stats::SyncStats,
@@ -79,6 +82,9 @@ use crate::{
 };
 
 const LOG_TARGET: &str = "tari::indexer::network_state_sync::worker";
+/// How often a shard group whose committee has not yet been seen committing in the epoch manager's
+/// epoch is probed again.
+const CONSENSUS_EPOCH_PROBE_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 pub struct NetworkWideStateSync {
@@ -92,6 +98,7 @@ pub struct NetworkWideStateSync {
     transaction_event_notify: Notify<TransactionEvent>,
     validator_status: ValidatorStatusMonitor,
     shard_watermarks: Arc<ShardWatermarks>,
+    consensus_epoch: ConsensusEpoch,
     #[cfg(feature = "metrics")]
     metrics: NetworkStateMetrics,
     #[cfg(feature = "metrics")]
@@ -111,6 +118,7 @@ impl NetworkWideStateSync {
         transaction_event_notify: Notify<TransactionEvent>,
         validator_status: ValidatorStatusMonitor,
         shard_watermarks: Arc<ShardWatermarks>,
+        consensus_epoch: ConsensusEpoch,
         #[cfg(feature = "metrics")] metrics: NetworkStateMetrics,
         #[cfg(feature = "metrics")] substate_cache_metrics: SubstateCacheMetrics,
         #[cfg(feature = "metrics")] substate_manager: SubstateManager,
@@ -126,6 +134,7 @@ impl NetworkWideStateSync {
             transaction_event_notify,
             validator_status,
             shard_watermarks,
+            consensus_epoch,
             #[cfg(feature = "metrics")]
             metrics,
             #[cfg(feature = "metrics")]
@@ -182,6 +191,7 @@ impl NetworkWideStateSync {
                 .network_description()
                 .shard_groups_iter()
                 .collect::<BTreeSet<_>>();
+            self.consensus_epoch.track_groups(partition.iter().copied());
             let (epoch_tx, epoch_rx) = watch::channel(plan_epoch);
             // A plan is drawn against one partition of the shards into groups. An epoch that keeps
             // the partition is handled by each group on its own: it winds its stream down, syncs its
@@ -342,18 +352,24 @@ impl NetworkWideStateSync {
         info!(target: LOG_TARGET, "🌍️ Syncing checkpoints from {from_epoch} for shard group {shard_group}");
         // Perform sync operations using the pool and checkpoint
         let validator_status = self.validator_status.clone();
+        let consensus_epoch = self.consensus_epoch.clone();
         let checkpoints: Vec<_> = pool
             .try_with_random_members(|mut session| {
                 let validator_status = validator_status.clone();
+                let consensus_epoch = consensus_epoch.clone();
                 async move {
                     // Verify how far this peer has committed before trusting it as a sync source.
                     // `probe` only returns Err for a forged/malformed proof (other failures are
                     // logged internally and return Ok(None)), which disqualifies the peer so
                     // another committee member is tried.
-                    if let Err(e) = validator_status.probe(&mut session, shard_group).await {
-                        return Err(NetworkStateSyncError::InvalidCommitProof {
-                            details: format!("shard group {shard_group}: {e}"),
-                        });
+                    match validator_status.probe(&mut session, shard_group).await {
+                        Ok(Some(tip)) => consensus_epoch.observe(tip.shard_group, tip.epoch),
+                        Ok(None) => {},
+                        Err(e) => {
+                            return Err(NetworkStateSyncError::InvalidCommitProof {
+                                details: format!("shard group {shard_group}: {e}"),
+                            });
+                        },
                     }
                     let resp = session
                         .get_checkpoints(rpc::GetCheckpointsRequest {
@@ -496,10 +512,50 @@ impl NetworkWideStateSync {
             })
             .collect::<FuturesUnordered<_>>();
 
-        while let Some(result) = groups.next().await {
-            result?;
+        let followed = async {
+            while let Some(result) = groups.next().await {
+                result?;
+            }
+            Ok(())
+        };
+        // The groups wind down on `cancel`; the probe loop is dropped once they have.
+        tokio::select! {
+            result = followed => result,
+            never = self.track_consensus_epoch(sync_plan, epoch.clone()) => match never {},
         }
-        Ok(())
+    }
+
+    /// Probes each shard group whose committee has not been seen committing in the epoch manager's
+    /// epoch, every [`CONSENSUS_EPOCH_PROBE_INTERVAL`], so that [`ConsensusEpoch`] follows a committee
+    /// into a new epoch soon after its end-of-epoch block. A followed stream only probes when it
+    /// reopens, which on a quiet network is up to a stream deadline away.
+    async fn track_consensus_epoch(&self, sync_plan: &SyncPlan, epoch: watch::Receiver<Epoch>) -> Infallible {
+        let mut pools = sync_plan.committee_pools().clone();
+        let mut interval = time::interval(CONSENSUS_EPOCH_PROBE_INTERVAL);
+        interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            let target = *epoch.borrow();
+            for shard_group in self.consensus_epoch.groups_behind(target) {
+                let Some(pool) = pools.get_mut(&shard_group) else {
+                    continue;
+                };
+                let mut session = match pool.new_session().await {
+                    Ok(session) => session,
+                    Err(e) => {
+                        debug!(target: LOG_TARGET, "No session to probe the consensus epoch of shard group {shard_group}: {e}");
+                        continue;
+                    },
+                };
+                match self.validator_status.probe(&mut session, shard_group).await {
+                    Ok(Some(tip)) => self.consensus_epoch.observe(tip.shard_group, tip.epoch),
+                    Ok(None) => {},
+                    Err(e) => {
+                        warn!(target: LOG_TARGET, "⚠️ Validator {} for shard group {} served an INVALID commit proof: {}", session.peer_address(), shard_group, e);
+                    },
+                }
+            }
+        }
     }
 
     /// Keeps one shard group synced: syncs its checkpoints, opens a stream from a committee member,
@@ -544,6 +600,8 @@ impl NetworkWideStateSync {
             };
             match self.validator_status.probe(&mut session, shard_group).await {
                 Ok(Some(verified_tip)) => {
+                    self.consensus_epoch
+                        .observe(verified_tip.shard_group, verified_tip.epoch);
                     // Record the quorum-signed state root so the read path can skip re-validating
                     // commit proofs for this tip. A failure here must not abort the state sync.
                     if let Err(e) = self.persist_verified_tip(verified_tip).await {

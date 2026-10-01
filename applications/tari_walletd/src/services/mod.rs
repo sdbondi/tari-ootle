@@ -66,7 +66,7 @@ pub fn spawn_services(
     };
 
     let (account_monitor, account_monitor_handle) = AccountMonitor::new(
-        notify,
+        notify.clone(),
         wallet_sdk.clone(),
         utxo_scanner_handle.clone(),
         shutdown_signal.clone(),
@@ -87,6 +87,7 @@ pub fn spawn_services(
             wallet_sdk,
             transaction_service_handle.clone(),
             burn_proof_dir,
+            &notify,
             shutdown_signal,
         );
         join_handles.push(tokio::spawn(auto_claim_service.run()));
