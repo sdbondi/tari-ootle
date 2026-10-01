@@ -110,6 +110,7 @@ use crate::handlers::{
     auth::jwt::enforce_scopes,
     helpers::{
         complete_burn_proof_to_contents,
+        ensure_seed_recovery_finished,
         faucet_already_claimed,
         faucet_empty,
         general_error,
@@ -143,6 +144,7 @@ pub async fn handle_create(
         .map(Ok)
         .unwrap_or_else(|| accounts_api.any_accounts_exist().map(|b| !b))?;
 
+    ensure_seed_recovery_finished(sdk)?;
     let owner_address = match req.key_index {
         Some(id) => sdk.key_manager_api().derive_account_address(id)?,
         None => sdk.key_manager_api().next_account_address()?,
@@ -214,6 +216,7 @@ pub async fn handle_create_or_get(
         .map(Ok)
         .unwrap_or_else(|| accounts_api.any_accounts_exist().map(|b| !b))?;
 
+    ensure_seed_recovery_finished(sdk)?;
     let wallet_keys = match req.key_index {
         Some(id) => sdk.key_manager_api().derive_account_address(id)?,
         None => sdk.key_manager_api().next_account_address()?,
