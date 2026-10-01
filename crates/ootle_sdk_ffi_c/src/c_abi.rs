@@ -51,7 +51,7 @@ use ootle_sdk_core::{
 use serde::Deserialize;
 
 /// The stable ABI tag (as a NUL-terminated byte string so [`ootle_abi_version`] can hand out a
-/// static pointer). The Go SDK asserts this at startup to detect a header/lib mismatch. Bump on any
+/// static pointer). Every host binding asserts this at startup to detect a header/lib mismatch. Bump on any
 /// breaking ABI change (a changed signature, envelope layout, or handle contract) so a stale lib is
 /// caught loudly rather than mis-marshalled.
 const ABI_VERSION: &[u8] = b"ootle-sdk-ffi-c/17\0";

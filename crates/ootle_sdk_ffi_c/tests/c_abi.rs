@@ -1186,8 +1186,8 @@ fn abi_version_is_the_stable_tag() {
     let s = unsafe { CStr::from_ptr(p) }.to_str().unwrap();
     assert_eq!(
         s, "ootle-sdk-ffi-c/17",
-        "the ABI tag the Go SDK asserts against (bumped when the stealth assembly and outputs-statement exports \
-         gained the revealed output's receiver)"
+        "the ABI tag every host binding asserts against (bumped when the stealth assembly and outputs-statement \
+         exports gained the revealed output's receiver)"
     );
     // Static pointer — explicitly NOT freed (freeing it would be UB).
 }
