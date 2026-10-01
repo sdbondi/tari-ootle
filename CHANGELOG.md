@@ -6,8 +6,8 @@ See [standard-version](https://github.com/conventional-changelog/standard-versio
 ## [0.43.0](https://github.com/tari-project/tari-ootle/compare/v0.42.0...v0.43.0) (2026-10-01)
 
 A security release on v0.42.0. Empty proofs no longer pass resource access rules, covenant balance
-proofs are metered, transactions declare at most 1,024 inputs, and consensus drops malformed and
-unauthorised peer messages. The indexer bounds dry-runs and event queries.
+proofs and template compiles are metered, transactions declare at most 1,024 inputs, and consensus
+drops malformed and unauthorised peer messages. The indexer bounds dry-runs and event queries.
 
 ### ⚠️ Upgrade notes
 
@@ -19,6 +19,10 @@ unauthorised peer messages. The indexer bounds dry-runs and event queries.
 - **Covenant spends cost more.** A covenant balance proof is charged native points, and a statement
   with a duplicate or out-of-range covenant claim is rejected. The wallet fee estimate does not yet
   include the proof charge. (#2739)
+- **A template may hold at most 2,048 functions and 512Ki parameters and locals.** Publishing one
+  over either cap is rejected, and its compile is priced by function count as well as size. A
+  template already published over a cap no longer loads; the built-in templates hold 157–357
+  functions. (#2747)
 - **A zero-amount or empty proof is an error.** Creating one fails with `OperationNotAllowed`, and
   an empty proof no longer satisfies a `resource(..)` access rule.
 - **Operators — indexer rate limits are on by default.** An indexer behind a reverse proxy must set
@@ -26,6 +30,9 @@ unauthorised peer messages. The indexer bounds dry-runs and event queries.
   (#2744)
 - **Indexer dry-runs fail on a missing or down input** with a 400, as consensus does, and a rejected
   transaction is a 400 rather than a 500. (#2744)
+- **Indexer dry-runs run a bounded number at a time.** `indexer.dry_run_max_concurrent_executions`
+  defaults to half the cores; a dry run that waits 5 s for a slot gets a 503, and each one spends
+  rate-limit tokens by the compute it used. (#2745)
 - **The C FFI ABI tag is `ootle-sdk-ffi-c/17`.** Hosts must expect the new tag. (#2736)
 
 ### Consensus
@@ -38,6 +45,8 @@ unauthorised peer messages. The indexer bounds dry-runs and event queries.
   instead of stalling at height 0. (#2746)
 - `fix` — **A node serves bounded state sync only for the epochs and shards it holds**, and a
   syncing node stores a checkpoint only once its state has synced. (#2733)
+- `fix` — **A replica that misses proposals catches up as soon as a later proposal shows it is
+  behind**, instead of waiting out three leader timeouts. (#2743)
 
 ### Engine
 
@@ -47,6 +56,8 @@ unauthorised peer messages. The indexer bounds dry-runs and event queries.
 - `fix!` — **Covenant balance proofs are charged and verified once per partition**, so repeated
   covenant atoms cost a cache lookup. (#2739)
 - `fix!` — **A transaction declares at most 1,024 inputs.** (#2744)
+- `fix!` — **A template's function and variable counts are capped and priced before it compiles.**
+  (#2747)
 
 ### Indexer
 
@@ -55,16 +66,27 @@ unauthorised peer messages. The indexer bounds dry-runs and event queries.
 - `fix` — **An event query examines a bounded number of rows**, paging with a `before_id` cursor.
   (#2742)
 - `fix` — **Wildcard topic filters containing `_` match**, e.g. `my_template.*`. (#2740)
+- `fix` — **Dry-runs are capped in concurrency and rate-limited by compute spent**; a client that
+  disconnects mid-run pays the ceiling. (#2745)
+- `fix` — **Dry-runs execute in the consensus epoch**, and `/epoch-manager/stats` reports it as
+  `consensus_epoch`. (#2749)
 
 ### Wallet
 
 - `fix` — **Seed recovery finds stealth-only keys and removes the accounts it found unused**, and
   `accounts.create` works after recovery. (#2735)
 - `fix!` — **The C FFI ABI tag is bumped to `ootle-sdk-ffi-c/17`.** (#2736)
+- `fix` — **Auto-claim resubmits a burn claim that is not yet claimable** until its transaction
+  finalizes, and the wallet reads the consensus epoch from the indexer. (#2749)
+- `feat` — **An indexer client can switch endpoints at runtime.** `IndexerRestApiClient::set_endpoint`
+  and ootle-rs `IndexerProvider::set_indexer_url` let an application fail over to another indexer.
+  (#2750)
 
 ### Other
 
-- `fix` — **The swarm creates the claim key before starting any validator.** (#2741)
+- `fix` — **The swarm creates the claim key before starting any validator**, and reuses one that
+  already exists. (#2741, #2752)
+- `fix` — **The macOS release binaries vendor OpenSSL.** (#2751)
 
 ## [0.42.0](https://github.com/tari-project/tari-ootle/compare/v0.41.4...v0.42.0) (2026-09-30)
 
