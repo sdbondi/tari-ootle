@@ -50,8 +50,6 @@ pub enum DryRunTransactionProcessorError {
     SubstateManagerError(#[from] SubstateManagerError),
     #[error("Invalid transaction: {0}")]
     InvalidTransaction(#[from] TransactionValidationError),
-    #[error("Transaction declares {num_inputs} inputs, more than the {max_inputs} a dry-run accepts")]
-    TooManyInputs { num_inputs: usize, max_inputs: usize },
 }
 
 impl DryRunTransactionProcessorError {
@@ -61,7 +59,6 @@ impl DryRunTransactionProcessorError {
             self,
             Self::NonDryRunTransaction |
                 Self::InvalidTransaction(_) |
-                Self::TooManyInputs { .. } |
                 Self::SubstateManagerError(
                     SubstateManagerError::InputSubstateIsDown { .. } |
                         SubstateManagerError::InputSubstateDoesNotExist { .. }

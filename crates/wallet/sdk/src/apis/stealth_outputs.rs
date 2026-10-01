@@ -16,6 +16,7 @@ use tari_ootle_common_types::{
     displayable::Displayable,
     optional::{IsNotFoundError, Optional},
 };
+use tari_ootle_transaction::MAX_TRANSACTION_INPUTS;
 use tari_ootle_wallet_crypto::{
     DecryptedData,
     OutputWitness,
@@ -70,6 +71,10 @@ use crate::{
     },
 };
 
+/// Declared inputs a stealth transaction holds back for the substates around its UTXOs: the resources it reads, the
+/// account and vault it may spend from, and any swap or badge inputs.
+pub const NON_UTXO_INPUT_RESERVE: usize = 32;
+
 /// Stealth inputs one transaction may spend, across every statement it carries.
 ///
 /// The engine's ceiling is per transaction rather than per statement — `max_total_inputs_per_transaction` against
@@ -77,7 +82,14 @@ use crate::{
 /// with inputs of its own. Selecting against the per-statement limit for each of them builds a transaction the engine
 /// refuses outright (`ExceedsStealthTransactionLimit { limit: "inputs" }`), and which ingress refuses before that, so
 /// the two selections share this budget instead.
-pub const MAX_INPUTS_PER_TRANSACTION: usize = limits::STEALTH_LIMITS.max_total_inputs_per_transaction;
+///
+/// Each spent UTXO is also a declared input, so the budget must leave [`NON_UTXO_INPUT_RESERVE`] of
+/// [`MAX_TRANSACTION_INPUTS`] for the transaction's other inputs.
+pub const MAX_INPUTS_PER_TRANSACTION: usize = {
+    let declared = MAX_TRANSACTION_INPUTS - NON_UTXO_INPUT_RESERVE;
+    let stealth = limits::STEALTH_LIMITS.max_total_inputs_per_transaction;
+    if declared < stealth { declared } else { stealth }
+};
 
 /// Inputs held back from a transfer's own selection for the statement that sources its fee.
 ///

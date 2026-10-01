@@ -67,6 +67,13 @@ const LOG_TARGET: &str = "tari::ootle::transaction::transaction";
 /// `the_block_budget_admits_a_transaction_at_the_signature_cap` is where that headroom is pinned.
 pub const MAX_SIGNATURES_PER_TRANSACTION: usize = STEALTH_LIMITS.max_total_inputs_per_transaction;
 
+/// The most substates a transaction may declare as inputs.
+///
+/// Every node a transaction reaches resolves, locks and pledges each declared input, and a reader such as an indexer
+/// fetches each one to dry-run it, so the count is work a sender imposes per transaction. Weight prices inputs but
+/// leaves their count in the tens of thousands, so this bounds it directly.
+pub const MAX_TRANSACTION_INPUTS: usize = 1024;
+
 /// The TARI resource is immutable, so the fee payment every transaction makes against it is a read.
 static XTR_REQUIREMENT: InputDeclaration = InputDeclaration::new(SubstateId::Resource(TARI_TOKEN), None, false);
 

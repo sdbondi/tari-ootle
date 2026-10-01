@@ -8,6 +8,7 @@ use crate::{
     BasicValidations,
     BlobReferenceValidator,
     EpochRangeValidator,
+    InputLimitValidator,
     InputsAreNotVirtualValidator,
     PublishTemplateLimitValidator,
     SignatureLimitValidator,
@@ -56,6 +57,7 @@ pub fn create_dry_run_transaction_validator(
         // transaction failing it could not have been relayed regardless of what it weighs.
         .and_then(TransactionSizeValidator::new(max_transaction_size_bytes))
         .and_then(BlobReferenceValidator::new())
+        .and_then(InputLimitValidator::new())
         .and_then(InputsAreNotVirtualValidator::new())
         .and_then(TransactionWeightValidator::new(max_transaction_weight))
         .and_then(StealthTransactionLimitsValidator::new())

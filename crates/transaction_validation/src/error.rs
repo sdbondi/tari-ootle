@@ -109,6 +109,12 @@ pub enum TransactionValidationError {
         max: usize,
         actual: usize,
     },
+    #[error("Transaction {transaction_id} declares {actual} inputs, but the maximum allowed is {max}")]
+    TooManyInputs {
+        transaction_id: TransactionId,
+        max: usize,
+        actual: usize,
+    },
     #[error("Transaction {transaction_id} has invalid blob references: {source}")]
     InvalidBlobReferences {
         transaction_id: TransactionId,
@@ -182,6 +188,7 @@ impl TransactionValidationError {
             Self::PublishTemplateInFeeInstructions { .. } |
             Self::PublishTemplateBinaryTooLarge { .. } |
             Self::TooManySignatures { .. } |
+            Self::TooManyInputs { .. } |
             Self::InvalidBlobReferences { .. } => true,
         }
     }
@@ -282,6 +289,11 @@ mod tests {
                 max_weight: 1,
             },
             TransactionValidationError::TooManySignatures {
+                transaction_id: tx_id(),
+                max: 1,
+                actual: 2,
+            },
+            TransactionValidationError::TooManyInputs {
                 transaction_id: tx_id(),
                 max: 1,
                 actual: 2,

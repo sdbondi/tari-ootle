@@ -27,7 +27,6 @@ use ootle_network::Network;
 use tari_engine::{fees::FeeTable, state_store::new_memory_store, traits::ClaimProofVerifier, wasm::WasmModuleCache};
 use tari_engine_types::{
     commit_result::ExecuteResult,
-    limits::STEALTH_LIMITS,
     substate::{Substate, SubstateId},
     virtual_substate::{VirtualSubstate, VirtualSubstateId, VirtualSubstates},
 };
@@ -51,13 +50,6 @@ use crate::{
 };
 
 const LOG_TARGET: &str = "tari::indexer::dry_run_transaction_processor";
-
-/// The most inputs a dry-run may declare. A wallet spends at most
-/// `STEALTH_LIMITS.max_total_inputs_per_transaction` UTXOs in one transaction, each declared as an
-/// input, alongside the accounts, vaults and resources around them; this sits above that so any
-/// transaction a wallet builds can be dry-run.
-const MAX_DRY_RUN_INPUTS: usize = 2048;
-const _: () = assert!(MAX_DRY_RUN_INPUTS > STEALTH_LIMITS.max_total_inputs_per_transaction);
 
 #[derive(Clone)]
 pub struct DryRunTransactionProcessor {
@@ -114,13 +106,6 @@ impl DryRunTransactionProcessor {
             self.max_transaction_size_bytes,
         )
         .validate(&(), &transaction)?;
-        let num_inputs = transaction.inputs().len();
-        if num_inputs > MAX_DRY_RUN_INPUTS {
-            return Err(DryRunTransactionProcessorError::TooManyInputs {
-                num_inputs,
-                max_inputs: MAX_DRY_RUN_INPUTS,
-            });
-        }
 
         let mut found_substates = self.fetch_input_substates(&transaction).await?;
         // Add the TARI resource - this is what consensus does, so we'll need to do it for dry runs
