@@ -42,6 +42,7 @@
 
 - [API Overview](https://ootle.tari.com/reference/api-overview/): Full API reference for `tari_template_lib` and related crates
 - [Types Reference](https://ootle.tari.com/reference/types/): `Amount`, `ComponentAddress`, `ResourceAddress`, `NonFungibleId`, and more
+- [Limits](https://ootle.tari.com/reference/limits/): Size, count, weight and compute limits on transactions, templates and blocks
 - [Indexer API](https://ootle.tari.com/indexer/indexer-api.html): OpenAPI docs for the Tari Indexer REST API
 - [crates.io (tari_template_lib)](https://docs.rs/tari_template_lib/latest/tari_template_lib/): Rust crate documentation
 

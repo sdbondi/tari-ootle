@@ -1,0 +1,145 @@
+---
+title: Limits
+description: Every hard limit a transaction, template or block runs into on the Ootle — sizes, counts, weight and compute budgets — with where each one is enforced.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+The network bounds what one transaction can ask of every validator that processes it. The limits on this page are
+the same on every network. A transaction over one of them is rejected, with an error that names the limit.
+
+Limits are enforced at one or more of three points:
+
+- **Ingress.** A validator or indexer checks the transaction when it is submitted, before it is gossiped or
+  executed. A transaction rejected here never reaches a block and pays no fee.
+- **Block validation.** Validators re-check the transactions in a proposed block. A leader that includes a
+  transaction over one of these limits has its block rejected.
+- **Execution.** The engine checks the limit as the transaction runs. Exceeding it fails the transaction; see
+  [Fees](../fees/) for what is charged when it does.
+
+All amounts are in **microtari (µT)**, where 1 TARI = 1,000,000 µT. Sizes are in bytes, with 1 KiB = 1,024 bytes.
+
+---
+
+## Transactions
+
+| Limit                     | Value               | Enforced                     |
+| ------------------------- | ------------------- | ---------------------------- |
+| Encoded size              | 1,310,720 (1.25 MiB) | Ingress, block validation    |
+| Weight                    | 1,000,000           | Ingress, block validation    |
+| Declared inputs           | 1,024               | Ingress, block validation    |
+| Signatures                | 1,024               | Ingress, block validation    |
+| Template publishes        | 1, main intent only | Ingress, block validation    |
+| Validity window           | 2,160 epochs        | Ingress                      |
+
+**Encoded size** is the transaction's canonical CBOR encoding, including blobs. The gossip message limit is derived
+from it.
+
+**Weight** estimates the work a transaction causes before it runs:
+
+- An instruction that invokes a template weighs at least 30. Literal arguments add to that.
+- Each declared input adds 15 if it is written, 5 if it is only read.
+- Each signature adds 5.
+- Each blob adds a third of its length plus 32, so a 1 MiB template binary weighs about 350,000.
+- A `ClaimBurn` weighs 1,100.
+
+**Declared inputs** are the substates listed in the transaction's inputs. Each one is resolved, locked and pledged by
+every validator that touches the transaction, so the count is capped directly. A stealth transfer declares each UTXO
+it spends as an input.
+
+**Validity window**: a transaction's `max_epoch` may be at most 2,160 epochs after the current epoch.
+
+## Execution
+
+| Limit                                         | Value                    | Scope           |
+| --------------------------------------------- | ------------------------ | --------------- |
+| WASM metering points                          | 250,000,000              | Per call        |
+| WASM metering points                          | 250,000,000              | Per transaction |
+| Native verification points                    | 2,400,000,000            | Per transaction |
+| Points the fee intent may run before it pays  | 32,000,000               | Per transaction |
+| Call depth (nested cross-template calls)      | 10                       | Per transaction |
+| Substates created or written                  | 1,000                    | Per transaction |
+| Size of one substate                          | 1 MiB                    | Per substate    |
+| Arguments to a top-level call                 | 128 KiB                  | Per call        |
+| Arguments to a cross-template call            | 1 MiB                    | Per call        |
+| Events                                        | 256, at most 2 KiB each  | Per transaction |
+| Logs                                          | 256, at most 32 KiB each | Per transaction |
+| Debug messages                                | 256                      | Per call        |
+| Panic message                                 | 32 KiB                   | Per call        |
+| Random bytes                                  | 1 KiB                    | Per request     |
+| CBOR nesting depth of untrusted input         | 256                      | Per value       |
+
+A transaction gets one WASM compute budget, shared across every call it makes. Native verification, such as stealth
+and confidential proofs, burn claims and template compilation, draws on its own budget. The fee intent runs on
+credit until it calls `pay_fee`, so it is capped separately. Work that needs more belongs in the main intent. See
+[Fees](../fees/) for how points are charged.
+
+## Templates
+
+| Limit                         | Value              |
+| ----------------------------- | ------------------ |
+| WASM binary size              | 1 MiB              |
+| Template name                 | 64 bytes           |
+| Linear memory                 | 32 pages (2 MiB)   |
+| Functions                     | 8,192              |
+| Function arguments            | 32                 |
+| Function name                 | 256 bytes          |
+| Globals                       | 1,024              |
+| Tables                        | 4                  |
+| Elements per table            | 16,384             |
+
+The binary size limit is set by what compiling the template costs every validator: a publish at the limit still
+leaves room in the native budget to source the fee in the same transaction. See
+[Reducing Template Size](../reducing-template-size/).
+
+## Stealth transfers
+
+| Limit                                        | Value |
+| -------------------------------------------- | ----- |
+| Inputs per transfer statement                | 1,000 |
+| Outputs per transfer statement               | 16    |
+| Transfers per transaction                    | 64    |
+| Transfers in the fee intent                  | 1     |
+| Inputs per transaction, across all transfers | 1,024 |
+| Outputs per transaction, across all transfers | 256   |
+| Conditions per spend-condition conjunction   | 16    |
+| Script-path witness data                     | 4,096 bytes |
+| Script-path inclusion proof                  | 32 hashes |
+
+Every stealth input is also a declared input, so the transaction-wide input cap applies to the inputs a transfer
+spends together with the account, vault and resource substates around them.
+
+<Aside type="note">
+  The wallet keeps 32 declared inputs free for those surrounding substates. It selects at most 992 stealth inputs per
+  transaction, 64 of which are held back for the statement that sources the fee.
+</Aside>
+
+## Confidential withdrawals
+
+| Limit                                       | Value |
+| ------------------------------------------- | ----- |
+| Input commitments per withdraw proof        | 1,000 |
+| Withdraws per transaction                   | 64    |
+| Input commitments per transaction           | 1,024 |
+
+## Resources
+
+| Limit                 | Value     |
+| --------------------- | --------- |
+| Divisibility          | 18        |
+| Token symbol          | 10 bytes  |
+
+## Blocks
+
+| Limit                                 | Value          |
+| ------------------------------------- | -------------- |
+| Weight a leader proposes              | 24,000         |
+| Weight a validator accepts            | 36,000         |
+| Transactions                          | 1,000          |
+| Execution points a leader proposes    | 4,500,000,000  |
+| Execution points a validator accepts  | 7,250,000,000  |
+| Block time                            | 10 seconds     |
+
+A leader stops adding transactions once a block reaches the proposal budget. Validators accept blocks up to the
+higher validation budget, since a leader learns a transaction's execution cost only by running it and may overshoot
+by one transaction.
