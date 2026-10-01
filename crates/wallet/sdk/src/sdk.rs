@@ -239,6 +239,15 @@ impl<TSpec: WalletSdkSpec> WalletSdk<TSpec> {
     pub fn calculate_birthday_epoch(&self) -> Epoch {
         self.epoch_birthday.calculate_current_epoch()
     }
+
+    pub fn is_recovery_needed(&self) -> Result<bool, WalletSdkError> {
+        let recovery_needed = self
+            .config_api()
+            .get::<bool>(ConfigKey::RecoveryNeeded)
+            .optional()?
+            .unwrap_or(false);
+        Ok(recovery_needed)
+    }
 }
 
 impl<TSpec> WalletSdk<TSpec>
@@ -312,15 +321,6 @@ where TSpec: WalletSdkSpec<KeyStore = LocalKeyStore>
             .map(|s| s.to_mnemonic(MnemonicLanguage::English, None))
             .transpose()?;
         Ok(seed_words)
-    }
-
-    pub fn is_recovery_needed(&self) -> Result<bool, WalletSdkError> {
-        let recovery_needed = self
-            .config_api()
-            .get::<bool>(ConfigKey::RecoveryNeeded)
-            .optional()?
-            .unwrap_or(false);
-        Ok(recovery_needed)
     }
 
     /// Initializes the cipher seed for the wallet. Either creating a new cipher seed or recovering it from the provided

@@ -15,10 +15,7 @@ use tari_ootle_transaction::TransactionId;
 use tari_ootle_wallet_sdk::{
     WalletSdk,
     WalletSdkSpec,
-    apis::{
-        accounts::{AccountsApi, AccountsApiError},
-        config::ConfigKey,
-    },
+    apis::accounts::{AccountsApi, AccountsApiError},
     models::{AccountWithAddress, DerivedKeyIndex, TransactionFinalizedEvent, WalletEvent},
 };
 use tari_ootle_walletd_client::{ComponentAddressOrName, types::ClaimBurnProofContents};
@@ -214,12 +211,7 @@ pub(super) fn invalid_request<T: Display>(details: T) -> anyhow::Error {
 /// Seed recovery checks account key indexes from 0, adds an account for each and removes the unused ones when it
 /// finishes. An account created while it runs takes one of those indexes.
 pub(super) fn ensure_seed_recovery_finished<TSpec: WalletSdkSpec>(sdk: &WalletSdk<TSpec>) -> Result<(), anyhow::Error> {
-    let recovery_needed = sdk
-        .config_api()
-        .get::<bool>(ConfigKey::RecoveryNeeded)
-        .optional()?
-        .unwrap_or(false);
-    if recovery_needed {
+    if sdk.is_recovery_needed()? {
         return Err(invalid_request(
             "the wallet is still recovering accounts from its seed. Create the account after recovery has finished",
         ));
