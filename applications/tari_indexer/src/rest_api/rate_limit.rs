@@ -23,7 +23,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     sync::{
         Arc,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -44,6 +44,8 @@ use prometheus_client::{
 
 #[cfg(feature = "metrics")]
 use crate::metrics::CollectorRegister;
+
+const LOG_TARGET: &str = "tari::indexer::rest_api::rate_limit";
 
 // ---------------------------------------------------------------------------
 // Token-bucket state per IP
@@ -375,11 +377,29 @@ pub fn extract_ip(
         }
     }
 
+    if !trust_proxy_headers && (headers.contains_key("x-forwarded-for") || headers.contains_key("x-real-ip")) {
+        warn_proxy_headers_untrusted();
+    }
+
     if let Some(ConnectInfo(addr)) = connect_info {
         return addr.ip();
     }
 
     IpAddr::from([127, 0, 0, 1])
+}
+
+/// Warns once that requests carry proxy headers while they are untrusted. Behind a reverse proxy
+/// every client then shares the proxy's address, and so one rate-limit bucket.
+fn warn_proxy_headers_untrusted() {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        log::warn!(
+            target: LOG_TARGET,
+            "Requests carry X-Forwarded-For/X-Real-IP but indexer.rate_limits.trust_proxy_headers is false, so rate \
+             limits key on the connecting address. Behind a trusted reverse proxy, set it to true so each client \
+             gets its own limit."
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
