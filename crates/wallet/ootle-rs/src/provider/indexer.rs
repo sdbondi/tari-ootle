@@ -91,7 +91,8 @@ impl<Wallet> IndexerProvider<Wallet> {
     }
 
     /// Sends all subsequent requests from this provider, its clones and the streams it created to the indexer at
-    /// `url`. This is the hook for applications that implement their own indexer failover.
+    /// `url`. This is the hook for applications that implement their own indexer failover. The provider keeps the
+    /// network it was built for, so `url` must name an indexer on that same network.
     ///
     /// Pending transactions keep being watched: the finalization stream reconnects to the new indexer. A transaction
     /// that finalizes during the reconnect is resolved by the direct result query that

@@ -121,19 +121,33 @@ impl EventStream {
                     return;
                 },
             };
-            let mut endpoint_changes = client.subscribe_endpoint_changes();
             loop {
                 let _enter = self.span.enter();
                 if self.paused.wait_unpaused().await {
                     debug!("event stream unpaused");
                 }
 
-                let mut events = match client.sse_events().await.map_err(EventStreamError::IndexerClientError) {
+                // Subscribed per connection attempt so that a switch made while paused or retrying, which this
+                // connection already reads, is not reported again once it is open.
+                let mut endpoint_changes = client.subscribe_endpoint_changes();
+                let connected = tokio::select! {
+                    result = client.sse_events() => result.map_err(EventStreamError::IndexerClientError),
+                    new_endpoint = endpoint_changes.changed() => {
+                        debug!(%new_endpoint, "indexer endpoint changed while connecting, reconnecting event stream");
+                        continue;
+                    },
+                };
+                let mut events = match connected {
                     Ok(stream) => stream,
                     Err(err) => {
                         error!(%err, "failed to start event stream. Sleeping before retrying");
                         yield Err(err);
-                        time::sleep(Duration::from_secs(5)).await;
+                        tokio::select! {
+                            _ = time::sleep(Duration::from_secs(5)) => {},
+                            new_endpoint = endpoint_changes.changed() => {
+                                debug!(%new_endpoint, "indexer endpoint changed, retrying event stream now");
+                            },
+                        }
                         continue;
                     },
                 };
@@ -208,5 +222,46 @@ mod tests {
 
         client.set_endpoint(url_b).unwrap();
         assert_eq!(next_event_type(&mut stream).await, "FromB");
+    }
+
+    #[tokio::test]
+    async fn a_switch_during_the_retry_wait_connects_to_the_new_endpoint_once() {
+        let unreachable = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            format!("http://{}/", listener.local_addr().unwrap())
+        };
+        let (url_b, mut connected_b) = spawn_sse_server(Some("FromB")).await;
+        let client = Arc::new(IndexerRestApiClient::connect(unreachable).unwrap());
+        let paused = Paused::default();
+        paused.set_paused(false);
+
+        let stream = EventStream::new(Arc::downgrade(&client), paused.waiter()).into_stream();
+        pin_mut!(stream);
+        let connect_err = time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("connect did not fail")
+            .expect("stream ended");
+        assert!(connect_err.is_err());
+
+        client.set_endpoint(url_b).unwrap();
+        // Well inside the 5s retry wait, so only an interrupted wait gets here in time.
+        let event = time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .expect("the retry wait was not interrupted")
+            .expect("stream ended")
+            .expect("stream errored");
+        assert_eq!(event.event_type, "FromB");
+
+        let waiting = stream.next();
+        pin_mut!(waiting);
+        tokio::select! {
+            _ = &mut waiting => panic!("stream yielded unexpectedly"),
+            _ = time::sleep(Duration::from_millis(300)) => {},
+        }
+        connected_b.recv().await.unwrap();
+        assert!(
+            connected_b.try_recv().is_err(),
+            "connected to the new endpoint more than once"
+        );
     }
 }
