@@ -8,7 +8,7 @@ use axum::{
     response::Response,
 };
 use log::*;
-use tari_engine_types::limits::MAX_WASM_POINTS_PER_TRANSACTION;
+use tari_engine_types::limits::{MAX_NATIVE_POINTS_PER_TRANSACTION, MAX_WASM_POINTS_PER_TRANSACTION};
 use tari_indexer_client::types::{
     GetTransactionResponse,
     GetTransactionResultResponse,
@@ -116,6 +116,14 @@ pub async fn submit_transaction(
 /// ceiling of one transaction, so a dry run at the per-transaction native and WASM ceilings costs
 /// about 11 tokens and an ordinary one about 1.
 const DRY_RUN_POINTS_PER_TOKEN: u64 = MAX_WASM_POINTS_PER_TRANSACTION;
+
+/// The most [`RequestCost`] a dry run can report: one at both per-transaction execution ceilings.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a token count needs no more than f64 precision"
+)]
+pub const DRY_RUN_MAX_COST: f64 =
+    (MAX_WASM_POINTS_PER_TRANSACTION + MAX_NATIVE_POINTS_PER_TRANSACTION) as f64 / DRY_RUN_POINTS_PER_TOKEN as f64;
 
 #[utoipa::path(
     post,

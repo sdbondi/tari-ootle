@@ -13,7 +13,10 @@
 //! A handler whose work varies widely in cost attaches a [`RequestCost`] to its
 //! response, and the middleware takes that many further tokens from the same
 //! bucket, so a client's budget is spent in work done rather than calls made.
-//! The bucket may go negative; later requests wait for it to refill.
+//! The bucket may go negative; later requests wait for it to refill. A request
+//! dropped before its response reaches the middleware, as when the client
+//! disconnects, is charged the route's `abandoned_request_cost` instead, since
+//! the work it started may still be running.
 //!
 //! SSE / streaming endpoints use a per-IP concurrent-connection counter
 //! instead of a token bucket — the slot is held for the full lifetime of the
@@ -435,6 +438,31 @@ pub struct RateLimitConfig {
     /// Whether to trust `X-Forwarded-For` / `X-Real-IP` headers for IP
     /// extraction. Only enable this when running behind a trusted reverse proxy.
     pub trust_proxy_headers: bool,
+    /// Tokens charged, beyond the one the request took, when a request is dropped before its
+    /// handler responds. A route whose handler reports a [`RequestCost`] sets this to the most
+    /// that cost can be.
+    pub abandoned_request_cost: f64,
+}
+
+/// Charges the abandoned-request cost unless the request completes and disarms it.
+struct PendingCharge {
+    limiter: IpRateLimiter,
+    ip: IpAddr,
+    tokens: f64,
+}
+
+impl PendingCharge {
+    fn disarm(mut self) {
+        self.tokens = 0.0;
+    }
+}
+
+impl Drop for PendingCharge {
+    fn drop(&mut self) {
+        if self.tokens > 0.0 {
+            self.limiter.charge(self.ip, self.tokens);
+        }
+    }
 }
 
 /// Configuration for the SSE connection-limit middleware layer.
@@ -471,7 +499,13 @@ pub async fn rate_limit_middleware(
     let ip = extract_ip(req.headers(), connect_info.as_ref(), config.trust_proxy_headers);
     match config.limiter.check(ip) {
         Ok(()) => {
+            let pending = PendingCharge {
+                limiter: config.limiter.clone(),
+                ip,
+                tokens: config.abandoned_request_cost,
+            };
             let response = next.run(req).await;
+            pending.disarm();
             if let Some(RequestCost(tokens)) = response.extensions().get::<RequestCost>() {
                 config.limiter.charge(ip, *tokens);
             }
@@ -681,6 +715,7 @@ mod tests {
             enabled: true,
             limiter: IpRateLimiter::new(rate(5.0, 600)),
             trust_proxy_headers: false,
+            abandoned_request_cost: 0.0,
         };
         let app = Router::new().route(
             "/work",
@@ -698,6 +733,67 @@ mod tests {
         assert!(status_of(addr).await.contains("200"));
         assert!(status_of(addr).await.contains("200"));
         assert!(status_of(addr).await.contains("429"));
+    }
+
+    #[tokio::test]
+    async fn middleware_charges_a_request_the_client_abandons() {
+        use axum::{Router, routing::get};
+        use tokio::{io::AsyncWriteExt, sync::oneshot};
+
+        /// Signals when the handler's future is dropped, which is when the middleware's is.
+        struct DropSignal(Option<oneshot::Sender<()>>);
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                let _ = self.0.take().map(|tx| tx.send(()));
+            }
+        }
+
+        let (dropped_tx, dropped_rx) = oneshot::channel();
+        let dropped_tx = Arc::new(std::sync::Mutex::new(Some(dropped_tx)));
+        let slow = get(move || {
+            let signal = DropSignal(dropped_tx.lock().unwrap().take());
+            async move {
+                let _signal = signal;
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                (axum::Extension(RequestCost(0.0)), "done")
+            }
+        });
+
+        let config = RateLimitConfig {
+            enabled: true,
+            limiter: IpRateLimiter::new(rate(5.0, 600)),
+            trust_proxy_headers: false,
+            abandoned_request_cost: 10.0,
+        };
+        let limiter = config.limiter.clone();
+        let app = Router::new().route(
+            "/work",
+            slow.route_layer(axum::middleware::from_fn_with_state(config, rate_limit_middleware)),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+                .await
+                .unwrap();
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(format!("GET /work HTTP/1.1\r\nHost: {addr}\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        // Let the request reach the handler before hanging up on it.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        stream.shutdown().await.unwrap();
+        drop(stream);
+        tokio::time::timeout(Duration::from_secs(5), dropped_rx)
+            .await
+            .expect("server never dropped the abandoned request")
+            .unwrap();
+
+        // 5 - 1 - 10 leaves the bucket at -6; a completed request would have left it at 4.
+        assert!(limiter.check(IpAddr::from([127, 0, 0, 1])).is_err());
     }
 
     // --------------------------------------------------- SseConnectionLimiter --

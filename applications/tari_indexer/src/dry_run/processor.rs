@@ -22,7 +22,7 @@
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use log::info;
+use log::{debug, info};
 use ootle_network::Network;
 use tari_engine::{fees::FeeTable, state_store::new_memory_store, traits::ClaimProofVerifier, wasm::WasmModuleCache};
 use tari_engine_types::{
@@ -145,7 +145,10 @@ impl DryRunTransactionProcessor {
         );
         let slot = tokio::time::timeout(EXECUTION_SLOT_WAIT, self.execution_slots.clone().acquire_owned())
             .await
-            .map_err(|_| DryRunTransactionProcessorError::Busy)?
+            .map_err(|_| {
+                debug!(target: LOG_TARGET, "Refusing dry run: every execution slot stayed busy for {EXECUTION_SLOT_WAIT:?}");
+                DryRunTransactionProcessorError::Busy
+            })?
             .expect("execution_slots is never closed");
         let exec_output = task::spawn_blocking(move || {
             let _slot = slot;

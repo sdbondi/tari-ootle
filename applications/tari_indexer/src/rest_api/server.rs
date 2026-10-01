@@ -110,31 +110,37 @@ impl Server {
             enabled: rate_limits.enabled,
             limiter: IpRateLimiter::new(rate_limits.transactions_submit_rate),
             trust_proxy_headers: rate_limits.trust_proxy_headers,
+            abandoned_request_cost: 0.0,
         };
         let tx_dry_run_limiter = RateLimitConfig {
             enabled: rate_limits.enabled,
             limiter: IpRateLimiter::new(rate_limits.transactions_dry_run_submit_rate),
             trust_proxy_headers: rate_limits.trust_proxy_headers,
+            abandoned_request_cost: handlers::transactions::DRY_RUN_MAX_COST,
         };
         let transactions_fetch_limiter = RateLimitConfig {
             enabled: rate_limits.enabled,
             limiter: IpRateLimiter::new(rate_limits.transactions_rate),
             trust_proxy_headers: rate_limits.trust_proxy_headers,
+            abandoned_request_cost: 0.0,
         };
         let substates_fetch_limiter = RateLimitConfig {
             enabled: rate_limits.enabled,
             limiter: IpRateLimiter::new(rate_limits.substates_rate),
             trust_proxy_headers: rate_limits.trust_proxy_headers,
+            abandoned_request_cost: 0.0,
         };
         let utxos_fetch_limiter = RateLimitConfig {
             enabled: rate_limits.enabled,
             limiter: IpRateLimiter::new(rate_limits.utxos_fetch_rate),
             trust_proxy_headers: rate_limits.trust_proxy_headers,
+            abandoned_request_cost: 0.0,
         };
         let non_fungibles_limiter = RateLimitConfig {
             enabled: rate_limits.enabled,
             limiter: IpRateLimiter::new(rate_limits.non_fungibles_rate),
             trust_proxy_headers: rate_limits.trust_proxy_headers,
+            abandoned_request_cost: 0.0,
         };
         // The streaming routes share one per-IP limiter but are counted separately, so each
         // takes its own config carrying that route's gauge handle.
