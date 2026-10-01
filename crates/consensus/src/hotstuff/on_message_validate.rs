@@ -246,10 +246,19 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
         // ours across a boundary, and shard groups move between epochs when the committee count changes. The epoch is
         // chosen by the requester, so a failed lookup counts as no match.
         let current_epoch = epoch_state.epoch();
-        let mut candidate_epochs = vec![*epoch, current_epoch, current_epoch + Epoch(1)];
-        candidate_epochs.extend(current_epoch.checked_sub(Epoch(1)));
-        candidate_epochs.sort_unstable();
-        candidate_epochs.dedup();
+        let mut candidate_epochs = vec![current_epoch];
+        for candidate in [
+            Some(*epoch),
+            Some(current_epoch + Epoch(1)),
+            current_epoch.checked_sub(Epoch(1)),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !candidate_epochs.contains(&candidate) {
+                candidate_epochs.push(candidate);
+            }
+        }
         for candidate in candidate_epochs {
             if let Ok(requester) = self
                 .epoch_manager
