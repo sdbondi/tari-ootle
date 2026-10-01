@@ -25,6 +25,7 @@ mod transaction_executor;
 mod validator;
 
 pub use address::*;
+pub use epoch_manager::TestEpochManager;
 pub use executions_store::ExecuteSpec;
 pub use fixtures::*;
 pub use harness::*;

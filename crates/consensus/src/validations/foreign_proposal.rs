@@ -1,7 +1,11 @@
 //   Copyright 2025 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use tari_ootle_common_types::{VotePower, committee::Committee};
+use std::sync::Arc;
+
+use log::*;
+use tari_epoch_manager::EpochManagerReader;
+use tari_ootle_common_types::{VotePower, committee::Committee, optional::Optional};
 use tari_ootle_storage::consensus_models::{CommandsCommitProof, ForeignProposal};
 use tari_ootle_transaction::Network;
 
@@ -9,6 +13,40 @@ use crate::{
     hotstuff::{HotStuffError, HotstuffConfig, ProposalValidationError},
     traits::ConsensusSpec,
 };
+
+const LOG_TARGET: &str = "tari::ootle::consensus::validations::foreign_proposal";
+
+/// Returns the committee of the shard group the proposal's header names, in the proposal's epoch. The proposal is
+/// processed as the evidence and pledges of that shard group, so its proof must verify against this committee.
+///
+/// Returns `None` when no committee is assigned to exactly that shard group in that epoch.
+pub async fn resolve_foreign_committee<TEpochManager: EpochManagerReader>(
+    epoch_manager: &TEpochManager,
+    proposal: &ForeignProposal,
+) -> Result<Option<Arc<Committee<TEpochManager::Addr>>>, HotStuffError> {
+    let shard_group = proposal
+        .shard_group_checked()
+        .ok_or_else(|| ProposalValidationError::InvalidShardGroup {
+            block_id: proposal.calculate_block_id(),
+            shard_group: proposal.shard_group_unchecked(),
+            details: "Foreign proposal header names a shard group with invalid bounds".to_string(),
+        })?;
+
+    let committee = epoch_manager
+        .get_committee_by_shard_group(proposal.epoch(), shard_group)
+        .await
+        .optional()?;
+    if committee.is_none() {
+        warn!(
+            target: LOG_TARGET,
+            "❌ Foreign proposal block {} names shard group {} which has no committee in epoch {}",
+            proposal,
+            shard_group,
+            proposal.epoch(),
+        );
+    }
+    Ok(committee)
+}
 
 pub fn check_foreign_proposal<TConsensusSpec: ConsensusSpec>(
     proposal: &ForeignProposal,
@@ -135,7 +173,7 @@ mod tests {
     fn it_rejects_a_proposer_outside_the_named_shard_groups_committee() {
         let b = shard_group_b();
         let committee_b = committee(&[11, 12, 13]);
-        // Proposed by a member of shard group A's committee, but the header names shard group B
+        // The header names shard group B, but the proposer is a validator outside B's committee
         let proposal = proposal(1, b);
 
         let err = check_proposer_in_committee(&proposal, &committee_b).unwrap_err();

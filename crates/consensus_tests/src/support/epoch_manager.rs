@@ -386,15 +386,17 @@ impl EpochManagerReader for TestEpochManager {
 
     async fn get_committee_by_shard_group(
         &self,
-        _epoch: Epoch,
+        epoch: Epoch,
         shard_group: ShardGroup,
     ) -> Result<Arc<Committee<Self::Addr>>, EpochManagerError> {
         let state = self.state_lock().await;
-        let Some(committee) = state.committees.get(&shard_group).cloned() else {
-            panic!("Committee not found for shard group {}", shard_group);
-        };
-
-        Ok(committee)
+        // Mirrors the production epoch manager, which reports a shard group with no assigned committee as
+        // `NoEpochFound`.
+        state
+            .committees
+            .get(&shard_group)
+            .cloned()
+            .ok_or(EpochManagerError::NoEpochFound(epoch))
     }
 
     async fn get_committees_overlapping_shard_group(

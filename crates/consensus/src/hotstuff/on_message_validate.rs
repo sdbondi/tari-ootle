@@ -5,12 +5,10 @@ use std::collections::{HashSet, VecDeque};
 
 use log::*;
 use tari_consensus_types::BlockId;
-use tari_epoch_manager::EpochManagerReader;
 use tari_ootle_common_types::{
     Epoch,
     NodeHeight,
     committee::{Committee, CommitteeInfo},
-    optional::Optional,
 };
 use tari_ootle_storage::{
     StateStore,
@@ -467,7 +465,6 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
         Ok(missing_tx_ids)
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn process_foreign_proposal(
         &self,
         epoch_state: &EpochState<TConsensusSpec::Addr>,
@@ -494,38 +491,17 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
             });
         }
 
-        let Some(foreign_shard_group) = msg.proposal.shard_group_checked() else {
-            let block_id = msg.proposal.calculate_block_id();
-            let shard_group = msg.proposal.shard_group_unchecked();
-            return Ok(MessageValidationResult::Invalid {
-                from,
-                message: HotstuffMessage::ForeignProposal(msg),
-                err: ProposalValidationError::InvalidShardGroup {
-                    block_id,
-                    shard_group,
-                    details: "Foreign proposal header names a shard group with invalid bounds".to_string(),
-                }
-                .into(),
-            });
-        };
-
-        // The proposal is processed as the evidence and pledges of the shard group its header names, so the proof
-        // must verify against that shard group's committee.
-        let Some(committee) = self
-            .epoch_manager
-            .get_committee_by_shard_group(msg.proposal.epoch(), foreign_shard_group)
-            .await
-            .optional()?
-        else {
-            warn!(
-                target: LOG_TARGET,
-                "❌ Foreign proposal block {} names shard group {} which has no committee in epoch {}. Discarding \
-                 message.",
-                msg.proposal,
-                foreign_shard_group,
-                msg.proposal.epoch(),
-            );
-            return Ok(MessageValidationResult::Discard);
+        let committee = match validations::resolve_foreign_committee(&self.epoch_manager, &msg.proposal).await {
+            Ok(Some(committee)) => committee,
+            Ok(None) => return Ok(MessageValidationResult::Discard),
+            Err(HotStuffError::ProposalValidationError(err)) => {
+                return Ok(MessageValidationResult::Invalid {
+                    from,
+                    message: HotstuffMessage::ForeignProposal(msg),
+                    err: err.into(),
+                });
+            },
+            Err(err) => return Err(err),
         };
 
         if let Err(err) = self.check_foreign_proposal(&msg.proposal, &committee) {

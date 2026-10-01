@@ -9,10 +9,11 @@ mod tracing;
 pub mod traits;
 mod validations;
 
-// The QC signature check is used by recovery probes outside the consensus crate; both are also exercised
+// The QC signature check is used by recovery probes outside the consensus crate; the others are exercised
 // directly by the consensus test suite.
 pub use validations::{
     check_block_commits_to_timeout_certificate,
     check_justify_reaches_timeout_certificate,
     check_quorum_certificate_signatures,
+    resolve_foreign_committee,
 };
