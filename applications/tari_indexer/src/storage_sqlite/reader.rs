@@ -308,7 +308,7 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
         if let Some(topic) = topic_filter {
             match EventFilter::topic_to_like_pattern(topic) {
                 Some(pattern) => {
-                    query = query.filter(events::topic.like(pattern));
+                    query = query.filter(events::topic.like(pattern).escape('\\'));
                 },
                 None => {
                     query = query.filter(events::topic.eq(topic));
@@ -385,7 +385,7 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
         if let Some(topic) = topic_filter {
             match EventFilter::topic_to_like_pattern(topic) {
                 Some(pattern) => {
-                    query = query.filter(events::topic.like(pattern));
+                    query = query.filter(events::topic.like(pattern).escape('\\'));
                 },
                 None => {
                     query = query.filter(events::topic.eq(topic));

@@ -1642,4 +1642,41 @@ mod tests {
         // With the journal expired, a fetch that started before the transition is no longer vetoed.
         assert!(put(&store, &substate(9), SubstateVersion::new(1), 100).await);
     }
+
+    #[tokio::test]
+    async fn a_wildcard_topic_filter_matches_underscores_literally() {
+        use crate::storage_sqlite::{models::NewEvent, schema::events, serialization::serialize_json};
+
+        let (dir, store) = temp_store().await;
+        let mut conn = SqliteConnection::establish(dir.path().join("indexer.db").to_str().unwrap()).unwrap();
+        let tx_hash = FixedHash::zero().to_string();
+        let payload = serialize_json(&tari_template_lib_types::Metadata::new()).unwrap();
+        for topic in ["my_template.minted", "myXtemplate.minted"] {
+            diesel::insert_into(events::table)
+                .values(NewEvent {
+                    template_address: FixedHash::zero().to_string(),
+                    tx_hash: &tx_hash,
+                    topic,
+                    payload: payload.clone(),
+                    substate_id: None,
+                    resource_address: None,
+                })
+                .execute(&mut conn)
+                .unwrap();
+        }
+
+        let events = store
+            .with_read_tx(|tx| tx.get_events(None, Some("my_template.*"), None, 0, 10))
+            .await
+            .unwrap();
+        let topics = events.iter().map(|(_, e)| e.topic()).collect::<Vec<_>>();
+        assert_eq!(topics, vec!["my_template.minted"]);
+
+        let events = store
+            .with_read_tx(|tx| tx.get_events_after_id(0, Some("my_template.*"), None, None, None, 10))
+            .await
+            .unwrap();
+        let topics = events.iter().map(|(_, _, e)| e.topic()).collect::<Vec<_>>();
+        assert_eq!(topics, vec!["my_template.minted"]);
+    }
 }

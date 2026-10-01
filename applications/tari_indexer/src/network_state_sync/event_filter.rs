@@ -83,13 +83,13 @@ impl EventFilter {
     }
 
     /// Convert a topic filter with `*` wildcards to a SQL LIKE pattern.
-    /// `*` segments become `%`. Returns `None` if no wildcards are present.
+    /// `*` segments become `%`. Returns `None` if no wildcards are present. The pattern escapes
+    /// LIKE metacharacters with `\`, so callers must match it with `ESCAPE '\'`.
     pub fn topic_to_like_pattern(filter: &str) -> Option<String> {
         if !filter.contains('*') {
             return None;
         }
-        // Escape any existing SQL LIKE special chars, then replace * with %
-        let escaped = filter.replace('%', r"\%").replace('_', r"\_");
+        let escaped = filter.replace('\\', r"\\").replace('%', r"\%").replace('_', r"\_");
         Some(escaped.replace('*', "%"))
     }
 
