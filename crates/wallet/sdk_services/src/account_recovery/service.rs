@@ -33,6 +33,9 @@ use crate::{
 
 const LOG_TARGET: &str = "tari::ootle_wallet_daemon::resource_scanner";
 
+const MAX_ATTEMPTS_PER_KEY: u32 = 5;
+const RETRY_DELAY: Duration = Duration::from_secs(1);
+
 /// Scans through all the substates to find related resources to current wallet.
 pub struct AccountRecoveryService<TSpec: WalletSdkSpec> {
     wallet_sdk: WalletSdk<TSpec>,
@@ -85,40 +88,37 @@ where
         let key_manager_api = self.wallet_sdk.key_manager_api();
         let mut not_found_accounts_count = 0;
         let mut found_accounts_count = 0;
-        let initial_key_index = match key_manager_api.get_active_key(KeyBranch::Account) {
-            Ok(key) => key.key_index(),
-            Err(err) => {
-                error!(target: LOG_TARGET, "Error getting active key: {err}. Scanning failed...");
-                return;
-            },
-        };
         let mut last_found_key = None;
-        let mut max_probed_key;
         let mut unused_accounts = Vec::new();
+        // Every run starts from the first key, so a run that was interrupted is redone in full. Keys are derived
+        // without advancing the key manager's index, which is set once the scan is complete.
+        let mut key_index = 0;
         loop {
-            let key = match key_manager_api.next_key(KeyBranch::Account) {
+            let key = match key_manager_api.derive_account_key(key_index) {
                 Ok(key) => key,
                 Err(err) => {
-                    error!(target: LOG_TARGET, "Error getting next key: {err}. Scanning failed...");
+                    error!(target: LOG_TARGET, "Error deriving key {key_index}: {err}. Scanning failed...");
                     return;
                 },
             };
-            max_probed_key = key.key_index();
-            info!(target: LOG_TARGET, "🔍️ Attempting to recover account with key index {}", key.key_index());
-            match self.try_recover_account(&key).await {
-                Ok(RecoveredAccount::Found) => {
-                    last_found_key = Some(key.key_index());
-                    info!(target: LOG_TARGET, "✅ Account with key index {} found!", key.key_index());
+            info!(target: LOG_TARGET, "🔍️ Attempting to recover account with key index {}", key_index);
+            match self.try_recover_account_with_retries(&key).await {
+                Some(RecoveredAccount::Found) => {
+                    last_found_key = Some(key_index);
+                    info!(target: LOG_TARGET, "✅ Account with key index {} found!", key_index);
                     not_found_accounts_count = 0;
                     found_accounts_count += 1;
                 },
-                Ok(RecoveredAccount::Unused(address)) => {
-                    unused_accounts.push((key.key_index(), address));
+                Some(RecoveredAccount::Unused(address)) => {
+                    unused_accounts.push((key_index, address));
                     not_found_accounts_count += 1;
                 },
-                Err(err) => {
-                    warn!(target: LOG_TARGET, "⚠️Error scanning account: {err}. Keeping the account and continuing...");
-                    not_found_accounts_count += 1;
+                None => {
+                    error!(
+                        target: LOG_TARGET,
+                        "❌ Could not scan the account at key index {key_index}. Recovery will run again when the wallet restarts"
+                    );
+                    return;
                 },
             }
             if not_found_accounts_count == self.abandon_after_not_found {
@@ -128,9 +128,11 @@ where
                 );
                 break;
             }
+            key_index += 1;
         }
+        let max_probed_key = key_index;
 
-        let active_key_index = last_found_key.unwrap_or(initial_key_index);
+        let active_key_index = last_found_key.unwrap_or(0);
 
         // The account at the active key index is kept so that a wallet with nothing to recover still has its first
         // account.
@@ -164,6 +166,28 @@ where
         }
 
         info!(target: LOG_TARGET, "✅ Scanning accounts finished! {found_accounts_count} owned account(s) found!");
+    }
+
+    /// Returns None if the account could not be scanned after several attempts. The scan cannot skip the key: the
+    /// key may hold the only UTXOs that keep the scan going, and its account row must not be left in place of an
+    /// account the user creates later.
+    async fn try_recover_account_with_retries(&self, key: &DerivedWalletKey) -> Option<RecoveredAccount> {
+        for attempt in 1..=MAX_ATTEMPTS_PER_KEY {
+            match self.try_recover_account(key).await {
+                Ok(recovered) => return Some(recovered),
+                Err(err) => {
+                    warn!(
+                        target: LOG_TARGET,
+                        "⚠️ Error scanning the account at key index {} (attempt {attempt}/{MAX_ATTEMPTS_PER_KEY}): {err}",
+                        key.key_index()
+                    );
+                    if attempt < MAX_ATTEMPTS_PER_KEY {
+                        time::sleep(RETRY_DELAY * attempt).await;
+                    }
+                },
+            }
+        }
+        None
     }
 
     /// Adds the account derived from the key and scans it for vaults and stealth UTXOs. The account is found if it

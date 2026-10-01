@@ -89,38 +89,8 @@ impl Test {
 
 impl<TNetwork: WalletNetworkInterface> TestWithNetwork<TNetwork> {
     pub fn with_network(network: TNetwork) -> Self {
-        let temp = tempfile::tempdir().unwrap();
-        let store = SqliteWalletStore::try_open(temp.path().join("data/wallet.sqlite")).unwrap();
-        store.run_migrations().unwrap();
-
-        let mut sdk = WalletSdk::initialize_with_local_key_store(
-            store.clone(),
-            network,
-            WalletSdkConfig {
-                network: Network::LocalNet,
-                override_keyring_password: Some(SafePassword::from_str("SuuuCh Sekret W0W").unwrap()),
-            },
-            EpochBirthday::new(1200.try_into().unwrap(), u64::MAX),
-        )
-        .unwrap();
-        sdk.initialize_cipher_seed(CipherSeedRestore::CreateNewIfRequired)
-            .unwrap();
-        let accounts_api = sdk.accounts_api();
-        sdk.resources_api()
-            .upsert_resource(
-                &STEALTH_TARI_RESOURCE_ADDRESS,
-                &Resource::new(
-                    ResourceType::Stealth,
-                    SubstateOwnerRule::None,
-                    ResourceAccessRules::new(),
-                    Metadata::from([(TOKEN_SYMBOL, "TEST".to_string())]),
-                    None,
-                    None,
-                    6,
-                    false,
-                ),
-            )
-            .unwrap();
+        let test = Self::without_accounts(network);
+        let accounts_api = test.sdk.accounts_api();
         accounts_api
             .add_account(
                 Some("test"),
@@ -141,6 +111,42 @@ impl<TNetwork: WalletNetworkInterface> TestWithNetwork<TNetwork> {
                 ResourceType::Stealth,
                 Some("TEST".to_string()),
                 6,
+            )
+            .unwrap();
+        test
+    }
+
+    /// A wallet with the stealth TARI resource and no accounts.
+    pub fn without_accounts(network: TNetwork) -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SqliteWalletStore::try_open(temp.path().join("data/wallet.sqlite")).unwrap();
+        store.run_migrations().unwrap();
+
+        let mut sdk = WalletSdk::initialize_with_local_key_store(
+            store.clone(),
+            network,
+            WalletSdkConfig {
+                network: Network::LocalNet,
+                override_keyring_password: Some(SafePassword::from_str("SuuuCh Sekret W0W").unwrap()),
+            },
+            EpochBirthday::new(1200.try_into().unwrap(), u64::MAX),
+        )
+        .unwrap();
+        sdk.initialize_cipher_seed(CipherSeedRestore::CreateNewIfRequired)
+            .unwrap();
+        sdk.resources_api()
+            .upsert_resource(
+                &STEALTH_TARI_RESOURCE_ADDRESS,
+                &Resource::new(
+                    ResourceType::Stealth,
+                    SubstateOwnerRule::None,
+                    ResourceAccessRules::new(),
+                    Metadata::from([(TOKEN_SYMBOL, "TEST".to_string())]),
+                    None,
+                    None,
+                    6,
+                    false,
+                ),
             )
             .unwrap();
 
