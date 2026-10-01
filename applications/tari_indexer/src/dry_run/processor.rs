@@ -169,10 +169,11 @@ impl DryRunTransactionProcessor {
     /// The epoch the validators would execute the transaction in. Until the state sync has observed
     /// every committee, the epoch manager's epoch stands in for it.
     async fn execution_epoch(&self) -> Result<Epoch, DryRunTransactionProcessorError> {
-        match self.consensus_epoch.current() {
-            Some(epoch) => Ok(epoch),
-            None => Ok(self.epoch_manager.current_epoch().await?),
-        }
+        let epoch_manager_epoch = self.epoch_manager.current_epoch().await?;
+        Ok(self
+            .consensus_epoch
+            .current_within(epoch_manager_epoch)
+            .unwrap_or(epoch_manager_epoch))
     }
 
     async fn get_virtual_substates(&self, epoch: Epoch) -> Result<VirtualSubstates, DryRunTransactionProcessorError> {

@@ -56,6 +56,17 @@ impl ConsensusEpoch {
         self.inner.read().unwrap_or_else(|e| e.into_inner()).current()
     }
 
+    /// The epoch every shard group has reached, held within one epoch below `epoch_manager_epoch`.
+    ///
+    /// A committee that is executing trails the epoch manager by at most its end-of-epoch block, so
+    /// a group observed further behind has stopped and must not hold back the epoch transactions
+    /// elsewhere execute in. An epoch past `epoch_manager_epoch` is one this indexer's base layer
+    /// scan has not reached and cannot resolve the epoch hash for.
+    pub fn current_within(&self, epoch_manager_epoch: Epoch) -> Option<Epoch> {
+        self.current()
+            .map(|epoch| epoch.clamp(epoch_manager_epoch.saturating_sub(Epoch(1)), epoch_manager_epoch))
+    }
+
     /// The shard groups observed in an epoch before `epoch`, or not observed at all.
     pub fn groups_behind(&self, epoch: Epoch) -> Vec<ShardGroup> {
         self.inner
@@ -126,6 +137,19 @@ mod tests {
         assert_eq!(consensus_epoch.current(), Some(Epoch(6)));
         consensus_epoch.observe(sg(0, 127), Epoch(7));
         assert_eq!(consensus_epoch.current(), Some(Epoch(6)));
+    }
+
+    #[test]
+    fn it_is_held_within_one_epoch_below_the_epoch_manager() {
+        let consensus_epoch = ConsensusEpoch::new();
+        consensus_epoch.track_groups([sg(0, 127), sg(128, 255)]);
+        consensus_epoch.observe(sg(0, 127), Epoch(10));
+        consensus_epoch.observe(sg(128, 255), Epoch(4));
+        assert_eq!(consensus_epoch.current_within(Epoch(10)), Some(Epoch(9)));
+
+        consensus_epoch.observe(sg(128, 255), Epoch(10));
+        assert_eq!(consensus_epoch.current_within(Epoch(9)), Some(Epoch(9)));
+        assert_eq!(consensus_epoch.current_within(Epoch(10)), Some(Epoch(10)));
     }
 
     #[test]

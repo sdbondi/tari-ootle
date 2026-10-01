@@ -14,10 +14,13 @@ use notify::{
     event::{AccessKind, AccessMode},
 };
 use ootle_byte_type::ToByteType;
-use tari_engine_types::commit_result::{ExecutionFailureCode, RejectReason};
+use tari_engine_types::commit_result::{ExecutionFailureCode, FinalizeResult, RejectReason};
 use tari_ootle_common_types::{Epoch, optional::Optional};
 use tari_ootle_transaction::TransactionId;
-use tari_ootle_wallet_sdk::{models::WalletEvent, network::WalletNetworkInterface};
+use tari_ootle_wallet_sdk::{
+    models::{TransactionStatus, WalletEvent, WalletTransaction},
+    network::WalletNetworkInterface,
+};
 use tari_ootle_wallet_sdk_services::{notify::Notify, transaction_service::TransactionServiceHandle};
 use tari_shutdown::ShutdownSignal;
 use tari_sidechain::CompleteClaimBurnProof;
@@ -158,16 +161,12 @@ impl AutoClaimBurnService {
                     match result {
                         Ok(event) => self.on_wallet_event(event),
                         Err(broadcast::error::RecvError::Lagged(n)) => {
-                            // Any awaited result may be among the missed events, so every in-flight
-                            // claim is submitted again; one that already landed fails as already claimed.
                             warn!(
                                 target: LOG_TARGET,
-                                "Missed {} wallet events; resubmitting any claim still awaiting its result.",
+                                "Missed {} wallet events; reading the result of each claim still awaiting one.",
                                 n
                             );
-                            for pending in self.pending_claims.values_mut() {
-                                pending.in_flight = None;
-                            }
+                            self.refresh_in_flight(None);
                         },
                         Err(broadcast::error::RecvError::Closed) => {
                             info!(target: LOG_TARGET, "🔥 Wallet event channel closed, shutting down");
@@ -344,6 +343,7 @@ impl AutoClaimBurnService {
             },
         };
 
+        self.refresh_in_flight(Some(current_epoch));
         self.resolve_claim_epochs().await;
 
         let ready: Vec<String> = self
@@ -365,7 +365,10 @@ impl AutoClaimBurnService {
                         tx_id,
                     );
                     if let Some(pending) = self.pending_claims.get_mut(&file_name) {
-                        pending.in_flight = Some(tx_id);
+                        pending.in_flight = Some(InFlightClaim {
+                            transaction_id: tx_id,
+                            max_epoch: claim_max_epoch(current_epoch),
+                        });
                     }
                 },
                 Err(ClaimError::Permanent(e)) => {
@@ -409,17 +412,40 @@ impl AutoClaimBurnService {
 
     fn on_wallet_event(&mut self, event: WalletEvent) {
         let (transaction_id, outcome) = match &event {
-            WalletEvent::TransactionFinalized(event) => (event.transaction_id, match event.finalize.any_reject() {
-                None => ClaimOutcome::Accepted,
-                Some(reason) if is_burn_not_yet_claimable(reason) => ClaimOutcome::NotYetClaimable,
-                Some(reason) => ClaimOutcome::Failed(reason.to_string()),
-            }),
+            WalletEvent::TransactionFinalized(event) => (event.transaction_id, finalized_outcome(&event.finalize)),
             WalletEvent::TransactionInvalid(event) => {
                 (event.transaction_id, ClaimOutcome::Failed(event.status.to_string()))
             },
             _ => return,
         };
         settle_claim(&mut self.pending_claims, &transaction_id, outcome);
+    }
+
+    /// Settles each in-flight claim whose transaction the wallet has stored as final, for a result
+    /// whose event may have been missed. One still pending once `current_epoch` is past its
+    /// `max_epoch` can no longer be included, so the claim is submitted again.
+    fn refresh_in_flight(&mut self, current_epoch: Option<Epoch>) {
+        let in_flight: Vec<InFlightClaim> = self.pending_claims.values().filter_map(|p| p.in_flight).collect();
+        for claim in in_flight {
+            let transaction = match self.sdk.transaction_api().get(claim.transaction_id) {
+                Ok(transaction) => transaction,
+                Err(e) => {
+                    debug!(
+                        target: LOG_TARGET,
+                        "Could not read claim burn transaction {}: {}",
+                        claim.transaction_id,
+                        e
+                    );
+                    continue;
+                },
+            };
+            let outcome = match stored_outcome(&transaction) {
+                Some(outcome) => outcome,
+                None if current_epoch.is_some_and(|epoch| epoch > claim.max_epoch) => ClaimOutcome::Expired,
+                None => continue,
+            };
+            settle_claim(&mut self.pending_claims, &claim.transaction_id, outcome);
+        }
     }
 
     /// Reads and deserializes a burn proof file from `burn_proof_dir`.
@@ -534,6 +560,32 @@ enum ClaimOutcome {
     /// Rejected because the burn is not claimable in the epoch the claim executed in.
     NotYetClaimable,
     Failed(String),
+    /// Not finalized by its `max_epoch`, so it can no longer be included.
+    Expired,
+}
+
+fn finalized_outcome(finalize: &FinalizeResult) -> ClaimOutcome {
+    match finalize.any_reject() {
+        None => ClaimOutcome::Accepted,
+        Some(reason) if is_burn_not_yet_claimable(reason) => ClaimOutcome::NotYetClaimable,
+        Some(reason) => ClaimOutcome::Failed(reason.to_string()),
+    }
+}
+
+/// The outcome the wallet has stored for a claim transaction, or `None` while it is not final.
+fn stored_outcome(transaction: &WalletTransaction) -> Option<ClaimOutcome> {
+    match transaction.status {
+        TransactionStatus::New | TransactionStatus::DryRun | TransactionStatus::Pending => None,
+        TransactionStatus::Accepted | TransactionStatus::Rejected | TransactionStatus::OnlyFeeAccepted => {
+            transaction.finalize.as_ref().map(finalized_outcome)
+        },
+        TransactionStatus::InvalidTransaction | TransactionStatus::DryRunFailed => Some(ClaimOutcome::Failed(
+            transaction
+                .invalid_reason
+                .clone()
+                .unwrap_or_else(|| transaction.status.to_string()),
+        )),
+    }
 }
 
 /// Settles the claim awaiting `transaction_id`: an accepted claim leaves the queue (the
@@ -546,7 +598,7 @@ fn settle_claim(
 ) {
     let Some(file_name) = pending_claims
         .iter()
-        .find(|(_, pending)| pending.in_flight.as_ref() == Some(transaction_id))
+        .find(|(_, pending)| pending.in_flight.is_some_and(|c| c.transaction_id == *transaction_id))
         .map(|(name, _)| name.clone())
     else {
         return;
@@ -561,6 +613,17 @@ fn settle_claim(
                 pending.in_flight = None;
             }
             defer_claim(pending_claims, &file_name);
+        },
+        ClaimOutcome::Expired => {
+            info!(
+                target: LOG_TARGET,
+                "Claim burn for '{}' (tx_id: {}) was not finalized by its max epoch; submitting it again",
+                file_name,
+                transaction_id,
+            );
+            if let Some(pending) = pending_claims.get_mut(&file_name) {
+                pending.in_flight = None;
+            }
         },
         ClaimOutcome::Failed(reason) => {
             warn!(
@@ -625,7 +688,13 @@ struct PendingClaim {
     deferrals: u32,
     /// The submitted claim transaction whose result has not arrived yet. The claim is not submitted
     /// again while it is set.
-    in_flight: Option<TransactionId>,
+    in_flight: Option<InFlightClaim>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InFlightClaim {
+    transaction_id: TransactionId,
+    max_epoch: Epoch,
 }
 
 impl PendingClaim {
@@ -681,7 +750,10 @@ mod tests {
     fn queue_with_claim_in_flight(transaction_id: TransactionId) -> HashMap<String, PendingClaim> {
         let mut pending = PendingClaim::new();
         pending.claim_after_epoch = Some(Epoch(10));
-        pending.in_flight = Some(transaction_id);
+        pending.in_flight = Some(InFlightClaim {
+            transaction_id,
+            max_epoch: Epoch(13),
+        });
         HashMap::from([("burn.json".to_string(), pending)])
     }
 
@@ -716,7 +788,20 @@ mod tests {
         let transaction_id = TransactionId::new([1; 32]);
         let mut queue = queue_with_claim_in_flight(transaction_id);
         settle_claim(&mut queue, &TransactionId::new([2; 32]), ClaimOutcome::Accepted);
-        assert_eq!(queue["burn.json"].in_flight, Some(transaction_id));
+        assert_eq!(
+            queue["burn.json"].in_flight.map(|c| c.transaction_id),
+            Some(transaction_id)
+        );
+    }
+
+    #[test]
+    fn an_expired_claim_is_submitted_again_without_a_deferral() {
+        let transaction_id = TransactionId::new([1; 32]);
+        let mut queue = queue_with_claim_in_flight(transaction_id);
+        settle_claim(&mut queue, &transaction_id, ClaimOutcome::Expired);
+        let pending = &queue["burn.json"];
+        assert_eq!(pending.in_flight, None);
+        assert_eq!(pending.deferrals, 0);
     }
 
     #[test]

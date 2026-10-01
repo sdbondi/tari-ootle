@@ -9,8 +9,9 @@ export type IndexerGetEpochManagerStatsResponse = {
   current_epoch: Epoch;
   /**
    * The epoch the validators execute transactions in, as the indexer has observed from their
-   * committed blocks. It trails `current_epoch` after each epoch boundary until every committee
-   * has committed its end-of-epoch block. `None` until the indexer has observed every committee.
+   * committed blocks, held within one epoch below `current_epoch`. It trails `current_epoch` after
+   * each epoch boundary until every committee has committed its end-of-epoch block. `None` until
+   * the indexer has observed every committee.
    */
   consensus_epoch: Epoch | null;
   current_block_height: bigint;
