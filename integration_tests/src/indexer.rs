@@ -191,6 +191,7 @@ pub async fn spawn_indexer(world: &mut TariWorld, indexer_name: String, base_nod
         config.indexer.data_dir = base_dir.to_path_buf();
         config.indexer.identity_file = base_dir.join("indexer_id.json");
         config.indexer.localnet_consensus_constants_file = localnet_consensus_constants_file;
+        config.indexer.rate_limits.enabled = false;
         config.epoch_oracle.base_layer.base_node_grpc_url =
             Some(format!("http://127.0.0.1:{}", base_node_grpc_port).parse().unwrap());
         config.indexer.block_scanning_interval = Duration::from_secs(5);

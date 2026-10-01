@@ -469,6 +469,7 @@ impl SubConfigPath for IndexerConfig {
 /// in seconds rather than a full minute.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IndexerRateLimitsConfig {
+    /// On by default, since the API is public. Local networks such as the swarm turn it off.
     pub enabled: bool,
     /// POST /transactions – default 20 req / 10s burst (~120/min sustained)
     pub transactions_submit_rate: RefillRate,
@@ -493,7 +494,7 @@ impl Default for IndexerRateLimitsConfig {
     fn default() -> Self {
         let window = Duration::from_secs(10);
         Self {
-            enabled: false,
+            enabled: true,
             transactions_submit_rate: RefillRate::new(20.0, window).unwrap(),
             transactions_dry_run_submit_rate: RefillRate::new(20.0, window).unwrap(),
             substates_rate: RefillRate::new(20.0, Duration::from_secs(20)).unwrap(),

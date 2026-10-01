@@ -27,7 +27,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use futures::FutureExt;
+use futures::{FutureExt, StreamExt, TryStreamExt, stream};
 use log::*;
 use ootle_network::Network;
 use tari_common_types::types::FixedHash;
@@ -96,6 +96,9 @@ pub trait TrustedRootStore: std::fmt::Debug + Send + Sync + 'static {
 /// The most substates a validator will answer for in one batch request.
 const SUBSTATE_BATCH_SIZE: usize = 50;
 
+/// How many batch requests are in flight at once across the shard groups a lookup touches.
+const BATCH_FETCH_CONCURRENCY: usize = 4;
+
 /// How many committee members a batch chunk is tried against before it is given up on. Unlike
 /// [`READ_RACE_WIDTH`], which bounds concurrent in-flight reads, these are sequential attempts: a
 /// batch is large enough that asking several members at once for the same chunk would waste more
@@ -121,6 +124,36 @@ pub struct SubstateLookupResult {
     /// verification is disabled, the result is `DoesNotExist` (not provable), or no committee member
     /// could supply a proof yet (e.g. nothing has been committed since an epoch change).
     pub verified: bool,
+}
+
+/// What [`CachedSubstateManager::get_input_substates`] found.
+#[derive(Debug, Clone)]
+pub enum InputSubstatesLookup {
+    /// Every requirement is up.
+    AllUp(HashMap<SubstateId, SubstateLookupResult>),
+    /// The first requirement found to be down. The lookup stops there, so the others are unknown.
+    Down {
+        substate_id: SubstateId,
+        version: SubstateVersion,
+    },
+    /// The first requirement found not to exist. The lookup stops there, so the others are unknown.
+    DoesNotExist { substate_id: SubstateId },
+}
+
+impl InputSubstatesLookup {
+    /// The stopping outcome for `substate_id`, or `None` when `result` is up.
+    fn not_up(substate_id: &SubstateId, result: &SubstateResult) -> Option<Self> {
+        match result {
+            SubstateResult::Up { .. } => None,
+            SubstateResult::Down { version } => Some(Self::Down {
+                substate_id: substate_id.clone(),
+                version: *version,
+            }),
+            SubstateResult::DoesNotExist => Some(Self::DoesNotExist {
+                substate_id: substate_id.clone(),
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -214,44 +247,8 @@ where
         specific_version: Option<SubstateVersion>,
     ) -> Result<SubstateLookupResult, IndexerError> {
         debug!(target: LOG_TARGET, "get_substate: {}v{}", substate_id, specific_version.display());
-        let cache_res = self
-            .substate_cache
-            .read(substate_id)
-            .await?
-            .and_then(|entry| entry.answer_at(specific_version));
-        if let Some(entry) = cache_res {
-            // Absence has nothing to prove against the state tree, so a cached nonexistence is never
-            // verified and gating it on a proof would mean never serving one. Its evidence is the
-            // f+1 agreement that produced it. Every other entry that is unverified (e.g. written by
-            // the batch path or before verification was enabled) is refetched while verification is
-            // on, so it can be replaced with a proven copy.
-            let is_nonexistence = matches!(entry.substate_result, SubstateResult::DoesNotExist);
-            if is_nonexistence || entry.verified || !self.verify_substate_proofs {
-                let ttl = if is_nonexistence {
-                    self.negative_cache_ttl
-                } else {
-                    self.cache_ttl
-                };
-                let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_secs();
-                let age = now.saturating_sub(entry.cached_at);
-                if age <= ttl.as_secs() {
-                    debug!(target: LOG_TARGET, "Substate cache hit for {} with version {}", substate_id, entry.version.display());
-                    #[cfg(feature = "metrics")]
-                    self.metrics.as_ref().inspect(|m| m.inc_cache_hits());
-                    return Ok(SubstateLookupResult {
-                        result: entry.substate_result,
-                        verified: entry.verified,
-                    });
-                }
-
-                debug!(
-                    target: LOG_TARGET,
-                    "Cached substate {} at v{} has aged out ({}s). Fetching from committee.",
-                    substate_id,
-                    entry.version.display(),
-                    age,
-                );
-            }
+        if let Some(lookup_result) = self.read_fresh_cache_entry(substate_id, specific_version).await? {
+            return Ok(lookup_result);
         }
         #[cfg(feature = "metrics")]
         self.metrics.as_ref().inspect(|m| m.inc_cache_misses());
@@ -297,6 +294,56 @@ where
         Ok(lookup_result)
     }
 
+    /// The cached answer for `substate_id` at `specific_version`, or `None` when the cache holds no
+    /// entry that may be served: none at all, one that has aged out, or an unverified one while
+    /// verification is on.
+    async fn read_fresh_cache_entry(
+        &self,
+        substate_id: &SubstateId,
+        specific_version: Option<SubstateVersion>,
+    ) -> Result<Option<SubstateLookupResult>, IndexerError> {
+        let cache_res = self
+            .substate_cache
+            .read(substate_id)
+            .await?
+            .and_then(|entry| entry.answer_at(specific_version));
+        if let Some(entry) = cache_res {
+            // Absence has nothing to prove against the state tree, so a cached nonexistence is never
+            // verified and gating it on a proof would mean never serving one. Its evidence is the
+            // f+1 agreement that produced it. Every other entry that is unverified (e.g. written by
+            // the batch path or before verification was enabled) is refetched while verification is
+            // on, so it can be replaced with a proven copy.
+            let is_nonexistence = matches!(entry.substate_result, SubstateResult::DoesNotExist);
+            if is_nonexistence || entry.verified || !self.verify_substate_proofs {
+                let ttl = if is_nonexistence {
+                    self.negative_cache_ttl
+                } else {
+                    self.cache_ttl
+                };
+                let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_secs();
+                let age = now.saturating_sub(entry.cached_at);
+                if age <= ttl.as_secs() {
+                    debug!(target: LOG_TARGET, "Substate cache hit for {} with version {}", substate_id, entry.version.display());
+                    #[cfg(feature = "metrics")]
+                    self.metrics.as_ref().inspect(|m| m.inc_cache_hits());
+                    return Ok(Some(SubstateLookupResult {
+                        result: entry.substate_result,
+                        verified: entry.verified,
+                    }));
+                }
+
+                debug!(
+                    target: LOG_TARGET,
+                    "Cached substate {} at v{} has aged out ({}s). Fetching from committee.",
+                    substate_id,
+                    entry.version.display(),
+                    age,
+                );
+            }
+        }
+        Ok(None)
+    }
+
     pub async fn get_cached_substates<'a, I: Iterator<Item = &'a SubstateId> + ExactSizeIterator>(
         &self,
         substate_ids: I,
@@ -311,12 +358,12 @@ where
 
     async fn build_vn_committee_map<'a>(
         &self,
-        substate_ids: &'a [SubstateId],
+        substate_ids: &[&'a SubstateId],
         epoch: Epoch,
         num_committees: u32,
     ) -> Result<HashMap<ShardGroup, (Arc<Committee<TAddr>>, Vec<&'a SubstateId>)>, IndexerError> {
         let mut map = HashMap::<_, (_, Vec<&'a SubstateId>)>::with_capacity(substate_ids.len());
-        for substate_id in substate_ids {
+        for &substate_id in substate_ids {
             let shard_group = SubstateAddress::from_substate_id(substate_id, SubstateVersion::ZERO)
                 .to_shard_group(NumPreshards::current(), num_committees);
             if let Some((_, substates_mut)) = map.get_mut(&shard_group) {
@@ -341,6 +388,79 @@ where
         &self,
         substate_ids: &[SubstateId],
     ) -> Result<HashMap<SubstateId, Substate>, IndexerError> {
+        let substate_ids = substate_ids.iter().collect::<Vec<_>>();
+        let heads = self.fetch_and_cache_heads(&substate_ids).await?;
+        // A batch answers with the head version; a caller asking for substates by id wants the live
+        // ones, and a down head is not one.
+        Ok(heads
+            .into_iter()
+            .filter_map(|(id, lookup)| lookup.result.into_up().map(|up| (id, up)))
+            .collect())
+    }
+
+    /// Looks up the substates a transaction declares as inputs, stopping at the first one that is not
+    /// up.
+    ///
+    /// Consensus aborts a transaction whose declared input is not up, so once one is found there is
+    /// nothing left to learn from the rest. Fresh cache entries are consulted first, then the misses
+    /// are fetched in batches. A batch omission says only that one member did not answer for the id,
+    /// so an omitted input is confirmed through [`Self::get_substate`]'s committee agreement before
+    /// the lookup stops at it.
+    pub async fn get_input_substates(
+        &self,
+        requirements: &[SubstateRequirementRef<'_>],
+    ) -> Result<InputSubstatesLookup, IndexerError> {
+        let mut found = HashMap::with_capacity(requirements.len());
+        let mut misses = Vec::new();
+        for req in requirements {
+            match self.read_fresh_cache_entry(req.substate_id(), req.version()).await? {
+                Some(lookup) => {
+                    if let Some(not_up) = InputSubstatesLookup::not_up(req.substate_id(), &lookup.result) {
+                        return Ok(not_up);
+                    }
+                    found.insert(req.substate_id().clone(), lookup);
+                },
+                None => misses.push(*req),
+            }
+        }
+        if misses.is_empty() {
+            return Ok(InputSubstatesLookup::AllUp(found));
+        }
+
+        let miss_ids = misses.iter().map(|req| req.substate_id()).collect::<Vec<_>>();
+        let heads = self.fetch_and_cache_heads(&miss_ids).await?;
+
+        for req in misses {
+            let from_batch = heads.get(req.substate_id()).and_then(|head| {
+                let entry = SubstateCacheEntry {
+                    version: head.result.version(),
+                    substate_result: head.result.clone(),
+                    cached_at: 0,
+                    verified: head.verified,
+                };
+                entry.answer_at(req.version()).map(|entry| SubstateLookupResult {
+                    result: entry.substate_result,
+                    verified: entry.verified,
+                })
+            });
+            let lookup = match from_batch {
+                Some(lookup) => lookup,
+                None => self.get_substate(req.substate_id(), req.version()).await?,
+            };
+            if let Some(not_up) = InputSubstatesLookup::not_up(req.substate_id(), &lookup.result) {
+                return Ok(not_up);
+            }
+            found.insert(req.substate_id().clone(), lookup);
+        }
+        Ok(InputSubstatesLookup::AllUp(found))
+    }
+
+    /// Fetches the head of each substate in batches from its shard group, caching what may be cached.
+    /// Ids that no member answered for are absent from the result.
+    async fn fetch_and_cache_heads(
+        &self,
+        substate_ids: &[&SubstateId],
+    ) -> Result<HashMap<SubstateId, SubstateLookupResult>, IndexerError> {
         let epoch = self.committee_provider.current_epoch().await?;
         let num_committees = self.committee_provider.get_num_committees(epoch).await?;
         let committee_map = self.build_vn_committee_map(substate_ids, epoch, num_committees).await?;
@@ -348,49 +468,57 @@ where
         // Captured before any fetch so that a transition arriving while one is in flight can veto the
         // write it produces.
         let mut watermarks = HashMap::with_capacity(substate_ids.len());
-        for substate_id in substate_ids {
+        for &substate_id in substate_ids {
             if let Some(watermark) = self.substate_cache.watermark(substate_id).await? {
                 watermarks.insert(substate_id, watermark);
             }
         }
 
-        let mut results = HashMap::with_capacity(substate_ids.len());
-        for (shard_group, (committee, substate_ids)) in committee_map {
+        let mut fetches = Vec::new();
+        for (shard_group, (committee, substate_ids)) in &committee_map {
             debug!(target: LOG_TARGET, "Fetching {} substates from shard group {}", substate_ids.len(), shard_group);
             for chunk in substate_ids.chunks(SUBSTATE_BATCH_SIZE) {
-                let (batch, verified) = self.race_substate_batch(&committee, chunk, shard_group).await?;
-                if !batch.missing.is_empty() {
-                    debug!(
-                        target: LOG_TARGET,
-                        "{} of {} requested substate(s) are unknown to {shard_group}",
-                        batch.missing.len(),
-                        chunk.len()
-                    );
+                // Boxed so that each future's `Send` is settled here, where every lifetime is concrete
+                // (rust-lang/rust#102211).
+                fetches.push(self.race_substate_batch(committee, chunk, *shard_group).boxed());
+            }
+        }
+        let batches = stream::iter(fetches)
+            .buffer_unordered(BATCH_FETCH_CONCURRENCY)
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        let mut results = HashMap::with_capacity(substate_ids.len());
+        for (batch, verified) in batches {
+            if !batch.missing.is_empty() {
+                debug!(
+                    target: LOG_TARGET,
+                    "{} requested substate(s) are unknown to the member that answered",
+                    batch.missing.len(),
+                );
+            }
+
+            for substate in batch.substates {
+                if let Some(watermark) = watermarks.get(&substate.substate_id).copied() {
+                    let entry = SubstateCacheEntryRef {
+                        version: substate.result.version(),
+                        substate_result: &substate.result,
+                        cached_at: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_secs(),
+                        verified,
+                    };
+                    // An unverified entry is not cached while verification is on, so the next read
+                    // retries for a proven copy instead of pinning an unproven value.
+                    if verified || !self.verify_substate_proofs {
+                        self.substate_cache
+                            .write(&substate.substate_id, entry, watermark)
+                            .await?;
+                    }
                 }
 
-                for substate in batch.substates {
-                    if let Some(watermark) = watermarks.get(&substate.substate_id).copied() {
-                        let entry = SubstateCacheEntryRef {
-                            version: substate.result.version(),
-                            substate_result: &substate.result,
-                            cached_at: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_secs(),
-                            verified,
-                        };
-                        // An unverified entry is not cached while verification is on, so the next
-                        // read retries for a proven copy instead of pinning an unproven value.
-                        if verified || !self.verify_substate_proofs {
-                            self.substate_cache
-                                .write(&substate.substate_id, entry, watermark)
-                                .await?;
-                        }
-                    }
-
-                    // A batch answers with the head version; a caller asking for substates by id
-                    // wants the live ones, and a down head is not one.
-                    if let Some(up) = substate.result.into_up() {
-                        results.insert(substate.substate_id, up);
-                    }
-                }
+                results.insert(substate.substate_id, SubstateLookupResult {
+                    result: substate.result,
+                    verified,
+                });
             }
         }
         Ok(results)
@@ -710,5 +838,378 @@ where
         }
 
         Ok(root)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::HashSet,
+        str::FromStr,
+        sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+
+    use tari_engine_types::{non_fungible::NonFungibleContainer, substate::SubstateValue};
+    use tari_epoch_manager::{EpochManagerError, EpochManagerEvent};
+    use tari_ootle_common_types::committee::{CommitteeInfo, CommitteeMember};
+    use tari_ootle_storage::global::models::ValidatorNode;
+    use tari_ootle_transaction::{Transaction, TransactionId};
+    use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
+    use tari_validator_node_rpc::{ValidatorNodeRpcClientError, client::TransactionResultStatus};
+    use tokio::sync::broadcast;
+
+    use super::*;
+    use crate::substate_cache::{FetchWatermark, SubstateCacheError};
+
+    type Addr = String;
+
+    /// A single-member network holding `live` and answering batches for all of it except `omitted_from_batches`.
+    #[derive(Default)]
+    struct FakeNetwork {
+        live: HashMap<SubstateId, Substate>,
+        omitted_from_batches: HashSet<SubstateId>,
+        batch_requests: AtomicUsize,
+        single_requests: AtomicUsize,
+    }
+
+    #[derive(Clone)]
+    struct FakeClient(Arc<FakeNetwork>);
+
+    impl ValidatorNodeClientFactory<Addr> for FakeClient {
+        type Client = Self;
+
+        fn create_client(&self, _address: &Addr) -> Self::Client {
+            self.clone()
+        }
+    }
+
+    impl ValidatorNodeRpcClient<Addr> for FakeClient {
+        async fn submit_transaction(&mut self, _: Transaction) -> Result<TransactionId, ValidatorNodeRpcClientError> {
+            unimplemented!()
+        }
+
+        async fn get_finalized_transaction_result(
+            &mut self,
+            _: TransactionId,
+        ) -> Result<TransactionResultStatus, ValidatorNodeRpcClientError> {
+            unimplemented!()
+        }
+
+        async fn get_substate(
+            &mut self,
+            substate_req: SubstateRequirementRef<'_>,
+        ) -> Result<SubstateResult, ValidatorNodeRpcClientError> {
+            self.0.single_requests.fetch_add(1, Ordering::Relaxed);
+            Ok(match self.0.live.get(substate_req.substate_id()) {
+                Some(substate) => SubstateResult::Up {
+                    substate: Box::new(substate.clone()),
+                },
+                None => SubstateResult::DoesNotExist,
+            })
+        }
+
+        async fn get_substate_with_proof(
+            &mut self,
+            _: SubstateRequirementRef<'_>,
+        ) -> Result<(SubstateResult, Option<SubstateProofData>), ValidatorNodeRpcClientError> {
+            unimplemented!()
+        }
+
+        async fn get_substates_batch(
+            &mut self,
+            substate_ids: &[&SubstateId],
+            _include_proofs: bool,
+        ) -> Result<SubstateBatch, ValidatorNodeRpcClientError> {
+            self.0.batch_requests.fetch_add(1, Ordering::Relaxed);
+            let mut batch = SubstateBatch {
+                commit_proof: None,
+                substates: vec![],
+                missing: vec![],
+            };
+            for &id in substate_ids {
+                match self.0.live.get(id) {
+                    Some(substate) if !self.0.omitted_from_batches.contains(id) => {
+                        batch.substates.push(tari_validator_node_rpc::client::BatchedSubstate {
+                            substate_id: id.clone(),
+                            result: SubstateResult::Up {
+                                substate: Box::new(substate.clone()),
+                            },
+                            value_proof: None,
+                            proof_epoch: 0,
+                        })
+                    },
+                    _ => batch.missing.push(id.clone()),
+                }
+            }
+            Ok(batch)
+        }
+    }
+
+    struct FakeEpochManager(Arc<Committee<Addr>>);
+
+    impl EpochManagerReader for FakeEpochManager {
+        type Addr = Addr;
+
+        fn subscribe(&self) -> broadcast::Receiver<EpochManagerEvent> {
+            unimplemented!()
+        }
+
+        async fn wait_for_initial_scanning_to_complete(&self) -> Result<(), EpochManagerError> {
+            unimplemented!()
+        }
+
+        async fn get_all_validator_nodes(&self, _: Epoch) -> Result<Vec<ValidatorNode<Addr>>, EpochManagerError> {
+            unimplemented!()
+        }
+
+        async fn get_committee_info_by_validator_address(
+            &self,
+            _: Epoch,
+            _: &Addr,
+        ) -> Result<CommitteeInfo, EpochManagerError> {
+            unimplemented!()
+        }
+
+        async fn get_committee_for_substate(
+            &self,
+            _: Epoch,
+            _: SubstateAddress,
+        ) -> Result<Arc<Committee<Addr>>, EpochManagerError> {
+            Ok(self.0.clone())
+        }
+
+        async fn get_validator_node_by_public_key(
+            &self,
+            _: Epoch,
+            _: RistrettoPublicKeyBytes,
+        ) -> Result<ValidatorNode<Addr>, EpochManagerError> {
+            unimplemented!()
+        }
+
+        async fn get_our_validator_node(&self, _: Epoch) -> Result<ValidatorNode<Addr>, EpochManagerError> {
+            unimplemented!()
+        }
+
+        async fn get_local_committee_info(&self, _: Epoch) -> Result<CommitteeInfo, EpochManagerError> {
+            unimplemented!()
+        }
+
+        async fn get_committee_info(&self, _: Epoch, _: ShardGroup) -> Result<CommitteeInfo, EpochManagerError> {
+            unimplemented!()
+        }
+
+        async fn get_committee_info_for_substate(
+            &self,
+            _: Epoch,
+            _: SubstateAddress,
+        ) -> Result<CommitteeInfo, EpochManagerError> {
+            unimplemented!()
+        }
+
+        async fn current_epoch(&self) -> Result<Epoch, EpochManagerError> {
+            Ok(Epoch(1))
+        }
+
+        async fn get_current_epoch_hash(&self) -> Result<FixedHash, EpochManagerError> {
+            unimplemented!()
+        }
+
+        async fn get_epoch_hash(&self, _: Epoch) -> Result<FixedHash, EpochManagerError> {
+            unimplemented!()
+        }
+
+        async fn get_num_committees(&self, _: Epoch) -> Result<u32, EpochManagerError> {
+            Ok(1)
+        }
+
+        async fn get_committee_by_shard_group(
+            &self,
+            _: Epoch,
+            _: ShardGroup,
+        ) -> Result<Arc<Committee<Addr>>, EpochManagerError> {
+            Ok(self.0.clone())
+        }
+
+        async fn get_committees_overlapping_shard_group(
+            &self,
+            _: Epoch,
+            _: ShardGroup,
+        ) -> Result<HashMap<ShardGroup, Committee<Addr>>, EpochManagerError> {
+            unimplemented!()
+        }
+
+        async fn get_random_committee_member(
+            &self,
+            _: Epoch,
+            _: Option<ShardGroup>,
+            _: HashSet<Addr>,
+        ) -> Result<ValidatorNode<Addr>, EpochManagerError> {
+            unimplemented!()
+        }
+
+        async fn lock_epoch(&self, _: Epoch) -> Result<(), EpochManagerError> {
+            unimplemented!()
+        }
+
+        async fn get_observed_epoch_hash(&self, _: Epoch) -> Result<Option<FixedHash>, EpochManagerError> {
+            unimplemented!()
+        }
+
+        async fn get_birthday_epoch(&self) -> Result<Option<Epoch>, EpochManagerError> {
+            unimplemented!()
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeCache(Mutex<HashMap<SubstateId, SubstateCacheEntry>>);
+
+    impl SubstateCache for FakeCache {
+        async fn watermark(&self, _: &SubstateId) -> Result<Option<FetchWatermark>, SubstateCacheError> {
+            Ok(Some(FetchWatermark::new(0)))
+        }
+
+        async fn read(&self, id: &SubstateId) -> Result<Option<SubstateCacheEntry>, SubstateCacheError> {
+            Ok(self.0.lock().unwrap().get(id).cloned())
+        }
+
+        async fn write(
+            &self,
+            id: &SubstateId,
+            entry: SubstateCacheEntryRef<'_>,
+            _: FetchWatermark,
+        ) -> Result<(), SubstateCacheError> {
+            self.0.lock().unwrap().insert(id.clone(), SubstateCacheEntry {
+                version: entry.version,
+                substate_result: entry.substate_result.clone(),
+                cached_at: entry.cached_at,
+                verified: entry.verified,
+            });
+            Ok(())
+        }
+    }
+
+    fn component_id(n: u8) -> SubstateId {
+        SubstateId::from_str(&format!("component_{}", hex(&[n; 32]))).unwrap()
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn manager(
+        network: FakeNetwork,
+    ) -> (
+        CachedSubstateManager<FakeEpochManager, FakeClient, FakeCache>,
+        Arc<FakeNetwork>,
+    ) {
+        let network = Arc::new(network);
+        let committee = Committee::new(vec![CommitteeMember {
+            address: "vn".to_string(),
+            public_key: Default::default(),
+            vote_power: VotePower::of(1),
+        }]);
+        let manager = CachedSubstateManager::new(
+            Network::LocalNet,
+            FakeEpochManager(Arc::new(committee)),
+            FakeClient(network.clone()),
+            FakeCache::default(),
+        );
+        (manager, network)
+    }
+
+    fn live(ids: &[SubstateId]) -> HashMap<SubstateId, Substate> {
+        ids.iter()
+            .map(|id| {
+                (
+                    id.clone(),
+                    Substate::new(0, SubstateValue::NonFungible(NonFungibleContainer::no_data())),
+                )
+            })
+            .collect()
+    }
+
+    fn requirements(ids: &[SubstateId]) -> Vec<SubstateRequirementRef<'_>> {
+        ids.iter().map(|id| SubstateRequirementRef::new(id, None)).collect()
+    }
+
+    #[tokio::test]
+    async fn it_fetches_live_inputs_in_one_batch() {
+        let ids = (0..10).map(component_id).collect::<Vec<_>>();
+        let (manager, network) = manager(FakeNetwork {
+            live: live(&ids),
+            ..Default::default()
+        });
+
+        let lookup = manager.get_input_substates(&requirements(&ids)).await.unwrap();
+
+        let InputSubstatesLookup::AllUp(found) = lookup else {
+            panic!("expected every input to be up, got {lookup:?}");
+        };
+        assert_eq!(found.len(), ids.len());
+        assert_eq!(network.batch_requests.load(Ordering::Relaxed), 1);
+        assert_eq!(network.single_requests.load(Ordering::Relaxed), 0);
+    }
+
+    /// A transaction declaring inputs that do not exist cannot commit, so the lookup confirms the
+    /// first such input and goes no further, however many more were declared.
+    #[tokio::test]
+    async fn it_stops_at_the_first_input_that_does_not_exist() {
+        let ids = (0..100).map(component_id).collect::<Vec<_>>();
+        let (manager, network) = manager(FakeNetwork::default());
+
+        let lookup = manager.get_input_substates(&requirements(&ids)).await.unwrap();
+
+        assert!(
+            matches!(lookup, InputSubstatesLookup::DoesNotExist { .. }),
+            "expected a missing input, got {lookup:?}"
+        );
+        assert_eq!(
+            network.batch_requests.load(Ordering::Relaxed),
+            ids.len().div_ceil(SUBSTATE_BATCH_SIZE)
+        );
+        assert_eq!(network.single_requests.load(Ordering::Relaxed), 1);
+    }
+
+    /// An input one member omitted from its batch is confirmed with the committee, which finds it
+    /// live.
+    #[tokio::test]
+    async fn it_confirms_an_input_a_batch_omitted() {
+        let ids = (0..3).map(component_id).collect::<Vec<_>>();
+        let (manager, network) = manager(FakeNetwork {
+            live: live(&ids),
+            omitted_from_batches: HashSet::from([ids[1].clone()]),
+            ..Default::default()
+        });
+
+        let lookup = manager.get_input_substates(&requirements(&ids)).await.unwrap();
+
+        let InputSubstatesLookup::AllUp(found) = lookup else {
+            panic!("expected every input to be up, got {lookup:?}");
+        };
+        assert_eq!(found.len(), ids.len());
+        assert_eq!(network.single_requests.load(Ordering::Relaxed), 1);
+    }
+
+    /// A cached nonexistence ends the lookup before anything is asked of the network.
+    #[tokio::test]
+    async fn it_stops_at_a_cached_nonexistent_input_without_fetching() {
+        let ids = (0..5).map(component_id).collect::<Vec<_>>();
+        let (manager, network) = manager(FakeNetwork::default());
+        manager.get_substate(&ids[4], None).await.unwrap();
+        network.single_requests.store(0, Ordering::Relaxed);
+
+        let mut reqs = requirements(&ids);
+        reqs.reverse();
+        let lookup = manager.get_input_substates(&reqs).await.unwrap();
+
+        assert!(
+            matches!(lookup, InputSubstatesLookup::DoesNotExist { ref substate_id } if *substate_id == ids[4]),
+            "expected the cached missing input, got {lookup:?}"
+        );
+        assert_eq!(network.batch_requests.load(Ordering::Relaxed), 0);
+        assert_eq!(network.single_requests.load(Ordering::Relaxed), 0);
     }
 }

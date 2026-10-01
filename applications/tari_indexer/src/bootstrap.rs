@@ -365,6 +365,8 @@ pub async fn spawn_services(
             config.network,
             config.indexer.sidechain_id.as_ref().map(|p| p.to_byte_type()),
         ),
+        consensus_constants.max_transaction_weight,
+        consensus_constants.max_transaction_size_bytes,
     )?;
 
     // Both of these have defaults that decide how much disk this node uses and what it deletes, so

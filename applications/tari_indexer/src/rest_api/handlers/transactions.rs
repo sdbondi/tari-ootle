@@ -141,7 +141,13 @@ pub async fn submit_transaction_dry_run(
         .dry_run_transaction_processor()
         .process_transaction(transaction)
         .await
-        .map_err(ErrorResponse::anyhow)?;
+        .map_err(|e| {
+            if e.is_invalid_transaction() {
+                ErrorResponse::bad_request(e.to_string())
+            } else {
+                ErrorResponse::anyhow(e)
+            }
+        })?;
 
     Ok(Json(SubmitTransactionDryRunResponse {
         result: exec_result,

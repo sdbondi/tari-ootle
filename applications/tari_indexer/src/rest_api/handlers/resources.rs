@@ -1,8 +1,6 @@
 //   Copyright 2025 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::iter;
-
 use axum::{Extension, Json, extract::Path};
 use tari_engine_types::substate::SubstateId;
 use tari_indexer_client::types::GetResourceResponse;
@@ -40,13 +38,11 @@ pub async fn get_resource(
     let is_xtr = resource_address == TARI_TOKEN;
     let resource_address = SubstateId::Resource(resource_address);
 
-    let (_, fetched) = context
+    let fetched = context
         .substate_manager()
-        .get_substates(iter::once(SubstateRequirementRef::new(&resource_address, None)))
+        .fetch_substate(SubstateRequirementRef::new(&resource_address, None))
         .await
         .map_err(|e| ErrorResponse::internal_error(format!("Error getting resource: {}", e)))?
-        .into_iter()
-        .next()
         .ok_or_else(|| ErrorResponse::not_found(format!("Resource {} not found", resource_address)))?;
 
     let substate = fetched.substate;

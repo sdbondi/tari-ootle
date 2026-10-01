@@ -1,7 +1,7 @@
 //   Copyright 2025 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::{array, iter};
+use std::array;
 
 use axum::{
     Extension,
@@ -98,9 +98,8 @@ pub async fn get_substate(
             .map_err(substate_lookup_error)?
     } else {
         manager
-            .get_substates(iter::once(requirement))
+            .fetch_substate(requirement)
             .await
-            .map(|a| a.into_iter().next().map(|(_, fetched)| fetched))
             .map_err(substate_lookup_error)?
     };
 

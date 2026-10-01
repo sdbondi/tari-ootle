@@ -24,6 +24,7 @@ use tari_engine::state_store::StateStoreError;
 use tari_epoch_manager::EpochManagerError;
 use tari_indexer_lib::error::IndexerError;
 use tari_ootle_app_utilities::transaction_executor::TransactionProcessorError;
+use tari_ootle_transaction_validation::TransactionValidationError;
 use tari_rpc_framework::RpcStatus;
 use thiserror::Error;
 
@@ -47,4 +48,24 @@ pub enum DryRunTransactionProcessorError {
     SpawnBlockingTaskError(#[from] tokio::task::JoinError),
     #[error("SubstateManager error: {0}")]
     SubstateManagerError(#[from] SubstateManagerError),
+    #[error("Invalid transaction: {0}")]
+    InvalidTransaction(#[from] TransactionValidationError),
+    #[error("Transaction declares {num_inputs} inputs, more than the {max_inputs} a dry-run accepts")]
+    TooManyInputs { num_inputs: usize, max_inputs: usize },
+}
+
+impl DryRunTransactionProcessorError {
+    /// True when the fault lies with the submitted transaction.
+    pub fn is_invalid_transaction(&self) -> bool {
+        matches!(
+            self,
+            Self::NonDryRunTransaction |
+                Self::InvalidTransaction(_) |
+                Self::TooManyInputs { .. } |
+                Self::SubstateManagerError(
+                    SubstateManagerError::InputSubstateIsDown { .. } |
+                        SubstateManagerError::InputSubstateDoesNotExist { .. }
+                )
+        )
+    }
 }

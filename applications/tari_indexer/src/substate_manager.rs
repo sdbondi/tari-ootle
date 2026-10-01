@@ -37,7 +37,7 @@ use tari_engine_types::{
 use tari_epoch_manager::service::EpochManagerHandle;
 use tari_indexer_client::types::{ListSubstateItem, NonFungibleSubstate, UtxoStateUpdateSet};
 use tari_indexer_lib::{
-    cached_substate_manager::{CachedSubstateManager, TrustedRootStore},
+    cached_substate_manager::{CachedSubstateManager, InputSubstatesLookup, TrustedRootStore},
     error::IndexerError,
 };
 use tari_ootle_common_types::{
@@ -280,56 +280,88 @@ impl SubstateManager {
         }
     }
 
-    pub async fn get_substates<'a, I: IntoIterator<Item = SubstateRequirementRef<'a>>>(
+    /// Looks up one substate. `None` when the committee agrees it does not exist.
+    pub async fn fetch_substate(
+        &self,
+        req: SubstateRequirementRef<'_>,
+    ) -> Result<Option<FetchedSubstate>, SubstateManagerError> {
+        if let Some(fetched) = self.get_versioned_substate_from_db(req).await? {
+            return Ok(Some(fetched));
+        }
+        let lookup_result = self
+            .cache_manager
+            .get_substate(req.substate_id(), req.version())
+            .await?;
+        match lookup_result.result {
+            SubstateResult::DoesNotExist => Ok(None),
+            SubstateResult::Up { substate } => Ok(Some(FetchedSubstate {
+                substate: Substate::new(substate.version(), substate.into_substate_value()),
+                verified: lookup_result.verified,
+            })),
+            SubstateResult::Down { version } => Err(SubstateManagerError::InputSubstateIsDown {
+                substate_id: req.substate_id().clone(),
+                version,
+            }),
+        }
+    }
+
+    /// Looks up the substates a transaction declares as inputs. Fails on the first one that is not
+    /// up, as consensus would.
+    pub async fn get_input_substates<'a, I: IntoIterator<Item = SubstateRequirementRef<'a>>>(
         &self,
         substate_req: I,
     ) -> Result<HashMap<SubstateId, FetchedSubstate>, SubstateManagerError> {
         let substate_req = substate_req.into_iter().collect::<HashSet<_>>();
         let mut results = HashMap::with_capacity(substate_req.len());
 
-        let mut found_in_cache = HashSet::new();
-
-        for req in &substate_req {
-            if let Some(version) = req.version() &&
-                let Some(substate) = self.get_substate_from_db(req.substate_id(), Some(version)).await?
-            {
-                found_in_cache.insert(*req);
-                results.insert(req.substate_id().clone(), FetchedSubstate {
-                    substate: Substate::new(substate.version, substate.substate),
-                    // Locally-stored substates were verified when ingested iff verification is on.
-                    verified: self.cache_manager.verifies_substates(),
-                });
+        let mut remaining = Vec::with_capacity(substate_req.len());
+        for req in substate_req {
+            match self.get_versioned_substate_from_db(req).await? {
+                Some(fetched) => {
+                    results.insert(req.substate_id().clone(), fetched);
+                },
+                None => remaining.push(req),
             }
         }
 
-        // TODO(perf): consider batch fetching from cache and validator nodes
-        for req in substate_req {
-            if found_in_cache.contains(&req) {
-                continue;
-            }
-            let lookup_result = self
-                .cache_manager
-                .get_substate(req.substate_id(), req.version())
-                .await?;
-            match lookup_result.result {
-                SubstateResult::DoesNotExist => {
-                    // Skip, does not exist
-                },
-                SubstateResult::Up { substate } => {
-                    results.insert(req.substate_id().clone(), FetchedSubstate {
+        match self.cache_manager.get_input_substates(&remaining).await? {
+            InputSubstatesLookup::AllUp(found) => {
+                for (id, lookup_result) in found {
+                    let Some(substate) = lookup_result.result.into_up() else {
+                        continue;
+                    };
+                    results.insert(id, FetchedSubstate {
                         substate: Substate::new(substate.version(), substate.into_substate_value()),
                         verified: lookup_result.verified,
                     });
-                },
-                SubstateResult::Down { version } => {
-                    return Err(SubstateManagerError::InputSubstateIsDown {
-                        substate_id: req.substate_id().clone(),
-                        version,
-                    });
-                },
-            }
+                }
+                Ok(results)
+            },
+            InputSubstatesLookup::Down { substate_id, version } => {
+                Err(SubstateManagerError::InputSubstateIsDown { substate_id, version })
+            },
+            InputSubstatesLookup::DoesNotExist { substate_id } => {
+                Err(SubstateManagerError::InputSubstateDoesNotExist { substate_id })
+            },
         }
-        Ok(results)
+    }
+
+    /// A version-pinned requirement served from the local store, if held there.
+    async fn get_versioned_substate_from_db(
+        &self,
+        req: SubstateRequirementRef<'_>,
+    ) -> Result<Option<FetchedSubstate>, SubstateManagerError> {
+        let Some(version) = req.version() else {
+            return Ok(None);
+        };
+        let Some(substate) = self.get_substate_from_db(req.substate_id(), Some(version)).await? else {
+            return Ok(None);
+        };
+        Ok(Some(FetchedSubstate {
+            substate: Substate::new(substate.version, substate.substate),
+            // Locally-stored substates were verified when ingested iff verification is on.
+            verified: self.cache_manager.verifies_substates(),
+        }))
     }
 
     pub async fn get_cached_substates(
