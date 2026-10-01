@@ -20,7 +20,7 @@
 //  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use log::info;
 use ootle_network::Network;
@@ -38,7 +38,7 @@ use tari_ootle_template_provider::TemplateConfig;
 use tari_ootle_transaction::Transaction;
 use tari_ootle_transaction_validation::{Validator, create_dry_run_transaction_validator};
 use tari_template_lib_types::constants::TARI_TOKEN;
-use tokio::{runtime::Handle, task};
+use tokio::{runtime::Handle, sync::Semaphore, task};
 
 use crate::{
     dry_run::{
@@ -51,6 +51,11 @@ use crate::{
 
 const LOG_TARGET: &str = "tari::indexer::dry_run_transaction_processor";
 
+/// How long a dry run waits for an execution slot before it is refused. Long enough to ride out a
+/// burst of wallet estimates, short enough that a saturated node answers rather than piling up
+/// requests.
+const EXECUTION_SLOT_WAIT: Duration = Duration::from_secs(5);
+
 #[derive(Clone)]
 pub struct DryRunTransactionProcessor {
     network: Network,
@@ -61,6 +66,7 @@ pub struct DryRunTransactionProcessor {
     claim_burn_proof_verifier: Arc<dyn ClaimProofVerifier + Send + Sync + 'static>,
     max_transaction_weight: u64,
     max_transaction_size_bytes: usize,
+    execution_slots: Arc<Semaphore>,
 }
 
 impl DryRunTransactionProcessor {
@@ -74,6 +80,7 @@ impl DryRunTransactionProcessor {
         claim_burn_proof_verifier: impl ClaimProofVerifier + Send + Sync + 'static,
         max_transaction_weight: u64,
         max_transaction_size_bytes: usize,
+        max_concurrent_executions: usize,
     ) -> Result<Self, std::io::Error> {
         let handle = Handle::try_current().map_err(std::io::Error::other)?;
         let template_provider =
@@ -87,6 +94,7 @@ impl DryRunTransactionProcessor {
             claim_burn_proof_verifier: Arc::new(claim_burn_proof_verifier),
             max_transaction_weight,
             max_transaction_size_bytes,
+            execution_slots: Arc::new(Semaphore::new(max_concurrent_executions.max(1))),
         })
     }
 
@@ -135,7 +143,12 @@ impl DryRunTransactionProcessor {
             true,
             self.claim_burn_proof_verifier.clone(),
         );
+        let slot = tokio::time::timeout(EXECUTION_SLOT_WAIT, self.execution_slots.clone().acquire_owned())
+            .await
+            .map_err(|_| DryRunTransactionProcessorError::Busy)?
+            .expect("execution_slots is never closed");
         let exec_output = task::spawn_blocking(move || {
+            let _slot = slot;
             processor.execute(&transaction, state_store.into_read_only(), virtual_substates, burn_rate)
         })
         .await??;

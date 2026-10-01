@@ -367,6 +367,7 @@ pub async fn spawn_services(
         ),
         consensus_constants.max_transaction_weight,
         consensus_constants.max_transaction_size_bytes,
+        config.indexer.dry_run_max_concurrent_executions,
     )?;
 
     // Both of these have defaults that decide how much disk this node uses and what it deletes, so

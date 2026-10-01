@@ -8,6 +8,7 @@ use axum::{
     response::Response,
 };
 use log::*;
+use tari_engine_types::limits::MAX_WASM_POINTS_PER_TRANSACTION;
 use tari_indexer_client::types::{
     GetTransactionResponse,
     GetTransactionResultResponse,
@@ -24,9 +25,10 @@ use tari_ootle_transaction::TransactionId;
 use tari_rpc_framework::RpcStatusCode;
 
 use crate::{
+    dry_run::error::DryRunTransactionProcessorError,
     event_manager::{MAX_EVENT_QUERY_OFFSET, WILDCARD_TOPIC_SCAN_LIMIT},
     network_client::NetworkClientError,
-    rest_api::{context::HandlerContext, error::ErrorResponse, handlers::HandlerResult},
+    rest_api::{context::HandlerContext, error::ErrorResponse, handlers::HandlerResult, rate_limit::RequestCost},
     store::EventQuery,
     transaction_manager::error::TransactionManagerError,
 };
@@ -110,6 +112,11 @@ pub async fn submit_transaction(
     Ok(Json(SubmitTransactionResponse { transaction_id }))
 }
 
+/// Execution points a dry run spends per rate-limit token beyond the one its request takes: the WASM
+/// ceiling of one transaction, so a dry run at the per-transaction native and WASM ceilings costs
+/// about 11 tokens and an ordinary one about 1.
+const DRY_RUN_POINTS_PER_TOKEN: u64 = MAX_WASM_POINTS_PER_TRANSACTION;
+
 #[utoipa::path(
     post,
     path = "/transactions/dry-run",
@@ -118,12 +125,13 @@ pub async fn submit_transaction(
         (status = 200, description = "Dry-run transaction processed successfully", body = SubmitTransactionDryRunResponse),
         (status = BAD_REQUEST, description = "Invalid transaction or request parameters", body = ErrorResponse),
         (status = INTERNAL_SERVER_ERROR, description = "Failed to process dry-run transaction due to an internal error", body = ErrorResponse),
+        (status = SERVICE_UNAVAILABLE, description = "Every dry-run execution slot is busy; retry shortly", body = ErrorResponse),
     )
 )]
 pub async fn submit_transaction_dry_run(
     Extension(context): Extension<HandlerContext>,
     Json(req): Json<SubmitTransactionRequest>,
-) -> HandlerResult<Json<SubmitTransactionDryRunResponse>> {
+) -> HandlerResult<(Extension<RequestCost>, Json<SubmitTransactionDryRunResponse>)> {
     let request: SubmitTransactionRequest = req;
     let transaction = request
         .transaction
@@ -143,18 +151,24 @@ pub async fn submit_transaction_dry_run(
         .dry_run_transaction_processor()
         .process_transaction(transaction)
         .await
-        .map_err(|e| {
-            if e.is_invalid_transaction() {
-                ErrorResponse::bad_request(e.to_string())
-            } else {
-                ErrorResponse::anyhow(e)
-            }
+        .map_err(|e| match e {
+            DryRunTransactionProcessorError::Busy => ErrorResponse::service_unavailable(e.to_string()),
+            e if e.is_invalid_transaction() => ErrorResponse::bad_request(e.to_string()),
+            e => ErrorResponse::anyhow(e),
         })?;
 
-    Ok(Json(SubmitTransactionDryRunResponse {
-        result: exec_result,
-        transaction_id,
-    }))
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a token count needs no more than f64 precision"
+    )]
+    let cost = RequestCost(exec_result.total_execution_points() as f64 / DRY_RUN_POINTS_PER_TOKEN as f64);
+    Ok((
+        Extension(cost),
+        Json(SubmitTransactionDryRunResponse {
+            result: exec_result,
+            transaction_id,
+        }),
+    ))
 }
 
 #[utoipa::path(

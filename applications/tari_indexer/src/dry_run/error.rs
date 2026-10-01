@@ -46,6 +46,8 @@ pub enum DryRunTransactionProcessorError {
     NonDryRunTransaction,
     #[error("Failed to spawn blocking task: {0}")]
     SpawnBlockingTaskError(#[from] tokio::task::JoinError),
+    #[error("Every dry-run execution slot is in use; retry shortly")]
+    Busy,
     #[error("SubstateManager error: {0}")]
     SubstateManagerError(#[from] SubstateManagerError),
     #[error("Invalid transaction: {0}")]

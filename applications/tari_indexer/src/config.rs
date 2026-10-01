@@ -165,6 +165,12 @@ pub struct IndexerConfig {
     /// A shorter TTL reduces the chance of stale fee estimates.
     #[serde(with = "serializers::seconds")]
     pub dry_run_cache_ttl: Duration,
+    /// How many dry runs may execute at once. A dry run is unpaid, and one can spend up to the
+    /// per-transaction execution ceilings in CPU, so this bounds the share of the node that dry runs
+    /// take, however many clients send them. A dry run that waits too long for a slot is refused
+    /// with a 503. Defaults to half the available cores, at least 1.
+    #[serde(default = "default_dry_run_max_concurrent_executions")]
+    pub dry_run_max_concurrent_executions: usize,
     /// Start even when the binary's schema activation schedule disagrees with the one this node has
     /// already run under. Doing so re-hashes committed state and breaks the substate proofs this
     /// indexer serves, so this exists only for a node whose state is being discarded.
@@ -274,6 +280,10 @@ pub struct IndexerConfig {
 
 fn default_verify_substate_proofs() -> bool {
     true
+}
+
+fn default_dry_run_max_concurrent_executions() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).max(1))
 }
 
 fn default_state_sync_stream_deadline() -> Duration {
@@ -437,6 +447,7 @@ impl Default for IndexerConfig {
             state_sync_keepalive_interval: default_state_sync_keepalive_interval(),
             sidechain_id: None,
             dry_run_cache_ttl: Duration::from_secs(10),
+            dry_run_max_concurrent_executions: default_dry_run_max_concurrent_executions(),
             allow_past_protocol_activation: false,
             substate_cache_max_serve_lag: default_substate_cache_max_serve_lag(),
             substate_cache_max_entries: default_substate_cache_max_entries(),

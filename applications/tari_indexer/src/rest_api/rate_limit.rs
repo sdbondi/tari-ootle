@@ -10,6 +10,11 @@
 //! `Retry-After` header set to the computed time until the next token is
 //! available (clamped to a minimum of 1 second).
 //!
+//! A handler whose work varies widely in cost attaches a [`RequestCost`] to its
+//! response, and the middleware takes that many further tokens from the same
+//! bucket, so a client's budget is spent in work done rather than calls made.
+//! The bucket may go negative; later requests wait for it to refill.
+//!
 //! SSE / streaming endpoints use a per-IP concurrent-connection counter
 //! instead of a token bucket — the slot is held for the full lifetime of the
 //! response body and released on disconnect.
@@ -90,6 +95,10 @@ impl Bucket {
             Err(Duration::from_secs_f64(seconds))
         }
     }
+
+    fn charge(&mut self, tokens: f64) {
+        self.tokens -= tokens;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +160,13 @@ impl IpRateLimiter {
         self.maybe_evict_stale();
         let mut bucket = self.buckets.entry(ip).or_insert_with(|| Bucket::new(self.capacity));
         bucket.try_consume(self.capacity, self.refill_rate)
+    }
+
+    /// Takes `tokens` more from `ip`'s bucket for work a request has already done.
+    pub fn charge(&self, ip: IpAddr, tokens: f64) {
+        if let Some(mut bucket) = self.buckets.get_mut(&ip) {
+            bucket.charge(tokens);
+        }
     }
 
     /// Remove buckets that have not been accessed for longer than `stale_ttl`.
@@ -406,6 +422,11 @@ fn warn_proxy_headers_untrusted() {
 // Axum middleware factories
 // ---------------------------------------------------------------------------
 
+/// Tokens a handler asks [`rate_limit_middleware`] to take from the caller's bucket on top of the
+/// one the request itself took, set as a response extension.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestCost(pub f64);
+
 /// Configuration for the rate-limit middleware layer.
 #[derive(Clone)]
 pub struct RateLimitConfig {
@@ -449,7 +470,13 @@ pub async fn rate_limit_middleware(
     let connect_info = req.extensions().get::<ConnectInfo<SocketAddr>>().copied();
     let ip = extract_ip(req.headers(), connect_info.as_ref(), config.trust_proxy_headers);
     match config.limiter.check(ip) {
-        Ok(()) => next.run(req).await,
+        Ok(()) => {
+            let response = next.run(req).await;
+            if let Some(RequestCost(tokens)) = response.extensions().get::<RequestCost>() {
+                config.limiter.charge(ip, *tokens);
+            }
+            response
+        },
         Err(retry_after) => (
             StatusCode::TOO_MANY_REQUESTS,
             [(header::RETRY_AFTER, retry_after.as_secs().to_string())],
@@ -617,6 +644,60 @@ mod tests {
         }
         // Refill over a few-ms test run is well below 1 token, so exactly capacity must succeed.
         assert_eq!(success.load(Ordering::SeqCst), 10);
+    }
+
+    #[test]
+    fn ip_rate_limiter_charge_spends_future_requests() {
+        let limiter = IpRateLimiter::new(rate(5.0, 60));
+        let target = ip(10, 0, 0, 1);
+        assert!(limiter.check(target).is_ok());
+        limiter.charge(target, 6.0);
+        // 5 - 1 - 6 leaves the bucket at -2: three tokens short, refilling at one per 12s.
+        let retry_after = limiter.check(target).unwrap_err();
+        assert!(retry_after >= Duration::from_secs(35), "retry after {retry_after:?}");
+    }
+
+    #[tokio::test]
+    async fn middleware_charges_the_cost_a_handler_reports() {
+        use axum::{Router, routing::get};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        async fn costly() -> impl IntoResponse {
+            (axum::Extension(RequestCost(3.0)), "done")
+        }
+
+        async fn status_of(addr: SocketAddr) -> String {
+            let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            stream
+                .write_all(format!("GET /work HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes())
+                .await
+                .unwrap();
+            let mut buf = Vec::new();
+            stream.read_to_end(&mut buf).await.unwrap();
+            String::from_utf8(buf).unwrap().lines().next().unwrap().to_string()
+        }
+
+        let config = RateLimitConfig {
+            enabled: true,
+            limiter: IpRateLimiter::new(rate(5.0, 600)),
+            trust_proxy_headers: false,
+        };
+        let app = Router::new().route(
+            "/work",
+            get(costly).route_layer(axum::middleware::from_fn_with_state(config, rate_limit_middleware)),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+                .await
+                .unwrap();
+        });
+
+        // Each request takes 1 token plus the 3 it reports: a 5-token bucket serves two, not five.
+        assert!(status_of(addr).await.contains("200"));
+        assert!(status_of(addr).await.contains("200"));
+        assert!(status_of(addr).await.contains("429"));
     }
 
     // --------------------------------------------------- SseConnectionLimiter --
