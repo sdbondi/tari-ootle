@@ -21,7 +21,7 @@ function AdvancedFeatures() {
   const onManifestChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const updated = { ...advancedUiFeatures, enable_manifest: e.target.checked };
     setAdvancedUiFeatures(updated);
-    settingsSet({ indexer_url: null, advanced_ui_features: updated, claimed_accounts: null });
+    settingsSet({ indexer_url: null, indexer_urls: null, advanced_ui_features: updated, claimed_accounts: null });
   };
 
   return (

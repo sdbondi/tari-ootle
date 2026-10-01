@@ -12,10 +12,11 @@
 # signaling_server_addr = "127.0.0.1:9100"
 
 [localnet.ootle_wallet_daemon]
-# Indexer API url (default: http://127.0.0.1:18200)
-# indexer_api_url = "http://127.0.0.1:18200"
+# Indexer API URLs. The wallet picks one at random at startup and moves to the next if it stops responding.
+# (default: ["http://127.0.0.1:18300"])
+# indexer_api_url = ["http://127.0.0.1:18300"]
 [esmeralda.ootle_wallet_daemon]
 # Authentication method: "webauthn" (default) or "none" (dangerous: any local program can spend funds)
 #authentication = "webauthn"
-# Indexer API url for Esme.
-indexer_api_url = "https://ootle-indexer-a.tari.com/"
+# Indexer API URLs for Esme.
+indexer_api_url = ["https://ootle-indexer-a.tari.com/"]

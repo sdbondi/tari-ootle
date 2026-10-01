@@ -27,12 +27,16 @@ anyhow = { workspace = true }
 reqwest = { workspace = true, optional = true }
 futures = { workspace = true }
 futures-bounded = { workspace = true }
+rand = { workspace = true, optional = true }
 thiserror = { workspace = true }
 url = { workspace = true }
 log = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true, features = ["sync", "macros", "time"] }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util"] }
+
 [features]
 default = []
-indexer_client = ["tari_indexer_client", "reqwest"]
+indexer_client = ["tari_indexer_client", "reqwest", "rand"]

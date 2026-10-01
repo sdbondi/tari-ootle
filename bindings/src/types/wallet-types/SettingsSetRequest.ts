@@ -2,7 +2,16 @@
 import type { AdvancedUiFeatures } from "./AdvancedUiFeatures";
 
 export type SettingsSetRequest = {
+  /**
+   * Replaces the configured indexers with this single indexer. Shorthand for a one-element `indexer_urls`; at
+   * most one of the two may be given.
+   */
   indexer_url: string | null;
+  /**
+   * Replaces the configured indexers. The wallet activates one of them at random and moves to the next when the
+   * active one stops responding.
+   */
+  indexer_urls: Array<string> | null;
   advanced_ui_features: AdvancedUiFeatures | null;
   claimed_accounts: Array<string> | null;
 };

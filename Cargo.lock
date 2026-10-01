@@ -12602,6 +12602,7 @@ dependencies = [
  "futures-bounded 0.2.4",
  "log",
  "ootle_byte_type",
+ "rand 0.10.1",
  "reqwest 0.13.2",
  "tari_bor",
  "tari_crypto",

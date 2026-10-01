@@ -19,11 +19,8 @@ pub async fn handle_get(
 ) -> Result<SettingsGetResponse, anyhow::Error> {
     let sdk = context.wallet_sdk().clone();
     context.authorize(token, &[Permission::Settings(Crud::Read)])?;
-    let indexer_url = sdk
-        .config_api()
-        .get(ConfigKey::IndexerUrl)
-        .optional()?
-        .unwrap_or_else(|| sdk.get_network_interface().get_endpoint());
+    let indexer_url = sdk.get_network_interface().get_endpoint();
+    let indexer_urls = sdk.get_network_interface().get_endpoints();
     let network = sdk.config_api().get_network()?;
     let advanced_ui_features = sdk
         .config_api()
@@ -42,6 +39,7 @@ pub async fn handle_get(
 
     Ok(SettingsGetResponse {
         indexer_url,
+        indexer_urls,
         network: NetworkInfo {
             name: network.to_string(),
             byte: network.as_byte(),
@@ -56,13 +54,13 @@ pub async fn handle_get(
 /// The permissions `settings.set` requires of its caller, decided by which fields the request
 /// carries.
 ///
-/// `indexer_url` chooses which server the wallet believes is the chain: what it reports as its own
+/// The indexer URLs choose which servers the wallet believes are the chain: what it reports as its own
 /// balances, whether a transaction it submits is ever broadcast, and who learns of every transaction
 /// it does submit. That is an administrative decision about the wallet's trust, so it takes `Admin`.
 /// The remaining fields are UI preferences and take `Settings(Update)`, which is what a client
 /// holding only a preference scope is for.
 fn required_permissions(req: &SettingsSetRequest) -> Vec<Permission> {
-    if req.indexer_url.is_some() {
+    if req.indexer_url.is_some() || req.indexer_urls.is_some() {
         // `Admin` satisfies `Settings(Update)`, so it alone covers a request that also carries
         // preference fields.
         vec![Permission::Admin]
@@ -104,6 +102,35 @@ fn validate_indexer_url(url: &Url) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+/// The indexers a `settings.set` request configures, if it configures any.
+fn requested_indexer_urls(req: &SettingsSetRequest) -> Result<Option<Vec<Url>>, anyhow::Error> {
+    let urls = match (&req.indexer_url, &req.indexer_urls) {
+        (None, None) => return Ok(None),
+        (Some(_), Some(_)) => {
+            return Err(invalid_params(
+                "indexer_url",
+                Some("Give either indexer_url or indexer_urls, not both"),
+            ));
+        },
+        (Some(url), None) => vec![url.clone()],
+        (None, Some(urls)) => urls.clone(),
+    };
+    if urls.is_empty() {
+        return Err(invalid_params(
+            "indexer_urls",
+            Some("The wallet needs at least one indexer"),
+        ));
+    }
+    let mut unique = Vec::with_capacity(urls.len());
+    for url in urls {
+        validate_indexer_url(&url)?;
+        if !unique.contains(&url) {
+            unique.push(url);
+        }
+    }
+    Ok(Some(unique))
+}
+
 pub async fn handle_set(
     context: &HandlerContext,
     token: Option<&Bearer>,
@@ -111,10 +138,9 @@ pub async fn handle_set(
 ) -> Result<SettingsSetResponse, anyhow::Error> {
     let sdk = context.wallet_sdk();
     context.authorize(token, &required_permissions(&req))?;
-    if let Some(indexer_url) = req.indexer_url {
-        validate_indexer_url(&indexer_url)?;
-        sdk.config_api().set(ConfigKey::IndexerUrl, &indexer_url)?;
-        sdk.get_network_interface().set_endpoint(indexer_url);
+    if let Some(indexer_urls) = requested_indexer_urls(&req)? {
+        sdk.config_api().set(ConfigKey::IndexerUrl, &indexer_urls)?;
+        sdk.get_network_interface().set_endpoints(indexer_urls)?;
         // The cached epoch describes the indexer we just stopped using.
         context.invalidate_epoch_cache();
     }
@@ -139,9 +165,66 @@ mod tests {
     fn request(indexer_url: Option<&str>) -> SettingsSetRequest {
         SettingsSetRequest {
             indexer_url: indexer_url.map(|url| Url::parse(url).unwrap()),
+            indexer_urls: None,
             advanced_ui_features: None,
             claimed_accounts: None,
         }
+    }
+
+    fn request_many(indexer_urls: &[&str]) -> SettingsSetRequest {
+        SettingsSetRequest {
+            indexer_url: None,
+            indexer_urls: Some(indexer_urls.iter().map(|url| Url::parse(url).unwrap()).collect()),
+            advanced_ui_features: None,
+            claimed_accounts: None,
+        }
+    }
+
+    #[test]
+    fn repointing_the_indexer_set_is_refused_to_a_preference_scope() {
+        let required = required_permissions(&request_many(&["http://127.0.0.1:18300"]));
+        assert!(granted("settings:update").check(&required).is_err());
+        assert!(granted("admin").check(&required).is_ok());
+    }
+
+    #[test]
+    fn a_single_indexer_url_configures_a_set_of_one() {
+        let urls = requested_indexer_urls(&request(Some("http://127.0.0.1:18300")))
+            .unwrap()
+            .unwrap();
+        assert_eq!(urls, vec![Url::parse("http://127.0.0.1:18300").unwrap()]);
+    }
+
+    #[test]
+    fn duplicate_indexer_urls_are_kept_once_in_order() {
+        let urls = requested_indexer_urls(&request_many(&[
+            "http://b.example/",
+            "http://a.example/",
+            "http://b.example/",
+        ]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(urls, vec![
+            Url::parse("http://b.example/").unwrap(),
+            Url::parse("http://a.example/").unwrap()
+        ]);
+    }
+
+    #[test]
+    fn an_empty_indexer_set_is_refused() {
+        requested_indexer_urls(&request_many(&[])).unwrap_err();
+    }
+
+    #[test]
+    fn giving_both_indexer_fields_is_refused() {
+        let mut req = request(Some("http://a.example/"));
+        req.indexer_urls = Some(vec![Url::parse("http://b.example/").unwrap()]);
+        requested_indexer_urls(&req).unwrap_err();
+    }
+
+    #[test]
+    fn every_url_in_the_set_is_validated() {
+        requested_indexer_urls(&request_many(&["http://a.example/", "file:///etc/passwd"])).unwrap_err();
     }
 
     fn granted(permissions: &str) -> Permissions {

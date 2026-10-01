@@ -30,6 +30,7 @@ mod webrtc;
 use std::{fs, panic, pin, process};
 
 use log::*;
+use serde::Deserialize;
 use tari_common_types::seeds::seed_words::SeedWords;
 use tari_crypto::{keys::SecretKey, ristretto::RistrettoSecretKey};
 use tari_ootle_address::Network;
@@ -91,13 +92,10 @@ pub async fn run_tari_ootle_walletd(
 
     info!(
         target: LOG_TARGET,
-        "🟢 Starting wallet on {} connected to indexer {}",
+        "🟢 Starting wallet on {} connected to indexer {} (one of {} configured)",
         wallet_sdk.network(),
-        wallet_sdk
-            .config_api()
-            .get::<Url>(ConfigKey::IndexerUrl)
-            .optional()?
-            .unwrap_or_else(|| config.ootle_wallet_daemon.indexer_api_url.clone())
+        wallet_sdk.get_network_interface().get_endpoint(),
+        wallet_sdk.get_network_interface().get_endpoints().len(),
     );
 
     let needs_seed_recovery =
@@ -252,15 +250,34 @@ pub fn initialize_wallet_sdk(config: &ApplicationConfig, store: SqliteWalletStor
         override_keyring_password: config.ootle_wallet_daemon.override_keyring_password.clone(),
     };
     let config_api = ConfigApi::new(&store);
-    let indexer_endpoint = if let Some(indexer_url) = config_api.get(ConfigKey::IndexerUrl).optional()? {
-        indexer_url
-    } else {
-        config.ootle_wallet_daemon.indexer_api_url.clone()
-    };
-    let indexer = IndexerRestApiNetworkInterface::new(indexer_endpoint);
+    // Indexer URLs saved through `settings.set` take precedence over the config file.
+    let indexer_endpoints = config_api
+        .get::<StoredIndexerUrls>(ConfigKey::IndexerUrl)
+        .optional()?
+        .map(StoredIndexerUrls::into_vec)
+        .filter(|urls| !urls.is_empty())
+        .unwrap_or_else(|| config.ootle_wallet_daemon.indexer_api_urls.clone());
+    let indexer = IndexerRestApiNetworkInterface::init(indexer_endpoints)?;
     let birthday = get_epoch_birthday(sdk_config.network);
     let sdk = WalletSdk::initialize_with_local_key_store(store, indexer, sdk_config, birthday)?;
     Ok(sdk)
+}
+
+/// The value stored under [`ConfigKey::IndexerUrl`]: a list of URLs, or a single URL as stored by earlier versions.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum StoredIndexerUrls {
+    Many(Vec<Url>),
+    One(Url),
+}
+
+impl StoredIndexerUrls {
+    fn into_vec(self) -> Vec<Url> {
+        match self {
+            Self::Many(urls) => urls,
+            Self::One(url) => vec![url],
+        }
+    }
 }
 
 const fn get_epoch_birthday(network: Network) -> EpochBirthday {

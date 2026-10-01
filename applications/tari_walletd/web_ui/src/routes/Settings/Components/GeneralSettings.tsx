@@ -26,7 +26,7 @@ import { useTheme } from "@mui/material/styles";
 import Typography from "@mui/material/Typography";
 import { SettingsGetResponse } from "@tari-project/ootle-ts-bindings";
 import { settingsGet } from "@utils/json_rpc";
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import IndexerSettings from "./IndexerSettings";
 
 const NETWORK_COLORS: Record<string, string> = {
@@ -42,9 +42,13 @@ function GeneralSettings() {
   const theme = useTheme();
   const [settings, setSettings] = useState<SettingsGetResponse | null>(null);
 
-  useEffect(() => {
+  const loadSettings = useCallback(() => {
     settingsGet().then(setSettings);
   }, []);
+
+  useEffect(() => {
+    loadSettings();
+  }, [loadSettings]);
 
   const items = [
     {
@@ -52,9 +56,14 @@ function GeneralSettings() {
       content: <NetworkSettings network={settings?.network.name ?? ""} />,
     },
     {
-      label: "Indexer Url",
+      label: "Indexers",
       content: (
-        <IndexerSettings indexerUrl={settings?.indexer_url ?? ""} walletNetwork={settings?.network.name ?? ""} />
+        <IndexerSettings
+          indexerUrls={settings?.indexer_urls ?? []}
+          activeUrl={settings?.indexer_url ?? ""}
+          walletNetwork={settings?.network.name ?? ""}
+          onSaved={loadSettings}
+        />
       ),
     },
   ];

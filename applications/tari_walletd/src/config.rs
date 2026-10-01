@@ -30,7 +30,7 @@ use std::{
 
 use anyhow::anyhow;
 use config::Config;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use tari_common::{ConfigurationError, DefaultConfigLoader, SubConfigPath, configuration::CommonConfig};
 use tari_crypto::tari_utilities::SafePassword;
 use tari_ootle_address::Network;
@@ -69,8 +69,11 @@ pub struct WalletDaemonConfig {
     pub json_rpc_address: SocketAddr,
     /// The signaling server address for the webrtc
     pub signaling_server_address: Option<SocketAddr>,
-    /// The indexer API url
-    pub indexer_api_url: Url,
+    /// The indexer API URLs, under the key `indexer_api_url`. The wallet uses one at a time, chosen at random at
+    /// startup, and moves to the next when the one in use stops responding. Accepts a list, or a string of
+    /// comma-separated URLs.
+    #[serde(rename = "indexer_api_url", deserialize_with = "deserialize_indexer_urls")]
+    pub indexer_api_urls: Vec<Url>,
     /// Expiration duration of the JWT token
     #[serde(with = "humantime_serde")]
     #[serde(default = "return_default_jwt_expiry")]
@@ -120,6 +123,19 @@ impl WalletDaemonConfig {
     /// before it can land. An oversized window is only warned about: it is the network's ceiling
     /// that decides, and this process cannot read it.
     pub fn validate(&self) -> Result<(), anyhow::Error> {
+        if self.indexer_api_urls.is_empty() {
+            return Err(anyhow::anyhow!("indexer_api_url must name at least one indexer"));
+        }
+        if let Some(url) = self
+            .indexer_api_urls
+            .iter()
+            .find(|url| !matches!(url.scheme(), "http" | "https"))
+        {
+            return Err(anyhow::anyhow!(
+                "indexer_api_url: the indexer is reached over HTTP, but a URL has scheme '{}'",
+                url.scheme()
+            ));
+        }
         if self.default_transaction_validity_epochs == 0 {
             return Err(anyhow::anyhow!(
                 "default_transaction_validity_epochs must be at least 1: a zero window expires transactions in the \
@@ -173,6 +189,25 @@ fn return_default_jwt_expiry() -> Duration {
     Duration::from_secs(5 * 60)
 }
 
+fn deserialize_indexer_urls<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Url>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        List(Vec<String>),
+        CommaSeparated(String),
+    }
+
+    let urls = match Raw::deserialize(deserializer)? {
+        Raw::List(urls) => urls,
+        Raw::CommaSeparated(urls) => urls.split(',').map(str::to_string).collect(),
+    };
+    urls.iter()
+        .map(|url| url.trim())
+        .filter(|url| !url.is_empty())
+        .map(|url| Url::parse(url).map_err(|e| de::Error::custom(format!("invalid indexer URL: {e}"))))
+        .collect()
+}
+
 fn return_default_rpc_address() -> SocketAddr {
     SocketAddr::from(([127u8, 0, 0, 1], 5100))
 }
@@ -185,9 +220,11 @@ impl Default for WalletDaemonConfig {
             authentication: WalletDaemonAuth::default(),
             json_rpc_address: return_default_rpc_address(),
             signaling_server_address: Some(SocketAddr::from(([127u8, 0, 0, 1], 9100))),
-            indexer_api_url: "http://127.0.0.1:18300"
-                .parse()
-                .expect("failed to parse default indexer_api_url"),
+            indexer_api_urls: vec![
+                "http://127.0.0.1:18300"
+                    .parse()
+                    .expect("failed to parse default indexer_api_url"),
+            ],
             jwt_expiry: return_default_jwt_expiry(),
             transaction_request_ttl: return_default_transaction_request_ttl(),
             enable_permissive_cors: false,
@@ -280,6 +317,66 @@ mod tests {
             IMPLAUSIBLE_TRANSACTION_VALIDITY_EPOCHS,
             ConsensusConstants::mainnet().max_transaction_validity_epochs
         );
+    }
+
+    fn load(toml: &str) -> Result<WalletDaemonConfig, ConfigurationError> {
+        let cfg = Config::builder()
+            .add_source(config::File::from_str(toml, config::FileFormat::Toml))
+            .build()
+            .unwrap();
+        WalletDaemonConfig::load_from(&cfg)
+    }
+
+    fn urls(urls: &[&str]) -> Vec<Url> {
+        urls.iter().map(|url| Url::parse(url).unwrap()).collect()
+    }
+
+    #[test]
+    fn a_single_indexer_url_still_loads() {
+        let config = load("[ootle_wallet_daemon]\nindexer_api_url = \"http://a.example/\"").unwrap();
+        assert_eq!(config.indexer_api_urls, urls(&["http://a.example/"]));
+    }
+
+    #[test]
+    fn a_list_of_indexer_urls_loads() {
+        let config =
+            load("[ootle_wallet_daemon]\nindexer_api_url = [\"http://a.example/\", \"http://b.example/\"]").unwrap();
+        assert_eq!(
+            config.indexer_api_urls,
+            urls(&["http://a.example/", "http://b.example/"])
+        );
+    }
+
+    /// The command line passes its URLs as one comma-separated override.
+    #[test]
+    fn comma_separated_indexer_urls_load() {
+        let cfg = Config::builder()
+            .set_override(
+                "ootle_wallet_daemon.indexer_api_url",
+                "http://a.example/, http://b.example/",
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        let config = WalletDaemonConfig::load_from(&cfg).unwrap();
+        assert_eq!(
+            config.indexer_api_urls,
+            urls(&["http://a.example/", "http://b.example/"])
+        );
+    }
+
+    #[test]
+    fn an_empty_or_non_http_indexer_set_is_refused() {
+        let empty = WalletDaemonConfig {
+            indexer_api_urls: vec![],
+            ..Default::default()
+        };
+        assert!(empty.validate().is_err());
+        let non_http = WalletDaemonConfig {
+            indexer_api_urls: urls(&["http://a.example/", "ftp://b.example/"]),
+            ..Default::default()
+        };
+        assert!(non_http.validate().is_err());
     }
 
     #[test]

@@ -51,9 +51,9 @@ pub struct Cli {
     pub listen_on: Option<SocketAddr>,
     #[clap(long, env = "SIGNALING_SERVER_ADDRESS")]
     pub signaling_server_address: Option<SocketAddr>,
-    #[clap(long, short = 'i', alias = "indexer-url")]
-    /// Indexer API url override
-    pub indexer_api_url: Option<Url>,
+    #[clap(long = "indexer-api-url", short = 'i', alias = "indexer-url", value_delimiter = ',')]
+    /// Indexer API URL override. Repeat it, or separate URLs with commas, to configure several indexers.
+    pub indexer_api_urls: Vec<Url>,
     #[clap(flatten)]
     pub wallet_restore: WalletRestoreArgs,
     /// The OS keyring is used to store and retrieve a randomly generated password. This is used for wallet encryption.
@@ -109,11 +109,14 @@ impl ConfigOverrideProvider for Cli {
                 signaling_server_address.to_string(),
             ));
         }
-        if let Some(ref indexer_api_url) = self.indexer_api_url {
-            overrides.push((
-                format!("{}.ootle_wallet_daemon.indexer_api_url", network),
-                indexer_api_url.to_string(),
-            ));
+        if !self.indexer_api_urls.is_empty() {
+            let urls = self
+                .indexer_api_urls
+                .iter()
+                .map(Url::as_str)
+                .collect::<Vec<_>>()
+                .join(",");
+            overrides.push((format!("{}.ootle_wallet_daemon.indexer_api_url", network), urls));
         }
         if let Some(ref file) = self.value_lookup_table_file {
             overrides.push((

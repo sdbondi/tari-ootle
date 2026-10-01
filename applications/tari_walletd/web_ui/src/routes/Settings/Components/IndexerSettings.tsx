@@ -23,6 +23,7 @@
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import Chip from "@mui/material/Chip";
 import CircularProgress from "@mui/material/CircularProgress";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
@@ -112,110 +113,117 @@ function IndexerStatus({ indexerUrl, walletNetwork }: IndexerStatusProps) {
 }
 
 interface IndexerSettingsProps {
-  indexerUrl: string;
+  indexerUrls: string[];
+  activeUrl: string;
   walletNetwork: string;
+  onSaved: () => void;
 }
 
-function IndexerSettings({ indexerUrl, walletNetwork }: IndexerSettingsProps) {
-  const [inputUrl, setInputUrl] = useState(indexerUrl);
-  const [showForm, setShowForm] = useState(false);
-  const [currentUrl, setCurrentUrl] = useState(indexerUrl);
+function IndexerSettings({ indexerUrls, activeUrl, walletNetwork, onSaved }: IndexerSettingsProps) {
+  const [inputUrl, setInputUrl] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    setCurrentUrl(indexerUrl);
-    setInputUrl(indexerUrl);
-  }, [indexerUrl]);
+  const save = async (urls: string[]) => {
+    setSaving(true);
+    try {
+      await settingsSet({ indexer_url: null, indexer_urls: urls, advanced_ui_features: null, claimed_accounts: null });
+      setSaveError(null);
+      onSaved();
+      return true;
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Failed to save indexer URLs");
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const onInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setInputUrl(e.target.value);
-    setValidationError(validateUrl(e.target.value));
+    setValidationError(e.target.value ? validateUrl(e.target.value) : null);
     setSaveError(null);
   };
 
-  const onSubmitIndexer = async () => {
+  const onAdd = async () => {
     const error = validateUrl(inputUrl);
     if (error) {
       setValidationError(error);
       return;
     }
-    try {
-      await settingsSet({ indexer_url: inputUrl, advanced_ui_features: null, claimed_accounts: null });
-      setCurrentUrl(inputUrl);
-      setShowForm(false);
-      setSaveError(null);
-    } catch (e) {
-      setSaveError(e instanceof Error ? e.message : "Failed to save indexer URL");
+    if (indexerUrls.includes(inputUrl)) {
+      setValidationError("This indexer is already configured");
+      return;
+    }
+    if (await save([...indexerUrls, inputUrl])) {
+      setInputUrl("");
     }
   };
 
-  const onCancel = () => {
-    setShowForm(false);
-    setValidationError(null);
-    setSaveError(null);
-  };
+  const onRemove = (url: string) => save(indexerUrls.filter((u) => u !== url));
 
   return (
-    <>
-      <Box className="flex-container">
-        {showForm ? (
-          <Form
-            onSubmit={onSubmitIndexer}
-            className="flex-container"
-            style={{ alignItems: "flex-start", flexDirection: "column", width: "100%" }}
-          >
-            <Box className="flex-container" style={{ alignItems: "center", width: "100%" }}>
-              <TextField
-                name="indexer_url"
-                label="Indexer url"
-                value={inputUrl}
-                onChange={onInputChange}
-                size="small"
-                style={{ flexGrow: 1 }}
-                error={!!validationError}
-                helperText={validationError ?? " "}
-              />
-              <Button variant="contained" type="submit" disabled={!!validationError}>
-                Set Indexer
-              </Button>
-              <Button variant="outlined" onClick={onCancel}>
-                Cancel
-              </Button>
+    <Box style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%" }}>
+      <Typography variant="caption" color="text.secondary">
+        The wallet uses one indexer at a time, chosen at random at startup or when this list changes, and moves to the
+        next one if it stops responding.
+      </Typography>
+      {indexerUrls.length === 0 && (
+        <Alert severity="warning" style={{ width: "100%" }}>
+          No Indexer Set
+        </Alert>
+      )}
+      {indexerUrls.map((url) => (
+        <Box key={url} style={{ width: "100%" }}>
+          <Box className="flex-container" style={{ justifyContent: "space-between", alignItems: "center" }}>
+            <Box style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+              <Typography variant="body2" style={{ overflowWrap: "anywhere" }}>
+                {url}
+              </Typography>
+              {url === activeUrl && <Chip label="In use" size="small" color="success" />}
             </Box>
-            {saveError && (
-              <Alert severity="error" style={{ marginTop: 8, width: "100%" }}>
-                {saveError}
-              </Alert>
-            )}
-          </Form>
-        ) : (
-          <Box style={{ width: "100%" }}>
-            <Box className="flex-container" style={{ justifyContent: "space-between", alignItems: "center" }}>
-              {currentUrl === "" ? (
-                <Alert severity="warning" style={{ width: "100%" }}>
-                  No Indexer Set
-                </Alert>
-              ) : (
-                <Typography variant="body2">{currentUrl}</Typography>
-              )}
-              <Button
-                variant="outlined"
-                onClick={() => {
-                  setInputUrl(currentUrl);
-                  setValidationError(null);
-                  setSaveError(null);
-                  setShowForm(true);
-                }}
-              >
-                Set new url
-              </Button>
-            </Box>
-            <IndexerStatus indexerUrl={currentUrl} walletNetwork={walletNetwork} />
+            <Button
+              variant="outlined"
+              color="error"
+              size="small"
+              disabled={saving || indexerUrls.length < 2}
+              title={indexerUrls.length < 2 ? "The wallet needs at least one indexer" : undefined}
+              onClick={() => onRemove(url)}
+            >
+              Remove
+            </Button>
           </Box>
-        )}
-      </Box>
-    </>
+          <IndexerStatus indexerUrl={url} walletNetwork={walletNetwork} />
+        </Box>
+      ))}
+      <Form
+        onSubmit={onAdd}
+        className="flex-container"
+        style={{ alignItems: "flex-start", flexDirection: "column", width: "100%" }}
+      >
+        <Box className="flex-container" style={{ alignItems: "center", width: "100%" }}>
+          <TextField
+            name="indexer_url"
+            label="Add indexer url"
+            value={inputUrl}
+            onChange={onInputChange}
+            size="small"
+            style={{ flexGrow: 1 }}
+            error={!!validationError}
+            helperText={validationError ?? " "}
+          />
+          <Button variant="contained" type="submit" disabled={saving || !inputUrl || !!validationError}>
+            Add Indexer
+          </Button>
+        </Box>
+      </Form>
+      {saveError && (
+        <Alert severity="error" style={{ width: "100%" }}>
+          {saveError}
+        </Alert>
+      )}
+    </Box>
   );
 }
 

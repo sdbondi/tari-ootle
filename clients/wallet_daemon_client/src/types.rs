@@ -1356,9 +1356,16 @@ pub struct ClaimValidatorFeesResponse {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct SettingsSetRequest {
+    /// Replaces the configured indexers with this single indexer. Shorthand for a one-element `indexer_urls`; at
+    /// most one of the two may be given.
     #[cfg_attr(feature = "ts", ts(type = "string | null"))]
     #[serde(default)]
     pub indexer_url: Option<Url>,
+    /// Replaces the configured indexers. The wallet activates one of them at random and moves to the next when the
+    /// active one stops responding.
+    #[cfg_attr(feature = "ts", ts(type = "Array<string> | null"))]
+    #[serde(default)]
+    pub indexer_urls: Option<Vec<Url>>,
     #[serde(default)]
     pub advanced_ui_features: Option<AdvancedUiFeatures>,
     #[serde(default)]
@@ -1372,8 +1379,12 @@ pub struct SettingsSetResponse {}
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct SettingsGetResponse {
+    /// The indexer the wallet is currently using, one of `indexer_urls`.
     #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub indexer_url: Url,
+    /// The configured indexers.
+    #[cfg_attr(feature = "ts", ts(type = "Array<string>"))]
+    pub indexer_urls: Vec<Url>,
     pub network: NetworkInfo,
     pub advanced_ui_features: AdvancedUiFeatures,
     pub claimed_accounts: Vec<String>,

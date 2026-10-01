@@ -3,7 +3,14 @@ import type { AdvancedUiFeatures } from "./AdvancedUiFeatures";
 import type { NetworkInfo } from "./NetworkInfo";
 
 export type SettingsGetResponse = {
+  /**
+   * The indexer the wallet is currently using, one of `indexer_urls`.
+   */
   indexer_url: string;
+  /**
+   * The configured indexers.
+   */
+  indexer_urls: Array<string>;
   network: NetworkInfo;
   advanced_ui_features: AdvancedUiFeatures;
   claimed_accounts: Array<string>;
