@@ -219,8 +219,8 @@ jobs:
       - name: Install macOS dependencies
         if: startsWith(runner.os,'macOS')
         run: |
-          # openssl, cmake and autoconf already installed
-          brew install zip coreutils automake protobuf
+          # cmake and autoconf already installed
+          brew install zip coreutils automake protobuf openssl@3
           rustup target add ${{ matrix.builds.target }}
 
       - name: Install macOS-14 missing dependencies - hack
@@ -303,6 +303,10 @@ jobs:
         run: |
           echo "PLATFORM_SPECIFIC_DIR=osx" >> $GITHUB_ENV
           echo "LIB_EXT=.dylib" >> $GITHUB_ENV
+          # webauthn-rs links OpenSSL. A hardened-runtime binary may only load dylibs signed by the
+          # same team or by Apple, so Homebrew's libssl.dylib must not be a load-time dependency.
+          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
 
       # Hardcoded sdk for MacOSX on ARM64
       - name: Set environment variables - macOS - ARM64 (pin/sdk)
@@ -502,6 +506,26 @@ jobs:
             cp -vf "${GITHUB_WORKSPACE}/applications/minotari_node/${PLATFORM_SPECIFIC_DIR}/runtime/start_tor${SHELL_EXT}" .
           fi
           ls -alhtR ${{ env.MTS_SOURCE }}
+
+      # codesign accepts a binary that links a third-party dylib; dyld then refuses to load it under
+      # the hardened runtime. Every dynamic dependency must ship with macOS.
+      - name: Check binaries link only system libraries - macOS
+        if: startsWith(runner.os,'macOS')
+        shell: bash
+        run: |
+          FAILED=0
+          ARRAY_FILES=( $(echo ${TS_FILES} | jq --raw-output '.[]' | awk '{ print $1 }') )
+          for FILE in "${ARRAY_FILES[@]}"; do
+            BIN="${{ env.MTS_SOURCE }}/${FILE}"
+            [ -f "${BIN}" ] || continue
+            FOREIGN=$(otool -L "${BIN}" | tail -n +2 | awk '{ print $1 }' | grep -v -E '^(/usr/lib/|/System/Library/)' || true)
+            if [ -n "${FOREIGN}" ]; then
+              echo "::error::${FILE} links libraries that do not ship with macOS:"
+              echo "${FOREIGN}"
+              FAILED=1
+            fi
+          done
+          exit ${FAILED}
 
       - name: Pre/unsigned OSX Artifact upload for Archive
         # Disabled
