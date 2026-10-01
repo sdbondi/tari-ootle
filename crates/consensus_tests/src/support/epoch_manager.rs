@@ -366,7 +366,10 @@ impl EpochManagerReader for TestEpochManager {
             .committees
             .iter()
             .find(|(_, committee)| committee.contains(address))
-            .unwrap_or_else(|| panic!("Validator {address} not found in any committee"));
+            .ok_or_else(|| EpochManagerError::ValidatorNodeNotRegistered {
+                address: address.to_string(),
+                epoch,
+            })?;
         let num_committees = state.committees.len() as u32;
         let num_members = committee.len();
         let total_power = state

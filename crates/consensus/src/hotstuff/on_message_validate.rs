@@ -222,8 +222,8 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
         }
     }
 
-    /// A foreign proposal is only served to a validator that is, in the requested epoch, a member of the foreign
-    /// shard group it asks pledges for.
+    /// A foreign proposal is only served to a registered validator that is a member of the foreign shard group it asks
+    /// pledges for.
     async fn is_foreign_proposal_requester(
         &self,
         epoch_state: &EpochState<TConsensusSpec::Addr>,
@@ -242,34 +242,31 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
             return Ok(false);
         }
 
-        // The epoch is chosen by the requester, so a failed lookup rejects the request rather than the worker.
-        let requester = match self
-            .epoch_manager
-            .get_committee_info_by_validator_address(*epoch, from)
-            .await
-        {
-            Ok(requester) => requester,
-            Err(err) => {
-                warn!(
-                    target: LOG_TARGET,
-                    "❌ Received ForeignProposalRequest from {from} who is not a registered validator for epoch {epoch} \
-                     ({err}). Discarding message.",
-                );
-                return Ok(false);
-            },
-        };
-
-        if requester.shard_group() != *for_shard_group {
-            warn!(
-                target: LOG_TARGET,
-                "❌ Received ForeignProposalRequest from {from} for shard group {for_shard_group}, but they are in shard \
-                 group {} in epoch {epoch}. Discarding message.",
-                requester.shard_group(),
-            );
-            return Ok(false);
+        // `for_shard_group` is the requester's shard group in its own current epoch, which may be one either side of
+        // ours across a boundary, and shard groups move between epochs when the committee count changes. The epoch is
+        // chosen by the requester, so a failed lookup counts as no match.
+        let current_epoch = epoch_state.epoch();
+        let mut candidate_epochs = vec![*epoch, current_epoch, current_epoch + Epoch(1)];
+        candidate_epochs.extend(current_epoch.checked_sub(Epoch(1)));
+        candidate_epochs.sort_unstable();
+        candidate_epochs.dedup();
+        for candidate in candidate_epochs {
+            if let Ok(requester) = self
+                .epoch_manager
+                .get_committee_info_by_validator_address(candidate, from)
+                .await &&
+                requester.shard_group() == *for_shard_group
+            {
+                return Ok(true);
+            }
         }
 
-        Ok(true)
+        warn!(
+            target: LOG_TARGET,
+            "❌ Received ForeignProposalRequest from {from} who is not a member of shard group {for_shard_group} in or \
+             around epoch {current_epoch} (requested epoch {epoch}). Discarding message.",
+        );
+        Ok(false)
     }
 
     pub async fn request_missing_transactions(
