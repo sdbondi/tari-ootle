@@ -16,8 +16,27 @@ pub fn check_foreign_proposal<TConsensusSpec: ConsensusSpec>(
     config: &HotstuffConfig,
 ) -> Result<(), HotStuffError> {
     check_network(proposal, config.network)?;
+    check_proposer_in_committee(proposal, foreign_committee)?;
     check_header(proposal)?;
     check_commit_proof::<TConsensusSpec>(proposal.commit_proof(), foreign_committee)?;
+    Ok(())
+}
+
+fn check_proposer_in_committee<TAddr: PartialEq>(
+    proposal: &ForeignProposal,
+    foreign_committee: &Committee<TAddr>,
+) -> Result<(), ProposalValidationError> {
+    let proposed_by = proposal.proposed_by();
+    if !foreign_committee.contains_public_key(&proposed_by) {
+        return Err(ProposalValidationError::ValidatorNotInCommittee {
+            validator: proposed_by.to_string(),
+            details: format!(
+                "Foreign proposal {} was proposed by a validator outside the committee of shard group {}",
+                proposal.calculate_block_id(),
+                proposal.shard_group_unchecked(),
+            ),
+        });
+    }
     Ok(())
 }
 
@@ -50,4 +69,88 @@ pub fn check_commit_proof<TConsensusSpec: ConsensusSpec>(
             .unwrap_or_else(VotePower::zero))
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use tari_common_types::types::CompressedPublicKey;
+    use tari_crypto::tari_utilities::ByteArray;
+    use tari_ootle_common_types::{ShardGroup, committee::CommitteeMember, crypto::create_key_pair_from_seed};
+    use tari_ootle_storage::consensus_models::BlockPledge;
+    use tari_sidechain::{SidechainBlockCommitProof, SidechainBlockHeader};
+    use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
+
+    use super::*;
+
+    fn public_key(seed: u8) -> RistrettoPublicKeyBytes {
+        let (_, pk) = create_key_pair_from_seed(seed);
+        RistrettoPublicKeyBytes::from_bytes(pk.as_bytes()).unwrap()
+    }
+
+    fn committee(seeds: &[u8]) -> Committee<String> {
+        Committee::new(
+            seeds
+                .iter()
+                .map(|seed| CommitteeMember {
+                    address: format!("vn{seed}"),
+                    public_key: public_key(*seed),
+                    vote_power: VotePower::of(1),
+                })
+                .collect(),
+        )
+    }
+
+    fn proposal(proposer_seed: u8, shard_group: ShardGroup) -> ForeignProposal {
+        let (_, proposer) = create_key_pair_from_seed(proposer_seed);
+        let commit_proof = CommandsCommitProof::new_latest(vec![], SidechainBlockCommitProof {
+            header: SidechainBlockHeader {
+                network: Network::LocalNet.as_byte(),
+                protocol_version: 0,
+                parent_id: Default::default(),
+                justify_id: Default::default(),
+                height: 1,
+                epoch: 1,
+                epoch_hash: Default::default(),
+                shard_group: tari_sidechain::ShardGroup {
+                    start: shard_group.start().as_u32(),
+                    end_inclusive: shard_group.end().as_u32(),
+                },
+                proposed_by: CompressedPublicKey::new_from_pk(proposer),
+                state_merkle_root: Default::default(),
+                command_merkle_root: Default::default(),
+                signature: Default::default(),
+                accumulated_data: Default::default(),
+                metadata_hash: Default::default(),
+            },
+            proof_elements: vec![],
+        });
+        ForeignProposal::new(commit_proof, BlockPledge::default())
+    }
+
+    fn shard_group_b() -> ShardGroup {
+        ShardGroup::new(129u32, 256u32)
+    }
+
+    #[test]
+    fn it_rejects_a_proposer_outside_the_named_shard_groups_committee() {
+        let b = shard_group_b();
+        let committee_b = committee(&[11, 12, 13]);
+        // Proposed by a member of shard group A's committee, but the header names shard group B
+        let proposal = proposal(1, b);
+
+        let err = check_proposer_in_committee(&proposal, &committee_b).unwrap_err();
+        assert!(
+            matches!(err, ProposalValidationError::ValidatorNotInCommittee { .. }),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn it_accepts_a_proposer_inside_the_named_shard_groups_committee() {
+        let b = shard_group_b();
+        let committee_b = committee(&[11, 12, 13]);
+        let proposal = proposal(12, b);
+
+        check_proposer_in_committee(&proposal, &committee_b).unwrap();
+    }
 }

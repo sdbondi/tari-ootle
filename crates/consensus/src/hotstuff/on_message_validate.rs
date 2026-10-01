@@ -467,6 +467,7 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
         Ok(missing_tx_ids)
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn process_foreign_proposal(
         &self,
         epoch_state: &EpochState<TConsensusSpec::Addr>,
@@ -493,18 +494,35 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
             });
         }
 
+        let Some(foreign_shard_group) = msg.proposal.shard_group_checked() else {
+            let block_id = msg.proposal.calculate_block_id();
+            let shard_group = msg.proposal.shard_group_unchecked();
+            return Ok(MessageValidationResult::Invalid {
+                from,
+                message: HotstuffMessage::ForeignProposal(msg),
+                err: ProposalValidationError::InvalidShardGroup {
+                    block_id,
+                    shard_group,
+                    details: "Foreign proposal header names a shard group with invalid bounds".to_string(),
+                }
+                .into(),
+            });
+        };
+
+        // The proposal is processed as the evidence and pledges of the shard group its header names, so the proof
+        // must verify against that shard group's committee.
         let Some(committee) = self
             .epoch_manager
-            .get_committee_by_validator_public_key(msg.proposal.epoch(), msg.proposal.proposed_by())
+            .get_committee_by_shard_group(msg.proposal.epoch(), foreign_shard_group)
             .await
             .optional()?
         else {
             warn!(
                 target: LOG_TARGET,
-                "❌ Foreign proposal block {} was proposed by {} who is not a registered validator for epoch {}. \
-                 Discarding message.",
+                "❌ Foreign proposal block {} names shard group {} which has no committee in epoch {}. Discarding \
+                 message.",
                 msg.proposal,
-                msg.proposal.proposed_by(),
+                foreign_shard_group,
                 msg.proposal.epoch(),
             );
             return Ok(MessageValidationResult::Discard);
