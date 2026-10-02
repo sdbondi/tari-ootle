@@ -252,7 +252,7 @@ pub fn initialize_wallet_sdk(config: &ApplicationConfig, store: SqliteWalletStor
     let config_api = ConfigApi::new(&store);
     // Indexer URLs saved through `settings.set` take precedence over the config file.
     let indexer_endpoints = config_api
-        .get::<StoredIndexerUrls>(ConfigKey::IndexerUrl)
+        .get::<StoredIndexerUrls>(ConfigKey::IndexerUrls)
         .optional()?
         .map(StoredIndexerUrls::into_vec)
         .filter(|urls| !urls.is_empty())
@@ -263,7 +263,7 @@ pub fn initialize_wallet_sdk(config: &ApplicationConfig, store: SqliteWalletStor
     Ok(sdk)
 }
 
-/// The value stored under [`ConfigKey::IndexerUrl`]: a list of URLs, or a single URL as stored by earlier versions.
+/// The value stored under [`ConfigKey::IndexerUrls`]: a list of URLs, or a single URL as stored by earlier versions.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum StoredIndexerUrls {

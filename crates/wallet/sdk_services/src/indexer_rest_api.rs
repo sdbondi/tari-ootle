@@ -5,6 +5,7 @@ use std::{
     collections::HashMap,
     ops::Deref,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use anyhow::anyhow;
@@ -69,6 +70,9 @@ const INVALID_REQUEST_CODE: i64 = 400;
 
 /// Consecutive unavailability failures on the active indexer after which the next configured indexer is used.
 const FAILOVER_THRESHOLD: u32 = 3;
+/// How long to wait for a TCP connection to an indexer. Bounds how long an unreachable host holds up a request before
+/// it counts towards failover. Only the connect is bounded: SSE subscriptions and long polls legitimately stay open.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The wallet's connection to the network through one of a set of indexers.
 ///
@@ -89,11 +93,14 @@ struct EndpointPool {
 }
 
 impl EndpointPool {
-    fn init(urls: Vec<Url>) -> Result<Self, IndexerRestApiNetworkInterfaceError> {
+    /// A pool over `urls` with `preferred` active if it is among them, otherwise one chosen at random.
+    fn init(urls: Vec<Url>, preferred: Option<&Url>) -> Result<Self, IndexerRestApiNetworkInterfaceError> {
         if urls.is_empty() {
             return Err(IndexerRestApiNetworkInterfaceError::NoIndexerEndpoints);
         }
-        let active = rand::random_range(0..urls.len());
+        let active = preferred
+            .and_then(|preferred| urls.iter().position(|url| url == preferred))
+            .unwrap_or_else(|| rand::random_range(0..urls.len()));
         Ok(Self {
             urls,
             active,
@@ -111,7 +118,8 @@ impl EndpointPool {
 enum IndexerHealth {
     /// The indexer answered.
     Answered,
-    /// The indexer could not be reached, or a gateway in front of it reports it unavailable.
+    /// The indexer could not be reached, or a gateway in front of it reports it unavailable: a 502 or 504, or a 503
+    /// without the indexer's own error body.
     Unavailable,
     /// Nothing can be concluded, e.g. the indexer is rate limiting this wallet.
     Inconclusive,
@@ -123,23 +131,32 @@ impl IndexerHealth {
             return Self::Answered;
         };
         match err {
-            IndexerRestClientError::RequestFailed { source } | IndexerRestClientError::ErrorResponse { source, .. } => {
-                match source.status() {
-                    None => Self::Unavailable,
-                    Some(StatusCode::TOO_MANY_REQUESTS) => Self::Inconclusive,
-                    Some(StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT) => {
-                        Self::Unavailable
-                    },
-                    Some(_) => Self::Answered,
-                }
+            IndexerRestClientError::RequestFailed { source } => match source.status() {
+                None => Self::Unavailable,
+                Some(status) => Self::of_status(status, false),
+            },
+            IndexerRestClientError::ErrorResponse { source, details } => match source.status() {
+                None => Self::Unavailable,
+                Some(status) => Self::of_status(status, details.is_some()),
             },
             _ => Self::Inconclusive,
         }
     }
+
+    /// The indexer itself answers 503 when its dry-run slots are busy or the network cannot serve a request. Neither
+    /// means the indexer is down, so only a 503 without the indexer's error body is a gateway reporting an outage.
+    fn of_status(status: StatusCode, has_indexer_error_body: bool) -> Self {
+        match status {
+            StatusCode::TOO_MANY_REQUESTS => Self::Inconclusive,
+            StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT => Self::Unavailable,
+            StatusCode::SERVICE_UNAVAILABLE if !has_indexer_error_body => Self::Unavailable,
+            _ => Self::Answered,
+        }
+    }
 }
 
-/// A client paired with the indexer it was handed out for, so that a result is attributed to that indexer even if
-/// the active one changes while the request is in flight.
+/// A client paired with the indexer that was active when it was handed out. Its results count towards that indexer
+/// only while it is still active; once another indexer is active they are discarded.
 struct TrackedClient {
     client: IndexerRestApiClient,
     endpoint: Url,
@@ -160,19 +177,19 @@ impl IndexerRestApiNetworkInterface {
 
     /// Connects through the indexers at `endpoints`, starting from one chosen at random.
     pub fn init(endpoints: Vec<Url>) -> Result<Self, IndexerRestApiNetworkInterfaceError> {
-        let pool = EndpointPool::init(endpoints)?;
-        let client = IndexerRestApiClient::connect(pool.active_url().clone())?;
+        let pool = EndpointPool::init(endpoints, None)?;
+        let client = IndexerRestApiClient::connect_with_connect_timeout(pool.active_url().clone(), CONNECT_TIMEOUT)?;
         Ok(Self {
             client,
             endpoints: Arc::new(Mutex::new(pool)),
         })
     }
 
-    /// Replaces the set of indexers and activates one of them at random. Requests already in flight finish against
-    /// the indexer they were sent to.
+    /// Replaces the set of indexers. The active indexer stays active if it is in the new set; otherwise one of the new
+    /// set is activated at random. Requests already in flight finish against the indexer they were sent to.
     pub fn set_endpoints(&self, endpoints: Vec<Url>) -> Result<(), IndexerRestApiNetworkInterfaceError> {
-        let pool = EndpointPool::init(endpoints)?;
         let mut current = self.endpoints.lock().unwrap();
+        let pool = EndpointPool::init(endpoints, Some(current.active_url()))?;
         self.client.set_endpoint(pool.active_url().clone())?;
         *current = pool;
         Ok(())
@@ -217,8 +234,11 @@ impl IndexerRestApiNetworkInterface {
             IndexerHealth::Answered => pool.consecutive_failures = 0,
             IndexerHealth::Inconclusive => {},
             IndexerHealth::Unavailable => {
+                if pool.urls.len() < 2 {
+                    return;
+                }
                 pool.consecutive_failures += 1;
-                if pool.consecutive_failures < FAILOVER_THRESHOLD || pool.urls.len() < 2 {
+                if pool.consecutive_failures < FAILOVER_THRESHOLD {
                     return;
                 }
                 let failed = pool.active;
@@ -749,6 +769,19 @@ mod tests {
     }
 
     #[test]
+    fn replacing_the_set_keeps_the_active_indexer_if_it_remains() {
+        let network = IndexerRestApiNetworkInterface::init(urls(2)).unwrap();
+        let active_before = active(&network);
+        let mut extended = urls(2);
+        extended.push(Url::parse("http://other.example:18300/").unwrap());
+
+        for _ in 0..10 {
+            network.set_endpoints(extended.clone()).unwrap();
+            assert_eq!(network.get_endpoint(), active_before);
+        }
+    }
+
+    #[test]
     fn replacing_the_set_activates_one_of_the_new_indexers() {
         let network = IndexerRestApiNetworkInterface::init(urls(2)).unwrap();
         let replacement = vec![Url::parse("http://other.example:18300/").unwrap()];
@@ -759,8 +792,8 @@ mod tests {
         assert_eq!(network.get_endpoint(), replacement[0]);
     }
 
-    /// Serves every request with `status` and an empty JSON body.
-    async fn spawn_status_server(status: &'static str) -> Url {
+    /// Serves every request with `status` and `body`.
+    async fn spawn_status_server(status: &'static str, body: &'static str) -> Url {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
         tokio::spawn(async move {
@@ -768,8 +801,10 @@ mod tests {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut buf = [0u8; 4096];
                 let _ignore = socket.read(&mut buf).await;
-                let response =
-                    format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}");
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
                 let _ignore = socket.write_all(response.as_bytes()).await;
             }
         });
@@ -784,23 +819,32 @@ mod tests {
     #[tokio::test]
     async fn responses_are_classified_by_what_they_say_about_the_indexer() {
         assert_eq!(
-            health_of_request_to(spawn_status_server("503 Service Unavailable").await).await,
+            health_of_request_to(spawn_status_server("503 Service Unavailable", "{}").await).await,
             IndexerHealth::Unavailable
         );
         assert_eq!(
-            health_of_request_to(spawn_status_server("502 Bad Gateway").await).await,
+            health_of_request_to(spawn_status_server("502 Bad Gateway", "{}").await).await,
             IndexerHealth::Unavailable
         );
         assert_eq!(
-            health_of_request_to(spawn_status_server("429 Too Many Requests").await).await,
-            IndexerHealth::Inconclusive
+            health_of_request_to(spawn_status_server("504 Gateway Timeout", "<html></html>").await).await,
+            IndexerHealth::Unavailable
         );
+        // The indexer's own 503 (dry-run slots busy, no committee for a shard) is an answer.
         assert_eq!(
-            health_of_request_to(spawn_status_server("404 Not Found").await).await,
+            health_of_request_to(spawn_status_server("503 Service Unavailable", r#"{"error":"busy"}"#).await).await,
             IndexerHealth::Answered
         );
         assert_eq!(
-            health_of_request_to(spawn_status_server("500 Internal Server Error").await).await,
+            health_of_request_to(spawn_status_server("429 Too Many Requests", "{}").await).await,
+            IndexerHealth::Inconclusive
+        );
+        assert_eq!(
+            health_of_request_to(spawn_status_server("404 Not Found", "{}").await).await,
+            IndexerHealth::Answered
+        );
+        assert_eq!(
+            health_of_request_to(spawn_status_server("500 Internal Server Error", "{}").await).await,
             IndexerHealth::Answered
         );
     }

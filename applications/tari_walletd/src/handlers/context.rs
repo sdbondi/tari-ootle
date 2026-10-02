@@ -19,6 +19,7 @@ use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
 use tari_ootle_walletd_client::permissions::{Permission, Permissions};
 use tari_shutdown::ShutdownSignal;
 use tari_utilities::SafePassword;
+use url::Url;
 use webauthn_rs::Webauthn;
 
 use crate::{
@@ -38,6 +39,13 @@ use crate::{
 pub struct AuthIdentity {
     pub permissions: Permissions,
     pub api_key_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedEpoch {
+    epoch: Epoch,
+    read_at: Instant,
+    indexer: Url,
 }
 
 #[derive(Debug, Clone)]
@@ -62,7 +70,7 @@ pub struct HandlerContext {
     /// Last epoch read from the network, with the time it was read. Every transaction build needs
     /// the current epoch to stamp `max_epoch`; epochs turn over on the order of tens of minutes, so
     /// a short cache keeps a burst of builds from making an indexer round-trip each.
-    cached_epoch: Arc<Mutex<Option<(Epoch, Instant)>>>,
+    cached_epoch: Arc<Mutex<Option<CachedEpoch>>>,
 }
 
 /// How long a read of the current epoch is reused before the network is asked again. Well under an
@@ -295,25 +303,27 @@ impl HandlerContext {
         self.authenticator.webauthn()
     }
 
-    /// Discards the cached epoch, forcing the next read to go to the network.
-    ///
-    /// Must be called whenever the daemon is repointed at a different indexer: the cached value
-    /// describes the previous indexer's chain, and stamping a `max_epoch` derived from it onto a
-    /// transaction for a different chain yields a window that chain will not accept.
-    pub fn invalidate_epoch_cache(&self) {
-        *self.cached_epoch.lock().unwrap() = None;
-    }
-
     /// The current epoch, re-read from the network at most every [`EPOCH_CACHE_TTL`].
+    ///
+    /// The cached value belongs to the indexer it was read from and is discarded once another indexer is in use,
+    /// whether by `settings.set` or by failover: stamping a `max_epoch` derived from one indexer's view onto a
+    /// transaction submitted through another can yield a window that the network will not accept.
     pub async fn current_epoch(&self) -> Result<Epoch, anyhow::Error> {
-        if let Some((epoch, read_at)) = *self.cached_epoch.lock().unwrap() &&
-            read_at.elapsed() < EPOCH_CACHE_TTL
+        let network = self.wallet_sdk.get_network_interface();
+        let indexer = network.get_endpoint();
+        if let Some(cached) = &*self.cached_epoch.lock().unwrap() &&
+            cached.indexer == indexer &&
+            cached.read_at.elapsed() < EPOCH_CACHE_TTL
         {
-            return Ok(epoch);
+            return Ok(cached.epoch);
         }
 
-        let epoch = self.wallet_sdk.get_network_interface().get_current_epoch().await?;
-        *self.cached_epoch.lock().unwrap() = Some((epoch, Instant::now()));
+        let epoch = network.get_current_epoch().await?;
+        *self.cached_epoch.lock().unwrap() = Some(CachedEpoch {
+            epoch,
+            read_at: Instant::now(),
+            indexer,
+        });
         Ok(epoch)
     }
 

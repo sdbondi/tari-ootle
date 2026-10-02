@@ -83,16 +83,16 @@ fn required_permissions(req: &SettingsSetRequest) -> Vec<Permission> {
 /// The host is deliberately unconstrained. A wallet's indexer normally runs on loopback or on the
 /// local network, so refusing private ranges would reject the ordinary deployment; `Admin` is what
 /// separates a caller allowed to choose it from one that is not.
-fn validate_indexer_url(url: &Url) -> Result<(), anyhow::Error> {
+fn validate_indexer_url(field: &str, url: &Url) -> Result<(), anyhow::Error> {
     if !url.username().is_empty() || url.password().is_some() {
         return Err(invalid_params(
-            "indexer_url",
+            field,
             Some("The indexer URL is persisted in the wallet's settings and must not embed credentials"),
         ));
     }
     if !matches!(url.scheme(), "http" | "https") {
         return Err(invalid_params(
-            "indexer_url",
+            field,
             Some(format!(
                 "The indexer is reached over HTTP, but the URL has scheme '{}'",
                 url.scheme()
@@ -104,7 +104,7 @@ fn validate_indexer_url(url: &Url) -> Result<(), anyhow::Error> {
 
 /// The indexers a `settings.set` request configures, if it configures any.
 fn requested_indexer_urls(req: &SettingsSetRequest) -> Result<Option<Vec<Url>>, anyhow::Error> {
-    let urls = match (&req.indexer_url, &req.indexer_urls) {
+    let (field, urls) = match (&req.indexer_url, &req.indexer_urls) {
         (None, None) => return Ok(None),
         (Some(_), Some(_)) => {
             return Err(invalid_params(
@@ -112,8 +112,8 @@ fn requested_indexer_urls(req: &SettingsSetRequest) -> Result<Option<Vec<Url>>, 
                 Some("Give either indexer_url or indexer_urls, not both"),
             ));
         },
-        (Some(url), None) => vec![url.clone()],
-        (None, Some(urls)) => urls.clone(),
+        (Some(url), None) => ("indexer_url", vec![url.clone()]),
+        (None, Some(urls)) => ("indexer_urls", urls.clone()),
     };
     if urls.is_empty() {
         return Err(invalid_params(
@@ -123,7 +123,7 @@ fn requested_indexer_urls(req: &SettingsSetRequest) -> Result<Option<Vec<Url>>, 
     }
     let mut unique = Vec::with_capacity(urls.len());
     for url in urls {
-        validate_indexer_url(&url)?;
+        validate_indexer_url(field, &url)?;
         if !unique.contains(&url) {
             unique.push(url);
         }
@@ -139,10 +139,8 @@ pub async fn handle_set(
     let sdk = context.wallet_sdk();
     context.authorize(token, &required_permissions(&req))?;
     if let Some(indexer_urls) = requested_indexer_urls(&req)? {
-        sdk.config_api().set(ConfigKey::IndexerUrl, &indexer_urls)?;
+        sdk.config_api().set(ConfigKey::IndexerUrls, &indexer_urls)?;
         sdk.get_network_interface().set_endpoints(indexer_urls)?;
-        // The cached epoch describes the indexer we just stopped using.
-        context.invalidate_epoch_cache();
     }
     if let Some(advanced_ui_features) = &req.advanced_ui_features {
         sdk.config_api()
@@ -224,7 +222,8 @@ mod tests {
 
     #[test]
     fn every_url_in_the_set_is_validated() {
-        requested_indexer_urls(&request_many(&["http://a.example/", "file:///etc/passwd"])).unwrap_err();
+        let err = requested_indexer_urls(&request_many(&["http://a.example/", "file:///etc/passwd"])).unwrap_err();
+        assert!(err.to_string().contains("indexer_urls"), "{err}");
     }
 
     fn granted(permissions: &str) -> Permissions {
@@ -248,14 +247,14 @@ mod tests {
 
     #[test]
     fn a_non_http_indexer_url_is_refused() {
-        validate_indexer_url(&Url::parse("file:///etc/passwd").unwrap()).unwrap_err();
-        validate_indexer_url(&Url::parse("data:text/plain,hello").unwrap()).unwrap_err();
+        validate_indexer_url("indexer_url", &Url::parse("file:///etc/passwd").unwrap()).unwrap_err();
+        validate_indexer_url("indexer_url", &Url::parse("data:text/plain,hello").unwrap()).unwrap_err();
     }
 
     #[test]
     fn an_indexer_url_embedding_credentials_is_refused() {
-        validate_indexer_url(&Url::parse("http://user:pass@indexer.example/").unwrap()).unwrap_err();
-        validate_indexer_url(&Url::parse("http://user@indexer.example/").unwrap()).unwrap_err();
+        validate_indexer_url("indexer_url", &Url::parse("http://user:pass@indexer.example/").unwrap()).unwrap_err();
+        validate_indexer_url("indexer_url", &Url::parse("http://user@indexer.example/").unwrap()).unwrap_err();
     }
 
     /// A refusal is rendered into the JSON-RPC error and warned to the log, so no branch of it may
@@ -266,7 +265,9 @@ mod tests {
             "ftp://user:swordfish@indexer.example/",
             "http://user:swordfish@indexer.example/",
         ] {
-            let err = validate_indexer_url(&Url::parse(url).unwrap()).unwrap_err().to_string();
+            let err = validate_indexer_url("indexer_url", &Url::parse(url).unwrap())
+                .unwrap_err()
+                .to_string();
             assert!(!err.contains("swordfish"), "{err}");
         }
     }
@@ -274,7 +275,7 @@ mod tests {
     /// A loopback indexer is the default deployment, so no host restriction may reject it.
     #[test]
     fn a_loopback_indexer_url_is_accepted() {
-        validate_indexer_url(&Url::parse("http://127.0.0.1:18300").unwrap()).unwrap();
-        validate_indexer_url(&Url::parse("https://indexer.example/json_rpc").unwrap()).unwrap();
+        validate_indexer_url("indexer_url", &Url::parse("http://127.0.0.1:18300").unwrap()).unwrap();
+        validate_indexer_url("indexer_url", &Url::parse("https://indexer.example/json_rpc").unwrap()).unwrap();
     }
 }

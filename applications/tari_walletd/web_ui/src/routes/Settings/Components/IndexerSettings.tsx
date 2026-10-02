@@ -166,8 +166,8 @@ function IndexerSettings({ indexerUrls, activeUrl, walletNetwork, onSaved }: Ind
   return (
     <Box style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%" }}>
       <Typography variant="caption" color="text.secondary">
-        The wallet uses one indexer at a time, chosen at random at startup or when this list changes, and moves to the
-        next one if it stops responding.
+        The wallet uses one indexer at a time, chosen at random at startup, and moves to the next one if it stops
+        responding.
       </Typography>
       {indexerUrls.length === 0 && (
         <Alert severity="warning" style={{ width: "100%" }}>

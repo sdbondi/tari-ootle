@@ -73,14 +73,28 @@ pub struct IndexerRestApiClient {
 
 impl IndexerRestApiClient {
     pub fn connect<T: IntoUrl>(endpoint: T) -> Result<Self, IndexerRestClientError> {
-        Self::connect_internal(endpoint, None)
+        Self::connect_internal(endpoint, None, None)
     }
 
     pub fn connect_with_timeout<T: IntoUrl>(endpoint: T, timeout: Duration) -> Result<Self, IndexerRestClientError> {
-        Self::connect_internal(endpoint, Some(timeout))
+        Self::connect_internal(endpoint, Some(timeout), None)
     }
 
-    fn connect_internal(endpoint: impl IntoUrl, timeout: Option<Duration>) -> Result<Self, IndexerRestClientError> {
+    /// Connects with a bound on establishing each TCP connection only. Unlike
+    /// [`connect_with_timeout`](Self::connect_with_timeout), responses may take as long as they need, so SSE
+    /// subscriptions and long polls stay usable.
+    pub fn connect_with_connect_timeout<T: IntoUrl>(
+        endpoint: T,
+        connect_timeout: Duration,
+    ) -> Result<Self, IndexerRestClientError> {
+        Self::connect_internal(endpoint, None, Some(connect_timeout))
+    }
+
+    fn connect_internal(
+        endpoint: impl IntoUrl,
+        timeout: Option<Duration>,
+        connect_timeout: Option<Duration>,
+    ) -> Result<Self, IndexerRestClientError> {
         let client_builder = reqwest::Client::builder().default_headers({
             let mut headers = HeaderMap::with_capacity(1);
             headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
@@ -89,6 +103,11 @@ impl IndexerRestApiClient {
 
         let client_builder = if let Some(timeout) = timeout {
             client_builder.timeout(timeout)
+        } else {
+            client_builder
+        };
+        let client_builder = if let Some(connect_timeout) = connect_timeout {
+            client_builder.connect_timeout(connect_timeout)
         } else {
             client_builder
         };
