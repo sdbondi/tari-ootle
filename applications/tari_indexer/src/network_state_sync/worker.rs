@@ -85,6 +85,10 @@ const LOG_TARGET: &str = "tari::indexer::network_state_sync::worker";
 /// How often a shard group whose committee has not yet been seen committing in the epoch manager's
 /// epoch is probed again.
 const CONSENSUS_EPOCH_PROBE_INTERVAL: Duration = Duration::from_secs(10);
+/// The highest state version accepted from a peer or carried in the recorded progress. State
+/// versions are stored in signed 64-bit columns, and every recorded version must leave room for the
+/// cursor that resumes after it.
+const MAX_STATE_VERSION: StateVersion = StateVersion::new(i64::MAX as u64);
 
 #[derive(Clone)]
 pub struct NetworkWideStateSync {
@@ -288,12 +292,17 @@ impl NetworkWideStateSync {
 
     async fn initialize_sync_plan(&self) -> Result<SyncPlan, NetworkStateSyncError> {
         let network_desc = self.epoch_manager.get_network_description().await?;
-        let sync_progress = self
+        let mut sync_progress = self
             .store
             .with_read_tx(|tx| tx.key_value_get_value::<_, SyncProgress>(Key::SyncProgress))
             .await
             .optional()?
             .unwrap_or_default();
+        // A recorded version no stream could have delivered is dropped, so the shard is synced again
+        // from its head state.
+        for shard in sync_progress.discard_state_versions_above(MAX_STATE_VERSION) {
+            warn!(target: LOG_TARGET, "⚠️ Recorded state version for shard {shard} exceeds v{MAX_STATE_VERSION}. Resyncing the shard from its head state");
+        }
 
         let mut committee_pools = HashMap::with_capacity(network_desc.num_committees());
         for shard_group in network_desc.shard_groups_iter() {
@@ -877,15 +886,15 @@ impl NetworkWideStateSync {
                 Some(rpc::sync_state_response::Response::Batch(batch)) => batch,
                 Some(rpc::sync_state_response::Response::Complete(complete)) => {
                     let shard = Shard::from(complete.shard);
+                    let synced_to = StateVersion::new(complete.synced_to_version);
                     order
-                        .accept_marker(shard)
+                        .accept_marker(shard, synced_to)
                         .map_err(|details| NetworkStateSyncError::InvalidStateUpdate { details })?;
                     // Terminal watermark: advance recorded progress to the version the producer is
                     // synced to. This covers trailing versions that streamed no updates because their
                     // substates are all filtered out for our subscription - without it we could never
                     // observe that we have caught up to such a shard and would re-sync it from scratch
                     // every round.
-                    let synced_to = StateVersion::new(complete.synced_to_version);
                     let msg_epoch =
                         complete
                             .epoch
@@ -1106,7 +1115,9 @@ fn cursors_for(shards: &[Shard], progress: &SyncProgress) -> Vec<rpc::ShardCurso
         .iter()
         .map(|&shard| rpc::ShardCursor {
             shard: shard.as_u32(),
-            start_state_version: progress.last_state_version(shard).map_or(0, |v| v.as_u64()) + 1,
+            start_state_version: progress
+                .last_state_version(shard)
+                .map_or(1, |v| v.as_u64().saturating_add(1)),
         })
         .collect()
 }
@@ -1148,6 +1159,7 @@ impl StreamOrder {
         let Some(committed_version) = self.committed_versions.get(&shard).copied() else {
             return Err(format!("Received batch for unrequested shard {shard}"));
         };
+        check_state_version_bound(shard, state_version)?;
         if state_version <= committed_version {
             return Err(format!(
                 "Received v{state_version} for shard {shard}, which is not ahead of the committed v{committed_version}"
@@ -1171,10 +1183,11 @@ impl StreamOrder {
         Ok(())
     }
 
-    fn accept_marker(&mut self, shard: Shard) -> Result<(), String> {
+    fn accept_marker(&mut self, shard: Shard, synced_to: StateVersion) -> Result<(), String> {
         if !self.committed_versions.contains_key(&shard) {
             return Err(format!("Received completion marker for unrequested shard {shard}"));
         }
+        check_state_version_bound(shard, synced_to)?;
         if let Some((pending_shard, pending_version)) = self.pending_chunk {
             return Err(format!(
                 "Received completion marker for shard {shard} while v{pending_version} of shard {pending_shard} is \
@@ -1183,6 +1196,15 @@ impl StreamOrder {
         }
         Ok(())
     }
+}
+
+fn check_state_version_bound(shard: Shard, state_version: StateVersion) -> Result<(), String> {
+    if state_version > MAX_STATE_VERSION {
+        return Err(format!(
+            "Received v{state_version} for shard {shard}, which exceeds the maximum v{MAX_STATE_VERSION}"
+        ));
+    }
+    Ok(())
 }
 
 fn process_watched_substate_events(
@@ -1458,9 +1480,9 @@ mod tests {
             let mut o = order(&[(1, 1), (2, 1)]);
             o.accept_batch(S1, v(1), false).unwrap();
             o.accept_batch(S1, v(4), false).unwrap();
-            o.accept_marker(S1).unwrap();
+            o.accept_marker(S1, v(4)).unwrap();
             o.accept_batch(S2, v(7), false).unwrap();
-            o.accept_marker(S2).unwrap();
+            o.accept_marker(S2, v(7)).unwrap();
         }
 
         #[test]
@@ -1469,7 +1491,7 @@ mod tests {
             o.accept_batch(S1, v(3), true).unwrap();
             o.accept_batch(S1, v(3), true).unwrap();
             o.accept_batch(S1, v(3), false).unwrap();
-            o.accept_marker(S1).unwrap();
+            o.accept_marker(S1, v(3)).unwrap();
         }
 
         #[test]
@@ -1498,12 +1520,12 @@ mod tests {
         fn it_accepts_a_followed_shard_streamed_again_after_its_marker() {
             let mut o = order(&[(1, 1), (2, 1)]);
             o.accept_batch(S1, v(2), false).unwrap();
-            o.accept_marker(S1).unwrap();
-            o.accept_marker(S2).unwrap();
+            o.accept_marker(S1, v(2)).unwrap();
+            o.accept_marker(S2, v(0)).unwrap();
             o.accept_batch(S1, v(3), false).unwrap();
-            o.accept_marker(S1).unwrap();
+            o.accept_marker(S1, v(3)).unwrap();
             // A forced marker on an epoch change closes off nothing new.
-            o.accept_marker(S1).unwrap();
+            o.accept_marker(S1, v(3)).unwrap();
             assert!(o.accept_batch(S1, v(3), false).is_err());
         }
 
@@ -1518,13 +1540,61 @@ mod tests {
         fn it_rejects_a_marker_while_a_version_is_incomplete() {
             let mut o = order(&[(1, 1)]);
             o.accept_batch(S1, v(3), true).unwrap();
-            assert!(o.accept_marker(S1).is_err());
+            assert!(o.accept_marker(S1, v(3)).is_err());
         }
 
         #[test]
         fn it_rejects_unrequested_shards() {
             assert!(order(&[(1, 1)]).accept_batch(S2, v(1), false).is_err());
-            assert!(order(&[(1, 1)]).accept_marker(S2).is_err());
+            assert!(order(&[(1, 1)]).accept_marker(S2, v(1)).is_err());
+        }
+
+        #[test]
+        fn it_rejects_a_marker_above_the_maximum_version() {
+            let mut o = order(&[(1, 1)]);
+            o.accept_marker(S1, MAX_STATE_VERSION).unwrap();
+            assert!(o.accept_marker(S1, v(MAX_STATE_VERSION.as_u64() + 1)).is_err());
+            assert!(o.accept_marker(S1, v(u64::MAX)).is_err());
+        }
+
+        #[test]
+        fn it_rejects_a_batch_above_the_maximum_version() {
+            assert!(order(&[(1, 1)]).accept_batch(S1, v(u64::MAX), false).is_err());
+            assert!(order(&[(1, 1)]).accept_batch(S1, v(u64::MAX), true).is_err());
+            order(&[(1, 1)]).accept_batch(S1, MAX_STATE_VERSION, false).unwrap();
+        }
+    }
+
+    mod cursors_for {
+        use super::*;
+
+        const S1: Shard = Shard::from_u32(1);
+
+        fn progress_at(version: u64) -> SyncProgress {
+            let mut progress = SyncProgress::default();
+            progress.record_state_version(S1, StateVersion::new(version), Epoch(1));
+            progress
+        }
+
+        #[test]
+        fn it_resumes_after_the_recorded_version() {
+            assert_eq!(cursors_for(&[S1], &progress_at(12_345))[0].start_state_version, 12_346);
+            assert_eq!(cursors_for(&[S1], &SyncProgress::default())[0].start_state_version, 1);
+        }
+
+        #[test]
+        fn it_does_not_overflow_on_the_largest_version() {
+            let cursors = cursors_for(&[S1], &progress_at(u64::MAX));
+            assert_eq!(cursors[0].start_state_version, u64::MAX);
+        }
+
+        #[test]
+        fn a_discarded_version_resumes_from_scratch() {
+            let mut progress = progress_at(u64::MAX);
+            progress.record_state_version(Shard::from_u32(2), MAX_STATE_VERSION, Epoch(1));
+            assert_eq!(progress.discard_state_versions_above(MAX_STATE_VERSION), vec![S1]);
+            assert_eq!(cursors_for(&[S1], &progress)[0].start_state_version, 1);
+            assert_eq!(progress.last_state_version(Shard::from_u32(2)), Some(MAX_STATE_VERSION));
         }
     }
 }
