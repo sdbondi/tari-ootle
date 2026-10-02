@@ -44,29 +44,9 @@ pub mod boxed_slice {
     pub fn decode_with_fn<'b, C, T>(
         d: &mut Decoder<'b>,
         ctx: &mut C,
-        mut decode_elem: impl FnMut(&mut Decoder<'b>, &mut C) -> Result<T, minicbor::decode::Error>,
+        decode_elem: impl FnMut(&mut Decoder<'b>, &mut C) -> Result<T, minicbor::decode::Error>,
     ) -> Result<Box<[T]>, minicbor::decode::Error> {
-        let len = d.array()?;
-        match len {
-            Some(n) => {
-                let mut out = Vec::with_capacity(n.min(super::MAX_PREALLOC) as usize);
-                for _ in 0..n {
-                    out.push(decode_elem(d, ctx)?);
-                }
-                Ok(out.into_boxed_slice())
-            },
-            None => {
-                let mut out: Vec<T> = Vec::new();
-                loop {
-                    if matches!(d.datatype()?, minicbor::data::Type::Break) {
-                        d.skip()?;
-                        break;
-                    }
-                    out.push(decode_elem(d, ctx)?);
-                }
-                Ok(out.into_boxed_slice())
-            },
-        }
+        super::bounded_vec::decode_with_fn(d, ctx, usize::MAX, decode_elem).map(Vec::into_boxed_slice)
     }
 
     pub fn cbor_len<C, T>(xs: &[T], ctx: &mut C) -> usize
@@ -102,6 +82,17 @@ pub mod bounded_vec {
     where
         T: Decode<'b, C>,
     {
+        decode_with_fn(d, ctx, max_len, T::decode)
+    }
+
+    /// Like [`decode`], but decodes each element with a caller-supplied function rather than the element's
+    /// [`Decode`] impl.
+    pub fn decode_with_fn<'b, C, T>(
+        d: &mut Decoder<'b>,
+        ctx: &mut C,
+        max_len: usize,
+        mut decode_elem: impl FnMut(&mut Decoder<'b>, &mut C) -> Result<T, minicbor::decode::Error>,
+    ) -> Result<Vec<T>, minicbor::decode::Error> {
         let too_many = || minicbor::decode::Error::message(format!("array holds more than {max_len} elements"));
         match d.array()? {
             Some(n) => {
@@ -110,7 +101,7 @@ pub mod bounded_vec {
                 }
                 let mut out = Vec::with_capacity(n.min(super::MAX_PREALLOC) as usize);
                 for _ in 0..n {
-                    out.push(T::decode(d, ctx)?);
+                    out.push(decode_elem(d, ctx)?);
                 }
                 Ok(out)
             },
@@ -124,7 +115,7 @@ pub mod bounded_vec {
                     if out.len() == max_len {
                         return Err(too_many());
                     }
-                    out.push(T::decode(d, ctx)?);
+                    out.push(decode_elem(d, ctx)?);
                 }
             },
         }
