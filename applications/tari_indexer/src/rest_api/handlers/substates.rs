@@ -1,7 +1,7 @@
 //   Copyright 2025 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::array;
+use std::{array, collections::HashMap};
 
 use axum::{
     Extension,
@@ -10,11 +10,16 @@ use axum::{
 };
 use tari_engine_types::substate::SubstateId;
 use tari_indexer_client::types::{GetSubstateRequest, GetSubstateResponse, GetSubstatesRequest, GetSubstatesResponse};
-use tari_indexer_lib::error::IndexerError;
+use tari_indexer_lib::{cached_substate_manager::ProvenSubstate, error::IndexerError};
 use tari_ootle_common_types::{SubstateRequirementRef, optional::IsNotFoundError};
 
 use crate::{
-    rest_api::{context::HandlerContext, error::ErrorResponse, handlers::HandlerResult},
+    rest_api::{
+        context::HandlerContext,
+        error::ErrorResponse,
+        handlers::HandlerResult,
+        proofs::{require_proof_verification, to_substate_proof},
+    },
     substate_manager::{FetchedSubstate, SubstateManagerError},
 };
 
@@ -24,7 +29,7 @@ use crate::{
 /// thing that was asked for rather than failures of the indexer. A caller has to be able to tell
 /// those from the indexer being unable to answer at all, which is the only case left as a server
 /// error.
-fn substate_lookup_error(e: SubstateManagerError) -> ErrorResponse {
+pub(super) fn substate_lookup_error(e: SubstateManagerError) -> ErrorResponse {
     // A down is never undone, so naming a spent version is permanent for that version: the caller
     // has to resolve the substate again rather than retry what it asked for.
     if matches!(e, SubstateManagerError::InputSubstateIsDown { .. }) || e.is_not_found_error() {
@@ -49,9 +54,19 @@ fn substate_lookup_error(e: SubstateManagerError) -> ErrorResponse {
         ("substate_id" = String, Path, description = "The substate ID to fetch"),
         ("local_search_only" = bool, Query, description = "If true, only search local storage for the substate"),
         ("version" = Option<u64>, Query, description = "Minimum version of the substate to fetch"),
+        (
+            "include_proof" = Option<bool>,
+            Query,
+            description = "If true, fetch the substate from its committee and include the proof it was verified with"
+        ),
     ),
     responses(
         (status = 200, description = "Substate details", body = GetSubstateResponse),
+        (
+            status = BAD_REQUEST,
+            description = "A proof was requested together with local_search_only, or from an indexer that does not verify proofs",
+            body = ErrorResponse
+        ),
         (
             status = 404,
             description = "No such substate, or the version asked for has been spent",
@@ -83,7 +98,20 @@ pub async fn get_substate(
     let requirement = SubstateRequirementRef::new(&substate_id, req.version);
 
     let manager = context.substate_manager();
-    let maybe_substate = if req.local_search_only {
+    if req.include_proof {
+        if req.local_search_only {
+            return Err(ErrorResponse::bad_request(
+                "include_proof cannot be combined with local_search_only: proofs are only fetched from the committee",
+            ));
+        }
+        require_proof_verification(manager.verifies_substates())?;
+    }
+    let maybe_substate = if req.include_proof {
+        manager
+            .fetch_substate_with_proof(requirement)
+            .await
+            .map_err(substate_lookup_error)?
+    } else if req.local_search_only {
         manager
             .get_cached_substates(array::from_ref(requirement.substate_id()))
             .await
@@ -93,6 +121,7 @@ pub async fn get_substate(
                     .map(|(_, substate)| FetchedSubstate {
                         substate,
                         verified: false,
+                        proof: None,
                     })
             })
             .map_err(substate_lookup_error)?
@@ -103,17 +132,19 @@ pub async fn get_substate(
             .map_err(substate_lookup_error)?
     };
 
-    match maybe_substate {
-        Some(fetched) => Ok(Json(GetSubstateResponse {
-            version: fetched.substate.version(),
-            substate: fetched.substate.into_substate_value(),
-            // True when this value was checked against the committee before being accepted. False
-            // for local-only lookups, when verification is disabled, or when no committee member
-            // could supply a proof yet (e.g. nothing committed since an epoch change).
-            verified: fetched.verified,
-        })),
-        None => Err(ErrorResponse::not_found(format!("Substate {} not found", substate_id))),
-    }
+    let Some(fetched) = maybe_substate else {
+        return Err(ErrorResponse::not_found(format!("Substate {} not found", substate_id)));
+    };
+    let proof = fetched.proof.map(to_substate_proof).transpose()?;
+    Ok(Json(GetSubstateResponse {
+        version: fetched.substate.version(),
+        substate: fetched.substate.into_substate_value(),
+        // True when this value was checked against the committee before being accepted. False
+        // for local-only lookups, when verification is disabled, or when no committee member
+        // could supply a proof yet (e.g. nothing committed since an epoch change).
+        verified: fetched.verified,
+        proof,
+    }))
 }
 
 #[utoipa::path(
@@ -122,7 +153,12 @@ pub async fn get_substate(
     description = "Fetches several substates by their IDs",
     responses(
         (status = 200, description = "Substates details", body = GetSubstatesResponse),
-        (status = BAD_REQUEST, description = "Too many substates requested", body = ErrorResponse),
+        (
+            status = BAD_REQUEST,
+            description = "Too many substates requested, or proofs requested together with cached_only or from an \
+                           indexer that does not verify proofs",
+            body = ErrorResponse
+        ),
         (
             status = SERVICE_UNAVAILABLE,
             description = "Indexer is still syncing, or no committee answers for the substate's shard group",
@@ -137,12 +173,25 @@ pub async fn fetch_substates(
 ) -> HandlerResult<Json<GetSubstatesResponse>> {
     const MAX_REQUESTS: usize = 20;
 
-    let GetSubstatesRequest { requests, cached_only } = req;
+    let GetSubstatesRequest {
+        requests,
+        cached_only,
+        include_proofs,
+    } = req;
 
     if requests.len() > MAX_REQUESTS {
         return Err(ErrorResponse::bad_request(format!(
             "Cannot request more than {MAX_REQUESTS} substates at once"
         )));
+    }
+
+    if include_proofs {
+        if cached_only {
+            return Err(ErrorResponse::bad_request(
+                "include_proofs cannot be combined with cached_only: proofs are only fetched from the committee",
+            ));
+        }
+        require_proof_verification(context.substate_manager().verifies_substates())?;
     }
 
     if cached_only {
@@ -152,16 +201,28 @@ pub async fn fetch_substates(
             .await
             .map_err(|e| ErrorResponse::internal_error(format!("Error getting substate: {}", e)))?;
 
-        return Ok(Json(GetSubstatesResponse { substates }));
+        return Ok(Json(GetSubstatesResponse {
+            substates,
+            proofs: HashMap::new(),
+        }));
     }
 
-    let substates = context
+    let fetched = context
         .substate_manager()
         .fetch_and_cache_substates(requests.as_slice())
         .await
         .map_err(substate_lookup_error)?;
 
-    Ok(Json(GetSubstatesResponse { substates }))
+    let mut substates = HashMap::with_capacity(fetched.len());
+    let mut proofs = HashMap::new();
+    for (id, ProvenSubstate { substate, proof }) in fetched {
+        if include_proofs && let Some(proof) = proof {
+            proofs.insert(id.clone(), to_substate_proof(proof)?);
+        }
+        substates.insert(id, substate);
+    }
+
+    Ok(Json(GetSubstatesResponse { substates, proofs }))
 }
 
 #[cfg(test)]

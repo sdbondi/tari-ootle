@@ -124,6 +124,16 @@ pub struct SubstateLookupResult {
     /// verification is disabled, the result is `DoesNotExist` (not provable), or no committee member
     /// could supply a proof yet (e.g. nothing has been committed since an epoch change).
     pub verified: bool,
+    /// The proof `result` was verified with, for a result fetched from the committee. `None` for a
+    /// result served from the cache, which holds only whether its entry was verified.
+    pub proof: Option<SubstateProofData>,
+}
+
+/// A live substate and the proof it was verified with, if it was.
+#[derive(Debug, Clone)]
+pub struct ProvenSubstate {
+    pub substate: Substate,
+    pub proof: Option<SubstateProofData>,
 }
 
 /// What [`CachedSubstateManager::get_input_substates`] found.
@@ -253,6 +263,29 @@ where
         #[cfg(feature = "metrics")]
         self.metrics.as_ref().inspect(|m| m.inc_cache_misses());
 
+        self.fetch_and_cache_substate(substate_id, specific_version).await
+    }
+
+    /// Like [`Self::get_substate`], but always asks the committee, so that an up or down result comes
+    /// with the proof it was verified with, anchored at the responder's latest committed block. The
+    /// result is cached as any other fetch is.
+    ///
+    /// The proof is `None` when proof verification is off, for `DoesNotExist`, which has no proof, and
+    /// when no committee member could prove the result.
+    pub async fn get_substate_with_proof(
+        &self,
+        substate_id: &SubstateId,
+        specific_version: Option<SubstateVersion>,
+    ) -> Result<SubstateLookupResult, IndexerError> {
+        debug!(target: LOG_TARGET, "get_substate_with_proof: {}v{}", substate_id, specific_version.display());
+        self.fetch_and_cache_substate(substate_id, specific_version).await
+    }
+
+    async fn fetch_and_cache_substate(
+        &self,
+        substate_id: &SubstateId,
+        specific_version: Option<SubstateVersion>,
+    ) -> Result<SubstateLookupResult, IndexerError> {
         // Captured before the fetch so that a transition arriving while it is in flight can veto the
         // write it produces.
         let watermark = self.substate_cache.watermark(substate_id).await?;
@@ -329,6 +362,7 @@ where
                     return Ok(Some(SubstateLookupResult {
                         result: entry.substate_result,
                         verified: entry.verified,
+                        proof: None,
                     }));
                 }
 
@@ -384,17 +418,26 @@ where
         Ok(map)
     }
 
+    /// Fetches the live version of each substate from the committee. A substate that is not up, or
+    /// that no member answered for, is absent from the result. Each result carries the proof it was
+    /// verified with, when one was.
     pub async fn fetch_and_cache_substates(
         &self,
         substate_ids: &[SubstateId],
-    ) -> Result<HashMap<SubstateId, Substate>, IndexerError> {
+    ) -> Result<HashMap<SubstateId, ProvenSubstate>, IndexerError> {
         let substate_ids = substate_ids.iter().collect::<Vec<_>>();
         let heads = self.fetch_and_cache_heads(&substate_ids).await?;
         // A batch answers with the head version; a caller asking for substates by id wants the live
         // ones, and a down head is not one.
         Ok(heads
             .into_iter()
-            .filter_map(|(id, lookup)| lookup.result.into_up().map(|up| (id, up)))
+            .filter_map(|(id, lookup)| {
+                let proof = lookup.proof;
+                lookup
+                    .result
+                    .into_up()
+                    .map(|substate| (id, ProvenSubstate { substate, proof }))
+            })
             .collect())
     }
 
@@ -441,6 +484,7 @@ where
                 entry.answer_at(req.version()).map(|entry| SubstateLookupResult {
                     result: entry.substate_result,
                     verified: entry.verified,
+                    proof: None,
                 })
             });
             let lookup = match from_batch {
@@ -490,6 +534,7 @@ where
 
         let mut results = HashMap::with_capacity(substate_ids.len());
         for (batch, verified) in batches {
+            let commit_proof = batch.commit_proof;
             if !batch.missing.is_empty() {
                 debug!(
                     target: LOG_TARGET,
@@ -515,9 +560,18 @@ where
                     }
                 }
 
+                // A proven batch carries an anchor and a value proof for every result in it.
+                let proof = commit_proof.clone().zip(substate.value_proof).filter(|_| verified).map(
+                    |(commit_proof, substate_value_proof)| SubstateProofData {
+                        substate_value_proof,
+                        commit_proof,
+                        proof_epoch: substate.proof_epoch,
+                    },
+                );
                 results.insert(substate.substate_id, SubstateLookupResult {
                     result: substate.result,
                     verified,
+                    proof,
                 });
             }
         }
@@ -694,8 +748,8 @@ where
         debug!(target: LOG_TARGET, "Getting substate {} from vn {}", substate_req, vn_addr);
         let response = self.get_substate_from_vn(vn_addr, substate_req).await;
         match &response {
-            Ok((substate_result, verified)) => {
-                debug!(target: LOG_TARGET, "Got substate result for {} from vn {} (verified = {}): {:?}", substate_req, vn_addr, verified, substate_result);
+            Ok((substate_result, proof)) => {
+                debug!(target: LOG_TARGET, "Got substate result for {} from vn {} (verified = {}): {:?}", substate_req, vn_addr, proof.is_some(), substate_result);
             },
             Err(e) => {
                 warn!(target: LOG_TARGET, "Could not get substate {} from vn {}: {}", substate_req, vn_addr, e);
@@ -704,13 +758,13 @@ where
         response
     }
 
-    /// Gets a substate directly from querying a VN. The returned flag is true if the result came
-    /// with a proof that verified against the committee.
+    /// Gets a substate directly from querying a VN, with the proof it came with if that proof verified
+    /// against the committee.
     async fn get_substate_from_vn(
         &self,
         vn_addr: &TAddr,
         substate_requirement: SubstateRequirementRef<'_>,
-    ) -> Result<(SubstateResult, bool), IndexerError> {
+    ) -> Result<(SubstateResult, Option<SubstateProofData>), IndexerError> {
         // build a client with the VN
         let mut client = self.validator_node_client_factory.create_client(vn_addr);
 
@@ -718,7 +772,7 @@ where
             return client
                 .get_substate(substate_requirement)
                 .await
-                .map(|result| (result, false))
+                .map(|result| (result, None))
                 .map_err(|e| IndexerError::ValidatorNodeClientError(e.to_string()));
         }
 
@@ -730,32 +784,21 @@ where
         // The validator has nothing committed to anchor a proof against yet (e.g. immediately after
         // an epoch change). Return the result unverified and let the caller decide.
         let Some(proof) = proof else {
-            return Ok((result, false));
+            return Ok((result, None));
         };
 
         // Verify up/down results against the committee. An invalid proof disqualifies this
         // validator's response (fail-closed) so the caller tries another member. `DoesNotExist` is
         // not provable and is left to the existing f+1 agreement.
-        let verified = match &result {
-            SubstateResult::Up { substate } => {
-                self.verify_substate_proof(
-                    substate_requirement.substate_id(),
-                    substate.version(),
-                    Some(substate.substate_value()),
-                    proof,
-                )
-                .await?;
-                true
-            },
-            SubstateResult::Down { version } => {
-                self.verify_substate_proof(substate_requirement.substate_id(), *version, None, proof)
-                    .await?;
-                true
-            },
-            SubstateResult::DoesNotExist => false,
+        let (version, value) = match &result {
+            SubstateResult::Up { substate } => (substate.version(), Some(substate.substate_value())),
+            SubstateResult::Down { version } => (*version, None),
+            SubstateResult::DoesNotExist => return Ok((result, None)),
         };
+        self.verify_substate_proof(substate_requirement.substate_id(), version, value, &proof)
+            .await?;
 
-        Ok((result, verified))
+        Ok((result, Some(proof)))
     }
 
     async fn verify_substate_proof(
@@ -763,7 +806,7 @@ where
         substate_id: &SubstateId,
         version: SubstateVersion,
         value: Option<&SubstateValue>,
-        proof: SubstateProofData,
+        proof: &SubstateProofData,
     ) -> Result<(), IndexerError> {
         let root = self.trusted_root_from_commit_proof(&proof.commit_proof).await?;
         verify_substate_value_proof_against_root(
@@ -1211,5 +1254,24 @@ mod tests {
         );
         assert_eq!(network.batch_requests.load(Ordering::Relaxed), 0);
         assert_eq!(network.single_requests.load(Ordering::Relaxed), 0);
+    }
+
+    /// The cache records only whether an entry was verified, so a read that has to return the proof
+    /// asks the committee even when a fresh entry would answer it.
+    #[tokio::test]
+    async fn a_read_for_a_proof_is_not_answered_from_the_cache() {
+        let ids = vec![component_id(1)];
+        let (manager, network) = manager(FakeNetwork {
+            live: live(&ids),
+            ..Default::default()
+        });
+        manager.get_substate(&ids[0], None).await.unwrap();
+        manager.get_substate(&ids[0], None).await.unwrap();
+        assert_eq!(network.single_requests.load(Ordering::Relaxed), 1);
+
+        let lookup = manager.get_substate_with_proof(&ids[0], None).await.unwrap();
+
+        assert!(lookup.result.into_up().is_some());
+        assert_eq!(network.single_requests.load(Ordering::Relaxed), 2);
     }
 }

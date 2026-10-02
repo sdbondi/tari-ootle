@@ -6,4 +6,9 @@ export type IndexerGetTransactionResultRequest = {
    * The ID of the transaction to query the result for
    */
   transaction_id: TransactionId;
+  /**
+   * If true, a committed transaction's result carries its receipt and the proof that the receipt
+   * was committed.
+   */
+  include_proof: boolean;
 };

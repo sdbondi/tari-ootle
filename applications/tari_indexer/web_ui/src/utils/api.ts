@@ -115,6 +115,7 @@ export const getSubstate = (
     c.substatesGet(id, {
       version: version ?? null,
       local_search_only: local_search_only ?? false,
+      include_proof: false,
     }),
   );
 export const getNonFungibles = (request: GetNonFungiblesRequest): Promise<GetNonFungiblesResponse> =>

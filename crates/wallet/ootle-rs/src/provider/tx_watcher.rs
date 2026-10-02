@@ -383,6 +383,7 @@ impl PendingTransaction {
         let resp = client
             .get_transaction_result(GetTransactionResultRequest {
                 transaction_id: self.tx_id,
+                include_proof: false,
             })
             .await
             .optional()?;

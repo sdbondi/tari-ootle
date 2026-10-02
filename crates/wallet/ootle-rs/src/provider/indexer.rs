@@ -296,6 +296,7 @@ impl<Wallet: NetworkWallet + Send + Sync> Provider for IndexerProvider<Wallet> {
                     .try_into()
                     .map_err(|_| ProviderError::other("Too many substates requested in single request"))?,
                 cached_only: false,
+                include_proofs: false,
             })
             .await?;
 

@@ -32,6 +32,7 @@ use crate::{
         GetTemplateDefinitionResponse,
         GetTransactionReceiptResponse,
         GetTransactionResponse,
+        GetTransactionResultQuery,
         GetTransactionResultRequest,
         GetTransactionResultResponse,
         GetUtxoUpdatesRequest,
@@ -206,8 +207,13 @@ impl IndexerRestApiClient {
         &self,
         req: GetTransactionResultRequest,
     ) -> Result<GetTransactionResultResponse, IndexerRestClientError> {
-        self.send_get(format!("transactions/{}/result", req.transaction_id), ())
-            .await
+        self.send_get(
+            format!("transactions/{}/result", req.transaction_id),
+            GetTransactionResultQuery {
+                include_proof: req.include_proof,
+            },
+        )
+        .await
     }
 
     pub async fn list_recent_transactions(

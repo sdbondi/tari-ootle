@@ -64,6 +64,10 @@ pub struct GetSubstateRequest {
     pub version: Option<SubstateVersion>,
     #[serde(default)]
     pub local_search_only: bool,
+    /// If true, the indexer asks the committee for the substate and returns the proof it verified the
+    /// answer with. Not combinable with `local_search_only`.
+    #[serde(default)]
+    pub include_proof: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +86,60 @@ pub struct GetSubstateResponse {
     /// merkle proof). False when proofs are disabled, or when no committee member could supply a
     /// proof yet (e.g. nothing committed since an epoch change) and the value was served unverified.
     pub verified: bool,
+    /// The proof the indexer verified this substate with. Present only when `include_proof` was set
+    /// and a committee member could prove the substate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub proof: Option<SubstateProof>,
+}
+
+/// Proof that a substate value was committed by its shard group.
+///
+/// Two parts: a commit proof that the shard group committee committed a block whose header carries
+/// `anchor.state_merkle_root`, and a value proof that the substate's leaf is in the state tree under
+/// that root. Verifying it requires the committee for `anchor.epoch` and `anchor.shard_group`.
+///
+/// A proof shows the value was committed at the anchor block. It says nothing about later blocks, so
+/// a caller judges freshness by the anchor's epoch and height.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "tari-indexer-client/"))]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct SubstateProof {
+    /// The committed block the proof is anchored at, as read from `commit_proof`.
+    pub anchor: SubstateProofAnchor,
+    /// CBOR-encoded `SidechainBlockCommitProof`: the anchor block's header and the chain of quorum
+    /// certificates that committed it.
+    #[serde(with = "ootle_serde::base64")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
+    #[cfg_attr(feature = "utoipa", schema(value_type = String, format = Byte))]
+    pub commit_proof: Vec<u8>,
+    /// CBOR-encoded `SubstateValueProof`: the inclusion proof of the substate's leaf under
+    /// `anchor.state_merkle_root`.
+    #[serde(with = "ootle_serde::base64")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
+    #[cfg_attr(feature = "utoipa", schema(value_type = String, format = Byte))]
+    pub value_proof: Vec<u8>,
+    /// The epoch the substate's leaf value hash was computed in. It is an input to that hash, so a
+    /// verifier needs it to recompute the leaf.
+    #[cfg_attr(feature = "utoipa", schema(value_type = u64))]
+    pub value_hash_epoch: Epoch,
+}
+
+/// The committed block a [`SubstateProof`] is anchored at.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "tari-indexer-client/"))]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct SubstateProofAnchor {
+    #[cfg_attr(feature = "utoipa", schema(value_type = u64))]
+    pub epoch: Epoch,
+    #[cfg_attr(feature = "utoipa", schema(value_type = Object))]
+    pub shard_group: ShardGroup,
+    pub height: u64,
+    #[cfg_attr(feature = "utoipa", schema(value_type = String))]
+    pub block_id: Hash32,
+    /// The shard group state root the block header commits.
+    #[cfg_attr(feature = "utoipa", schema(value_type = String))]
+    pub state_merkle_root: Hash32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +155,10 @@ pub struct GetSubstatesRequest {
     /// exist. Otherwise, the indexer will attempt to fetch substates from validator nodes across various shard groups
     /// which may result in more failures.
     pub cached_only: bool,
+    /// If true, the response carries the proof each substate was verified with. Not combinable with
+    /// `cached_only`.
+    #[serde(default)]
+    pub include_proofs: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +167,11 @@ pub struct GetSubstatesRequest {
 pub struct GetSubstatesResponse {
     #[cfg_attr(feature = "utoipa", schema(value_type = HashMap<String, Object>))]
     pub substates: HashMap<SubstateId, Substate>,
+    /// The proof each substate was verified with, when `include_proofs` was set. A substate no
+    /// committee member could prove has no entry.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(value_type = HashMap<String, SubstateProof>))]
+    pub proofs: HashMap<SubstateId, SubstateProof>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,6 +305,10 @@ pub struct GetTransactionResultRequest {
     #[cfg_attr(feature = "utoipa", schema(value_type = String))]
     /// The ID of the transaction to query the result for
     pub transaction_id: TransactionId,
+    /// If true, a committed transaction's result carries its receipt and the proof that the receipt
+    /// was committed.
+    #[serde(default)]
+    pub include_proof: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -256,6 +327,34 @@ pub struct GetTransactionResultResponse {
     /// The result of the transaction, which may be pending (not yet finalized) or finalized with details such as the
     /// final decision, execution result, and timestamps
     pub result: IndexerTransactionFinalizedResult,
+    /// The committed transaction receipt and its proof, when `include_proof` was set and the
+    /// transaction committed. An aborted transaction commits no receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub receipt: Option<ProvenTransactionReceipt>,
+}
+
+/// Query parameters of `GET /transactions/{transaction_id}/result`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+pub struct GetTransactionResultQuery {
+    /// If true, a committed transaction's result carries its receipt and the proof that the receipt
+    /// was committed.
+    #[serde(default)]
+    pub include_proof: bool,
+}
+
+/// A committed transaction's receipt substate, with the proof it was verified with.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "tari-indexer-client/"))]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct ProvenTransactionReceipt {
+    #[cfg_attr(feature = "utoipa", schema(value_type = u64))]
+    pub version: SubstateVersion,
+    #[cfg_attr(feature = "utoipa", schema(value_type = Object))]
+    pub receipt: TransactionReceipt,
+    /// `None` when no committee member could prove the receipt, e.g. when nothing has been committed
+    /// since an epoch change.
+    pub proof: Option<SubstateProof>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

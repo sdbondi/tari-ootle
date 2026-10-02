@@ -650,6 +650,7 @@ impl TrafficSim {
             .get_substate(&resource_address.into(), GetSubstateRequest {
                 version: None,
                 local_search_only: true,
+                include_proof: false,
             })
             .await?
             .substate

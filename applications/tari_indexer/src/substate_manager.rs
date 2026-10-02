@@ -37,7 +37,13 @@ use tari_engine_types::{
 use tari_epoch_manager::service::EpochManagerHandle;
 use tari_indexer_client::types::{ListSubstateItem, NonFungibleSubstate, UtxoStateUpdateSet};
 use tari_indexer_lib::{
-    cached_substate_manager::{CachedSubstateManager, InputSubstatesLookup, TrustedRootStore},
+    cached_substate_manager::{
+        CachedSubstateManager,
+        InputSubstatesLookup,
+        ProvenSubstate,
+        SubstateLookupResult,
+        TrustedRootStore,
+    },
     error::IndexerError,
 };
 use tari_ootle_common_types::{
@@ -58,7 +64,7 @@ use tari_template_lib_types::{
     UtxoId,
     crypto::{RistrettoPublicKeyBytes, UtxoTag},
 };
-use tari_validator_node_rpc::client::{SubstateResult, TariValidatorNodeRpcClientFactory};
+use tari_validator_node_rpc::client::{SubstateProofData, SubstateResult, TariValidatorNodeRpcClientFactory};
 
 use crate::{
     storage_sqlite::{SqliteIndexerStore, models::VerifiedStateRoot},
@@ -80,6 +86,8 @@ pub struct SubstateResponse {
 pub struct FetchedSubstate {
     pub substate: Substate,
     pub verified: bool,
+    /// The proof `substate` was verified with, when it was fetched from the committee and proven.
+    pub proof: Option<SubstateProofData>,
 }
 
 /// Adapts the indexer's sqlite store to [`TrustedRootStore`], which the read path consults to skip
@@ -292,11 +300,34 @@ impl SubstateManager {
             .cache_manager
             .get_substate(req.substate_id(), req.version())
             .await?;
+        Self::to_fetched_substate(req, lookup_result)
+    }
+
+    /// Looks up one substate from the committee, with the proof it was verified with. `None` when the
+    /// committee agrees it does not exist.
+    ///
+    /// Neither the local store nor the substate cache holds proofs, so this always asks the committee.
+    pub async fn fetch_substate_with_proof(
+        &self,
+        req: SubstateRequirementRef<'_>,
+    ) -> Result<Option<FetchedSubstate>, SubstateManagerError> {
+        let lookup_result = self
+            .cache_manager
+            .get_substate_with_proof(req.substate_id(), req.version())
+            .await?;
+        Self::to_fetched_substate(req, lookup_result)
+    }
+
+    fn to_fetched_substate(
+        req: SubstateRequirementRef<'_>,
+        lookup_result: SubstateLookupResult,
+    ) -> Result<Option<FetchedSubstate>, SubstateManagerError> {
         match lookup_result.result {
             SubstateResult::DoesNotExist => Ok(None),
             SubstateResult::Up { substate } => Ok(Some(FetchedSubstate {
                 substate: Substate::new(substate.version(), substate.into_substate_value()),
                 verified: lookup_result.verified,
+                proof: lookup_result.proof,
             })),
             SubstateResult::Down { version } => Err(SubstateManagerError::InputSubstateIsDown {
                 substate_id: req.substate_id().clone(),
@@ -333,6 +364,7 @@ impl SubstateManager {
                     results.insert(id, FetchedSubstate {
                         substate: Substate::new(substate.version(), substate.into_substate_value()),
                         verified: lookup_result.verified,
+                        proof: lookup_result.proof,
                     });
                 }
                 Ok(results)
@@ -361,6 +393,7 @@ impl SubstateManager {
             substate: Substate::new(substate.version, substate.substate),
             // Locally-stored substates were verified when ingested iff verification is on.
             verified: self.cache_manager.verifies_substates(),
+            proof: None,
         }))
     }
 
@@ -400,7 +433,7 @@ impl SubstateManager {
     pub async fn fetch_and_cache_substates(
         &self,
         substate_ids: &[SubstateId],
-    ) -> Result<HashMap<SubstateId, Substate>, SubstateManagerError> {
+    ) -> Result<HashMap<SubstateId, ProvenSubstate>, SubstateManagerError> {
         let result = self.cache_manager.fetch_and_cache_substates(substate_ids).await?;
         Ok(result)
     }

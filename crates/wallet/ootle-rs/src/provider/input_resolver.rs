@@ -352,6 +352,7 @@ impl TransactionInputResolver {
                         .try_into()
                         .expect("number of substates drained should be <= request maximum"),
                     cached_only: false,
+                    include_proofs: false,
                 })
                 .await?;
 

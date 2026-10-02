@@ -8,19 +8,25 @@ use axum::{
     response::Response,
 };
 use log::*;
-use tari_engine_types::limits::{MAX_NATIVE_POINTS_PER_TRANSACTION, MAX_WASM_POINTS_PER_TRANSACTION};
+use tari_engine_types::{
+    limits::{MAX_NATIVE_POINTS_PER_TRANSACTION, MAX_WASM_POINTS_PER_TRANSACTION},
+    substate::SubstateId,
+};
 use tari_indexer_client::types::{
     GetTransactionResponse,
+    GetTransactionResultQuery,
     GetTransactionResultResponse,
+    IndexerTransactionFinalizedResult,
     ListRecentTransactionsRequest,
     ListRecentTransactionsResponse,
+    ProvenTransactionReceipt,
     QueryTransactionEventsRequest,
     QueryTransactionEventsResponse,
     SubmitTransactionDryRunResponse,
     SubmitTransactionRequest,
     SubmitTransactionResponse,
 };
-use tari_ootle_common_types::{displayable::Displayable, optional::Optional};
+use tari_ootle_common_types::{SubstateRequirementRef, displayable::Displayable, optional::Optional};
 use tari_ootle_transaction::TransactionId;
 use tari_rpc_framework::RpcStatusCode;
 
@@ -28,7 +34,13 @@ use crate::{
     dry_run::error::DryRunTransactionProcessorError,
     event_manager::{MAX_EVENT_QUERY_OFFSET, WILDCARD_TOPIC_SCAN_LIMIT},
     network_client::NetworkClientError,
-    rest_api::{context::HandlerContext, error::ErrorResponse, handlers::HandlerResult, rate_limit::RequestCost},
+    rest_api::{
+        context::HandlerContext,
+        error::ErrorResponse,
+        handlers::{HandlerResult, substates::substate_lookup_error},
+        proofs::{require_proof_verification, to_substate_proof},
+        rate_limit::RequestCost,
+    },
     store::EventQuery,
     transaction_manager::error::TransactionManagerError,
 };
@@ -260,16 +272,34 @@ pub async fn get_transaction(
     get,
     path = "/transactions/{transaction_id}/result",
     description = "Get the result of a submitted transaction (by transaction ID)",
+    params(
+        ("transaction_id" = String, Path, description = "The transaction ID"),
+        (
+            "include_proof" = Option<bool>,
+            Query,
+            description = "If true, a committed transaction's result includes its receipt and the proof that the receipt was committed"
+        ),
+    ),
     responses(
         (status = 200, description = "Transaction result found", body = GetTransactionResultResponse),
+        (status = BAD_REQUEST, description = "A proof was requested from an indexer that does not verify proofs", body = ErrorResponse),
         (status = 404, description = "Transaction result not found", body = ErrorResponse),
+        (
+            status = SERVICE_UNAVAILABLE,
+            description = "A proof was requested and no committee answers for the receipt's shard group",
+            body = ErrorResponse
+        ),
         (status = INTERNAL_SERVER_ERROR, description = "Failed to fetch transaction result", body = ErrorResponse),
     )
 )]
 pub async fn get_transaction_result(
     Extension(context): Extension<HandlerContext>,
     Path(transaction_id): Path<TransactionId>,
+    Query(query): Query<GetTransactionResultQuery>,
 ) -> HandlerResult<Json<GetTransactionResultResponse>> {
+    if query.include_proof {
+        require_proof_verification(context.substate_manager().verifies_substates())?;
+    }
     let result = context
         .transaction_manager()
         .get_transaction_result(transaction_id)
@@ -278,7 +308,44 @@ pub async fn get_transaction_result(
         .map_err(ErrorResponse::anyhow)?
         .ok_or_else(|| ErrorResponse::not_found(format!("Transaction {transaction_id} not found")))?;
 
-    Ok(Json(GetTransactionResultResponse { result }))
+    let is_committed = matches!(
+        &result,
+        IndexerTransactionFinalizedResult::Finalized { final_decision, .. } if final_decision.is_commit()
+    );
+    let receipt = if query.include_proof && is_committed {
+        get_proven_receipt(&context, transaction_id).await?
+    } else {
+        None
+    };
+
+    Ok(Json(GetTransactionResultResponse { result, receipt }))
+}
+
+/// The committed receipt of `transaction_id` and its proof, fetched from the receipt's committee.
+async fn get_proven_receipt(
+    context: &HandlerContext,
+    transaction_id: TransactionId,
+) -> HandlerResult<Option<ProvenTransactionReceipt>> {
+    let receipt_id = SubstateId::TransactionReceipt(transaction_id.into_receipt_address());
+    let Some(fetched) = context
+        .substate_manager()
+        .fetch_substate_with_proof(SubstateRequirementRef::unversioned(&receipt_id))
+        .await
+        .map_err(substate_lookup_error)?
+    else {
+        return Ok(None);
+    };
+    let version = fetched.substate.version();
+    let receipt = fetched
+        .substate
+        .into_substate_value()
+        .into_transaction_receipt()
+        .ok_or_else(|| ErrorResponse::internal_error(format!("Substate {receipt_id} is not a transaction receipt")))?;
+    Ok(Some(ProvenTransactionReceipt {
+        version,
+        receipt,
+        proof: fetched.proof.map(to_substate_proof).transpose()?,
+    }))
 }
 
 #[utoipa::path(

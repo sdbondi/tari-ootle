@@ -4,7 +4,7 @@
 use std::future::Future;
 
 use futures::{StreamExt, stream::FuturesUnordered};
-use tari_validator_node_rpc::client::SubstateResult;
+use tari_validator_node_rpc::client::{SubstateProofData, SubstateResult};
 
 use crate::{cached_substate_manager::SubstateLookupResult, error::IndexerError};
 
@@ -20,7 +20,9 @@ pub const READ_RACE_WIDTH: usize = 3;
 
 /// One committee member's answer to a substate read: the result and whether it came with a proof
 /// that verified against the committee.
-pub type MemberResponse = Result<(SubstateResult, bool), IndexerError>;
+/// One member's answer, with the proof it verified against the committee. `None` when the member
+/// could not prove it, or when proofs are not being verified.
+pub type MemberResponse = Result<(SubstateResult, Option<SubstateProofData>), IndexerError>;
 
 /// Folds committee members' responses to a single-substate read into an answer.
 ///
@@ -56,12 +58,13 @@ impl CommitteeReadTally {
     /// Folds in one member's response, returning the answer if this response settles the read.
     pub fn observe(&mut self, response: MemberResponse) -> Option<SubstateLookupResult> {
         match response {
-            Ok((substate_result, verified)) => match substate_result {
+            Ok((substate_result, proof)) => match substate_result {
                 SubstateResult::Up { .. } | SubstateResult::Down { .. } => {
-                    if verified || !self.verify_substate_proofs {
+                    if proof.is_some() || !self.verify_substate_proofs {
                         return Some(SubstateLookupResult {
                             result: substate_result,
-                            verified,
+                            verified: proof.is_some(),
+                            proof,
                         });
                     }
                     // The member could not prove its response (e.g. nothing committed since the
@@ -82,6 +85,7 @@ impl CommitteeReadTally {
                     (self.num_nexist > self.f).then_some(SubstateLookupResult {
                         result: SubstateResult::DoesNotExist,
                         verified: false,
+                        proof: None,
                     })
                 },
             },
@@ -103,6 +107,7 @@ impl CommitteeReadTally {
             return Ok(SubstateLookupResult {
                 result,
                 verified: false,
+                proof: None,
             });
         }
 
@@ -117,6 +122,7 @@ impl CommitteeReadTally {
         Ok(SubstateLookupResult {
             result: SubstateResult::DoesNotExist,
             verified: false,
+            proof: None,
         })
     }
 }
@@ -176,6 +182,14 @@ mod tests {
         }
     }
 
+    fn proven() -> Option<SubstateProofData> {
+        Some(SubstateProofData {
+            substate_value_proof: vec![],
+            commit_proof: vec![],
+            proof_epoch: 0,
+        })
+    }
+
     fn error() -> IndexerError {
         IndexerError::ValidatorNodeClientError("unreachable".into())
     }
@@ -230,7 +244,7 @@ mod tests {
     async fn a_member_that_never_answers_does_not_delay_the_rest() {
         let result = tokio::time::timeout(
             Duration::from_secs(1),
-            race(3, READ_RACE_WIDTH, true, vec![(1, Ok((down(4), true)))]),
+            race(3, READ_RACE_WIDTH, true, vec![(1, Ok((down(4), proven())))]),
         )
         .await
         .expect("read stalled behind an unresponsive member")
@@ -257,7 +271,7 @@ mod tests {
         let result = race(3, 1, true, vec![
             (0, Err(error())),
             (1, Err(error())),
-            (2, Ok((down(2), true))),
+            (2, Ok((down(2), proven()))),
         ])
         .await
         .unwrap();
@@ -267,18 +281,25 @@ mod tests {
     #[tokio::test]
     async fn an_unproven_answer_is_held_until_a_proof_arrives() {
         // Member 0 answers first and cannot prove; member 1 can.
-        let result = race(2, 1, true, vec![(0, Ok((down(7), false))), (1, Ok((down(7), true)))])
+        let result = race(2, 1, true, vec![(0, Ok((down(7), None))), (1, Ok((down(7), proven())))])
             .await
             .unwrap();
         assert!(result.verified);
     }
 
     #[tokio::test]
+    async fn a_proven_answer_carries_its_proof() {
+        let result = race(2, 1, true, vec![(0, Ok((down(3), proven())))]).await.unwrap();
+        assert!(result.verified);
+        assert!(result.proof.is_some());
+    }
+
+    #[tokio::test]
     async fn the_highest_unproven_version_is_served_when_nobody_can_prove() {
         let result = race(3, 1, true, vec![
-            (0, Ok((down(2), false))),
-            (1, Ok((down(5), false))),
-            (2, Ok((down(3), false))),
+            (0, Ok((down(2), None))),
+            (1, Ok((down(5), None))),
+            (2, Ok((down(3), None))),
         ])
         .await
         .unwrap();
@@ -288,7 +309,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unproven_answer_settles_the_read_when_proofs_are_not_required() {
-        let result = race(2, 1, false, vec![(0, Ok((down(1), false)))]).await.unwrap();
+        let result = race(2, 1, false, vec![(0, Ok((down(1), None)))]).await.unwrap();
         assert_eq!(result.result.version(), Some(SubstateVersion::new(1)));
         assert!(!result.verified);
     }
@@ -297,8 +318,8 @@ mod tests {
     async fn nonexistence_needs_more_than_f_agreeing_members() {
         // Four members: f = 1, so two must agree.
         let result = race(4, 1, true, vec![
-            (0, Ok((SubstateResult::DoesNotExist, false))),
-            (1, Ok((SubstateResult::DoesNotExist, false))),
+            (0, Ok((SubstateResult::DoesNotExist, None))),
+            (1, Ok((SubstateResult::DoesNotExist, None))),
         ])
         .await
         .unwrap();
@@ -308,8 +329,8 @@ mod tests {
     #[tokio::test]
     async fn a_single_nonexistence_is_outvoted_by_a_proven_version() {
         let result = race(4, 1, true, vec![
-            (0, Ok((SubstateResult::DoesNotExist, false))),
-            (1, Ok((down(1), true))),
+            (0, Ok((SubstateResult::DoesNotExist, None))),
+            (1, Ok((down(1), proven()))),
         ])
         .await
         .unwrap();
@@ -319,7 +340,7 @@ mod tests {
     #[tokio::test]
     async fn f_agreeing_members_and_errors_from_the_rest_is_the_last_error() {
         let result = race(4, 1, true, vec![
-            (0, Ok((SubstateResult::DoesNotExist, false))),
+            (0, Ok((SubstateResult::DoesNotExist, None))),
             (1, Err(error())),
             (2, Err(error())),
             (3, Err(error())),
@@ -333,9 +354,9 @@ mod tests {
     async fn agreed_nonexistence_outranks_errors() {
         let result = race(4, 1, true, vec![
             (0, Err(error())),
-            (1, Ok((SubstateResult::DoesNotExist, false))),
+            (1, Ok((SubstateResult::DoesNotExist, None))),
             (2, Err(error())),
-            (3, Ok((SubstateResult::DoesNotExist, false))),
+            (3, Ok((SubstateResult::DoesNotExist, None))),
         ])
         .await
         .unwrap();

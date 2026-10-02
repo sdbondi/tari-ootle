@@ -211,7 +211,10 @@ async fn fetch_result_summary(
                     i += 1;
                     match client
                         .client
-                        .get_transaction_result(GetTransactionResultRequest { transaction_id })
+                        .get_transaction_result(GetTransactionResultRequest {
+                            transaction_id,
+                            include_proof: false,
+                        })
                         .await
                         .optional()
                     {
@@ -222,6 +225,7 @@ async fn fetch_result_summary(
                                     execution_time,
                                     ..
                                 },
+                            ..
                         })) => {
                             let result = match execution_result {
                                 // Full accept: fee and main intents both committed.
@@ -257,11 +261,13 @@ async fn fetch_result_summary(
                         },
                         Ok(Some(GetTransactionResultResponse {
                             result: IndexerTransactionFinalizedResult::Pending,
+                            ..
                         })) => {
                             sleep(Duration::from_secs(1)).await;
                         },
                         Ok(Some(GetTransactionResultResponse {
                             result: IndexerTransactionFinalizedResult::Rejected { details, .. },
+                            ..
                         })) => {
                             println!(
                                 "Transaction {} rejected by mempool validation: {}",

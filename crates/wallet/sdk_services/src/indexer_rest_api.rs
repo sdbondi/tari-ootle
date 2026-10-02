@@ -265,6 +265,7 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
                 .get_substate(substate_id, GetSubstateRequest {
                     version,
                     local_search_only,
+                    include_proof: false,
                 })
                 .await,
         )?;
@@ -295,6 +296,7 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
                             )
                         })?,
                         cached_only: false,
+                        include_proofs: false,
                     })
                     .await,
             )?;
@@ -367,7 +369,10 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
         let resp = self.observe(
             &client,
             client
-                .get_transaction_result(GetTransactionResultRequest { transaction_id })
+                .get_transaction_result(GetTransactionResultRequest {
+                    transaction_id,
+                    include_proof: false,
+                })
                 .await,
         )?;
 

@@ -92,6 +92,7 @@ impl IndexerProcess {
             .get_substate(address, GetSubstateRequest {
                 version: Some(version),
                 local_search_only: false,
+                include_proof: false,
             })
             .await
     }

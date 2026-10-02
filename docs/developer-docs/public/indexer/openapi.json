@@ -10,7 +10,7 @@
       "name": "BSD-3-Clause",
       "identifier": "BSD-3-Clause"
     },
-    "version": "0.41.2"
+    "version": "0.43.0"
   },
   "paths": {
     "/epoch-checkpoints": {
@@ -248,7 +248,7 @@
         "tags": [
           "handlers::network"
         ],
-        "description": "Get network-wide TARI economic totals (claimed, burned, fee volume, supply, target rate)",
+        "description": "Get network-wide TARI economic totals (claimed, burned, fee volume, supply, fees claimable by validators, target rate and the rate changes scheduled ahead)",
         "operationId": "get_economics",
         "responses": {
           "200": {
@@ -477,7 +477,7 @@
             }
           },
           "400": {
-            "description": "Too many substates requested",
+            "description": "Too many substates requested, or proofs requested together with cached_only or from an indexer that does not verify proofs",
             "content": {
               "application/json": {
                 "schema": {
@@ -545,6 +545,15 @@
               "format": "int64",
               "minimum": 0
             }
+          },
+          {
+            "name": "include_proof",
+            "in": "query",
+            "description": "If true, fetch the substate from its committee and include the proof it was verified with",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -554,6 +563,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GetSubstateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A proof was requested together with local_search_only, or from an indexer that does not verify proofs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -580,50 +599,6 @@
           },
           "503": {
             "description": "Indexer is still syncing, or no committee answers for the substate's shard group",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/templates/cached": {
-      "get": {
-        "tags": [
-          "handlers::templates"
-        ],
-        "description": "List all template cached by this indexer",
-        "operationId": "list_cached_templates",
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Limit the number of results returned",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int32",
-              "minimum": 0
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List of cached templates",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListTemplatesResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Failed to list cached templates",
             "content": {
               "application/json": {
                 "schema": {
@@ -767,7 +742,7 @@
             }
           },
           "404": {
-            "description": "Template not found or still pending",
+            "description": "Template not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -950,6 +925,16 @@
               }
             }
           },
+          "429": {
+            "description": "Every dry-run execution slot is busy, or the caller's dry-run budget is spent; retry shortly",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Failed to process dry-run transaction due to an internal error",
             "content": {
@@ -1110,6 +1095,26 @@
         ],
         "description": "Get the result of a submitted transaction (by transaction ID)",
         "operationId": "get_transaction_result",
+        "parameters": [
+          {
+            "name": "transaction_id",
+            "in": "path",
+            "description": "The transaction ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_proof",
+            "in": "query",
+            "description": "If true, a committed transaction's result includes its receipt and the proof that the receipt was committed",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Transaction result found",
@@ -1117,6 +1122,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GetTransactionResultResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A proof was requested from an indexer that does not verify proofs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1133,6 +1148,16 @@
           },
           "500": {
             "description": "Failed to fetch transaction result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A proof was requested and no committee answers for the receipt's shard group",
             "content": {
               "application/json": {
                 "schema": {
@@ -1415,6 +1440,15 @@
           "current_block_hash"
         ],
         "properties": {
+          "consensus_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The epoch the validators execute transactions in, as the indexer has observed from their\ncommitted blocks, held within one epoch below `current_epoch`. It trails `current_epoch` after\neach epoch boundary until every committee has committed its end-of-epoch block. `None` until\nthe indexer has observed every committee.",
+            "minimum": 0
+          },
           "current_block_hash": {
             "type": "string"
           },
@@ -1545,6 +1579,15 @@
           "target_burn_rate_bps"
         ],
         "properties": {
+          "burn_rate_retired_from": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The first epoch the release-scheduled rate governs again, when the council has retired.",
+            "minimum": 0
+          },
           "current_epoch": {
             "type": "integer",
             "format": "int64",
@@ -1557,6 +1600,13 @@
           "receipt_exhaust_burned": {
             "type": "string",
             "description": "Total exhaust burned summed from the same receipts as `fee_volume`; `receipt_exhaust_burned /\nfee_volume` is the exact realized burn share, and this is the burn netted from `total_supply`. May\ntransiently trail `total_exhaust_burned` while the receipt sync frontier catches up to the checkpoint\nfrontier."
+          },
+          "scheduled_burn_rates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScheduledBurnRate"
+            },
+            "description": "Rate changes the council has scheduled to activate after `current_epoch`, ascending by epoch.\nEmpty when nothing is pending."
           },
           "target_burn_rate_bps": {
             "type": "integer",
@@ -1581,6 +1631,10 @@
             "format": "int64",
             "description": "Number of transaction receipts the indexer has stored.",
             "minimum": 0
+          },
+          "validator_claimable_fees": {
+            "type": "string",
+            "description": "Leader fees sitting in validator fee pools that validators have not yet claimed: the sum of every pool's\ncurrent balance."
           }
         }
       },
@@ -1680,6 +1734,17 @@
           "verified"
         ],
         "properties": {
+          "proof": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SubstateProof",
+                "description": "The proof the indexer verified this substate with. Present only when `include_proof` was set\nand a committee member could prove the substate."
+              }
+            ]
+          },
           "substate": {
             "type": "object"
           },
@@ -1700,6 +1765,16 @@
           "substates"
         ],
         "properties": {
+          "proofs": {
+            "type": "object",
+            "description": "The proof each substate was verified with, when `include_proofs` was set. A substate no\ncommittee member could prove has no entry.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SubstateProof"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "substates": {
             "type": "object",
             "additionalProperties": {
@@ -1760,6 +1835,17 @@
           "result"
         ],
         "properties": {
+          "receipt": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProvenTransactionReceipt",
+                "description": "The committed transaction receipt and its proof, when `include_proof` was set and the\ntransaction committed. An aborted transaction commits no receipt."
+              }
+            ]
+          },
           "result": {
             "type": "object",
             "description": "The result of the transaction, which may be pending (not yet finalized) or finalized with details such as the\nfinal decision, execution result, and timestamps"
@@ -1902,20 +1988,6 @@
           }
         }
       },
-      "ListTemplatesResponse": {
-        "type": "object",
-        "required": [
-          "templates"
-        ],
-        "properties": {
-          "templates": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/TemplateMeta"
-            }
-          }
-        }
-      },
       "ListTransactionReceiptsResponse": {
         "type": "object",
         "required": [
@@ -2040,6 +2112,55 @@
           }
         }
       },
+      "ProvenTransactionReceipt": {
+        "type": "object",
+        "description": "A committed transaction's receipt substate, with the proof it was verified with.",
+        "required": [
+          "version",
+          "receipt"
+        ],
+        "properties": {
+          "proof": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SubstateProof",
+                "description": "`None` when no committee member could prove the receipt, e.g. when nothing has been committed\nsince an epoch change."
+              }
+            ]
+          },
+          "receipt": {
+            "type": "object"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "ScheduledBurnRate": {
+        "type": "object",
+        "description": "A burn rate the council has scheduled, taking effect from `activation_epoch`.",
+        "required": [
+          "activation_epoch",
+          "rate_bps"
+        ],
+        "properties": {
+          "activation_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "rate_bps": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "SubmitTransactionDryRunResponse": {
         "type": "object",
         "required": [
@@ -2066,6 +2187,71 @@
           "transaction_id": {
             "type": "string",
             "description": "The ID of the submitted transaction"
+          }
+        }
+      },
+      "SubstateProof": {
+        "type": "object",
+        "description": "Proof that a substate value was committed by its shard group.\n\nTwo parts: a commit proof that the shard group committee committed a block whose header carries\n`anchor.state_merkle_root`, and a value proof that the substate's leaf is in the state tree under\nthat root. Verifying it requires the committee for `anchor.epoch` and `anchor.shard_group`.\n\nA proof shows the value was committed at the anchor block. It says nothing about later blocks, so\na caller judges freshness by the anchor's epoch and height.",
+        "required": [
+          "anchor",
+          "commit_proof",
+          "value_proof",
+          "value_hash_epoch"
+        ],
+        "properties": {
+          "anchor": {
+            "$ref": "#/components/schemas/SubstateProofAnchor",
+            "description": "The committed block the proof is anchored at, as read from `commit_proof`."
+          },
+          "commit_proof": {
+            "type": "string",
+            "format": "byte",
+            "description": "CBOR-encoded `SidechainBlockCommitProof`: the anchor block's header and the chain of quorum\ncertificates that committed it."
+          },
+          "value_hash_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The epoch the substate's leaf value hash was computed in. It is an input to that hash, so a\nverifier needs it to recompute the leaf.",
+            "minimum": 0
+          },
+          "value_proof": {
+            "type": "string",
+            "format": "byte",
+            "description": "CBOR-encoded `SubstateValueProof`: the inclusion proof of the substate's leaf under\n`anchor.state_merkle_root`."
+          }
+        }
+      },
+      "SubstateProofAnchor": {
+        "type": "object",
+        "description": "The committed block a [`SubstateProof`] is anchored at.",
+        "required": [
+          "epoch",
+          "shard_group",
+          "height",
+          "block_id",
+          "state_merkle_root"
+        ],
+        "properties": {
+          "block_id": {
+            "type": "string"
+          },
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "height": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "shard_group": {
+            "type": "object"
+          },
+          "state_merkle_root": {
+            "type": "string",
+            "description": "The shard group state root the block header commits."
           }
         }
       },
@@ -2162,47 +2348,6 @@
             "type": "string"
           },
           "template_name": {
-            "type": "string"
-          }
-        }
-      },
-      "TemplateMeta": {
-        "type": "object",
-        "required": [
-          "name",
-          "address",
-          "binary_sha",
-          "author_public_key",
-          "code_size",
-          "epoch"
-        ],
-        "properties": {
-          "address": {
-            "type": "string"
-          },
-          "author_public_key": {
-            "type": "string"
-          },
-          "binary_sha": {
-            "type": "string"
-          },
-          "code_size": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "epoch": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "metadata_hash": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Optional multihash of off-chain CBOR metadata"
-          },
-          "name": {
             "type": "string"
           }
         }

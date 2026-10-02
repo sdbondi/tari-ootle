@@ -48,7 +48,7 @@ export const useListRecentTransactions = ({ last_id, limit, source = null }: Use
 export const useGetTransactionResult = (transaction_id: string) => {
   return useQuery({
     queryKey: ["transaction_result", transaction_id],
-    queryFn: () => getTransactionResult({ transaction_id }),
+    queryFn: () => getTransactionResult({ transaction_id, include_proof: false }),
     enabled: !!transaction_id,
     // Once a transaction is finalized (Accept/Abort) or rejected its result is immutable, so treat
     // it as permanently fresh — React Query then never auto-refetches it (no polling, window-focus

@@ -12,4 +12,9 @@ export type GetSubstatesRequest = {
    * which may result in more failures.
    */
   cached_only: boolean;
+  /**
+   * If true, the response carries the proof each substate was verified with. Not combinable with
+   * `cached_only`.
+   */
+  include_proofs: boolean;
 };

@@ -227,6 +227,7 @@ impl<Wallet> IndexerProvider<Wallet> {
                     .try_into()
                     .map_err(|_| ProviderError::other("Too many vaults in account"))?,
                 cached_only: false,
+                include_proofs: false,
             })
             .await?;
 

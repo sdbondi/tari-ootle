@@ -140,8 +140,11 @@ export class IndexerClient {
     return this.transport.sendGet(`transactions/${encodeURIComponent(transaction_id)}`, {});
   }
 
-  public getTransactionResult(transaction_id: TransactionId): Promise<IndexerGetTransactionResultResponse> {
-    return this.transport.sendGet(`transactions/${encodeURIComponent(transaction_id)}/result`, {});
+  public getTransactionResult(
+    transaction_id: TransactionId,
+    include_proof = false,
+  ): Promise<IndexerGetTransactionResultResponse> {
+    return this.transport.sendGet(`transactions/${encodeURIComponent(transaction_id)}/result`, { include_proof });
   }
 
   public listRecentTransactions(params: ListRecentTransactionsRequest): Promise<ListRecentTransactionsResponse> {
