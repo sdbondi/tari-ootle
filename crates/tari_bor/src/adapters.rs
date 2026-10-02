@@ -80,6 +80,57 @@ pub mod boxed_slice {
     }
 }
 
+/// Decodes a `Vec<T>` that may hold at most a caller-chosen number of elements.
+///
+/// [`MAX_PREALLOC`] stops a dishonest length header from reserving memory, but elements that are really
+/// present still decode one by one, and a cheaply encoded element can occupy far more memory decoded than
+/// it does on the wire. A field whose element type has that shape wraps [`bounded_vec::decode`] in a
+/// `#[cbor(decode_with = ...)]` function that supplies the bound.
+pub mod bounded_vec {
+    #[cfg(not(feature = "std"))]
+    use alloc::{format, vec::Vec};
+
+    use minicbor::{Decode, Decoder};
+
+    /// Decodes an array of at most `max_len` elements. A definite-length array over the bound is refused
+    /// from its header, before any element is decoded; an indefinite-length one as soon as it passes it.
+    pub fn decode<'b, C, T>(
+        d: &mut Decoder<'b>,
+        ctx: &mut C,
+        max_len: usize,
+    ) -> Result<Vec<T>, minicbor::decode::Error>
+    where
+        T: Decode<'b, C>,
+    {
+        let too_many = || minicbor::decode::Error::message(format!("array holds more than {max_len} elements"));
+        match d.array()? {
+            Some(n) => {
+                if n > max_len as u64 {
+                    return Err(too_many());
+                }
+                let mut out = Vec::with_capacity(n.min(super::MAX_PREALLOC) as usize);
+                for _ in 0..n {
+                    out.push(T::decode(d, ctx)?);
+                }
+                Ok(out)
+            },
+            None => {
+                let mut out = Vec::new();
+                loop {
+                    if matches!(d.datatype()?, minicbor::data::Type::Break) {
+                        d.skip()?;
+                        return Ok(out);
+                    }
+                    if out.len() == max_len {
+                        return Err(too_many());
+                    }
+                    out.push(T::decode(d, ctx)?);
+                }
+            },
+        }
+    }
+}
+
 /// Adapter that lets `IndexSet<T, S>` participate in minicbor derives via
 /// `#[cbor(with = "tari_bor::adapters::indexset_codec")]`.
 ///
@@ -324,6 +375,39 @@ mod alloc_cap_tests {
         use std::collections::hash_map::RandomState;
         let mut d = Decoder::new(&HUGE_MAP_HEADER);
         assert!(super::indexmap_codec::decode::<(), u8, u8, RandomState>(&mut d, &mut ()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod bounded_vec_tests {
+    use minicbor::Decoder;
+
+    use super::bounded_vec;
+
+    #[test]
+    fn an_array_at_the_bound_decodes() {
+        // [1, 2] as a definite-length and an indefinite-length array.
+        for bytes in [&[0x82, 0x01, 0x02][..], &[0x9f, 0x01, 0x02, 0xff][..]] {
+            let mut d = Decoder::new(bytes);
+            assert_eq!(bounded_vec::decode::<(), u8>(&mut d, &mut (), 2).unwrap(), vec![1, 2]);
+        }
+    }
+
+    #[test]
+    fn an_array_over_the_bound_is_refused() {
+        // [1, 2, 3] as a definite-length and an indefinite-length array.
+        for bytes in [&[0x83, 0x01, 0x02, 0x03][..], &[0x9f, 0x01, 0x02, 0x03, 0xff][..]] {
+            let mut d = Decoder::new(bytes);
+            assert!(bounded_vec::decode::<(), u8>(&mut d, &mut (), 2).is_err());
+        }
+    }
+
+    #[test]
+    fn a_definite_length_over_the_bound_is_refused_from_its_header() {
+        // Claims three elements and carries none: refusing it must not need them.
+        let mut d = Decoder::new(&[0x83]);
+        let err = bounded_vec::decode::<(), u8>(&mut d, &mut (), 2).unwrap_err();
+        assert!(!err.is_end_of_input(), "{err}");
     }
 }
 
