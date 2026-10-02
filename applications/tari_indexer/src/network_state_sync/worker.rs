@@ -86,9 +86,9 @@ const LOG_TARGET: &str = "tari::indexer::network_state_sync::worker";
 /// epoch is probed again.
 const CONSENSUS_EPOCH_PROBE_INTERVAL: Duration = Duration::from_secs(10);
 /// The highest state version accepted from a peer or carried in the recorded progress. State
-/// versions are stored in signed 64-bit columns, and every recorded version must leave room for the
-/// cursor that resumes after it.
-const MAX_STATE_VERSION: StateVersion = StateVersion::new(i64::MAX as u64);
+/// versions are stored in signed 64-bit columns, which must also hold the version just past any
+/// recorded one: the next cursor, and the substate cache journals retirements one past a watermark.
+const MAX_STATE_VERSION: StateVersion = StateVersion::new(i64::MAX as u64 - 1);
 
 #[derive(Clone)]
 pub struct NetworkWideStateSync {
@@ -292,16 +292,29 @@ impl NetworkWideStateSync {
 
     async fn initialize_sync_plan(&self) -> Result<SyncPlan, NetworkStateSyncError> {
         let network_desc = self.epoch_manager.get_network_description().await?;
-        let mut sync_progress = self
+        let (sync_progress, rewound) = self
             .store
-            .with_read_tx(|tx| tx.key_value_get_value::<_, SyncProgress>(Key::SyncProgress))
-            .await
-            .optional()?
-            .unwrap_or_default();
-        // A recorded version no stream could have delivered is dropped, so the shard is synced again
-        // from its head state.
-        for shard in sync_progress.discard_state_versions_above(MAX_STATE_VERSION) {
-            warn!(target: LOG_TARGET, "⚠️ Recorded state version for shard {shard} exceeds v{MAX_STATE_VERSION}. Resyncing the shard from its head state");
+            .with_read_tx(|tx| {
+                let mut progress = tx
+                    .key_value_get_value::<_, SyncProgress>(Key::SyncProgress)
+                    .optional()?
+                    .unwrap_or_default();
+                let rewound = rewind_out_of_range_progress(tx, &mut progress)?;
+                Ok::<_, StorageError>((progress, rewound))
+            })
+            .await?;
+        if !rewound.is_empty() {
+            for shard in &rewound {
+                warn!(
+                    target: LOG_TARGET,
+                    "⚠️ Recorded state version for shard {shard} exceeds v{MAX_STATE_VERSION}. Resuming the shard from v{}",
+                    sync_progress.last_state_version(*shard).map_or(0, |v| v.as_u64())
+                );
+            }
+            let snapshot = sync_progress.clone();
+            self.store
+                .with_write_tx(move |tx| tx.key_value_set(Key::SyncProgress, snapshot))
+                .await?;
         }
 
         let mut committee_pools = HashMap::with_capacity(network_desc.num_committees());
@@ -1108,6 +1121,26 @@ enum StreamEnd {
     Cancelled,
 }
 
+/// Rewinds every shard whose recorded version exceeds [`MAX_STATE_VERSION`] to the highest version
+/// at which a transition was committed for it, returning the shards rewound. A shard with no
+/// committed transition is left unrecorded and resumes from scratch.
+///
+/// The latest committed transition is where such a shard can resume without re-applying anything:
+/// every row and running total a version contributes is committed with a transition at that
+/// version, so the versions above it carried nothing but cache invalidations, which are idempotent.
+fn rewind_out_of_range_progress<TTx: IndexerStoreReadTransaction>(
+    tx: &mut TTx,
+    progress: &mut SyncProgress,
+) -> Result<Vec<Shard>, StorageError> {
+    let rewound = progress.discard_state_versions_above(MAX_STATE_VERSION);
+    for shard in &rewound {
+        if let Some((state_version, epoch)) = tx.substate_transitions_get_latest_state_version(*shard)? {
+            progress.record_state_version(*shard, state_version, epoch);
+        }
+    }
+    Ok(rewound)
+}
+
 /// A cursor per shard resuming after the version recorded for it, in the order of `shards`. A shard
 /// never synced resumes from version one.
 fn cursors_for(shards: &[Shard], progress: &SyncProgress) -> Vec<rpc::ShardCursor> {
@@ -1587,14 +1620,99 @@ mod tests {
             let cursors = cursors_for(&[S1], &progress_at(u64::MAX));
             assert_eq!(cursors[0].start_state_version, u64::MAX);
         }
+    }
 
-        #[test]
-        fn a_discarded_version_resumes_from_scratch() {
-            let mut progress = progress_at(u64::MAX);
-            progress.record_state_version(Shard::from_u32(2), MAX_STATE_VERSION, Epoch(1));
-            assert_eq!(progress.discard_state_versions_above(MAX_STATE_VERSION), vec![S1]);
+    mod rewind_out_of_range_progress {
+        use tari_engine_types::substate::SubstateId;
+        use tari_ootle_common_types::SubstateVersion;
+        use tari_ootle_storage::consensus_models::SubstateDestroy;
+        use tari_template_lib_types::ValidatorFeePoolAddress;
+
+        use super::*;
+
+        const S1: Shard = Shard::from_u32(1);
+        const S2: Shard = Shard::from_u32(2);
+
+        fn destroyed(n: u8) -> SubstateUpdateProof {
+            SubstateUpdateProof::Destroy(SubstateDestroy {
+                substate_id: SubstateId::ValidatorFeePool(ValidatorFeePoolAddress::from_array([n; 32])),
+                version: SubstateVersion::new(0),
+            })
+        }
+
+        async fn store_with_transitions(transitions: &[(Shard, u64, u64)]) -> (tempfile::TempDir, SqliteIndexerStore) {
+            let dir = tempfile::tempdir().unwrap();
+            let store = SqliteIndexerStore::try_create(dir.path().join("indexer.db")).unwrap();
+            let transitions = transitions.to_vec();
+            store
+                .with_write_tx(move |tx| {
+                    for (n, (shard, state_version, epoch)) in transitions.into_iter().enumerate() {
+                        tx.batch_insert_substate_transitions(
+                            Network::LocalNet,
+                            shard,
+                            StateVersion::new(state_version),
+                            [(Epoch(epoch), destroyed(n as u8))],
+                        )?;
+                    }
+                    Ok::<_, StorageError>(())
+                })
+                .await
+                .unwrap();
+            (dir, store)
+        }
+
+        async fn rewind(store: &SqliteIndexerStore, progress: SyncProgress) -> (SyncProgress, Vec<Shard>) {
+            store
+                .with_read_tx(move |tx| {
+                    let mut progress = progress;
+                    let rewound = rewind_out_of_range_progress(tx, &mut progress)?;
+                    Ok::<_, StorageError>((progress, rewound))
+                })
+                .await
+                .unwrap()
+        }
+
+        #[tokio::test]
+        async fn it_resumes_an_out_of_range_shard_after_its_last_committed_transition() {
+            let (_dir, store) = store_with_transitions(&[(S1, 5, 2), (S1, 9, 3), (S2, 100, 4)]).await;
+            let mut progress = SyncProgress::default();
+            progress.record_state_version(S1, StateVersion::new(u64::MAX), Epoch(5));
+            progress.record_state_version(S2, StateVersion::new(120), Epoch(5));
+
+            let (progress, rewound) = rewind(&store, progress).await;
+
+            assert_eq!(rewound, vec![S1]);
+            assert_eq!(
+                progress.last_state_versions.get(&S1),
+                Some(&(StateVersion::new(9), Epoch(3)))
+            );
+            assert_eq!(progress.last_state_version(S2), Some(StateVersion::new(120)));
+            assert_eq!(cursors_for(&[S1, S2], &progress)[0].start_state_version, 10);
+        }
+
+        #[tokio::test]
+        async fn an_out_of_range_shard_with_no_transitions_resumes_from_scratch() {
+            let (_dir, store) = store_with_transitions(&[(S2, 100, 4)]).await;
+            let mut progress = SyncProgress::default();
+            progress.record_state_version(S1, StateVersion::new(MAX_STATE_VERSION.as_u64() + 1), Epoch(5));
+
+            let (progress, rewound) = rewind(&store, progress).await;
+
+            assert_eq!(rewound, vec![S1]);
+            assert_eq!(progress.last_state_version(S1), None);
             assert_eq!(cursors_for(&[S1], &progress)[0].start_state_version, 1);
-            assert_eq!(progress.last_state_version(Shard::from_u32(2)), Some(MAX_STATE_VERSION));
+        }
+
+        #[tokio::test]
+        async fn in_range_progress_is_left_alone() {
+            let (_dir, store) = store_with_transitions(&[(S1, 5, 2)]).await;
+            let mut progress = SyncProgress::default();
+            progress.record_state_version(S1, MAX_STATE_VERSION, Epoch(5));
+
+            let (progress, rewound) = rewind(&store, progress).await;
+
+            assert!(rewound.is_empty());
+            assert_eq!(progress.last_state_version(S1), Some(MAX_STATE_VERSION));
         }
     }
 }

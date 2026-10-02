@@ -772,6 +772,26 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
         deserialize_json(&json_data)
     }
 
+    fn substate_transitions_get_latest_state_version(
+        &mut self,
+        shard: Shard,
+    ) -> Result<Option<(StateVersion, Epoch)>, StorageError> {
+        const OPERATION: &str = "substate_transitions_get_latest_state_version";
+        use crate::storage_sqlite::schema::substate_transitions;
+        let latest = substate_transitions::table
+            .select((substate_transitions::state_version, substate_transitions::epoch))
+            .filter(substate_transitions::shard.eq(shard.as_u32() as i32))
+            .filter(substate_transitions::state_version.ge(0))
+            .order_by(substate_transitions::state_version.desc())
+            .first::<(i64, i64)>(self.connection())
+            .optional()
+            .map_err(|e| StorageError::QueryError {
+                reason: format!("{OPERATION}: {}", e),
+            })?;
+
+        Ok(latest.map(|(state_version, epoch)| (StateVersion::new(state_version as u64), Epoch(epoch as u64))))
+    }
+
     fn utxos_get_max_state_version(
         &mut self,
         resource_address: ResourceAddress,
