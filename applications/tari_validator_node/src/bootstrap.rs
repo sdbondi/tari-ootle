@@ -388,6 +388,7 @@ pub async fn spawn_services(
         rx_consensus_gossip_messages,
         loopback_receiver,
         message_logger.clone(),
+        epoch_manager.clone(),
     );
     let outbound_messaging = ConsensusOutboundMessaging::new(
         loopback_sender,
