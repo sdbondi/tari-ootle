@@ -695,6 +695,7 @@ where
                 version,
                 value,
                 self.network,
+                NumPreshards::current(),
                 Epoch(substate.proof_epoch),
                 root,
             )
@@ -829,6 +830,7 @@ where
             version,
             value,
             self.network,
+            NumPreshards::current(),
             Epoch(proof.proof_epoch),
             root,
         )
