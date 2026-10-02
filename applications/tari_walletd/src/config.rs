@@ -366,6 +366,24 @@ mod tests {
     }
 
     #[test]
+    fn esmeralda_defaults_to_both_tari_indexers() {
+        let cfg = Config::builder()
+            .add_source(config::File::from_str(
+                tari_ootle_app_utilities::configuration::get_default_config()[4],
+                config::FileFormat::Toml,
+            ))
+            .set_override("ootle_wallet_daemon.override_from", "esmeralda")
+            .unwrap()
+            .build()
+            .unwrap();
+        let config = WalletDaemonConfig::load_from(&cfg).unwrap();
+        assert_eq!(
+            config.indexer_api_urls,
+            urls(&["https://ootle-indexer-a.tari.com/", "https://ootle-indexer-b.tari.com/"])
+        );
+    }
+
+    #[test]
     fn an_empty_or_non_http_indexer_set_is_refused() {
         let empty = WalletDaemonConfig {
             indexer_api_urls: vec![],
