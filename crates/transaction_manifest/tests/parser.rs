@@ -840,6 +840,43 @@ fn blob_macro_unknown_name_errors() {
 }
 
 #[test]
+fn blob_macro_string_that_is_not_an_identifier_errors() {
+    let manifests = [
+        r#"fn main() { let x = blob!("my blob"); }"#,
+        r#"fn main() { let x = blob!("1bad"); }"#,
+        r#"fn main() { let x = blob!(""); }"#,
+        r#"fn main() { let x = blob!("a-b"); }"#,
+        r#"fn main() { let x = blob!("a::b"); }"#,
+        r#"fn main() { let x = blob!("r#_"); }"#,
+        r#"fn main() { let x = blob!("r#self"); }"#,
+        r#"fn main() { let x = blob!("'a"); }"#,
+        r#"fn main() { let x = blob!("/*"); }"#,
+        r#"fn main() { let x = blob!("\""); }"#,
+        r#"fn main() { let x = blob!("\0"); }"#,
+        r#"
+            use template_c2b621869ec2929d3b9503ea41054f01b468ce99e50254b58e460f608ae377f7 as MyTemplate;
+            fn main() { let comp = MyTemplate::new(blob!("my blob")); }
+        "#,
+        r#"
+            use template_c2b621869ec2929d3b9503ea41054f01b468ce99e50254b58e460f608ae377f7 as MyTemplate;
+            fn main() { let comp = MyTemplate::new(blob!("1bad")); }
+        "#,
+        r#"
+            use template_c2b621869ec2929d3b9503ea41054f01b468ce99e50254b58e460f608ae377f7 as MyTemplate;
+            fn main() { let comp = MyTemplate::new(blob!("")); }
+        "#,
+    ];
+
+    for manifest in manifests {
+        let err = match parse_manifest(manifest, HashMap::new(), Default::default(), HashMap::new()) {
+            Ok(_) => panic!("expected an error for {manifest}"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("not a valid identifier"), "unexpected error: {err}");
+    }
+}
+
+#[test]
 fn put_into_bucket_macro() {
     let manifest = r#"
         use template_c2b621869ec2929d3b9503ea41054f01b468ce99e50254b58e460f608ae377f7 as MyTemplate;

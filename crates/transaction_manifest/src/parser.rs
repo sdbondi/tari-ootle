@@ -29,7 +29,8 @@ use syn::{
     Stmt,
     UnOp,
     UseTree,
-    parse::ParseStream,
+    ext::IdentExt,
+    parse::{ParseStream, Parser},
     parse2,
     punctuated::Punctuated,
     token::Comma,
@@ -455,16 +456,9 @@ fn assignment_from_macro(var_name: Ident, mac: &Ident, tokens: TokenStream) -> R
         })),
         "blob" => {
             // Accept `blob!("name")` or `blob!(name)`, mirroring the argument-position `blob!`.
-            let blob_name = if let Ok(lit_str) = parse2::<LitStr>(tokens.clone()) {
-                Ident::new(&lit_str.value(), lit_str.span())
-            } else {
-                parse2::<Ident>(tokens).map_err(|e| {
-                    syn::Error::new_spanned(mac, format!("Expected identifier or string literal in blob!: {}", e))
-                })?
-            };
             Ok(ManifestIntent::AssignBlob(AssignBlobStmt {
                 variable_name: var_name,
-                blob_name,
+                blob_name: parse_blob_name(mac, tokens)?,
             }))
         },
         "new_component_addr" => Ok(ManifestIntent::AllocateAddress(AllocateAddressStmt {
@@ -517,6 +511,23 @@ fn macro_call(mac: &Ident, tokens: TokenStream) -> Result<ManifestIntent, syn::E
         "publish_template" => parse_publish_template_args(tokens),
         _ => Err(syn::Error::new_spanned(mac, "Invalid macro name")),
     }
+}
+
+/// Parse the name in `blob!(name)` or `blob!("name")`. A string literal must hold a single identifier because the
+/// name is carried as an `Ident` from here on.
+fn parse_blob_name(mac: &Ident, tokens: TokenStream) -> Result<Ident, syn::Error> {
+    if let Ok(lit_str) = parse2::<LitStr>(tokens.clone()) {
+        let mut ident = Parser::parse_str(Ident::parse_any, &lit_str.value()).map_err(|_| {
+            syn::Error::new_spanned(
+                &lit_str,
+                format!("blob! name {:?} is not a valid identifier", lit_str.value()),
+            )
+        })?;
+        ident.set_span(lit_str.span());
+        return Ok(ident);
+    }
+    parse2::<Ident>(tokens)
+        .map_err(|e| syn::Error::new_spanned(mac, format!("Expected identifier or string literal in blob!: {}", e)))
 }
 
 /// Parse `publish_template!(blob_name)` or `publish_template!(blob_name, metadata = "0x...")`.
@@ -698,14 +709,7 @@ pub(crate) fn handle_macro_argument(mac: Macro) -> Result<ManifestLiteral, syn::
             // Accept either an identifier (`blob!(my_data)`) or a string literal
             // (`blob!("my_data")`). Both resolve the same name against the blobs map supplied
             // to `parse_manifest`.
-            let blob_name = if let Ok(lit_str) = parse2::<LitStr>(mac.tokens.clone()) {
-                Ident::new(&lit_str.value(), lit_str.span())
-            } else {
-                parse2::<Ident>(mac.tokens).map_err(|e| {
-                    syn::Error::new_spanned(name, format!("Expected identifier or string literal in blob!: {}", e))
-                })?
-            };
-            Ok(ManifestLiteral::Blob(blob_name))
+            Ok(ManifestLiteral::Blob(parse_blob_name(name, mac.tokens)?))
         },
         _ => Err(syn::Error::new_spanned(
             name,
