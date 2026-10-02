@@ -325,6 +325,13 @@ mod template {
             let input_reserve = self.get_pool_vault(input_pool).balance();
             let output_reserve = self.get_pool_vault(output_pool).balance();
 
+            // The price is the ratio of the reserves, which is undefined while either is empty. With an empty input
+            // reserve the formula below pays out the entire output reserve for any input.
+            assert!(
+                input_reserve.is_positive() && output_reserve.is_positive(),
+                "Pool has no liquidity for one of its resources"
+            );
+
             // Simple constant product formula without fees
             // Δy = y.Δx / (X + Δx)
             // Computed in 192-bit precision to avoid overflow in the `y·Δx` product for large reserves.

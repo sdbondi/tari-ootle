@@ -10,7 +10,10 @@ use tari_template_lib::{
     types::{AccessRule, OwnerRule, constants::TARI_TOKEN, metadata},
 };
 use tari_template_lib_types::{Amount, ComponentAddress, ResourceAddress, access_rules::ResourceAuthAction};
-use tari_template_test_tooling::{TemplateTest, support::assert_error::assert_access_denied_for_action};
+use tari_template_test_tooling::{
+    TemplateTest,
+    support::assert_error::{assert_access_denied_for_action, assert_reject_reason},
+};
 
 const TEMPLATE_NAME: &str = "TwoResourceLiquidityPool";
 const TEMPLATE_PATHS: &[&str] = &["tests/faucet", "tests/resource_minter"];
@@ -415,6 +418,89 @@ fn bootstrap_contribution_after_seeding_reserve() {
     let lp_vault = user_account.get_vault_by_resource(&lp_resx).unwrap();
     let lp_balance = store.get_vault(&lp_vault.vault_id()).unwrap().balance();
     assert_eq!(lp_balance, 1732);
+}
+
+#[test]
+fn swap_is_rejected_while_a_reserve_is_empty() {
+    // A pool the owner has seeded on one side only (via `protected_add_liquidity`) has no price yet, so a swap in
+    // either direction must be refused rather than priced against an empty reserve.
+    let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
+    let template_address = test.get_template_address(TEMPLATE_NAME);
+
+    let (faucet_component, faucet_resource) = create_test_faucet_component(&mut test, 1_000_000_000_000u64);
+    let (owner, owner_proof, owner_secret) = test.create_funded_account();
+    let (trader, _trader_proof, trader_secret) = test.create_funded_account();
+
+    const SEED_AMOUNT: u64 = 1_000_000;
+
+    test.execute_expect_success(
+        Transaction::builder_localnet(Epoch(1))
+            .allocate_component_address("pool")
+            .call_function(template_address, "create", args![
+                OwnerRule::OwnedBySigner,
+                AccessRule::AllowAll,
+                TARI_TOKEN,
+                faucet_resource,
+                metadata!["name" => "TARI-Stablecoin Liquidity Pool"],
+                Workspace("pool"),
+            ])
+            .build_and_seal(&owner_secret),
+        vec![owner_proof.clone()],
+    );
+
+    let store = test.read_only_state_store();
+    let (pool_addr, _) = store
+        .get_components_by_template_address(template_address)
+        .unwrap()
+        .pop()
+        .unwrap();
+
+    test.execute_expect_success(
+        Transaction::builder_localnet(Epoch(1))
+            .call_method(owner, "withdraw", args![TARI_TOKEN, SEED_AMOUNT])
+            .put_last_instruction_output_on_workspace("seed")
+            .call_method(pool_addr, "protected_add_liquidity", args![Workspace("seed")])
+            .build_and_seal(&owner_secret),
+        vec![owner_proof],
+    );
+
+    // Swapping into the empty side.
+    let reason = test.execute_expect_failure(
+        Transaction::builder_localnet(Epoch(1))
+            .call_method(faucet_component, "take_free_coins_custom", args![1])
+            .put_last_instruction_output_on_workspace("input")
+            .call_method(pool_addr, "swap", args![Workspace("input")])
+            .put_last_instruction_output_on_workspace("output")
+            .call_method(trader, "deposit", args![Workspace("output")])
+            .build_and_seal(&trader_secret),
+        vec![],
+    );
+    assert_reject_reason(&reason, "Pool has no liquidity");
+
+    // Swapping out of the empty side.
+    let reason = test.execute_expect_failure(
+        Transaction::builder_localnet(Epoch(1))
+            .call_method(trader, "withdraw", args![TARI_TOKEN, 1000])
+            .put_last_instruction_output_on_workspace("input")
+            .call_method(pool_addr, "swap", args![Workspace("input")])
+            .put_last_instruction_output_on_workspace("output")
+            .call_method(trader, "deposit", args![Workspace("output")])
+            .build_and_seal(&trader_secret),
+        vec![],
+    );
+    assert_reject_reason(&reason, "Pool has no liquidity");
+
+    let store = test.read_only_state_store();
+    let pool_body = store.get_component(pool_addr).unwrap();
+    let indexed = pool_body.body.to_indexed_well_known_types().unwrap();
+    let vaults = indexed
+        .vault_ids()
+        .iter()
+        .map(|id| store.get_vault(id).unwrap())
+        .map(|v| (*v.resource_address(), v))
+        .collect::<HashMap<_, _>>();
+    assert_eq!(vaults.get(&TARI_TOKEN).unwrap().balance(), SEED_AMOUNT);
+    assert_eq!(vaults.get(&faucet_resource).unwrap().balance(), 0);
 }
 
 #[test]
