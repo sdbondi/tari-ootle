@@ -93,7 +93,7 @@ const Empty = ({ message }: { message: string }) => (
   </Stack>
 );
 
-function Result({ transaction_id }: IndexerGetTransactionResultRequest) {
+function Result({ transaction_id }: Pick<IndexerGetTransactionResultRequest, "transaction_id">) {
   const [expandedPanels, setExpandedPanels] = useState<string[]>([]);
   const normalizedId = transaction_id.toLowerCase();
   const isValidHash = validateHash(normalizedId);

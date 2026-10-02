@@ -18,8 +18,6 @@ const LOG_TARGET: &str = "tari::indexer::scanner";
 /// cost of that many concurrent requests per read.
 pub const READ_RACE_WIDTH: usize = 3;
 
-/// One committee member's answer to a substate read: the result and whether it came with a proof
-/// that verified against the committee.
 /// One member's answer, with the proof it verified against the committee. `None` when the member
 /// could not prove it, or when proofs are not being verified.
 pub type MemberResponse = Result<(SubstateResult, Option<SubstateProofData>), IndexerError>;
