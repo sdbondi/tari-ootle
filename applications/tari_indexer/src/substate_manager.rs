@@ -306,7 +306,8 @@ impl SubstateManager {
     /// Looks up one substate from the committee, with the proof it was verified with. `None` when the
     /// committee agrees it does not exist.
     ///
-    /// Neither the local store nor the substate cache holds proofs, so this always asks the committee.
+    /// The local substate store holds no proofs, so it is not consulted. A cached head is served with
+    /// the proof held for it, and anything else is fetched from the committee.
     pub async fn fetch_substate_with_proof(
         &self,
         req: SubstateRequirementRef<'_>,

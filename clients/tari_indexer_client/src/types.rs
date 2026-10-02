@@ -64,8 +64,8 @@ pub struct GetSubstateRequest {
     pub version: Option<SubstateVersion>,
     #[serde(default)]
     pub local_search_only: bool,
-    /// If true, the indexer asks the committee for the substate and returns the proof it verified the
-    /// answer with. Not combinable with `local_search_only`.
+    /// If true, the response carries the proof the substate was verified with. Not combinable with
+    /// `local_search_only`.
     #[serde(default)]
     pub include_proof: bool,
 }

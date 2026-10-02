@@ -151,6 +151,16 @@ diesel::table! {
 }
 
 diesel::table! {
+    substate_cache_proofs (substate_id, version) {
+        substate_id -> Text,
+        version -> BigInt,
+        value_proof -> Binary,
+        commit_proof -> Binary,
+        proof_epoch -> BigInt,
+    }
+}
+
+diesel::table! {
     substate_cache_invalidations (substate_id) {
         substate_id -> Text,
         state_version -> BigInt,
@@ -166,6 +176,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     key_values,
     substate_cache,
     substate_cache_invalidations,
+    substate_cache_proofs,
     substate_transitions,
     substates,
     template_catalogue,

@@ -57,7 +57,7 @@ pub(super) fn substate_lookup_error(e: SubstateManagerError) -> ErrorResponse {
         (
             "include_proof" = Option<bool>,
             Query,
-            description = "If true, fetch the substate from its committee and include the proof it was verified with"
+            description = "If true, include the proof the substate was verified with"
         ),
     ),
     responses(
@@ -101,7 +101,8 @@ pub async fn get_substate(
     if req.include_proof {
         if req.local_search_only {
             return Err(ErrorResponse::bad_request(
-                "include_proof cannot be combined with local_search_only: proofs are only fetched from the committee",
+                "include_proof cannot be combined with local_search_only: a proof the indexer does not hold is \
+                 fetched from the committee",
             ));
         }
         require_proof_verification(manager.verifies_substates())?;
@@ -188,7 +189,7 @@ pub async fn fetch_substates(
     if include_proofs {
         if cached_only {
             return Err(ErrorResponse::bad_request(
-                "include_proofs cannot be combined with cached_only: proofs are only fetched from the committee",
+                "include_proofs cannot be combined with cached_only: the proofs are fetched from the committee",
             ));
         }
         require_proof_verification(context.substate_manager().verifies_substates())?;

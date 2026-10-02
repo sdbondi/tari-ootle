@@ -33,7 +33,7 @@ use tari_ootle_storage::{
 use tari_ootle_storage_sqlite::SqliteTransaction;
 use tari_ootle_transaction::{Transaction, TransactionId};
 use tari_template_lib_types::{TemplateAddress, TransactionReceiptAddress};
-use tari_validator_node_rpc::client::SubstateResult;
+use tari_validator_node_rpc::client::{SubstateProofData, SubstateResult};
 
 use crate::{
     diesel::ExpressionMethods,
@@ -662,6 +662,10 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
             .execute(self.connection())
             .map_err(|e| StorageError::general(OPERATION, e))?;
 
+        if let (Some(version), Some(proof)) = (version, entry.proof) {
+            self.substate_cache_proof_put(&id, version, proof)?;
+        }
+
         Ok(true)
     }
 
@@ -706,20 +710,31 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
             .get_result(self.connection())
             .map_err(|e| StorageError::general(OPERATION, e))?;
         let excess = count.saturating_sub(max_entries as i64);
-        if excess <= 0 {
-            return Ok(0);
-        }
+        let evicted = if excess > 0 {
+            // An evicted entry costs one committee round trip to restore, so oldest-written-first is a
+            // cheap approximation of least-recently-used: recording a read time would put a write on
+            // every cache hit.
+            diesel::sql_query(
+                "DELETE FROM substate_cache WHERE rowid IN (SELECT rowid FROM substate_cache ORDER BY cached_at ASC \
+                 LIMIT ?)",
+            )
+            .bind::<diesel::sql_types::BigInt, _>(excess)
+            .execute(self.connection())
+            .map_err(|e| StorageError::general(OPERATION, e))?
+        } else {
+            0
+        };
 
-        // An evicted entry costs one committee round trip to restore, so oldest-written-first is a
-        // cheap approximation of least-recently-used: recording a read time would put a write on
-        // every cache hit.
+        // A proof is served only for the version its substate's cached head holds, so one for any
+        // other version - superseded, retired by a transition, or evicted - can never be served again.
         diesel::sql_query(
-            "DELETE FROM substate_cache WHERE rowid IN (SELECT rowid FROM substate_cache ORDER BY cached_at ASC LIMIT \
-             ?)",
+            "DELETE FROM substate_cache_proofs WHERE NOT EXISTS (SELECT 1 FROM substate_cache c WHERE c.substate_id = \
+             substate_cache_proofs.substate_id AND c.version = substate_cache_proofs.version)",
         )
-        .bind::<diesel::sql_types::BigInt, _>(excess)
         .execute(self.connection())
-        .map_err(|e| StorageError::general(OPERATION, e))
+        .map_err(|e| StorageError::general(OPERATION, e))?;
+
+        Ok(evicted)
     }
 
     fn upsert_verified_state_root(&mut self, root: &VerifiedStateRoot) -> Result<(), StorageError> {
@@ -806,6 +821,36 @@ impl Drop for SqliteStoreWriteTransaction<'_> {
 }
 
 impl SqliteStoreWriteTransaction<'_> {
+    fn substate_cache_proof_put(
+        &mut self,
+        id: &str,
+        version: i64,
+        proof: &SubstateProofData,
+    ) -> Result<(), StorageError> {
+        const OPERATION: &str = "substate_cache_proof_put";
+        use crate::storage_sqlite::schema::substate_cache_proofs;
+
+        let proof_epoch = proof.proof_epoch as i64;
+        diesel::insert_into(substate_cache_proofs::table)
+            .values((
+                substate_cache_proofs::substate_id.eq(id),
+                substate_cache_proofs::version.eq(version),
+                substate_cache_proofs::value_proof.eq(&proof.substate_value_proof),
+                substate_cache_proofs::commit_proof.eq(&proof.commit_proof),
+                substate_cache_proofs::proof_epoch.eq(proof_epoch),
+            ))
+            .on_conflict((substate_cache_proofs::substate_id, substate_cache_proofs::version))
+            .do_update()
+            .set((
+                substate_cache_proofs::value_proof.eq(&proof.substate_value_proof),
+                substate_cache_proofs::commit_proof.eq(&proof.commit_proof),
+                substate_cache_proofs::proof_epoch.eq(proof_epoch),
+            ))
+            .execute(self.connection())
+            .map_err(|e| StorageError::general(OPERATION, e))?;
+        Ok(())
+    }
+
     fn apply_substate_cache_invalidation(
         &mut self,
         invalidation: &SubstateCacheInvalidation,

@@ -549,7 +549,7 @@
           {
             "name": "include_proof",
             "in": "query",
-            "description": "If true, fetch the substate from its committee and include the proof it was verified with",
+            "description": "If true, include the proof the substate was verified with",
             "required": false,
             "schema": {
               "type": "boolean"

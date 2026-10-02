@@ -55,6 +55,7 @@ use tari_template_lib_types::{
     UtxoId,
     crypto::{RistrettoPublicKeyBytes, UtxoTag},
 };
+use tari_validator_node_rpc::client::SubstateProofData;
 
 use crate::{
     network_state_sync::EventFilter,
@@ -1185,5 +1186,34 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
             })
         })
         .transpose()
+    }
+
+    fn substate_cache_proof_get(
+        &mut self,
+        substate_id: &SubstateId,
+        version: SubstateVersion,
+    ) -> Result<Option<SubstateProofData>, StorageError> {
+        const OPERATION: &str = "substate_cache_proof_get";
+        use crate::storage_sqlite::schema::substate_cache_proofs;
+
+        let row: Option<(Vec<u8>, Vec<u8>, i64)> = substate_cache_proofs::table
+            .select((
+                substate_cache_proofs::value_proof,
+                substate_cache_proofs::commit_proof,
+                substate_cache_proofs::proof_epoch,
+            ))
+            .filter(substate_cache_proofs::substate_id.eq(substate_id.to_string()))
+            .filter(substate_cache_proofs::version.eq(version.as_u64() as i64))
+            .first(self.connection())
+            .optional()
+            .map_err(|e| StorageError::QueryError {
+                reason: format!("{OPERATION}: {e}"),
+            })?;
+
+        Ok(row.map(|(value_proof, commit_proof, proof_epoch)| SubstateProofData {
+            substate_value_proof: value_proof,
+            commit_proof,
+            proof_epoch: proof_epoch as u64,
+        }))
     }
 }

@@ -1139,6 +1139,7 @@ mod tests {
                         substate_result: &result,
                         cached_at,
                         verified,
+                        proof: None,
                     },
                     FetchWatermark::new(watermark),
                     HEAD_TTL,
@@ -1176,6 +1177,7 @@ mod tests {
                         substate_result: &result,
                         cached_at: now_secs(),
                         verified: true,
+                        proof: None,
                     },
                     FetchWatermark::new(watermark),
                     HEAD_TTL,
@@ -1208,6 +1210,7 @@ mod tests {
                         substate_result: &SubstateResult::DoesNotExist,
                         cached_at: now_secs(),
                         verified: false,
+                        proof: None,
                     },
                     FetchWatermark::new(watermark),
                     HEAD_TTL,
@@ -1821,5 +1824,99 @@ mod tests {
             }
         }
         assert_eq!(found, vec![7, 6, 5, 4, 3, 2, 1]);
+    }
+
+    async fn put_with_proof(
+        store: &SqliteIndexerStore,
+        id: &SubstateId,
+        version: SubstateVersion,
+        cached_at: u64,
+        marker: u8,
+    ) -> bool {
+        let result = SubstateResult::Down { version };
+        let proof = tari_validator_node_rpc::client::SubstateProofData {
+            substate_value_proof: vec![marker],
+            commit_proof: vec![marker; 2],
+            proof_epoch: u64::from(marker),
+        };
+        let id = id.clone();
+        store
+            .with_write_tx(move |tx| {
+                tx.substate_cache_put(
+                    &id,
+                    SubstateCacheEntryRef {
+                        version: Some(version),
+                        substate_result: &result,
+                        cached_at,
+                        verified: true,
+                        proof: Some(&proof),
+                    },
+                    FetchWatermark::new(10),
+                    HEAD_TTL,
+                )
+            })
+            .await
+            .unwrap()
+    }
+
+    /// The value-proof marker of the proof held for `version`, if one is.
+    async fn read_proof_marker(store: &SqliteIndexerStore, id: &SubstateId, version: SubstateVersion) -> Option<u8> {
+        let id = id.clone();
+        let proof = store
+            .with_read_tx(move |tx| tx.substate_cache_proof_get(&id, version))
+            .await
+            .unwrap()?;
+        assert_eq!(proof.commit_proof, vec![proof.substate_value_proof[0]; 2]);
+        assert_eq!(proof.proof_epoch, u64::from(proof.substate_value_proof[0]));
+        Some(proof.substate_value_proof[0])
+    }
+
+    async fn prune(store: &SqliteIndexerStore, max_entries: usize) -> usize {
+        store
+            .with_write_tx(move |tx| tx.substate_cache_prune(Duration::from_secs(300), max_entries))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_proof_outlives_pruning_only_while_its_version_is_the_cached_head() {
+        let (_dir, store) = temp_store().await;
+        let id = substate(1);
+
+        assert!(put_with_proof(&store, &id, SubstateVersion::new(1), now_secs(), 1).await);
+        prune(&store, 100).await;
+        assert_eq!(read_proof_marker(&store, &id, SubstateVersion::new(1)).await, Some(1));
+
+        assert!(put_with_proof(&store, &id, SubstateVersion::new(2), now_secs(), 2).await);
+        prune(&store, 100).await;
+        assert_eq!(read_proof_marker(&store, &id, SubstateVersion::new(1)).await, None);
+        assert_eq!(read_proof_marker(&store, &id, SubstateVersion::new(2)).await, Some(2));
+    }
+
+    #[tokio::test]
+    async fn a_refused_write_records_no_proof() {
+        let (_dir, store) = temp_store().await;
+        let id = substate(1);
+
+        assert!(put_with_proof(&store, &id, SubstateVersion::new(2), now_secs(), 2).await);
+        assert!(!put_with_proof(&store, &id, SubstateVersion::new(1), now_secs(), 1).await);
+
+        assert_eq!(read_proof_marker(&store, &id, SubstateVersion::new(1)).await, None);
+    }
+
+    #[tokio::test]
+    async fn an_evicted_entry_takes_its_proof_with_it() {
+        let (_dir, store) = temp_store().await;
+        let (older, newer) = (substate(1), substate(2));
+
+        assert!(put_with_proof(&store, &older, SubstateVersion::new(1), now_secs() - 10, 1).await);
+        assert!(put_with_proof(&store, &newer, SubstateVersion::new(1), now_secs(), 2).await);
+        assert_eq!(prune(&store, 1).await, 1);
+
+        assert_eq!(read_proof_marker(&store, &older, SubstateVersion::new(1)).await, None);
+        assert_eq!(
+            read_proof_marker(&store, &newer, SubstateVersion::new(1)).await,
+            Some(2)
+        );
     }
 }

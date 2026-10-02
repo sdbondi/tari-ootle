@@ -51,6 +51,7 @@ use tari_template_lib_types::{
     UtxoId,
     crypto::{RistrettoPublicKeyBytes, UtxoTag},
 };
+use tari_validator_node_rpc::client::SubstateProofData;
 
 use crate::{
     network_state_sync::{EventFilter, SyncProgress},
@@ -267,6 +268,14 @@ pub trait IndexerStoreReadTransaction {
     /// [`SubstateCacheEntry::answer_at`](tari_indexer_lib::substate_cache::SubstateCacheEntry::answer_at)'s
     /// to decide.
     fn substate_cache_get(&mut self, substate_id: &SubstateId) -> Result<Option<SubstateCacheEntry>, StorageError>;
+
+    /// The proof held for `version` of `substate_id`. Whether that version is the cached head is
+    /// [`substate_cache_get`](Self::substate_cache_get)'s to say.
+    fn substate_cache_proof_get(
+        &mut self,
+        substate_id: &SubstateId,
+        version: SubstateVersion,
+    ) -> Result<Option<SubstateProofData>, StorageError>;
 }
 
 pub trait IndexerStoreWriteTransaction {
@@ -385,8 +394,9 @@ pub trait IndexerStoreWriteTransaction {
         invalidations: I,
     ) -> Result<usize, StorageError>;
 
-    /// Drops journal entries older than `journal_retention` and evicts the oldest cache entries down
-    /// to `max_entries`. Returns how many entries were evicted.
+    /// Drops journal entries older than `journal_retention`, evicts the oldest cache entries down to
+    /// `max_entries`, and drops the proofs of versions no cached head holds. Returns how many entries
+    /// were evicted.
     fn substate_cache_prune(&mut self, journal_retention: Duration, max_entries: usize) -> Result<usize, StorageError>;
 }
 

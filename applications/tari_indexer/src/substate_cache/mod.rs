@@ -15,6 +15,7 @@ use tari_indexer_lib::substate_cache::{
 use tari_ootle_common_types::{NumPreshards, StateVersion, SubstateAddress, SubstateVersion, shard::Shard};
 use tari_ootle_storage::StorageError;
 use tari_shutdown::ShutdownSignal;
+use tari_validator_node_rpc::client::SubstateProofData;
 use tokio::{task, time};
 
 use crate::{
@@ -250,6 +251,18 @@ impl SubstateCache for SqliteSubstateCache {
         Ok(Some(entry))
     }
 
+    async fn read_proof(
+        &self,
+        id: &SubstateId,
+        version: SubstateVersion,
+    ) -> Result<Option<SubstateProofData>, SubstateCacheError> {
+        let id = id.clone();
+        self.store
+            .with_read_tx(move |tx| tx.substate_cache_proof_get(&id, version))
+            .await
+            .map_err(|e: StorageError| SubstateCacheError(e.to_string()))
+    }
+
     async fn write(
         &self,
         id: &SubstateId,
@@ -259,6 +272,7 @@ impl SubstateCache for SqliteSubstateCache {
         let id = id.clone();
         let head_ttl = self.head_ttl;
         let substate_result = entry.substate_result.clone();
+        let proof = entry.proof.cloned();
         let SubstateCacheEntryRef {
             version,
             cached_at,
@@ -274,6 +288,7 @@ impl SubstateCache for SqliteSubstateCache {
                         substate_result: &substate_result,
                         cached_at,
                         verified,
+                        proof: proof.as_ref(),
                     },
                     watermark,
                     head_ttl,
@@ -339,6 +354,7 @@ mod tests {
                     substate_result: &result,
                     cached_at: now_unix_secs().unwrap(),
                     verified: true,
+                    proof: None,
                 },
                 FetchWatermark::new(100),
             )
@@ -396,6 +412,7 @@ mod tests {
                     substate_result: &SubstateResult::DoesNotExist,
                     cached_at: now_unix_secs().unwrap(),
                     verified: false,
+                    proof: None,
                 },
                 FetchWatermark::new(100),
             )
@@ -443,6 +460,7 @@ mod tests {
                     substate_result: &result,
                     cached_at: now_unix_secs().unwrap(),
                     verified: true,
+                    proof: None,
                 },
                 FetchWatermark::new(watermark),
             )
@@ -472,6 +490,7 @@ mod tests {
                     substate_result: &result,
                     cached_at: now_unix_secs().unwrap(),
                     verified: true,
+                    proof: None,
                 },
                 FetchWatermark::new(watermark),
             )
@@ -488,6 +507,7 @@ mod tests {
                     substate_result: &SubstateResult::DoesNotExist,
                     cached_at: now_unix_secs().unwrap(),
                     verified: false,
+                    proof: None,
                 },
                 FetchWatermark::new(watermark),
             )

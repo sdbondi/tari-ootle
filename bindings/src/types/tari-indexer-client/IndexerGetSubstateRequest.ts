@@ -5,8 +5,8 @@ export type IndexerGetSubstateRequest = {
   version: SubstateVersion | null;
   local_search_only: boolean;
   /**
-   * If true, the indexer asks the committee for the substate and returns the proof it verified the
-   * answer with. Not combinable with `local_search_only`.
+   * If true, the response carries the proof the substate was verified with. Not combinable with
+   * `local_search_only`.
    */
   include_proof: boolean;
 };

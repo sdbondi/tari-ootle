@@ -24,7 +24,7 @@ use std::future::Future;
 
 use tari_engine_types::substate::SubstateId;
 use tari_ootle_common_types::SubstateVersion;
-use tari_validator_node_rpc::client::SubstateResult;
+use tari_validator_node_rpc::client::{SubstateProofData, SubstateResult};
 
 #[derive(thiserror::Error, Debug)]
 #[error("Failed substate cache operation {0}")]
@@ -110,6 +110,8 @@ pub struct SubstateCacheEntryRef<'a> {
     pub substate_result: &'a SubstateResult,
     pub cached_at: u64,
     pub verified: bool,
+    /// The proof the result was verified with, kept for [`SubstateCache::read_proof`].
+    pub proof: Option<&'a SubstateProofData>,
 }
 
 pub trait SubstateCache: Send + Sync {
@@ -127,6 +129,14 @@ pub trait SubstateCache: Send + Sync {
         &self,
         id: &SubstateId,
     ) -> impl Future<Output = Result<Option<SubstateCacheEntry>, SubstateCacheError>> + Send;
+
+    /// The proof held for `version` of `id`, or `None` when none is held. A proof is evidence that the
+    /// version was committed, not that it is current: whether it is the head is [`Self::read`]'s to say.
+    fn read_proof(
+        &self,
+        id: &SubstateId,
+        version: SubstateVersion,
+    ) -> impl Future<Output = Result<Option<SubstateProofData>, SubstateCacheError>> + Send;
 
     /// Records `entry` as the substate's head version, provided no transition for `id` has arrived
     /// since `watermark`. A write vetoed that way is not an error: the caller still has its freshly
