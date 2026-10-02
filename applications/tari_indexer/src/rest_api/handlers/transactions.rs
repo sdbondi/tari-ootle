@@ -133,7 +133,7 @@ pub const DRY_RUN_MAX_COST: f64 =
         (status = 200, description = "Dry-run transaction processed successfully", body = SubmitTransactionDryRunResponse),
         (status = BAD_REQUEST, description = "Invalid transaction or request parameters", body = ErrorResponse),
         (status = INTERNAL_SERVER_ERROR, description = "Failed to process dry-run transaction due to an internal error", body = ErrorResponse),
-        (status = SERVICE_UNAVAILABLE, description = "Every dry-run execution slot is busy; retry shortly", body = ErrorResponse),
+        (status = TOO_MANY_REQUESTS, description = "Every dry-run execution slot is busy, or the caller's dry-run budget is spent; retry shortly", body = ErrorResponse),
     )
 )]
 pub async fn submit_transaction_dry_run(
@@ -160,7 +160,7 @@ pub async fn submit_transaction_dry_run(
         .process_transaction(transaction)
         .await
         .map_err(|e| match e {
-            DryRunTransactionProcessorError::Busy => ErrorResponse::service_unavailable(e.to_string()),
+            DryRunTransactionProcessorError::Busy => ErrorResponse::too_many_requests(e.to_string()),
             e if e.is_invalid_transaction() => ErrorResponse::bad_request(e.to_string()),
             e => ErrorResponse::anyhow(e),
         })?;

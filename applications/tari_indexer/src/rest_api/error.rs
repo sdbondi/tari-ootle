@@ -88,6 +88,14 @@ impl ErrorResponse {
     }
 
     #[must_use]
+    pub fn too_many_requests(msg: impl Into<Box<str>>) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            error: msg.into(),
+        }
+    }
+
+    #[must_use]
     pub fn service_unavailable(msg: impl Into<Box<str>>) -> Self {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,

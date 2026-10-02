@@ -118,8 +118,8 @@ impl EndpointPool {
 enum IndexerHealth {
     /// The indexer answered.
     Answered,
-    /// The indexer could not be reached, or a gateway in front of it reports it unavailable: a 502 or 504, or a 503
-    /// without the indexer's own error body.
+    /// The indexer could not be reached or cannot serve: a 502, 503 or 504, whether from the indexer (e.g. still
+    /// syncing) or a gateway in front of it.
     Unavailable,
     /// Nothing can be concluded, e.g. the indexer is rate limiting this wallet.
     Inconclusive,
@@ -131,26 +131,17 @@ impl IndexerHealth {
             return Self::Answered;
         };
         match err {
-            IndexerRestClientError::RequestFailed { source } => match source.status() {
-                None => Self::Unavailable,
-                Some(status) => Self::of_status(status, false),
-            },
-            IndexerRestClientError::ErrorResponse { source, details } => match source.status() {
-                None => Self::Unavailable,
-                Some(status) => Self::of_status(status, details.is_some()),
+            IndexerRestClientError::RequestFailed { source } | IndexerRestClientError::ErrorResponse { source, .. } => {
+                match source.status() {
+                    None => Self::Unavailable,
+                    Some(StatusCode::TOO_MANY_REQUESTS) => Self::Inconclusive,
+                    Some(StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT) => {
+                        Self::Unavailable
+                    },
+                    Some(_) => Self::Answered,
+                }
             },
             _ => Self::Inconclusive,
-        }
-    }
-
-    /// The indexer itself answers 503 when its dry-run slots are busy or the network cannot serve a request. Neither
-    /// means the indexer is down, so only a 503 without the indexer's error body is a gateway reporting an outage.
-    fn of_status(status: StatusCode, has_indexer_error_body: bool) -> Self {
-        match status {
-            StatusCode::TOO_MANY_REQUESTS => Self::Inconclusive,
-            StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT => Self::Unavailable,
-            StatusCode::SERVICE_UNAVAILABLE if !has_indexer_error_body => Self::Unavailable,
-            _ => Self::Answered,
         }
     }
 }
@@ -830,10 +821,10 @@ mod tests {
             health_of_request_to(spawn_status_server("504 Gateway Timeout", "<html></html>").await).await,
             IndexerHealth::Unavailable
         );
-        // The indexer's own 503 (dry-run slots busy, no committee for a shard) is an answer.
         assert_eq!(
-            health_of_request_to(spawn_status_server("503 Service Unavailable", r#"{"error":"busy"}"#).await).await,
-            IndexerHealth::Answered
+            health_of_request_to(spawn_status_server("503 Service Unavailable", r#"{"error":"still syncing"}"#).await)
+                .await,
+            IndexerHealth::Unavailable
         );
         assert_eq!(
             health_of_request_to(spawn_status_server("429 Too Many Requests", "{}").await).await,
