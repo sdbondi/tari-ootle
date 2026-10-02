@@ -68,13 +68,19 @@ mod template {
             if !metadata.contains_key(TOKEN_SYMBOL) {
                 metadata.insert(TOKEN_SYMBOL, "LP");
             }
+            let address_allocation =
+                address_allocation.unwrap_or_else(|| CallerContext::allocate_component_address(None));
+            // LP supply is a claim on the reserves, so only the pool, which mints against a contribution and burns
+            // against a redemption, may change it.
+            let pool_only = rule!(component(address_allocation.get_address()));
+
             // create the lp resource
             let lp_resource = ResourceBuilder::public_fungible()
                 .with_divisibility(0)
                 .with_access_rules(
                     ResourceAccessRules::new()
-                        .mintable(contribute_and_redeem_rule.clone(), LOCKED)
-                        .burnable(contribute_and_redeem_rule.clone(), LOCKED),
+                        .mintable(pool_only.clone(), LOCKED)
+                        .burnable(pool_only, LOCKED),
                 )
                 .with_owner_rule(owner_rule.clone())
                 .with_metadata(metadata)
@@ -89,14 +95,12 @@ mod template {
                 lp_resource: ResourceManager::get(lp_resource),
             })
             .with_owner_rule(owner_rule)
-            .with_address_allocation_opt(address_allocation)
+            .with_address_allocation(address_allocation)
             .with_access_rules(
                 ComponentAccessRules::new()
                     // Only owners can rebalance the pool by adding/removing liquidity directly
                     .add_method_rule("protected_add_liquidity", AccessRule::DenyAll)
                     .add_method_rule("protected_remove_liquidity", AccessRule::DenyAll)
-                    // Since we have to mint and burn LP tokens during contribute/redeem, we set these methods to the same
-                    // access rule as the LP token mint/burn rules
                     .add_method_rule("contribute", contribute_and_redeem_rule.clone())
                     .add_method_rule("redeem", contribute_and_redeem_rule)
                     .default(AccessRule::AllowAll),

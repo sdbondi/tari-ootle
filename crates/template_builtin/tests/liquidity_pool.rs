@@ -5,12 +5,15 @@ use std::collections::HashMap;
 
 use tari_engine_types::indexed_value::IndexedWellKnownTypes;
 use tari_ootle_transaction::{Epoch, Transaction, args};
-use tari_template_lib::types::{AccessRule, OwnerRule, constants::TARI_TOKEN, metadata};
-use tari_template_lib_types::{Amount, ComponentAddress, ResourceAddress};
-use tari_template_test_tooling::TemplateTest;
+use tari_template_lib::{
+    models::ComponentAddressAllocation,
+    types::{AccessRule, OwnerRule, constants::TARI_TOKEN, metadata},
+};
+use tari_template_lib_types::{Amount, ComponentAddress, ResourceAddress, access_rules::ResourceAuthAction};
+use tari_template_test_tooling::{TemplateTest, support::assert_error::assert_access_denied_for_action};
 
 const TEMPLATE_NAME: &str = "TwoResourceLiquidityPool";
-const TEMPLATE_PATHS: &[&str] = &["tests/faucet"];
+const TEMPLATE_PATHS: &[&str] = &["tests/faucet", "tests/resource_minter"];
 const CRATE_PATH: &str = env!("CARGO_MANIFEST_DIR");
 
 #[test]
@@ -103,6 +106,108 @@ fn initial_contribution_and_redeem() {
     let stablecoin_vault = user_account.get_vault_by_resource(&faucet_resource).unwrap();
     let stablecoin_coins = store.get_vault(&stablecoin_vault.vault_id()).unwrap();
     assert!(stablecoin_coins.balance() >= 2000);
+}
+
+#[test]
+fn only_the_pool_can_mint_or_burn_lp_tokens() {
+    let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
+    let template_address = test.get_template_address(TEMPLATE_NAME);
+    let minter_template = test.get_template_address("ResourceMinter");
+
+    let (faucet_component, faucet_resource) = create_test_faucet_component(&mut test, 1_000_000_000_000u64);
+    let (provider, _provider_proof, provider_secret) = test.create_funded_account();
+    let (attacker, _attacker_proof, attacker_secret) = test.create_funded_account();
+
+    // A public pool with no address allocation, so the pool allocates its own address for the LP rules. The pool is
+    // owned by a third key, because the resource owner may mint and burn regardless of the rules.
+    test.execute_expect_success(
+        Transaction::builder_localnet(Epoch(1))
+            .call_function(template_address, "create", args![
+                OwnerRule::OwnedBySigner,
+                AccessRule::AllowAll,
+                TARI_TOKEN,
+                faucet_resource,
+                metadata!["name" => "TARI-Stablecoin Liquidity Pool"],
+                None::<ComponentAddressAllocation>,
+            ])
+            .finish()
+            .seal(test.secret_key()),
+        vec![],
+    );
+    let store = test.read_only_state_store();
+    let (pool_addr, pool_body) = store
+        .get_components_by_template_address(template_address)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let indexed = pool_body.body.to_indexed_well_known_types().unwrap();
+    let lp_resx = indexed.resource_addresses().first().copied().unwrap();
+
+    test.execute_expect_success(
+        Transaction::builder_localnet(Epoch(1))
+            .call_method(faucet_component, "take_free_coins_custom", args![2000])
+            .put_last_instruction_output_on_workspace("faucet_coins")
+            .call_method(provider, "withdraw", args![TARI_TOKEN, 1000])
+            .put_last_instruction_output_on_workspace("xtr_coins")
+            .call_method(pool_addr, "contribute", args![
+                Workspace("xtr_coins"),
+                Workspace("faucet_coins")
+            ])
+            .put_last_instruction_output_on_workspace("contribution")
+            .call_method(provider, "deposit", args![Workspace("contribution.0")])
+            .call_method(provider, "deposit", args![Workspace("contribution.1")])
+            .call_method(provider, "deposit", args![Workspace("contribution.2")])
+            .finish()
+            .seal(&provider_secret),
+        vec![],
+    );
+
+    // Minting LP outside the pool and redeeming it would drain the reserves.
+    let reason = test.execute_expect_failure(
+        Transaction::builder_localnet(Epoch(1))
+            .call_function(minter_template, "mint", args![lp_resx, 1_000_000_000])
+            .put_last_instruction_output_on_workspace("unbacked_lp")
+            .call_method(pool_addr, "redeem", args![Workspace("unbacked_lp")])
+            .put_last_instruction_output_on_workspace("stolen")
+            .call_method(attacker, "deposit", args![Workspace("stolen.0")])
+            .call_method(attacker, "deposit", args![Workspace("stolen.1")])
+            .finish()
+            .seal(&attacker_secret),
+        vec![],
+    );
+    assert_access_denied_for_action(reason, ResourceAuthAction::Mint);
+
+    // Burning LP outside the pool would leave the reserves backing a smaller supply.
+    let reason = test.execute_expect_failure(
+        Transaction::builder_localnet(Epoch(1))
+            .call_method(provider, "withdraw", args![lp_resx, 100])
+            .put_last_instruction_output_on_workspace("lp")
+            .call_function(minter_template, "burn", args![Workspace("lp")])
+            .finish()
+            .seal(&provider_secret),
+        vec![],
+    );
+    assert_access_denied_for_action(reason, ResourceAuthAction::Burn);
+
+    // The pool itself still burns LP on redeem.
+    let store = test.read_only_state_store();
+    let provider_account = store.get_account(provider).unwrap();
+    let lp_vault = provider_account.get_vault_by_resource(&lp_resx).unwrap();
+    let lp_balance = store.get_vault(&lp_vault.vault_id()).unwrap().balance();
+    test.execute_expect_success(
+        Transaction::builder_localnet(Epoch(1))
+            .call_method(provider, "withdraw", args![lp_resx, lp_balance])
+            .put_last_instruction_output_on_workspace("lp")
+            .call_method(pool_addr, "redeem", args![Workspace("lp")])
+            .put_last_instruction_output_on_workspace("redeemed")
+            .assert_bucket_contains_at_least("redeemed.0", TARI_TOKEN, 1000u64)
+            .assert_bucket_contains_at_least("redeemed.1", faucet_resource, 2000u64)
+            .call_method(provider, "deposit", args![Workspace("redeemed.0")])
+            .call_method(provider, "deposit", args![Workspace("redeemed.1")])
+            .finish()
+            .seal(&provider_secret),
+        vec![],
+    );
 }
 
 #[test]
