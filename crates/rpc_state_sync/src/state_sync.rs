@@ -68,7 +68,8 @@ use crate::{error::RpcStateSyncError, stats::StateSyncStats};
 
 const LOG_TARGET: &str = "tari::ootle::rpc_state_sync";
 /// The most a peer may stream, in encoded bytes, for one state version before completing it. A
-/// version is buffered whole and committed at once, so this bounds the memory a peer can hold.
+/// version is buffered whole and committed at once, so this bounds the memory a peer can hold to a
+/// constant multiple of it: the buffered updates are held decoded, each with its tree change.
 const MAX_BUFFERED_VERSION_BYTES: usize = 256 * 1024 * 1024;
 
 pub struct RpcStateSyncClientProtocol<TConsensusSpec: ConsensusSpec> {
