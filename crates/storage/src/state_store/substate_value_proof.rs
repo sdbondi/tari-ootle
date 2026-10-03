@@ -139,20 +139,31 @@ impl<'a, TTx: StateStoreReadTransaction> SubstateProofGenerator<'a, TTx> {
     }
 }
 
+/// A shard-group state merkle root a quorum committed, with the block that committed it.
+///
+/// It must have been established independently - from a commit proof validated against the shard
+/// group committee (`CommittedBlockProof::validate`), either for this read or in an earlier round and
+/// recorded in a trusted-root store. The validator pins the substate value proof to the same committed
+/// block whose `state_merkle_root` is trusted (proof and commit proof are generated in one read
+/// transaction against the same committed block), so verifying against that root is the whole of the
+/// check. The trust decision must therefore be keyed on the root itself: a node cannot forge a
+/// substate proof that verifies against a root a quorum already signed.
+#[derive(Debug, Clone, Copy)]
+pub struct TrustedStateRoot {
+    /// The epoch of the block that committed `root`, which selects how the root's leaves are formed:
+    /// consensus rejects a header whose version is not the schedule's version at its epoch.
+    pub epoch: Epoch,
+    /// The shard group whose committee committed `root`. The root commits only to the group's own
+    /// shards: a shard outside the group has no leaf in it, exactly as an empty shard has none.
+    pub shard_group: ShardGroup,
+    pub root: FixedHash,
+}
+
 /// Verifies a substate value proof against an *already-trusted* shard-group state merkle root,
-/// skipping commit-proof (QC chain) validation.
+/// skipping commit-proof (QC chain) validation. A substate whose shard lies outside the root's shard
+/// group is rejected.
 ///
-/// `trusted_root` must have been established independently - from a commit proof validated against
-/// the shard group committee (`CommittedBlockProof::validate`), either for this read or in an earlier
-/// round and recorded in a trusted-root store. The validator pins the substate value proof to the
-/// same committed block whose `state_merkle_root` is trusted (proof and commit proof are generated in
-/// one read transaction against the same committed block), so verifying against that root is the
-/// whole of the check. The trust decision must therefore be keyed on `trusted_root` itself: a node
-/// cannot forge a substate proof that verifies against a root a quorum already signed.
-///
-/// `proof_epoch` is the epoch the substate was created at, which selects its value hash. `root_epoch`
-/// is the epoch of the block that committed `trusted_root`, which selects how that root's leaves are
-/// formed: consensus rejects a header whose version is not the schedule's version at its epoch.
+/// `proof_epoch` is the epoch the substate was created at, which selects its value hash.
 pub fn verify_substate_value_proof_against_root(
     value_proof_bytes: &[u8],
     substate_id: &SubstateId,
@@ -161,17 +172,24 @@ pub fn verify_substate_value_proof_against_root(
     network: Network,
     num_preshards: NumPreshards,
     proof_epoch: Epoch,
-    root_epoch: Epoch,
-    trusted_root: FixedHash,
+    trusted_root: &TrustedStateRoot,
 ) -> Result<(), SubstateProofVerifyError> {
-    let group_root = TreeHash::new(trusted_root.into_array());
-    let root_protocol_version = ProtocolVersion::at(network, root_epoch);
+    let group_root = TreeHash::new(trusted_root.root.into_array());
+    let root_protocol_version = ProtocolVersion::at(network, trusted_root.epoch);
 
     let value_proof: SubstateValueProof =
         tari_bor::serde_codec::from_slice_with_max_depth(value_proof_bytes, MAX_CBOR_NESTING_DEPTH)
             .map_err(|e| SubstateProofVerifyError::Decode(e.to_string()))?;
 
     let versioned_id = VersionedSubstateId::new(substate_id.clone(), version);
+    let shard = versioned_id.to_shard(num_preshards);
+    if !trusted_root.shard_group.contains_or_global(&shard) {
+        return Err(SubstateProofVerifyError::ShardOutsideAnchor {
+            substate: versioned_id,
+            shard,
+            shard_group: trusted_root.shard_group,
+        });
+    }
     match value {
         Some(value) => {
             // Bind the returned value to the committed leaf by re-deriving its value hash, so a
@@ -199,6 +217,12 @@ pub enum SubstateProofVerifyError {
     Decode(String),
     #[error("substate value proof invalid: {0}")]
     ValueProof(#[from] SubstateValueProofError),
+    #[error("{substate} is in {shard}, outside {shard_group} whose committed root the proof was anchored to")]
+    ShardOutsideAnchor {
+        substate: VersionedSubstateId,
+        shard: Shard,
+        shard_group: ShardGroup,
+    },
 }
 
 /// The committed JMT root and state-tree version of `shard`. A shard with no committed state has the
@@ -222,4 +246,75 @@ fn committed_shard_state<TTx: StateStoreReadTransaction>(
         root,
         version: Some(version),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use tari_state_tree::{StateTreePayload, compute_shard_group_root, memory_store::MemoryTreeStore};
+    use tari_template_lib_types::{ComponentAddress, ObjectKey};
+
+    use super::*;
+
+    const NUM_PRESHARDS: NumPreshards = NumPreshards::P4;
+
+    /// A shard group's root commits to the shards in the group and nothing else, so a substate in a
+    /// shard outside the group has no leaf there, the same as a substate in an empty shard. An
+    /// absence proved against another group's root must not count as the substate's absence.
+    #[test]
+    fn an_absence_proved_against_another_shard_groups_root_is_rejected() {
+        let substate_id = SubstateId::Component(ComponentAddress::new(ObjectKey::from_array([1; ObjectKey::LENGTH])));
+        let version = SubstateVersion::ZERO;
+        let versioned_id = VersionedSubstateId::new(substate_id.clone(), version);
+        let own_shard = versioned_id.to_shard(NUM_PRESHARDS);
+        let other_shard = Shard::from_u32(if own_shard.as_u32() == 1 { 2 } else { 1 });
+        let other_group = ShardGroup::new(other_shard, other_shard);
+
+        let other_group_states = [
+            (Shard::global(), SPARSE_MERKLE_PLACEHOLDER_HASH, 0),
+            (other_shard, TreeHash::new([7; 32]), 1),
+        ];
+        let other_group_root = compute_shard_group_root(ProtocolVersion::V1, other_group_states).unwrap();
+        // The substate's shard has no leaf in the other group's root, so the proof that its key is
+        // absent - the proof an empty shard gets - verifies against that root.
+        let with_own_shard_empty = ShardGroupRootTree::build(
+            ProtocolVersion::V1,
+            other_group_states
+                .into_iter()
+                .chain([(own_shard, SPARSE_MERKLE_PLACEHOLDER_HASH, 0)]),
+        )
+        .unwrap();
+        assert_eq!(with_own_shard_empty.root(), other_group_root);
+        let (_, shard_root_proof) = with_own_shard_empty.get_proof(own_shard).unwrap();
+        let mut empty = MemoryTreeStore::<StateTreePayload>::new();
+        SpreadPrefixStateTree::new(&mut empty)
+            .put_substate_changes(None, 1, vec![])
+            .unwrap();
+        let (_, _, leaf_proof) = SpreadPrefixStateTree::new(&mut empty)
+            .get_proof(1, &versioned_id)
+            .unwrap();
+        let proof = SubstateValueProof::new(SPARSE_MERKLE_PLACEHOLDER_HASH, 0, shard_root_proof, leaf_proof);
+        proof
+            .verify_exclusion(ProtocolVersion::V1, &other_group_root, NUM_PRESHARDS, &versioned_id)
+            .unwrap();
+        let proof_bytes = tari_bor::serde_codec::to_vec(&proof).unwrap();
+
+        let result = verify_substate_value_proof_against_root(
+            &proof_bytes,
+            &substate_id,
+            version,
+            None,
+            Network::LocalNet,
+            NUM_PRESHARDS,
+            Epoch(1),
+            &TrustedStateRoot {
+                epoch: Epoch(1),
+                shard_group: other_group,
+                root: FixedHash::new(other_group_root.into_array()),
+            },
+        );
+        assert!(
+            matches!(result, Err(SubstateProofVerifyError::ShardOutsideAnchor { .. })),
+            "{result:?}"
+        );
+    }
 }
