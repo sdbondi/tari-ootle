@@ -35,11 +35,15 @@ where TMsg: prost::Message + fmt::Debug + Default
         if len > MAX_MESSAGE_SIZE {
             return Err(std::io::Error::other("message too large"));
         }
-        // The buffer grows as bytes arrive, so memory tracks what the peer has sent rather than the length it declared.
-        let mut buf = Vec::with_capacity(len.min(INITIAL_READ_CAPACITY));
-        (&mut *reader).take(len as u64).read_to_end(&mut buf).await?;
-        if buf.len() < len {
-            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        // The buffer grows as bytes arrive: each step at most doubles what has been received and never exceeds the
+        // declared length.
+        let mut buf = Vec::new();
+        while buf.len() < len {
+            let start = buf.len();
+            let end = len.min(start.saturating_mul(2).max(INITIAL_READ_CAPACITY));
+            buf.reserve_exact(end - start);
+            buf.resize(end, 0);
+            reader.read_exact(&mut buf[start..]).await?;
         }
         let mut slice = &buf[..];
         let message = prost::Message::decode(&mut slice).map_err(std::io::Error::other)?;
