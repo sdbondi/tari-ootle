@@ -37,18 +37,18 @@ impl SyncProgress {
         self.last_state_versions.insert(shard, (state_version, epoch));
     }
 
-    /// Removes every shard's recorded state version above `max`, returning the shards removed.
-    pub fn discard_state_versions_above(&mut self, max: StateVersion) -> Vec<Shard> {
-        let discarded = self
-            .last_state_versions
+    pub fn forget_state_version(&mut self, shard: Shard) {
+        self.last_state_versions.shift_remove(&shard);
+    }
+
+    /// The shards whose recorded state version is above `max_version` or was recorded at an epoch
+    /// after `max_epoch`.
+    pub fn shards_recorded_beyond(&self, max_version: StateVersion, max_epoch: Epoch) -> Vec<Shard> {
+        self.last_state_versions
             .iter()
-            .filter(|(_, (version, _))| *version > max)
+            .filter(|(_, (version, epoch))| *version > max_version || *epoch > max_epoch)
             .map(|(shard, _)| *shard)
-            .collect::<Vec<_>>();
-        for shard in &discarded {
-            self.last_state_versions.shift_remove(shard);
-        }
-        discarded
+            .collect()
     }
 }
 
