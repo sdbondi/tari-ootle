@@ -24,6 +24,7 @@ use libp2p::{
         AsyncRead,
         AsyncReadExt,
         AsyncWrite,
+        AsyncWriteExt,
         FutureExt,
         SinkExt,
         StreamExt,
@@ -76,7 +77,8 @@ const TASK_TIMEOUT: Duration = Duration::from_secs(10000 * 24 * 60 * 60);
 #[derive(Debug, Clone, Copy)]
 struct StreamTimeouts {
     send_recv: Duration,
-    idle: Duration,
+    inbound_idle: Duration,
+    outbound_idle: Duration,
 }
 
 impl<TCodec: Codec> Handler<TCodec> {
@@ -93,7 +95,8 @@ impl<TCodec: Codec> Handler<TCodec> {
             pending_events_receiver,
             timeouts: StreamTimeouts {
                 send_recv: config.send_recv_timeout,
-                idle: config.inbound_idle_timeout,
+                inbound_idle: config.inbound_idle_timeout,
+                outbound_idle: config.outbound_idle_timeout,
             },
             // Streams enforce their own per-message and idle deadlines. The task sets only bound concurrency, and are
             // separate so that inbound streams cannot take the capacity needed to send.
@@ -186,6 +189,13 @@ where TCodec: Codec + Send + Clone + 'static
     }
 }
 
+enum OutboundWait<TMsg> {
+    Message(TMsg),
+    Drained,
+    RemoteClosed,
+    Idle,
+}
+
 async fn outbound_loop<TCodec, TStream>(
     codec: TCodec,
     mut peer_stream: TStream,
@@ -201,15 +211,32 @@ where
     let stream_id = msg_stream.stream_id();
     let peer_id = *msg_stream.peer_id();
     loop {
-        // The peer never writes to this stream, so a completed read means it has closed or reset it. The stream is
-        // given up so that the next message opens a fresh one.
+        // The peer never writes to this stream, so a completed read means it has closed or reset it.
         let mut read_buf = [0u8; 1];
-        let next = match future::select(pin!(msg_stream.recv()), peer_stream.read(&mut read_buf)).await {
-            Either::Left((msg, _)) => msg,
-            Either::Right(_) => None,
+        let next = {
+            let recv = pin!(msg_stream.recv());
+            let remote_closed = peer_stream.read(&mut read_buf);
+            let idle = Delay::new(timeouts.outbound_idle);
+            match future::select(recv, future::select(remote_closed, idle)).await {
+                Either::Left((Some(msg), _)) => OutboundWait::Message(msg),
+                Either::Left((None, _)) => OutboundWait::Drained,
+                Either::Right((Either::Left(_), _)) => OutboundWait::RemoteClosed,
+                Either::Right((Either::Right(_), _)) => OutboundWait::Idle,
+            }
         };
-        let Some(msg) = next else {
-            break Event::StreamClosed { peer_id, stream_id };
+        let msg = match next {
+            OutboundWait::Message(msg) => msg,
+            // Closing the channel makes the behaviour open a new stream for later messages, while messages already
+            // queued are still written here before the stream is closed.
+            OutboundWait::Idle => {
+                msg_stream.close();
+                continue;
+            },
+            OutboundWait::Drained => {
+                let _ignore = with_timeout(timeouts.send_recv, peer_stream.close()).await;
+                break Event::StreamClosed { peer_id, stream_id };
+            },
+            OutboundWait::RemoteClosed => break Event::StreamClosed { peer_id, stream_id },
         };
 
         match with_timeout(timeouts.send_recv, codec.encode_to(&mut peer_stream, msg)).await {
@@ -252,7 +279,7 @@ where
     // to start is bounded by the idle timeout, and receiving it once started by the send/recv timeout.
     let mut stream = BufReader::new(stream);
     loop {
-        match with_timeout(timeouts.idle, stream.fill_buf()).await {
+        match with_timeout(timeouts.inbound_idle, stream.fill_buf()).await {
             None => break Event::InboundStreamClosed { peer_id },
             Some(Ok([])) => break Event::InboundStreamClosed { peer_id },
             Some(Ok(_)) => {},
@@ -435,7 +462,14 @@ where P: AsRef<str> + Clone
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::{future::Future, pin::Pin};
+    use std::{
+        future::Future,
+        pin::Pin,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        },
+    };
 
     use libp2p::futures::{AsyncReadExt, AsyncWriteExt, executor::block_on, future, future::Either};
 
@@ -475,6 +509,9 @@ pub(crate) mod tests {
         pos: usize,
         eof_after_data: bool,
         accept_writes: bool,
+        /// Bytes written before the stream was closed.
+        written: Arc<AtomicUsize>,
+        closed: Arc<AtomicBool>,
     }
 
     impl TestStream {
@@ -488,6 +525,8 @@ pub(crate) mod tests {
                 pos: 0,
                 eof_after_data: false,
                 accept_writes: false,
+                written: Arc::default(),
+                closed: Arc::default(),
             }
         }
 
@@ -497,6 +536,20 @@ pub(crate) mod tests {
                 pos: 0,
                 eof_after_data: true,
                 accept_writes: true,
+                written: Arc::default(),
+                closed: Arc::default(),
+            }
+        }
+
+        /// Accepts writes and never yields data or EOF, like a healthy peer receiving on this stream.
+        fn open() -> Self {
+            Self {
+                data: vec![],
+                pos: 0,
+                eof_after_data: false,
+                accept_writes: true,
+                written: Arc::default(),
+                closed: Arc::default(),
             }
         }
     }
@@ -522,6 +575,9 @@ pub(crate) mod tests {
     impl AsyncWrite for TestStream {
         fn poll_write(self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
             if self.accept_writes {
+                if !self.closed.load(Ordering::SeqCst) {
+                    self.written.fetch_add(buf.len(), Ordering::SeqCst);
+                }
                 Poll::Ready(Ok(buf.len()))
             } else {
                 Poll::Pending
@@ -533,6 +589,7 @@ pub(crate) mod tests {
         }
 
         fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            self.closed.store(true, Ordering::SeqCst);
             Poll::Ready(Ok(()))
         }
     }
@@ -546,7 +603,8 @@ pub(crate) mod tests {
     fn timeouts(send_recv_ms: u64, idle_ms: u64) -> StreamTimeouts {
         StreamTimeouts {
             send_recv: Duration::from_millis(send_recv_ms),
-            idle: Duration::from_millis(idle_ms),
+            inbound_idle: Duration::from_millis(idle_ms),
+            outbound_idle: Duration::from_millis(idle_ms),
         }
     }
 
@@ -631,6 +689,52 @@ pub(crate) mod tests {
             }),
             "{event:?}"
         );
+    }
+
+    #[test]
+    fn idle_outbound_stream_is_closed_by_the_sender() {
+        let (sink, msg_stream) = stream::channel(1, PeerId::random());
+        let peer_stream = TestStream::open();
+        let closed = peer_stream.closed.clone();
+        let (events, _rx) = mpsc::channel(10);
+        let event = run_guarded(outbound_loop(
+            TestCodec,
+            peer_stream,
+            msg_stream,
+            events,
+            StreamTimeouts {
+                send_recv: Duration::from_secs(60),
+                inbound_idle: Duration::from_secs(60),
+                outbound_idle: Duration::from_millis(100),
+            },
+        ));
+        assert!(matches!(event, Event::StreamClosed { stream_id: 1, .. }), "{event:?}");
+        assert!(
+            closed.load(Ordering::SeqCst),
+            "expected the stream to be closed gracefully"
+        );
+        assert!(sink.is_closed(), "expected the sink to stop accepting messages");
+    }
+
+    #[test]
+    fn queued_messages_are_written_before_a_closing_stream_is_closed() {
+        let (mut sink, mut msg_stream) = stream::channel(1, PeerId::random());
+        sink.send(b"hello".to_vec()).unwrap();
+        msg_stream.close();
+        let peer_stream = TestStream::open();
+        let written = peer_stream.written.clone();
+        let closed = peer_stream.closed.clone();
+        let (events, _rx) = mpsc::channel(10);
+        let event = run_guarded(outbound_loop(
+            TestCodec,
+            peer_stream,
+            msg_stream,
+            events,
+            timeouts(60_000, 60_000),
+        ));
+        assert!(matches!(event, Event::StreamClosed { stream_id: 1, .. }), "{event:?}");
+        assert_eq!(written.load(Ordering::SeqCst), frame(b"hello").len());
+        assert!(closed.load(Ordering::SeqCst));
     }
 
     #[test]
