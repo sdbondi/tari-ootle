@@ -20,6 +20,7 @@
 //  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import { HttpError } from "@tari-project/indexer-client";
 import type { Amount } from "@tari-project/ootle-ts-bindings";
 import { ReactNode } from "react";
 import { toHexString } from "../routes/VN/Components/helpers";
@@ -226,6 +227,5 @@ export const formatCurrency = (
   }
 };
 
-// The indexer client's fetch transport reports a failed response as `HTTP <status>: ...`.
 export const isNotFoundError = (error: Error | null | undefined): boolean =>
-  error?.message.startsWith("HTTP 404") ?? false;
+  error instanceof HttpError && error.status === 404;

@@ -3,6 +3,7 @@
  * //  SPDX-License-Identifier: BSD-3-Clause
  */
 
+import { HttpError } from "../errors";
 import { stringifyRequestBody } from "../json";
 import { connectSse, SseStream, SseStreamOptions } from "../sse";
 import { HttpTransport, TransportOptions } from "./index";
@@ -113,7 +114,7 @@ export default class FetchTransport implements HttpTransport {
     }
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`HTTP ${response.status}: ${response.statusText}${text ? ` - ${text}` : ""}`);
+      throw new HttpError(response.status, response.statusText, text);
     }
     const json = await response.json();
     if (json.error) {

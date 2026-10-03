@@ -48,6 +48,7 @@ import type {
 import type { SseStream } from "./sse";
 import { FetchTransport, HttpTransport } from "./transports";
 
+export { HttpError } from "./errors";
 export type { SseEvent, SseStream, SseStreamOptions } from "./sse";
 export * as transports from "./transports";
 

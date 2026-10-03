@@ -3,6 +3,8 @@
  * //  SPDX-License-Identifier: BSD-3-Clause
  */
 
+import { HttpError } from "./errors";
+
 /**
  * A parsed Server-Sent Event.
  */
@@ -56,7 +58,7 @@ export function connectSse(url: string, options: SseStreamOptions): SseStream {
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`HTTP ${response.status}: ${response.statusText}${text ? ` - ${text}` : ""}`);
+      throw new HttpError(response.status, response.statusText, text);
     }
 
     if (!response.body) {
