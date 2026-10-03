@@ -52,7 +52,7 @@ import FetchStatusCheck from "../../../Components/FetchStatusCheck";
 import StatusChip from "../../../Components/StatusChip";
 import { DataTableCell } from "../../../Components/StyledComponents";
 import { CURRENCY } from "../../../utils/constants";
-import { formatCurrency, validateHash } from "../../../utils/helpers";
+import { formatCurrency, isNotFoundError, validateHash } from "../../../utils/helpers";
 import SubstateChanges from "../../TransactionReceipts/components/SubstateChanges";
 import EventsContent from "./EventsContent";
 import ExecutionResults from "./ExecutionResults";
@@ -144,6 +144,14 @@ function Result({ transaction_id }: IndexerGetTransactionResultRequest) {
     (result.isError && !cachedEntry && transactionQuery.isPending);
   // Each source answers on its own, so the page fails only when none of them knows the transaction.
   const isError = result.isError && !receipt && !txEntry;
+  const resultPruned = isNotFoundError(result.error);
+  // A failure other than "not found" says nothing about whether the transaction exists, so its
+  // message is shown instead of a conclusion drawn from the missing data.
+  const lookupFailure = !resultPruned
+    ? result.error?.message
+    : receiptQuery.isError && !isNotFoundError(receiptQuery.error)
+      ? receiptQuery.error.message
+      : undefined;
 
   const handleChange = (panel: string) => (_event: React.SyntheticEvent, isExpanded: boolean) => {
     setExpandedPanels((prev) => (isExpanded ? [...prev, panel] : prev.filter((p) => p !== panel)));
@@ -175,14 +183,17 @@ function Result({ transaction_id }: IndexerGetTransactionResultRequest) {
         <Box>
           {receipt && !finalized && (
             <Alert severity="info" sx={{ mb: 2 }}>
-              Validators no longer hold this transaction's execution result. Showing its committed receipt instead; logs
-              and per-instruction results are not part of a receipt.
+              {resultPruned
+                ? "Validators no longer hold this transaction's execution result."
+                : `Failed to fetch this transaction's execution result: ${result.error?.message}.`}{" "}
+              Showing its committed receipt instead; logs and per-instruction results are not part of a receipt.
             </Alert>
           )}
           {result.isError && !receipt && (
             <Alert severity="warning" sx={{ mb: 2 }}>
-              No validator holds a result for this transaction and it has no committed receipt. It may have aborted,
-              been rejected, or expired without being sequenced.
+              {lookupFailure
+                ? `Failed to fetch this transaction's outcome: ${lookupFailure}`
+                : "No validator holds a result for this transaction and it has no committed receipt. It may have aborted, been rejected, or expired without being sequenced."}
             </Alert>
           )}
 
@@ -216,7 +227,7 @@ function Result({ transaction_id }: IndexerGetTransactionResultRequest) {
                     </TableRow>
                   </>
                 )}
-                {!rejected && txEntry?.rejected_reason && (
+                {!rejected && !finalized && txEntry?.rejected_reason && (
                   <TableRow>
                     <TableCell>Rejection Reason</TableCell>
                     <DataTableCell>{txEntry.rejected_reason}</DataTableCell>

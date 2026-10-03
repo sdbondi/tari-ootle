@@ -21,12 +21,13 @@
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import { QueryClient } from "@tanstack/react-query";
+import { isNotFoundError } from "../utils/helpers";
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       // A 404 is a definitive answer; retrying it only delays the page's fallbacks.
-      retry: (failureCount, error) => failureCount < 3 && !error.message.startsWith("HTTP 404"),
+      retry: (failureCount, error) => failureCount < 3 && !isNotFoundError(error),
     },
   },
 });

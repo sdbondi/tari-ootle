@@ -225,3 +225,7 @@ export const formatCurrency = (
     return `-- ${currencySymbol}`;
   }
 };
+
+// The indexer client's fetch transport reports a failed response as `HTTP <status>: ...`.
+export const isNotFoundError = (error: Error | null | undefined): boolean =>
+  error?.message.startsWith("HTTP 404") ?? false;
