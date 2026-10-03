@@ -12,10 +12,10 @@ export const useListTransactionReceipts = (limit: number) => {
   });
 };
 
-export const useGetTransactionReceipt = (address: TransactionReceiptAddress) => {
+export const useGetTransactionReceipt = (address: TransactionReceiptAddress, enabled = true) => {
   return useQuery({
     queryKey: ["transaction_receipt", address],
     queryFn: () => getTransactionReceipt(address),
-    enabled: !!address,
+    enabled: enabled && !!address,
   });
 };

@@ -100,9 +100,7 @@ function RecentTransactions() {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [filteredTransactions, setFilteredTransactions] = useState<ExtendedTransactionEntry[]>([]);
-  // Defaults to this indexer's own submissions. With gossip indexing on, "all" is the whole
-  // network's throughput and would push an operator's own transactions off the first page.
-  const [source, setSource] = useState<TransactionSource | null>("local");
+  const [source, setSource] = useState<TransactionSource | null>(null);
 
   const { data, isLoading, isError, error } = useListRecentTransactions({
     last_id: null,
@@ -145,9 +143,9 @@ function RecentTransactions() {
             setPage(0);
           }}
         >
+          <ToggleButton value="all">All</ToggleButton>
           <ToggleButton value="local">Submitted here</ToggleButton>
           <ToggleButton value="gossip">From gossip</ToggleButton>
-          <ToggleButton value="all">All</ToggleButton>
         </ToggleButtonGroup>
         <TransactionFilter
           setPage={setPage}

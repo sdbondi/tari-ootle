@@ -25,7 +25,8 @@ import { QueryClient } from "@tanstack/react-query";
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      retry: 3,
+      // A 404 is a definitive answer; retrying it only delays the page's fallbacks.
+      retry: (failureCount, error) => failureCount < 3 && !error.message.startsWith("HTTP 404"),
     },
   },
 });

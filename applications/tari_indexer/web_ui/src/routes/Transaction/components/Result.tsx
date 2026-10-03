@@ -28,6 +28,7 @@ import {
   Button,
   Chip,
   Fade,
+  Link,
   Stack,
   Table,
   TableBody,
@@ -43,6 +44,8 @@ import type {
 } from "@tari-project/ootle-ts-bindings";
 import { saveAs } from "file-saver";
 import { useState } from "react";
+import { Link as RouterLink } from "react-router-dom";
+import { useGetTransactionReceipt } from "../../../api/hooks/useTransactionReceipts";
 import { useGetTransaction, useGetTransactionResult } from "../../../api/hooks/useTransactions";
 import { Accordion, AccordionDetails, AccordionSummary } from "../../../Components/Accordion";
 import FetchStatusCheck from "../../../Components/FetchStatusCheck";
@@ -50,6 +53,7 @@ import StatusChip from "../../../Components/StatusChip";
 import { DataTableCell } from "../../../Components/StyledComponents";
 import { CURRENCY } from "../../../utils/constants";
 import { formatCurrency, validateHash } from "../../../utils/helpers";
+import SubstateChanges from "../../TransactionReceipts/components/SubstateChanges";
 import EventsContent from "./EventsContent";
 import ExecutionResults from "./ExecutionResults";
 import FeeReceipt from "./FeeReceipt";
@@ -97,18 +101,25 @@ function Result({ transaction_id }: IndexerGetTransactionResultRequest) {
   const [expandedPanels, setExpandedPanels] = useState<string[]>([]);
   const normalizedId = transaction_id.toLowerCase();
   const isValidHash = validateHash(normalizedId);
-  const { data, isLoading, error, isError } = useGetTransactionResult(normalizedId);
+  const result = useGetTransactionResult(normalizedId);
+
+  // Validators prune a transaction's execution result a couple of epochs after it finalizes, after
+  // which its committee answers 404. The receipt synced from network state still records how it
+  // committed, so it stands in for the result.
+  const receiptQuery = useGetTransactionReceipt(normalizedId, isValidHash && result.isError);
 
   const queryClient = useQueryClient();
-  const cachedList = queryClient.getQueryData<ListRecentTransactionsResponse>(["recent_transactions"]);
-  const cachedEntry = cachedList?.transactions?.find((tx) => tx.transaction_id === normalizedId);
+  const cachedEntry = queryClient
+    .getQueriesData<ListRecentTransactionsResponse>({ queryKey: ["recent_transactions"] })
+    .flatMap(([, list]) => list?.transactions ?? [])
+    .find((tx) => tx.transaction_id === normalizedId);
 
   // The recent-transactions list cache is only populated when arriving from the list page. On a fresh
   // page load / direct navigation it's empty, so fetch the transaction body directly as a fallback. The
   // result endpoint never carries instructions, hence this separate fetch.
-  const { data: fetchedTransaction } = useGetTransaction(normalizedId, isValidHash && !cachedEntry);
+  const transactionQuery = useGetTransaction(normalizedId, isValidHash && !cachedEntry);
 
-  const txEntry = cachedEntry ?? fetchedTransaction?.transaction;
+  const txEntry = cachedEntry ?? transactionQuery.data?.transaction;
   const txV1 = txEntry?.transaction?.V1;
   const txBody = txV1?.body;
   const transaction = txBody?.transaction;
@@ -117,10 +128,22 @@ function Result({ transaction_id }: IndexerGetTransactionResultRequest) {
     return <Alert severity="error">Invalid Hash</Alert>;
   }
 
-  const execResult: any =
-    data?.result && isFinalized(data.result) ? data.result.Finalized.execution_result?.finalize?.result : undefined;
+  const finalized = result.data?.result && isFinalized(result.data.result) ? result.data.result.Finalized : undefined;
+  const rejected = result.data?.result && isRejected(result.data.result) ? result.data.result.Rejected : undefined;
+  const receipt = receiptQuery.data?.receipt;
+  const finalize = finalized?.execution_result?.finalize;
+  const execResult: any = finalize?.result;
+  const feeOnly = finalized ? isFeeOnlyResult(execResult) : receipt?.outcome === "FeeIntentCommit";
+  const feeReceipt = finalize?.fee_receipt ?? receipt?.fee_receipt;
+  const events = finalize?.events ?? receipt?.events ?? [];
 
-  const rejected = data?.result && isRejected(data.result) ? data.result.Rejected : undefined;
+  // The body only decides whether the page can render at all once the result lookup has failed.
+  const isLoading =
+    result.isPending ||
+    (result.isError && receiptQuery.isPending) ||
+    (result.isError && !cachedEntry && transactionQuery.isPending);
+  // Each source answers on its own, so the page fails only when none of them knows the transaction.
+  const isError = result.isError && !receipt && !txEntry;
 
   const handleChange = (panel: string) => (_event: React.SyntheticEvent, isExpanded: boolean) => {
     setExpandedPanels((prev) => (isExpanded ? [...prev, panel] : prev.filter((p) => p !== panel)));
@@ -130,108 +153,165 @@ function Result({ transaction_id }: IndexerGetTransactionResultRequest) {
 
   const collapseAll = () => setExpandedPanels([]);
 
+  const status = finalized ? (
+    <StatusChip status={finalized.final_decision} showTitle={true} feeOnly={feeOnly} />
+  ) : receipt ? (
+    <StatusChip status="Commit" showTitle={true} feeOnly={feeOnly} />
+  ) : rejected ? (
+    <Chip label="Rejected" color="error" variant="filled" />
+  ) : result.isError ? (
+    <Chip label="Unknown" variant="outlined" />
+  ) : (
+    <Chip label="Pending" color="warning" variant="filled" />
+  );
+
   return (
     <FetchStatusCheck
       isLoading={isLoading}
       isError={isError}
-      errorMessage={error ? error.message : "Error fetching transaction details."}
+      errorMessage={result.error ? result.error.message : "Error fetching transaction details."}
     >
       <Fade in={!isLoading && !isError}>
         <Box>
-          {data?.result && isFinalized(data.result) ? (
-            <>
-              {/* Summary table */}
-              <TableContainer sx={{ mb: 2 }}>
-                <Table>
-                  <TableBody>
-                    <TableRow>
-                      <TableCell>Transaction Hash</TableCell>
-                      <DataTableCell>{normalizedId}</DataTableCell>
-                    </TableRow>
-                    <TableRow>
-                      <TableCell>Decision</TableCell>
-                      <DataTableCell>
-                        <StatusChip
-                          status={data.result.Finalized.final_decision}
-                          showTitle={true}
-                          feeOnly={isFeeOnlyResult(execResult)}
-                        />
-                      </DataTableCell>
-                    </TableRow>
-                    {isFeeOnlyResult(execResult) && (
-                      <TableRow>
-                        <TableCell>Rejection Reason</TableCell>
-                        <DataTableCell>{formatRejectReason(execResult.AcceptFeeRejectRest[1])}</DataTableCell>
-                      </TableRow>
-                    )}
-                    <TableRow>
-                      <TableCell>Finalized Time</TableCell>
-                      <DataTableCell>{data.result.Finalized.finalized_time || "N/A"}</DataTableCell>
-                    </TableRow>
-                    <TableRow>
-                      <TableCell>Execution Time</TableCell>
-                      <DataTableCell>
-                        {data.result.Finalized.execution_result?.execution_time
-                          ? `${data.result.Finalized.execution_result.execution_time.secs}s ${Math.round(
-                              data.result.Finalized.execution_result.execution_time.nanos / 1_000_000,
-                            )}ms`
-                          : "N/A"}
-                      </DataTableCell>
-                    </TableRow>
-                    <TableRow>
-                      <TableCell>Total Fees</TableCell>
-                      <DataTableCell>
-                        {data.result.Finalized.execution_result?.finalize?.fee_receipt?.total_fees_paid
-                          ? formatCurrency(
-                              data.result.Finalized.execution_result.finalize.fee_receipt.total_fees_paid,
-                              CURRENCY.DECIMALS,
-                              CURRENCY.SYMBOL,
-                            )
-                          : "--"}
-                      </DataTableCell>
-                    </TableRow>
-                    {data.result.Finalized.abort_details && (
-                      <TableRow>
-                        <TableCell>Abort Details</TableCell>
-                        <DataTableCell>{data.result.Finalized.abort_details}</DataTableCell>
-                      </TableRow>
-                    )}
-                    {transaction?.min_epoch != null && (
-                      <TableRow>
-                        <TableCell>Min Epoch</TableCell>
-                        <DataTableCell>{transaction.min_epoch.toString()}</DataTableCell>
-                      </TableRow>
-                    )}
-                    {transaction?.max_epoch != null && (
-                      <TableRow>
-                        <TableCell>Max Epoch</TableCell>
-                        <DataTableCell>{transaction.max_epoch.toString()}</DataTableCell>
-                      </TableRow>
-                    )}
-                    <TableRow>
-                      <TableCell>Download</TableCell>
-                      <DataTableCell>
-                        <Button
-                          variant="outlined"
-                          size="small"
-                          onClick={() => {
-                            const json = JSON.stringify(
-                              { result: data.result, transaction: txEntry?.transaction },
-                              null,
-                              2,
-                            );
-                            const blob = new Blob([json], { type: "application/json" });
-                            saveAs(blob, `tx-${normalizedId}.json`);
-                          }}
-                        >
-                          Download JSON
-                        </Button>
-                      </DataTableCell>
-                    </TableRow>
-                  </TableBody>
-                </Table>
-              </TableContainer>
+          {receipt && !finalized && (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              Validators no longer hold this transaction's execution result. Showing its committed receipt instead; logs
+              and per-instruction results are not part of a receipt.
+            </Alert>
+          )}
+          {result.isError && !receipt && (
+            <Alert severity="warning" sx={{ mb: 2 }}>
+              No validator holds a result for this transaction and it has no committed receipt. It may have aborted,
+              been rejected, or expired without being sequenced.
+            </Alert>
+          )}
 
+          {/* Summary table */}
+          <TableContainer sx={{ mb: 2 }}>
+            <Table>
+              <TableBody>
+                <TableRow>
+                  <TableCell>Transaction Hash</TableCell>
+                  <DataTableCell>{normalizedId}</DataTableCell>
+                </TableRow>
+                <TableRow>
+                  <TableCell>{finalized || receipt ? "Decision" : "Status"}</TableCell>
+                  <DataTableCell>{status}</DataTableCell>
+                </TableRow>
+                {finalized && isFeeOnlyResult(execResult) && (
+                  <TableRow>
+                    <TableCell>Rejection Reason</TableCell>
+                    <DataTableCell>{formatRejectReason(execResult.AcceptFeeRejectRest[1])}</DataTableCell>
+                  </TableRow>
+                )}
+                {rejected && (
+                  <>
+                    <TableRow>
+                      <TableCell>Rejection Reason</TableCell>
+                      <DataTableCell>{rejected.details}</DataTableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell>Rejected Time</TableCell>
+                      <DataTableCell>{rejected.rejected_time}</DataTableCell>
+                    </TableRow>
+                  </>
+                )}
+                {!rejected && txEntry?.rejected_reason && (
+                  <TableRow>
+                    <TableCell>Rejection Reason</TableCell>
+                    <DataTableCell>{txEntry.rejected_reason}</DataTableCell>
+                  </TableRow>
+                )}
+                {(finalized || receipt) && (
+                  <TableRow>
+                    <TableCell>Finalized Time</TableCell>
+                    <DataTableCell>
+                      {finalized?.finalized_time || txEntry?.summary?.finalized_at || "N/A"}
+                    </DataTableCell>
+                  </TableRow>
+                )}
+                {finalized && (
+                  <TableRow>
+                    <TableCell>Execution Time</TableCell>
+                    <DataTableCell>
+                      {finalized.execution_result?.execution_time
+                        ? `${finalized.execution_result.execution_time.secs}s ${Math.round(
+                            finalized.execution_result.execution_time.nanos / 1_000_000,
+                          )}ms`
+                        : "N/A"}
+                    </DataTableCell>
+                  </TableRow>
+                )}
+                {receipt && (
+                  <TableRow>
+                    <TableCell>Receipt</TableCell>
+                    <DataTableCell>
+                      <Link component={RouterLink} to={`/transaction-receipts/${normalizedId}`}>
+                        Committed in epoch {String(receipt.epoch)}
+                      </Link>
+                    </DataTableCell>
+                  </TableRow>
+                )}
+                {(finalized || receipt) && (
+                  <TableRow>
+                    <TableCell>Total Fees</TableCell>
+                    <DataTableCell>
+                      {feeReceipt?.total_fees_paid
+                        ? formatCurrency(feeReceipt.total_fees_paid, CURRENCY.DECIMALS, CURRENCY.SYMBOL)
+                        : "--"}
+                    </DataTableCell>
+                  </TableRow>
+                )}
+                {finalized?.abort_details && (
+                  <TableRow>
+                    <TableCell>Abort Details</TableCell>
+                    <DataTableCell>{finalized.abort_details}</DataTableCell>
+                  </TableRow>
+                )}
+                {txEntry && (
+                  <TableRow>
+                    <TableCell>Seen Via</TableCell>
+                    <DataTableCell>{txEntry.source === "gossip" ? "Network gossip" : "Submitted here"}</DataTableCell>
+                  </TableRow>
+                )}
+                {transaction?.min_epoch != null && (
+                  <TableRow>
+                    <TableCell>Min Epoch</TableCell>
+                    <DataTableCell>{transaction.min_epoch.toString()}</DataTableCell>
+                  </TableRow>
+                )}
+                {transaction?.max_epoch != null && (
+                  <TableRow>
+                    <TableCell>Max Epoch</TableCell>
+                    <DataTableCell>{transaction.max_epoch.toString()}</DataTableCell>
+                  </TableRow>
+                )}
+                <TableRow>
+                  <TableCell>Download</TableCell>
+                  <DataTableCell>
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      onClick={() => {
+                        const json = JSON.stringify(
+                          { result: result.data?.result, receipt, transaction: txEntry?.transaction },
+                          null,
+                          2,
+                        );
+                        const blob = new Blob([json], { type: "application/json" });
+                        saveAs(blob, `tx-${normalizedId}.json`);
+                      }}
+                    >
+                      Download JSON
+                    </Button>
+                  </DataTableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+          </TableContainer>
+
+          {(finalized || receipt || txEntry) && (
+            <>
               {/* Expand / Collapse controls */}
               <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ px: 1, pb: 1 }}>
                 <Typography variant="h5">Details</Typography>
@@ -289,66 +369,72 @@ function Result({ transaction_id }: IndexerGetTransactionResultRequest) {
               </Accordion>
 
               {/* Events */}
-              {data.result.Finalized.execution_result?.finalize?.events?.length ? (
+              {events.length ? (
                 <Accordion expanded={expandedPanels.includes("p3")} onChange={handleChange("p3")}>
                   <AccordionSummary>
-                    <Typography variant="h5">
-                      Events ({data.result.Finalized.execution_result.finalize.events.length})
-                    </Typography>
+                    <Typography variant="h5">Events ({events.length})</Typography>
                   </AccordionSummary>
                   <AccordionDetails>
-                    <EventsContent data={data.result.Finalized.execution_result.finalize.events} />
+                    <EventsContent data={events} />
                   </AccordionDetails>
                 </Accordion>
               ) : null}
 
               {/* Logs */}
-              {data.result.Finalized.execution_result?.finalize?.logs?.length ? (
+              {finalize?.logs?.length ? (
                 <Accordion expanded={expandedPanels.includes("p4")} onChange={handleChange("p4")}>
                   <AccordionSummary>
-                    <Typography variant="h5">
-                      Logs ({data.result.Finalized.execution_result.finalize.logs.length})
-                    </Typography>
+                    <Typography variant="h5">Logs ({finalize.logs.length})</Typography>
                   </AccordionSummary>
                   <AccordionDetails>
-                    <LogsContent data={data.result.Finalized.execution_result.finalize.logs} />
+                    <LogsContent data={finalize.logs} />
                   </AccordionDetails>
                 </Accordion>
               ) : null}
 
               {/* Substates */}
-              {data.result.Finalized.execution_result?.finalize?.result &&
-                isAcceptResult(data.result.Finalized.execution_result.finalize.result) && (
-                  <Accordion expanded={expandedPanels.includes("p5")} onChange={handleChange("p5")}>
-                    <AccordionSummary>
-                      <Typography variant="h5">Substates</Typography>
-                    </AccordionSummary>
-                    <AccordionDetails>
-                      <SubstatesContent result={data.result.Finalized.execution_result.finalize.result} />
-                    </AccordionDetails>
-                  </Accordion>
-                )}
+              {execResult && isAcceptResult(execResult) ? (
+                <Accordion expanded={expandedPanels.includes("p5")} onChange={handleChange("p5")}>
+                  <AccordionSummary>
+                    <Typography variant="h5">Substates</Typography>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    <SubstatesContent result={execResult} />
+                  </AccordionDetails>
+                </Accordion>
+              ) : !finalized && receipt ? (
+                <Accordion expanded={expandedPanels.includes("p5")} onChange={handleChange("p5")}>
+                  <AccordionSummary>
+                    <Typography variant="h5">
+                      Substate Changes ({receipt.diff_summary.upped.length + receipt.diff_summary.downed.length})
+                    </Typography>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    <SubstateChanges upped={receipt.diff_summary.upped} downed={receipt.diff_summary.downed} />
+                  </AccordionDetails>
+                </Accordion>
+              ) : null}
 
               {/* Execution Results */}
-              {data.result.Finalized.execution_result?.finalize?.execution_results?.length ? (
+              {finalize?.execution_results?.length ? (
                 <Accordion expanded={expandedPanels.includes("p6")} onChange={handleChange("p6")}>
                   <AccordionSummary>
                     <Typography variant="h5">Execution Results</Typography>
                   </AccordionSummary>
                   <AccordionDetails>
-                    <ExecutionResults data={data.result.Finalized.execution_result.finalize.execution_results} />
+                    <ExecutionResults data={finalize.execution_results} />
                   </AccordionDetails>
                 </Accordion>
               ) : null}
 
               {/* Fee Receipt */}
-              {data.result.Finalized.execution_result?.finalize?.fee_receipt && (
+              {feeReceipt && (
                 <Accordion expanded={expandedPanels.includes("p7")} onChange={handleChange("p7")}>
                   <AccordionSummary>
                     <Typography variant="h5">Fee Receipt</Typography>
                   </AccordionSummary>
                   <AccordionDetails>
-                    <FeeReceipt data={data.result.Finalized.execution_result.finalize.fee_receipt} />
+                    <FeeReceipt data={feeReceipt} />
                   </AccordionDetails>
                 </Accordion>
               )}
@@ -373,39 +459,6 @@ function Result({ transaction_id }: IndexerGetTransactionResultRequest) {
                 </AccordionDetails>
               </Accordion>
             </>
-          ) : (
-            <TableContainer>
-              <Table>
-                <TableBody>
-                  <TableRow>
-                    <TableCell>Transaction Hash</TableCell>
-                    <DataTableCell>{normalizedId}</DataTableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell>Status</TableCell>
-                    <DataTableCell>
-                      {rejected ? (
-                        <Chip label="Rejected" color="error" variant="filled" />
-                      ) : (
-                        <Chip label="Pending" color="warning" variant="filled" />
-                      )}
-                    </DataTableCell>
-                  </TableRow>
-                  {rejected && (
-                    <>
-                      <TableRow>
-                        <TableCell>Rejection Reason</TableCell>
-                        <DataTableCell>{rejected.details}</DataTableCell>
-                      </TableRow>
-                      <TableRow>
-                        <TableCell>Rejected Time</TableCell>
-                        <DataTableCell>{rejected.rejected_time}</DataTableCell>
-                      </TableRow>
-                    </>
-                  )}
-                </TableBody>
-              </Table>
-            </TableContainer>
           )}
         </Box>
       </Fade>
