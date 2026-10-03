@@ -845,6 +845,7 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress> + Send + Sync + 'static
 
         let mut counted_pks: HashSet<RistrettoPublicKeyBytes> = HashSet::new();
         let mut attested_power = VotePower::zero();
+        let mut later_genesis_reports = LaterGenesisReports::default();
 
         // Pre-credit our own attestation. We hold the leaf QC ourselves and by definition have no
         // QC higher than our leaf's epoch — that's the question the probe is asking. Excluding
@@ -899,6 +900,14 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress> + Send + Sync + 'static
 
             // Stale peer: their QC is older than what we already know finalised. Don't count.
             if qc.epoch() < leaf_epoch {
+                continue;
+            }
+
+            if is_later_genesis_report(&qc, leaf) {
+                later_genesis_reports.record(member, qc.epoch());
+                if let Some(epoch) = later_genesis_reports.proven_epoch(committee.max_failures()) {
+                    return Ok(ProbeOutcome::HigherQcSeen { epoch });
+                }
                 continue;
             }
 
@@ -1158,6 +1167,43 @@ fn proves_progress_beyond(qc: &ProposalCertificate, leaf: &LeafBlock) -> bool {
     qc.epoch() > leaf.epoch() && qc.shard_group() == leaf.shard_group() && !qc.justifies_zero_block()
 }
 
+/// True if `qc` is the zero-block certificate of a genesis for `leaf`'s shard group in an epoch after `leaf`'s.
+fn is_later_genesis_report(qc: &ProposalCertificate, leaf: &LeafBlock) -> bool {
+    qc.epoch() > leaf.epoch() && qc.shard_group() == leaf.shard_group() && qc.justifies_zero_block()
+}
+
+/// Members of the leaf committee whose probe answer is a later epoch's genesis certificate (see
+/// `is_later_genesis_report`).
+///
+/// A member creates a genesis only after committing the epoch before it, and a committee moves one epoch at a time, so
+/// an honest reporter at epoch E shows every epoch from the leaf's up to E - 1 was finalised. The certificate carries
+/// no signatures, so one answer proves nothing. Reporters whose combined power exceeds the committee's fault tolerance
+/// include at least one honest member, whose epoch bounds the lowest reported one from above.
+#[derive(Debug, Default)]
+struct LaterGenesisReports {
+    reporters: HashSet<RistrettoPublicKeyBytes>,
+    power: VotePower,
+    lowest_epoch: Option<Epoch>,
+}
+
+impl LaterGenesisReports {
+    fn record<TAddr>(&mut self, member: &CommitteeMember<TAddr>, epoch: Epoch) {
+        if self.reporters.insert(member.public_key) {
+            self.power += member.vote_power;
+            self.lowest_epoch = Some(self.lowest_epoch.map_or(epoch, |lowest| lowest.min(epoch)));
+        }
+    }
+
+    /// The lowest reported epoch, once the reporters' power exceeds `max_failures`.
+    fn proven_epoch(&self, max_failures: VotePower) -> Option<Epoch> {
+        if self.power > max_failures {
+            self.lowest_epoch
+        } else {
+            None
+        }
+    }
+}
+
 fn extract_tree_change(
     network: Network,
     update: &SubstateUpdateProof,
@@ -1261,6 +1307,59 @@ mod tests {
         let group = ShardGroup::new(0u32, 31u32);
         let leaf = leaf_at(Epoch(7), group);
         assert!(!proves_progress_beyond(&certified_at(Epoch(7), group), &leaf));
+    }
+
+    fn member(id: u8) -> CommitteeMember<u8> {
+        CommitteeMember {
+            address: id,
+            public_key: RistrettoPublicKeyBytes::from([id; 32]),
+            vote_power: VotePower::of(1),
+        }
+    }
+
+    #[test]
+    fn a_later_genesis_is_a_report_only_for_the_leaf_group() {
+        let group = ShardGroup::new(0u32, 31u32);
+        let leaf = leaf_at(Epoch(7), group);
+        assert!(is_later_genesis_report(
+            &ProposalCertificate::genesis(Epoch(8), group),
+            &leaf
+        ));
+        assert!(!is_later_genesis_report(
+            &ProposalCertificate::genesis(Epoch(7), group),
+            &leaf
+        ));
+        assert!(!is_later_genesis_report(
+            &ProposalCertificate::genesis(Epoch(8), ShardGroup::new(32u32, 63u32)),
+            &leaf
+        ));
+        assert!(!is_later_genesis_report(&certified_at(Epoch(8), group), &leaf));
+    }
+
+    #[test]
+    fn genesis_reports_up_to_the_fault_tolerance_prove_nothing() {
+        let max_failures = VotePower::of(1);
+        let mut reports = LaterGenesisReports::default();
+        reports.record(&member(1), Epoch(8));
+        assert_eq!(reports.proven_epoch(max_failures), None);
+    }
+
+    #[test]
+    fn genesis_reports_beyond_the_fault_tolerance_prove_the_lowest_epoch() {
+        let max_failures = VotePower::of(1);
+        let mut reports = LaterGenesisReports::default();
+        reports.record(&member(1), Epoch(9));
+        reports.record(&member(2), Epoch(8));
+        assert_eq!(reports.proven_epoch(max_failures), Some(Epoch(8)));
+    }
+
+    #[test]
+    fn a_repeated_genesis_reporter_counts_once() {
+        let max_failures = VotePower::of(1);
+        let mut reports = LaterGenesisReports::default();
+        reports.record(&member(1), Epoch(8));
+        reports.record(&member(1), Epoch(8));
+        assert_eq!(reports.proven_epoch(max_failures), None);
     }
 
     #[test]
