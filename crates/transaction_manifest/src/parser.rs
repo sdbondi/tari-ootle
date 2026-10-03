@@ -517,14 +517,18 @@ fn macro_call(mac: &Ident, tokens: TokenStream) -> Result<ManifestIntent, syn::E
 /// name is carried as an `Ident` from here on.
 fn parse_blob_name(mac: &Ident, tokens: TokenStream) -> Result<Ident, syn::Error> {
     if let Ok(lit_str) = parse2::<LitStr>(tokens.clone()) {
-        let mut ident = Parser::parse_str(Ident::parse_any, &lit_str.value()).map_err(|_| {
-            syn::Error::new_spanned(
+        let value = lit_str.value();
+        // Tokenizing drops surrounding whitespace and comments, so the parsed ident must match the literal exactly.
+        return match Parser::parse_str(Ident::parse_any, &value) {
+            Ok(mut ident) if ident == value => {
+                ident.set_span(lit_str.span());
+                Ok(ident)
+            },
+            _ => Err(syn::Error::new_spanned(
                 &lit_str,
-                format!("blob! name {:?} is not a valid identifier", lit_str.value()),
-            )
-        })?;
-        ident.set_span(lit_str.span());
-        return Ok(ident);
+                format!("blob! name {value:?} is not a valid identifier"),
+            )),
+        };
     }
     parse2::<Ident>(tokens)
         .map_err(|e| syn::Error::new_spanned(mac, format!("Expected identifier or string literal in blob!: {}", e)))

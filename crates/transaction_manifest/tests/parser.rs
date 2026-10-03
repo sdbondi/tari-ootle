@@ -853,6 +853,9 @@ fn blob_macro_string_that_is_not_an_identifier_errors() {
         r#"fn main() { let x = blob!("/*"); }"#,
         r#"fn main() { let x = blob!("\""); }"#,
         r#"fn main() { let x = blob!("\0"); }"#,
+        r#"fn main() { let x = blob!(" foo "); }"#,
+        r#"fn main() { let x = blob!("foo /* x */"); }"#,
+        r#"fn main() { let x = blob!("foo // x"); }"#,
         r#"
             use template_c2b621869ec2929d3b9503ea41054f01b468ce99e50254b58e460f608ae377f7 as MyTemplate;
             fn main() { let comp = MyTemplate::new(blob!("my blob")); }
