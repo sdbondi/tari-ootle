@@ -338,6 +338,10 @@ impl RootProofTree {
 /// Keying by shard is what lets a proof name the shard a root belongs to. A verifier proves a
 /// substate against the root at the leaf of the substate's own shard, so no other shard's root can
 /// stand in for it.
+///
+/// A shard whose JMT is empty has no leaf: the absence of its leaf commits to the empty-tree root
+/// [`SPARSE_MERKLE_PLACEHOLDER_HASH`]. This keeps the tree, and the cost of building it for every
+/// block, proportional to the shards that hold state.
 pub struct ShardGroupRootTree {
     store: MemoryTreeStore<()>,
     root: TreeHash,
@@ -349,6 +353,7 @@ impl ShardGroupRootTree {
         let mut store = MemoryTreeStore::<()>::new();
         let mut changes = shard_roots
             .into_iter()
+            .filter(|(_, root)| *root != SPARSE_MERKLE_PLACEHOLDER_HASH)
             .map(|(shard, root)| (ShardKeyMapper::map_to_leaf_key(&shard), Some((root, ()))))
             .peekable();
         if changes.peek().is_none() {
@@ -373,7 +378,8 @@ impl ShardGroupRootTree {
         self.root
     }
 
-    /// Proves the root stored for `shard`, or that the tree holds none for it.
+    /// Proves the root stored for `shard`, or that the tree holds none for it - which is the proof
+    /// that the shard's root is the empty-tree root.
     pub fn get_proof(&self, shard: Shard) -> Result<(Option<ProofValue<()>>, SparseMerkleProofExt), StateTreeError> {
         let jmt = JellyfishMerkleTree::new(&self.store);
         let key = ShardKeyMapper::map_to_leaf_key(&shard);

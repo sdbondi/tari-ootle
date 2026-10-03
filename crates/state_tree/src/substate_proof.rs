@@ -2,7 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use serde::{Deserialize, Serialize};
-use tari_jellyfish::{SparseMerkleProofExt, TreeHash};
+use tari_jellyfish::{SPARSE_MERKLE_PLACEHOLDER_HASH, SparseMerkleProofExt, TreeHash};
 use tari_ootle_common_types::{NumPreshards, VersionedSubstateId, shard::Shard};
 
 use crate::key_mapper::{DbKeyMapper, ShardKeyMapper, SpreadPrefixKeyMapper};
@@ -73,11 +73,17 @@ impl SubstateValueProof {
     /// A substate is absent from every shard but its own, so an exclusion proof is only meaningful
     /// against its own shard's root: `shard` must be derived from the substate being proved, never
     /// taken from the prover.
+    ///
+    /// An empty shard has no leaf in that tree, so its root is proved by the absence of the leaf.
     fn verify_shard_root(&self, group_root: &TreeHash, shard: Shard) -> Result<(), SubstateValueProofError> {
         let shard_key = ShardKeyMapper::map_to_leaf_key(&shard);
-        self.shard_root_proof
-            .verify_inclusion(group_root, &shard_key, &self.shard_root)
-            .map_err(|e| SubstateValueProofError::ShardRootProof(e.to_string()))
+        let result = if self.shard_root == SPARSE_MERKLE_PLACEHOLDER_HASH {
+            self.shard_root_proof.verify_exclusion(group_root, &shard_key)
+        } else {
+            self.shard_root_proof
+                .verify_inclusion(group_root, &shard_key, &self.shard_root)
+        };
+        result.map_err(|e| SubstateValueProofError::ShardRootProof(e.to_string()))
     }
 }
 
