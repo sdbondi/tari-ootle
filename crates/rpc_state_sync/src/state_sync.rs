@@ -902,6 +902,15 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress> + Send + Sync + 'static
                 continue;
             }
 
+            if qc.epoch() > leaf_epoch && !proves_progress_beyond(&qc, leaf) {
+                debug!(
+                    target: LOG_TARGET,
+                    "🛜 Probe: {} returned QC at epoch {} for {} that cannot prove our committee moved past leaf {}; skipping",
+                    member.address, qc.epoch(), qc.shard_group(), leaf,
+                );
+                continue;
+            }
+
             // Verify QC against the committee that COULD have signed at qc.epoch().
             let verify_committee = if qc.epoch() == leaf_epoch {
                 committee.clone()
@@ -1139,6 +1148,16 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress> + Send + Sync + 'static
     }
 }
 
+/// True if `qc`, once its signatures verify, proves that the committee of `leaf`'s shard group certified a block in
+/// an epoch after `leaf`'s.
+///
+/// Only a signed certificate for the leaf's own shard group is that proof. A zero-block certificate is valid with no
+/// signatures, so a single peer can produce one for any epoch; a certificate for another shard group is evidence
+/// about that group's chain only.
+fn proves_progress_beyond(qc: &ProposalCertificate, leaf: &LeafBlock) -> bool {
+    qc.epoch() > leaf.epoch() && qc.shard_group() == leaf.shard_group() && !qc.justifies_zero_block()
+}
+
 fn extract_tree_change(
     network: Network,
     update: &SubstateUpdateProof,
@@ -1174,12 +1193,74 @@ fn is_peer_unavailable(err: &RpcStateSyncError) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use tari_common_types::types::FixedHash;
+    use tari_consensus_types::BlockId;
+    use tari_ootle_common_types::NodeHeight;
     use tari_rpc_framework::RpcStatus;
+    use tari_sidechain::QuorumDecision;
 
     use super::*;
 
     fn request_failed(status: RpcStatus) -> RpcStateSyncError {
         RpcStateSyncError::RpcError(RpcError::RequestFailed(status))
+    }
+
+    fn leaf_at(epoch: Epoch, shard_group: ShardGroup) -> LeafBlock {
+        ProposalCertificate::new(
+            FixedHash::from([1u8; 32]),
+            BlockId::zero(),
+            NodeHeight(12),
+            epoch,
+            shard_group,
+            vec![],
+            QuorumDecision::Accept,
+        )
+        .as_leaf_block()
+    }
+
+    fn certified_at(epoch: Epoch, shard_group: ShardGroup) -> ProposalCertificate {
+        ProposalCertificate::new(
+            FixedHash::from([2u8; 32]),
+            BlockId::zero(),
+            NodeHeight(1),
+            epoch,
+            shard_group,
+            vec![],
+            QuorumDecision::Accept,
+        )
+    }
+
+    #[test]
+    fn a_later_certificate_for_the_leaf_group_proves_progress() {
+        let group = ShardGroup::new(0u32, 31u32);
+        let leaf = leaf_at(Epoch(7), group);
+        assert!(proves_progress_beyond(&certified_at(Epoch(8), group), &leaf));
+    }
+
+    #[test]
+    fn a_zero_block_certificate_never_proves_progress() {
+        let group = ShardGroup::new(0u32, 31u32);
+        let leaf = leaf_at(Epoch(7), group);
+        assert!(!proves_progress_beyond(
+            &ProposalCertificate::genesis(Epoch(8), group),
+            &leaf
+        ));
+    }
+
+    #[test]
+    fn a_certificate_for_another_shard_group_does_not_prove_progress() {
+        let leaf = leaf_at(Epoch(7), ShardGroup::new(0u32, 31u32));
+        assert!(!proves_progress_beyond(
+            &certified_at(Epoch(8), ShardGroup::new(32u32, 63u32)),
+            &leaf
+        ));
+    }
+
+    #[test]
+    fn a_certificate_at_the_leaf_epoch_does_not_prove_progress() {
+        let group = ShardGroup::new(0u32, 31u32);
+        let leaf = leaf_at(Epoch(7), group);
+        assert!(!proves_progress_beyond(&certified_at(Epoch(7), group), &leaf));
     }
 
     #[test]
