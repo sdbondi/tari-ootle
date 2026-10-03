@@ -487,19 +487,26 @@ where
         let heads = self.fetch_and_cache_heads(&miss_ids).await?;
 
         for req in misses {
-            let from_batch = heads.get(req.substate_id()).and_then(|head| {
-                let entry = SubstateCacheEntry {
-                    version: head.result.version(),
-                    substate_result: head.result.clone(),
-                    cached_at: 0,
-                    verified: head.verified,
-                };
-                entry.answer_at(req.version()).map(|entry| SubstateLookupResult {
-                    result: entry.substate_result,
-                    verified: entry.verified,
-                    proof: None,
+            // An unproven head that is not up is confirmed with the committee before the lookup
+            // stops at it, as an omitted one is.
+            let from_batch = heads
+                .get(req.substate_id())
+                .filter(|head| {
+                    head.verified || !self.verify_substate_proofs || matches!(head.result, SubstateResult::Up { .. })
                 })
-            });
+                .and_then(|head| {
+                    let entry = SubstateCacheEntry {
+                        version: head.result.version(),
+                        substate_result: head.result.clone(),
+                        cached_at: 0,
+                        verified: head.verified,
+                    };
+                    entry.answer_at(req.version()).map(|entry| SubstateLookupResult {
+                        result: entry.substate_result,
+                        verified: entry.verified,
+                        proof: None,
+                    })
+                });
             let lookup = match from_batch {
                 Some(lookup) => lookup,
                 None => self.get_substate(req.substate_id(), req.version()).await?,
@@ -546,7 +553,7 @@ where
             .await?;
 
         let mut results = HashMap::with_capacity(substate_ids.len());
-        for (batch, verified) in batches {
+        for (batch, batch_verified) in batches {
             let commit_proof = batch.commit_proof;
             if !batch.missing.is_empty() {
                 debug!(
@@ -557,6 +564,9 @@ where
             }
 
             for substate in batch.substates {
+                // A batch answers with heads, and the proof of a down version cannot show that no
+                // later version is up, so only an up head is proven by its batch.
+                let verified = batch_verified && matches!(substate.result, SubstateResult::Up { .. });
                 // A proven batch carries an anchor and a value proof for every result in it.
                 let proof = commit_proof.clone().zip(substate.value_proof).filter(|_| verified).map(
                     |(commit_proof, substate_value_proof)| SubstateProofData {
@@ -739,7 +749,7 @@ where
             });
         };
 
-        let tally = CommitteeReadTally::new(committee.len(), self.verify_substate_proofs);
+        let tally = CommitteeReadTally::new(committee.len(), self.verify_substate_proofs, substate_req.version());
         race_committee(
             committee
                 .shuffled()
@@ -927,11 +937,13 @@ mod tests {
 
     type Addr = String;
 
-    /// A single-member network holding `live` and answering batches for all of it except `omitted_from_batches`.
+    /// A single-member network holding `live` and answering batches for all of it except `omitted_from_batches`,
+    /// and with a down head for `down_in_batches`. Every answer is unproven.
     #[derive(Default)]
     struct FakeNetwork {
         live: HashMap<SubstateId, Substate>,
         omitted_from_batches: HashSet<SubstateId>,
+        down_in_batches: HashSet<SubstateId>,
         batch_requests: AtomicUsize,
         single_requests: AtomicUsize,
     }
@@ -974,9 +986,9 @@ mod tests {
 
         async fn get_substate_with_proof(
             &mut self,
-            _: SubstateRequirementRef<'_>,
+            substate_req: SubstateRequirementRef<'_>,
         ) -> Result<(SubstateResult, Option<SubstateProofData>), ValidatorNodeRpcClientError> {
-            unimplemented!()
+            Ok((self.get_substate(substate_req).await?, None))
         }
 
         async fn get_substates_batch(
@@ -992,6 +1004,16 @@ mod tests {
             };
             for &id in substate_ids {
                 match self.0.live.get(id) {
+                    Some(substate) if self.0.down_in_batches.contains(id) => {
+                        batch.substates.push(tari_validator_node_rpc::client::BatchedSubstate {
+                            substate_id: id.clone(),
+                            result: SubstateResult::Down {
+                                version: substate.version(),
+                            },
+                            value_proof: None,
+                            proof_epoch: 0,
+                        })
+                    },
                     Some(substate) if !self.0.omitted_from_batches.contains(id) => {
                         batch.substates.push(tari_validator_node_rpc::client::BatchedSubstate {
                             substate_id: id.clone(),
@@ -1258,6 +1280,27 @@ mod tests {
             omitted_from_batches: HashSet::from([ids[1].clone()]),
             ..Default::default()
         });
+
+        let lookup = manager.get_input_substates(&requirements(&ids)).await.unwrap();
+
+        let InputSubstatesLookup::AllUp(found) = lookup else {
+            panic!("expected every input to be up, got {lookup:?}");
+        };
+        assert_eq!(found.len(), ids.len());
+        assert_eq!(network.single_requests.load(Ordering::Relaxed), 1);
+    }
+
+    /// A batch answers with heads, and a down head is not proven by its batch, so while verification is
+    /// on the committee is asked before the lookup stops at it.
+    #[tokio::test]
+    async fn it_confirms_an_input_a_batch_reported_down() {
+        let ids = (0..3).map(component_id).collect::<Vec<_>>();
+        let (manager, network) = manager(FakeNetwork {
+            live: live(&ids),
+            down_in_batches: HashSet::from([ids[1].clone()]),
+            ..Default::default()
+        });
+        let manager = manager.with_substate_proof_verification(true);
 
         let lookup = manager.get_input_substates(&requirements(&ids)).await.unwrap();
 
