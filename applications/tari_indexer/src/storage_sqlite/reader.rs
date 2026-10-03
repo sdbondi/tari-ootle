@@ -768,13 +768,15 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
     fn substate_transitions_get_latest_state_version(
         &mut self,
         shard: Shard,
+        at_most: StateVersion,
     ) -> Result<Option<(StateVersion, Epoch)>, StorageError> {
         const OPERATION: &str = "substate_transitions_get_latest_state_version";
         use crate::storage_sqlite::schema::substate_transitions;
+        let at_most = i64::try_from(at_most.as_u64()).unwrap_or(i64::MAX);
         let latest = substate_transitions::table
             .select((substate_transitions::state_version, substate_transitions::epoch))
             .filter(substate_transitions::shard.eq(shard.as_u32() as i32))
-            .filter(substate_transitions::state_version.ge(0))
+            .filter(substate_transitions::state_version.between(0, at_most))
             .order_by(substate_transitions::state_version.desc())
             .first::<(i64, i64)>(self.connection())
             .optional()
@@ -783,6 +785,27 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
             })?;
 
         Ok(latest.map(|(state_version, epoch)| (StateVersion::new(state_version as u64), Epoch(epoch as u64))))
+    }
+
+    fn substate_transitions_exist_above(&mut self, shard: Shard, at_most: StateVersion) -> Result<bool, StorageError> {
+        const OPERATION: &str = "substate_transitions_exist_above";
+        use diesel::BoolExpressionMethods;
+
+        use crate::storage_sqlite::schema::substate_transitions;
+        let at_most = i64::try_from(at_most.as_u64()).unwrap_or(i64::MAX);
+        diesel::select(diesel::dsl::exists(
+            substate_transitions::table
+                .filter(substate_transitions::shard.eq(shard.as_u32() as i32))
+                .filter(
+                    substate_transitions::state_version
+                        .gt(at_most)
+                        .or(substate_transitions::state_version.lt(0)),
+                ),
+        ))
+        .get_result(self.connection())
+        .map_err(|e| StorageError::QueryError {
+            reason: format!("{OPERATION}: {}", e),
+        })
     }
 
     fn utxos_get_max_state_version(
