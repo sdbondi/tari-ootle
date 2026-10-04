@@ -154,7 +154,7 @@ impl SqliteSubstateCache {
                 let ahead = self
                     .watermarks
                     .get(Self::shard_of(invalidation.substate_id()), Duration::MAX)
-                    .map_or(0, |version| version.as_u64() + 1);
+                    .map_or(0, |version| version.as_u64().saturating_add(1));
                 (invalidation, StateVersion::new(ahead))
             })
             .collect::<Vec<_>>();
