@@ -443,6 +443,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reads_order_and_resume_across_the_whole_version_range() {
+        // Versions from 2^63 up are stored negative in the signed column.
+        let high = i64::MAX as u64 + 1;
+        let (_dir, store) = store_with_utxos(&[(10, 1), (high, 1), (u64::MAX, 1)]).await;
+
+        let set = read_updates(&store, 0, 1).await;
+        assert_eq!(set.max_state_version, StateVersion::new(10));
+        assert!(set.has_more);
+        let set = read_updates(&store, 10, 1).await;
+        assert_eq!(set.max_state_version, StateVersion::new(high));
+        assert!(set.has_more);
+        let set = read_updates(&store, high, 1).await;
+        assert_eq!(set.max_state_version, StateVersion::new(u64::MAX));
+        assert!(!set.has_more);
+        assert!(read_updates(&store, u64::MAX, 1).await.updates.is_empty());
+
+        let max = store
+            .with_read_tx(|tx| {
+                tx.utxos_get_max_state_version(utxo_resource(), tari_ootle_common_types::shard::Shard::from(1u32))
+            })
+            .await
+            .unwrap();
+        assert_eq!(max, StateVersion::new(u64::MAX));
+    }
+
+    #[tokio::test]
     async fn a_version_wider_than_the_limit_is_served_whole() {
         // No complete earlier version to stop at, so the limit gives way rather than the read
         // returning nothing and stranding the cursor.
