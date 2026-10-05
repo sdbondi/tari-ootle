@@ -169,6 +169,7 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
             &self.state_store,
             shard,
             checkpoint_shard_root,
+            checkpoint.get_shard_state_version(shard),
         );
         let maybe_persisted_state_version = shard_sync.discard_unverified_state()?;
 
@@ -177,14 +178,7 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
             return Ok(None);
         }
 
-        // The stream is inclusive of start_state_version, so it must be the first version we have not
-        // yet persisted. A persisted version must never be written a second time: JMT nodes are keyed
-        // by (version, nibble_path), so rewriting a version overwrites live nodes and records those
-        // very keys as stale at that version, and the stale-node GC then deletes them from under the
-        // current tree. Bootstrapped genesis state is committed at version 0 and is never synced -
-        // every node bootstraps it - so a freshly bootstrapped node starts at version 1, which is also
-        // the minimum the peer accepts.
-        let start_state_version = maybe_persisted_state_version.map_or(1, |v| v + 1);
+        let start_state_version = shard_sync.start_state_version(maybe_persisted_state_version)?;
         info!(
             target: LOG_TARGET,
             "🛜Syncing from v{start_state_version}",
