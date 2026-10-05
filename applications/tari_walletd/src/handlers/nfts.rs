@@ -252,7 +252,18 @@ pub async fn handle_transfer(
     let sdk = context.wallet_sdk();
 
     // fetch accounts and its inputs
+    let (source_account, mut inputs) = get_account_with_inputs(Some(&req.source_account), sdk)?;
+    enforce_scopes(&granted, &[Permission::Transfer(
+        Crud::Create,
+        Some(*source_account.component_address()),
+    )])?;
+    // The fee payer's key signs the transaction and its account pays the fee, so the caller needs the same
+    // transfer scope on it as on the source account.
     let (fee_payer_account, fee_payer_account_inputs) = get_account_with_inputs(Some(&req.fee_payer_account), sdk)?;
+    enforce_scopes(&granted, &[Permission::Transfer(
+        Crud::Create,
+        Some(*fee_payer_account.component_address()),
+    )])?;
     let fee_payer_account = fee_payer_account.account;
     let fee_payer_key_id = fee_payer_account.owner_key_id.ok_or_else(|| {
         invalid_params(
@@ -261,11 +272,6 @@ pub async fn handle_transfer(
         )
     })?;
     let fee_payer_account_address = fee_payer_account.component_address;
-    let (source_account, mut inputs) = get_account_with_inputs(Some(&req.source_account), sdk)?;
-    enforce_scopes(&granted, &[Permission::Transfer(
-        Crud::Create,
-        Some(*source_account.component_address()),
-    )])?;
     let account_owner_key_id = source_account.account.owner_key_id().ok_or_else(|| {
         invalid_params(
             "source_account",
@@ -442,4 +448,190 @@ pub async fn handle_transfer(
         fee_refunded: req.max_fee.saturating_sub(finalized.final_fee),
         result: finalized.finalize,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use axum_extra::headers::Authorization;
+    use tari_ootle_address::Network;
+    use tari_ootle_common_types::Epoch;
+    use tari_ootle_wallet_sdk::{
+        WalletSdkConfig,
+        cipher_seed::CipherSeedRestore,
+        models::{EpochBirthday, KeyBranch, KeyId},
+    };
+    use tari_ootle_wallet_sdk_services::{
+        account_monitor::AccountMonitor,
+        indexer_rest_api::IndexerRestApiNetworkInterface,
+        notify::Notify,
+        transaction_service::TransactionService,
+        utxo_scanner::StealthUtxoScannerWorker,
+    };
+    use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
+    use tari_ootle_walletd_client::{ComponentAddressOrName, permissions::Permissions};
+    use tari_shutdown::Shutdown;
+    use tari_utilities::SafePassword;
+
+    use super::*;
+    use crate::{
+        WalletSdk,
+        config::{WalletDaemonAuth, WalletDaemonConfig},
+        handlers::{
+            HandlerContext,
+            auth::{create_authenticator, jwt::AuthError},
+        },
+    };
+
+    /// A handler context holding two wallet accounts. The indexer URL points at a closed port, so a request that gets
+    /// past authorization fails fast on its first network call. `_temp` keeps the SQLite directory alive.
+    struct TransferTest {
+        context: HandlerContext,
+        account_a: ComponentAddress,
+        account_b: ComponentAddress,
+        _temp: tempfile::TempDir,
+    }
+
+    impl TransferTest {
+        fn bearer(&self, permissions: &str) -> Bearer {
+            let permissions = Permissions::from_str(permissions).unwrap();
+            let claims = self.context.jwt_api().generate_auth_claims(permissions).unwrap();
+            let token = self.context.jwt_api().grant(&claims).unwrap();
+            Authorization::<Bearer>::bearer(&token).unwrap().0
+        }
+
+        fn request(&self, source: ComponentAddress, fee_payer: ComponentAddress) -> TransferNftRequest {
+            let target = get_account(&self.account_a.into(), &self.context.wallet_sdk().accounts_api())
+                .unwrap()
+                .address()
+                .clone();
+            TransferNftRequest {
+                resource_address: NFT_FAUCET_RESOURCE_ADDRESS,
+                nfts: vec![],
+                fee_payer_account: ComponentAddressOrName::ComponentAddress(fee_payer),
+                source_account: ComponentAddressOrName::ComponentAddress(source),
+                target_account_address: target,
+                max_fee: 1000,
+                dry_run: true,
+            }
+        }
+    }
+
+    async fn setup() -> TransferTest {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SqliteWalletStore::try_open(temp.path().join("wallet.sqlite")).unwrap();
+        store.run_migrations().unwrap();
+        let mut sdk = WalletSdk::initialize_with_local_key_store(
+            store.clone(),
+            IndexerRestApiNetworkInterface::new("http://127.0.0.1:1"),
+            WalletSdkConfig {
+                network: Network::LocalNet,
+                override_keyring_password: Some(SafePassword::from_str("test wallet password").unwrap()),
+            },
+            EpochBirthday::far_future(),
+        )
+        .unwrap();
+        sdk.initialize_cipher_seed(CipherSeedRestore::CreateNewIfRequired)
+            .unwrap();
+
+        let account_a = ComponentAddress::from_array([0xaa; 32]);
+        let account_b = ComponentAddress::from_array([0xbb; 32]);
+        for (index, (name, address)) in [("a", account_a), ("b", account_b)].into_iter().enumerate() {
+            sdk.accounts_api()
+                .add_account(
+                    Some(name),
+                    &address,
+                    KeyId::derived(KeyBranch::ViewOnlyKey, index as u64),
+                    KeyId::derived(KeyBranch::Account, index as u64),
+                    Epoch::zero(),
+                    false,
+                    index == 0,
+                )
+                .unwrap();
+        }
+
+        let notify = Notify::new(10);
+        let shutdown = Shutdown::new();
+        let (transaction_service, transaction_service_handle) =
+            TransactionService::new(notify.clone(), sdk.clone(), shutdown.to_signal());
+        let (utxo_worker, utxo_scanner_handle) = StealthUtxoScannerWorker::new(sdk.clone(), notify.clone()).spawn();
+        let (account_monitor, account_monitor_handle) =
+            AccountMonitor::new(notify.clone(), sdk.clone(), utxo_scanner_handle, shutdown.to_signal());
+        let mut config = WalletDaemonConfig::default();
+        config.network = Network::LocalNet;
+        config.authentication = WalletDaemonAuth::None;
+        let context = HandlerContext::new(
+            sdk,
+            notify,
+            transaction_service_handle,
+            account_monitor_handle,
+            config.clone(),
+            create_authenticator(&config, store).unwrap(),
+            SafePassword::from_str("test jwt secret").unwrap(),
+            shutdown.to_signal(),
+        );
+
+        // The background workers are not used by this handler; shut them down now.
+        shutdown.trigger();
+        drop(account_monitor);
+        drop(transaction_service);
+        utxo_worker.abort();
+        drop(utxo_worker.await);
+
+        TransferTest {
+            context,
+            account_a,
+            account_b,
+            _temp: temp,
+        }
+    }
+
+    #[tokio::test]
+    async fn transfer_requires_transfer_scope_on_the_fee_payer() {
+        let test = setup().await;
+        let bearer = test.bearer(&format!("transfer:create:{}", test.account_a));
+
+        let err = handle_transfer(
+            &test.context,
+            Some(&bearer),
+            test.request(test.account_a, test.account_b),
+        )
+        .await
+        .expect_err("a fee payer outside the token's scope must be rejected");
+        let auth_err = err
+            .downcast_ref::<AuthError>()
+            .unwrap_or_else(|| panic!("expected an AuthError, got: {err}"));
+        assert!(
+            matches!(
+                auth_err,
+                AuthError::InsufficientPermissions {
+                    required: Permission::Transfer(Crud::Create, Some(addr)),
+                } if *addr == test.account_b
+            ),
+            "the missing scope should be transfer:create on the fee payer: {auth_err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn transfer_accepts_a_fee_payer_within_scope() {
+        let test = setup().await;
+
+        for (permissions, fee_payer) in [
+            (format!("transfer:create:{}", test.account_a), test.account_a),
+            (
+                format!("transfer:create:{},transfer:create:{}", test.account_a, test.account_b),
+                test.account_b,
+            ),
+        ] {
+            let bearer = test.bearer(&permissions);
+            let err = handle_transfer(&test.context, Some(&bearer), test.request(test.account_a, fee_payer))
+                .await
+                .expect_err("the offline indexer fails the request after authorization");
+            assert!(
+                err.downcast_ref::<AuthError>().is_none(),
+                "fee payer {fee_payer} is within scope of '{permissions}', got: {err}"
+            );
+        }
+    }
 }
