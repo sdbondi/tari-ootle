@@ -1,0 +1,19 @@
+[workspace]
+[package]
+name = "smoke_test_template"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+tari_template_lib = { path = "../../crates/template_lib" }
+
+[profile.release]
+opt-level = 's'
+lto = true
+codegen-units = 1
+panic = 'abort'
+strip = "debuginfo"
+
+[lib]
+crate-type = ["cdylib"]
