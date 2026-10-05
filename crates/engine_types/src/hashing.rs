@@ -134,6 +134,7 @@ pub enum EngineHashDomainLabel {
     Blob,
     ConditionLeaf,
     ConditionBranch,
+    ShardStateLeaf,
 }
 
 impl EngineHashDomainLabel {
@@ -167,6 +168,7 @@ impl EngineHashDomainLabel {
             Self::Blob => "Blob",
             Self::ConditionLeaf => "ConditionLeaf",
             Self::ConditionBranch => "ConditionBranch",
+            Self::ShardStateLeaf => "ShardStateLeaf",
         }
     }
 }

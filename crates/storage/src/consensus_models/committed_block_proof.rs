@@ -3,7 +3,7 @@
 
 use tari_common_types::types::{CompressedPublicKey, FixedHash};
 use tari_crypto::tari_utilities::ByteArray;
-use tari_engine_types::limits::MAX_CBOR_NESTING_DEPTH;
+use tari_engine_types::{ProtocolVersion, UnknownProtocolVersionError, limits::MAX_CBOR_NESTING_DEPTH};
 use tari_ootle_common_types::{Epoch, NodeHeight, ShardGroup, VotePower};
 use tari_sidechain::{SidechainBlockCommitProof, SidechainProofValidationError};
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
@@ -51,6 +51,11 @@ impl CommittedBlockProof {
 
     pub fn height(&self) -> NodeHeight {
         NodeHeight(self.proof.header.height)
+    }
+
+    /// The protocol version of the committed block, which selects how its state merkle root's leaves are formed.
+    pub fn protocol_version(&self) -> Result<ProtocolVersion, UnknownProtocolVersionError> {
+        ProtocolVersion::try_from(self.proof.header.protocol_version)
     }
 
     pub fn state_merkle_root(&self) -> FixedHash {

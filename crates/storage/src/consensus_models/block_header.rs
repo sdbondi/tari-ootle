@@ -36,7 +36,7 @@ use tari_ootle_common_types::{
     hashing,
 };
 use tari_ootle_transaction::Network;
-use tari_sidechain::{BlockHeaderHashFields, BlockHeaderHashFieldsV1};
+use tari_sidechain::{BlockHeaderHashFields, BlockHeaderHashFieldsV1, BlockHeaderHashFieldsV2};
 use tari_state_tree::{TreeHash, compute_merkle_root_for_hashes};
 use tari_template_lib_types::crypto::{RistrettoPublicKeyBytes, SchnorrSignatureBytes};
 
@@ -398,6 +398,20 @@ impl BlockHeader {
             // produce distinct block IDs and the version a block claims cannot be altered without invalidating it.
             ProtocolVersion::V0 => BlockHeaderHashFields::V1(BlockHeaderHashFieldsV1 {
                 network: self.network.as_byte(),
+                justify_id: self.justify_id.hash(),
+                height: self.height.as_u64(),
+                epoch: self.epoch.as_u64(),
+                epoch_hash: &self.epoch_hash,
+                shard_group,
+                proposed_by: self.proposed_by.as_bytes(),
+                state_merkle_root: &self.state_merkle_root,
+                command_merkle_root: &self.command_merkle_root,
+                accumulated_data: &accumulated_data,
+                metadata_hash: &metadata_hash,
+            }),
+            protocol_version @ ProtocolVersion::V1 => BlockHeaderHashFields::V2(BlockHeaderHashFieldsV2 {
+                network: self.network.as_byte(),
+                protocol_version: protocol_version.as_u32(),
                 justify_id: self.justify_id.hash(),
                 height: self.height.as_u64(),
                 epoch: self.epoch.as_u64(),

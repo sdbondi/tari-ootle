@@ -189,9 +189,16 @@ impl<TStateStore: StateStore> ValidatorNodeRpcServiceImpl<TStateStore> {
         let shard_group = proof_shard_group(&commit_proof).map_err(RpcStatus::log_internal_error(LOG_TARGET))?;
         // The anchor cannot speak for this substate - its shard is outside the group the anchor
         // commits, or has nothing committed. Answer unproven rather than not at all.
-        let Some(value_proof) = SubstateProofGenerator::new(tx, shard_group, num_preshards)
-            .and_then(|mut generator| generator.generate(&substate.to_versioned_substate_id()))
-            .map_err(RpcStatus::log_internal_error(LOG_TARGET))?
+        let Some(value_proof) = SubstateProofGenerator::new(
+            tx,
+            shard_group,
+            num_preshards,
+            commit_proof
+                .protocol_version()
+                .map_err(RpcStatus::log_internal_error(LOG_TARGET))?,
+        )
+        .and_then(|mut generator| generator.generate(&substate.to_versioned_substate_id()))
+        .map_err(RpcStatus::log_internal_error(LOG_TARGET))?
         else {
             return Ok(());
         };
@@ -248,7 +255,14 @@ fn read_substate_batch<TTx: StateStoreReadTransaction>(
     {
         let shard_group = proof_shard_group(&commit_proof)?;
         messages.push(batch_response::Response::CommitProof(commit_proof.to_bytes()));
-        generator = Some(SubstateProofGenerator::new(tx, shard_group, ctx.num_preshards)?);
+        generator = Some(SubstateProofGenerator::new(
+            tx,
+            shard_group,
+            ctx.num_preshards,
+            commit_proof.protocol_version().map_err(|e| StorageError::QueryError {
+                reason: format!("commit proof: {e}"),
+            })?,
+        )?);
     }
 
     for substate in substates {

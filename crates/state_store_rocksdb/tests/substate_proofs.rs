@@ -6,6 +6,7 @@ pub mod helpers;
 use std::collections::HashSet;
 
 use helpers::{PROOF_TEST_TREE_VERSION, build_substate_record, commit_substates, create_rocksdb, num_preshards};
+use tari_engine_types::ProtocolVersion;
 use tari_ootle_common_types::{ShardGroup, SubstateVersion, VersionedSubstateId};
 use tari_ootle_storage::{
     ShardScopedTreeStoreReader,
@@ -19,21 +20,25 @@ use tari_state_tree::{
     SpreadPrefixStateTree,
     TreeHash,
     compute_merkle_root_for_hashes,
+    shard_state_leaf,
 };
 
 use crate::helpers::substate_id_seed;
 
+const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1;
+
 /// The shard-group state merkle root a block header commits: the root of the tree over the shard
-/// group's per-shard roots, in the canonical `[global, shard_0, ...]` order.
+/// group's per-shard leaves, in the canonical `[global, shard_0, ...]` order.
 fn shard_group_root(tx: &impl StateStoreReadTransaction, shard_group: ShardGroup) -> TreeHash {
-    let roots = shard_group.shard_iter_with_global().map(|shard| {
+    let leaves = shard_group.shard_iter_with_global().map(|shard| {
         let Some(version) = tx.state_tree_versions_get_latest(shard).unwrap() else {
-            return SPARSE_MERKLE_PLACEHOLDER_HASH;
+            return shard_state_leaf(PROTOCOL_VERSION, &SPARSE_MERKLE_PLACEHOLDER_HASH, 0);
         };
         let mut store = ShardScopedTreeStoreReader::new(tx, shard);
-        SpreadPrefixStateTree::new(&mut store).get_root_hash(version).unwrap()
+        let root = SpreadPrefixStateTree::new(&mut store).get_root_hash(version).unwrap();
+        shard_state_leaf(PROTOCOL_VERSION, &root, version)
     });
-    compute_merkle_root_for_hashes(roots.collect::<Vec<_>>()).unwrap()
+    compute_merkle_root_for_hashes(leaves.collect::<Vec<_>>()).unwrap()
 }
 
 /// The leaf value hash a verifier re-derives from the substate value to bind it to the committed leaf.
@@ -73,13 +78,13 @@ fn proofs_for_a_batch_verify_against_one_shard_group_root() {
 
     let tx = db.create_read_tx().unwrap();
     let group_root = shard_group_root(&tx, shard_group);
-    let mut generator = SubstateProofGenerator::new(&tx, shard_group, num_preshards()).unwrap();
+    let mut generator = SubstateProofGenerator::new(&tx, shard_group, num_preshards(), PROTOCOL_VERSION).unwrap();
 
     for substate in &substates {
         let versioned_id = substate.to_versioned_substate_id();
         let proof = generator.generate(&versioned_id).unwrap().expect("shard has state");
         proof
-            .verify_inclusion(&group_root, &versioned_id, &value_hash(substate))
+            .verify_inclusion(PROTOCOL_VERSION, &group_root, &versioned_id, &value_hash(substate))
             .unwrap_or_else(|e| panic!("{versioned_id} in {}: {e}", substate.created().in_shard));
     }
 }
@@ -95,7 +100,7 @@ fn a_reused_shard_root_proof_belongs_to_its_own_shard() {
 
     let tx = db.create_read_tx().unwrap();
     let group_root = shard_group_root(&tx, shard_group);
-    let mut generator = SubstateProofGenerator::new(&tx, shard_group, num_preshards()).unwrap();
+    let mut generator = SubstateProofGenerator::new(&tx, shard_group, num_preshards(), PROTOCOL_VERSION).unwrap();
 
     // Fill the cache for every shard the substates live in, so that the second pass is served
     // entirely from it, then check each cached proof still verifies for its own substate.
@@ -106,7 +111,7 @@ fn a_reused_shard_root_proof_belongs_to_its_own_shard() {
         let versioned_id = substate.to_versioned_substate_id();
         let proof = generator.generate(&versioned_id).unwrap().expect("shard has state");
         proof
-            .verify_inclusion(&group_root, &versioned_id, &value_hash(substate))
+            .verify_inclusion(PROTOCOL_VERSION, &group_root, &versioned_id, &value_hash(substate))
             .unwrap_or_else(|e| panic!("{versioned_id} in {}: {e}", substate.created().in_shard));
     }
 }
@@ -122,14 +127,16 @@ fn a_version_that_is_not_up_gets_an_exclusion_proof() {
 
     let tx = db.create_read_tx().unwrap();
     let group_root = shard_group_root(&tx, shard_group);
-    let mut generator = SubstateProofGenerator::new(&tx, shard_group, num_preshards()).unwrap();
+    let mut generator = SubstateProofGenerator::new(&tx, shard_group, num_preshards(), PROTOCOL_VERSION).unwrap();
 
     for substate in &substates {
         let next_version = VersionedSubstateId::new(substate.substate_id().clone(), substate.version().next());
         let proof = generator.generate(&next_version).unwrap().expect("shard has state");
-        proof.verify_exclusion(&group_root, &next_version).unwrap();
         proof
-            .verify_inclusion(&group_root, &next_version, &value_hash(substate))
+            .verify_exclusion(PROTOCOL_VERSION, &group_root, &next_version)
+            .unwrap();
+        proof
+            .verify_inclusion(PROTOCOL_VERSION, &group_root, &next_version, &value_hash(substate))
             .unwrap_err();
     }
 }
@@ -151,7 +158,7 @@ fn a_substate_outside_the_shard_group_proves_nothing() {
         .expect("substates span more than one shard");
 
     let tx = db.create_read_tx().unwrap();
-    let mut generator = SubstateProofGenerator::new(&tx, shard_group, num_preshards()).unwrap();
+    let mut generator = SubstateProofGenerator::new(&tx, shard_group, num_preshards(), PROTOCOL_VERSION).unwrap();
 
     assert!(
         generator
@@ -178,7 +185,7 @@ fn a_shard_with_no_committed_state_proves_nothing() {
     commit_substates(&db, &substates[..1]);
 
     let tx = db.create_read_tx().unwrap();
-    let mut generator = SubstateProofGenerator::new(&tx, shard_group, num_preshards()).unwrap();
+    let mut generator = SubstateProofGenerator::new(&tx, shard_group, num_preshards(), PROTOCOL_VERSION).unwrap();
 
     assert!(
         generator

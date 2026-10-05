@@ -1692,7 +1692,8 @@ impl<TConsensusSpec: ConsensusSpec> HotstuffWorker<TConsensusSpec> {
                 return Ok(false);
             }
 
-            let state_merkle_root = ShardedStateTree::new(&**tx).calculate_state_root(shard_group)?;
+            let state_merkle_root = ShardedStateTree::new(&**tx)
+                .calculate_state_root(ProtocolVersion::at(self.config.network, epoch), shard_group)?;
 
             let mut genesis = Block::genesis(
                 self.config.network,

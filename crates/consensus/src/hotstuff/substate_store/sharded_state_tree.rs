@@ -5,6 +5,7 @@ use std::{collections::HashMap, ops::Deref};
 
 use indexmap::IndexMap;
 use log::*;
+use tari_engine_types::ProtocolVersion;
 use tari_ootle_common_types::{ShardGroup, shard::Shard};
 use tari_ootle_storage::{
     ShardScopedTreeStoreReader,
@@ -25,6 +26,7 @@ use tari_state_tree::{
     TreeHash,
     Version,
     compute_merkle_root_for_hashes,
+    shard_state_leaf,
 };
 
 const LOG_TARGET: &str = "tari::ootle::consensus::sharded_state_tree";
@@ -79,8 +81,10 @@ impl<TTx: StateStoreReadTransaction> ShardedStateTree<&TTx> {
         self.shard_tree_diffs
     }
 
+    /// Applies `changes` and returns the resulting shard group state merkle root, formed under `protocol_version`.
     pub fn put_substate_tree_changes(
         &mut self,
+        protocol_version: ProtocolVersion,
         shard_group: ShardGroup,
         changes: IndexMap<Shard, Vec<SubstateTreeChange>>,
     ) -> Result<TreeHash, StateTreeError> {
@@ -112,54 +116,48 @@ impl<TTx: StateStoreReadTransaction> ShardedStateTree<&TTx> {
             let mut state_tree = SpreadPrefixStateTree::new(&mut store);
             debug!(target: LOG_TARGET, "v{next_version} contains {} new tree change(s) for shard {shard}", changes.len());
             let shard_state_hash = state_tree.put_substate_changes(current_version, next_version, changes)?;
-            shard_state_roots.insert(shard, shard_state_hash);
+            shard_state_roots.insert(shard, (shard_state_hash, next_version));
             self.shard_tree_diffs
                 .insert(shard, PendingShardStateTreeDiff::new(next_version, store.into_diff()));
         }
 
-        let root_hash = self.get_shard_group_root(shard_group, shard_state_roots)?;
+        let root_hash = self.get_shard_group_root(protocol_version, shard_group, shard_state_roots)?;
         Ok(root_hash)
     }
 
-    pub fn calculate_state_root(&self, shard_group: ShardGroup) -> Result<TreeHash, StateTreeError> {
-        let mut shard_state_roots = HashMap::new();
-        for shard in shard_group.shard_iter_with_global() {
-            let root = self.get_state_root_for_shard(shard)?;
-            shard_state_roots.insert(shard, root);
-        }
-        self.get_shard_group_root(shard_group, shard_state_roots)
+    pub fn calculate_state_root(
+        &self,
+        protocol_version: ProtocolVersion,
+        shard_group: ShardGroup,
+    ) -> Result<TreeHash, StateTreeError> {
+        self.get_shard_group_root(protocol_version, shard_group, HashMap::new())
     }
 
+    /// `shard_state_roots` holds the root and state version of each shard this block changes. Every other shard
+    /// contributes its current root and version.
     fn get_shard_group_root(
         &self,
+        protocol_version: ProtocolVersion,
         shard_group: ShardGroup,
-        mut shard_state_roots: HashMap<Shard, TreeHash>,
+        mut shard_state_roots: HashMap<Shard, (TreeHash, Version)>,
     ) -> Result<TreeHash, StateTreeError> {
-        let mut hashes = Vec::with_capacity(shard_group.len() + 1);
-        match shard_state_roots.remove(&Shard::global()) {
-            Some(r) => hashes.push(r),
-            None => {
-                let hash = self.get_state_root_for_shard(Shard::global())?;
-                hashes.push(hash);
-            },
-        }
-        for shard in shard_group.shard_iter() {
-            match shard_state_roots.remove(&shard) {
-                Some(r) => hashes.push(r),
-                None => {
-                    let hash = self.get_state_root_for_shard(shard)?;
-                    hashes.push(hash);
-                },
+        let mut leaves = Vec::with_capacity(shard_group.len() + 1);
+        for shard in shard_group.shard_iter_with_global() {
+            let (root, version) = match shard_state_roots.remove(&shard) {
+                Some(state) => state,
+                None => self.get_state_root_for_shard(shard)?,
             };
+            leaves.push(shard_state_leaf(protocol_version, &root, version));
         }
-        let hash = compute_merkle_root_for_hashes(hashes)?;
+        let hash = compute_merkle_root_for_hashes(leaves)?;
         Ok(hash)
     }
 
-    fn get_state_root_for_shard(&self, shard: Shard) -> Result<TreeHash, StateTreeError> {
+    /// The current root and state version of `shard`. A shard with no state changes is at version 0 with the empty
+    /// tree root.
+    fn get_state_root_for_shard(&self, shard: Shard) -> Result<(TreeHash, Version), StateTreeError> {
         let Some(version) = self.get_current_version(shard)? else {
-            // At v0 there have been no state changes
-            return Ok(SPARSE_MERKLE_PLACEHOLDER_HASH);
+            return Ok((SPARSE_MERKLE_PLACEHOLDER_HASH, 0));
         };
 
         let scoped_store = ShardScopedTreeStoreReader::new(self.tx, shard);
@@ -172,7 +170,7 @@ impl<TTx: StateStoreReadTransaction> ShardedStateTree<&TTx> {
         let state_tree = SpreadPrefixStateTree::new(&mut store);
 
         let root_hash = state_tree.get_root_hash(version)?;
-        Ok(root_hash)
+        Ok((root_hash, version))
     }
 }
 

@@ -6,6 +6,7 @@ use std::collections::{HashMap, hash_map::Entry};
 use ootle_network::Network;
 use tari_common_types::types::FixedHash;
 use tari_engine_types::{
+    ProtocolVersion,
     SubstateVersion,
     limits::MAX_CBOR_NESTING_DEPTH,
     substate::{SubstateId, SubstateValue, hash_substate},
@@ -20,6 +21,7 @@ use tari_state_tree::{
     SubstateValueProofError,
     TreeHash,
     Version,
+    shard_state_leaf,
 };
 
 use crate::{StateStoreReadTransaction, StorageError, state_store::ShardScopedTreeStoreReader};
@@ -45,15 +47,16 @@ use crate::{StateStoreReadTransaction, StorageError, state_store::ShardScopedTre
 pub struct SubstateProofGenerator<'a, TTx> {
     tx: &'a TTx,
     num_preshards: NumPreshards,
-    /// The tree over the shard group's per-shard roots, in the canonical order the block header
-    /// commits them: [global, shard_0, ...]. Every level-2 proof is a leaf of this one tree, so it is
-    /// built once however many substates are proved - which is what keeps the cost of a batch
+    /// The tree over the shard group's per-shard leaves (see [`shard_state_leaf`]), in the canonical
+    /// order the block header commits them: [global, shard_0, ...]. Every level-2 proof is a leaf of this one tree, so
+    /// it is built once however many substates are proved - which is what keeps the cost of a batch
     /// independent of the size of the shard group.
     root_tree: RootProofTree,
     /// The committed state of each shard in the root tree, keyed by shard.
     shards: HashMap<Shard, CommittedShardState>,
     /// Level-2 proofs, extracted from `root_tree` on first use of each shard.
     shard_root_proofs: HashMap<Shard, SparseMerkleProofExt>,
+    protocol_version: ProtocolVersion,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -64,25 +67,38 @@ struct CommittedShardState {
     version: Option<Version>,
 }
 
+impl CommittedShardState {
+    fn leaf(&self, protocol_version: ProtocolVersion) -> TreeHash {
+        shard_state_leaf(protocol_version, &self.root, self.version.unwrap_or_default())
+    }
+}
+
 impl<'a, TTx: StateStoreReadTransaction> SubstateProofGenerator<'a, TTx> {
     /// Reads the committed root of every shard in `shard_group`, plus the global shard.
-    pub fn new(tx: &'a TTx, shard_group: ShardGroup, num_preshards: NumPreshards) -> Result<Self, StorageError> {
-        let mut ordered_roots = Vec::with_capacity(shard_group.len() + 1);
+    /// `protocol_version` is the version of the block whose `state_merkle_root` the proofs are rooted at.
+    pub fn new(
+        tx: &'a TTx,
+        shard_group: ShardGroup,
+        num_preshards: NumPreshards,
+        protocol_version: ProtocolVersion,
+    ) -> Result<Self, StorageError> {
+        let mut ordered_leaves = Vec::with_capacity(shard_group.len() + 1);
         let mut shards = HashMap::with_capacity(shard_group.len() + 1);
         for shard in shard_group.shard_iter_with_global() {
             let state = committed_shard_state(tx, shard)?;
-            ordered_roots.push(state.root);
+            ordered_leaves.push(state.leaf(protocol_version));
             shards.insert(shard, state);
         }
 
         Ok(Self {
             tx,
             num_preshards,
-            root_tree: RootProofTree::build(ordered_roots).map_err(|e| StorageError::QueryError {
+            root_tree: RootProofTree::build(ordered_leaves).map_err(|e| StorageError::QueryError {
                 reason: format!("SubstateProofGenerator shard group root tree: {e}"),
             })?,
             shards,
             shard_root_proofs: HashMap::new(),
+            protocol_version,
         })
     }
 
@@ -116,7 +132,7 @@ impl<'a, TTx: StateStoreReadTransaction> SubstateProofGenerator<'a, TTx> {
             Entry::Vacant(entry) => {
                 let (_, proof) = self
                     .root_tree
-                    .get_proof(state.root)
+                    .get_proof(state.leaf(self.protocol_version))
                     .map_err(|e| StorageError::QueryError {
                         reason: format!("SubstateProofGenerator shard root proof: {e}"),
                     })?;
@@ -124,7 +140,12 @@ impl<'a, TTx: StateStoreReadTransaction> SubstateProofGenerator<'a, TTx> {
             },
         };
 
-        Ok(Some(SubstateValueProof::new(state.root, shard_root_proof, leaf_proof)))
+        Ok(Some(SubstateValueProof::new(
+            state.root,
+            version,
+            shard_root_proof,
+            leaf_proof,
+        )))
     }
 }
 
@@ -138,6 +159,10 @@ impl<'a, TTx: StateStoreReadTransaction> SubstateProofGenerator<'a, TTx> {
 /// one read transaction against the same committed block), so verifying against that root is the
 /// whole of the check. The trust decision must therefore be keyed on `trusted_root` itself: a node
 /// cannot forge a substate proof that verifies against a root a quorum already signed.
+///
+/// `proof_epoch` is the epoch the substate was created at, which selects its value hash. `root_epoch`
+/// is the epoch of the block that committed `trusted_root`, which selects how that root's leaves are
+/// formed.
 pub fn verify_substate_value_proof_against_root(
     value_proof_bytes: &[u8],
     substate_id: &SubstateId,
@@ -145,9 +170,11 @@ pub fn verify_substate_value_proof_against_root(
     value: Option<&SubstateValue>,
     network: Network,
     proof_epoch: Epoch,
+    root_epoch: Epoch,
     trusted_root: FixedHash,
 ) -> Result<(), SubstateProofVerifyError> {
     let group_root = TreeHash::new(trusted_root.into_array());
+    let root_protocol_version = ProtocolVersion::at(network, root_epoch);
 
     let value_proof: SubstateValueProof =
         tari_bor::serde_codec::from_slice_with_max_depth(value_proof_bytes, MAX_CBOR_NESTING_DEPTH)
@@ -159,10 +186,10 @@ pub fn verify_substate_value_proof_against_root(
             // Bind the returned value to the committed leaf by re-deriving its value hash, so a
             // validator cannot swap the value while presenting a proof for the real committed leaf.
             let value_hash = TreeHash::new(hash_substate(network, value, version, proof_epoch).into_array());
-            value_proof.verify_inclusion(&group_root, &versioned_id, &value_hash)?;
+            value_proof.verify_inclusion(root_protocol_version, &group_root, &versioned_id, &value_hash)?;
         },
         None => {
-            value_proof.verify_exclusion(&group_root, &versioned_id)?;
+            value_proof.verify_exclusion(root_protocol_version, &group_root, &versioned_id)?;
         },
     }
 

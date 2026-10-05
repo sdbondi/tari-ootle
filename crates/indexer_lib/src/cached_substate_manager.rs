@@ -667,7 +667,7 @@ where
             return Ok(BatchTrust::Unanchored);
         };
 
-        let root = self.trusted_root_from_commit_proof(commit_proof).await?;
+        let (root_epoch, root) = self.trusted_root_from_commit_proof(commit_proof).await?;
         for substate in &batch.substates {
             let Some(value_proof) = &substate.value_proof else {
                 return Err(IndexerError::SubstateProofVerificationFailed {
@@ -696,6 +696,7 @@ where
                 value,
                 self.network,
                 Epoch(substate.proof_epoch),
+                root_epoch,
                 root,
             )
             .map_err(|e| IndexerError::SubstateProofVerificationFailed { details: e.to_string() })?;
@@ -822,7 +823,7 @@ where
         value: Option<&SubstateValue>,
         proof: &SubstateProofData,
     ) -> Result<(), IndexerError> {
-        let root = self.trusted_root_from_commit_proof(&proof.commit_proof).await?;
+        let (root_epoch, root) = self.trusted_root_from_commit_proof(&proof.commit_proof).await?;
         verify_substate_value_proof_against_root(
             &proof.substate_value_proof,
             substate_id,
@@ -830,6 +831,7 @@ where
             value,
             self.network,
             Epoch(proof.proof_epoch),
+            root_epoch,
             root,
         )
         .map_err(|e| IndexerError::SubstateProofVerificationFailed { details: e.to_string() })?;
@@ -837,13 +839,13 @@ where
     }
 
     /// Establishes the shard-group state merkle root that value proofs anchored to `commit_proof`
-    /// must verify against.
+    /// must verify against, with the epoch of the block that committed it.
     ///
     /// The returned root is trusted because a quorum of the shard group signed the block header
     /// committing it, independently of any value proof that goes on to cite it. That is what makes it
     /// safe to establish once and reuse for a whole batch of value proofs, and to record for later
     /// reads.
-    async fn trusted_root_from_commit_proof(&self, commit_proof: &[u8]) -> Result<FixedHash, IndexerError> {
+    async fn trusted_root_from_commit_proof(&self, commit_proof: &[u8]) -> Result<(Epoch, FixedHash), IndexerError> {
         let commit_proof = CommittedBlockProof::from_bytes(commit_proof).map_err(|e| {
             IndexerError::SubstateProofVerificationFailed {
                 details: format!("undecodable commit proof: {e}"),
@@ -866,7 +868,7 @@ where
                 target: LOG_TARGET,
                 "trusted-root HIT at epoch {epoch} {shard_group}: skipped commit-proof validation"
             );
-            return Ok(root);
+            return Ok((epoch, root));
         }
 
         // Slow path: validate the commit proof against the shard group committee.
@@ -894,7 +896,7 @@ where
             warn!(target: LOG_TARGET, "Failed to record verified root at epoch {epoch} {shard_group}: {e}");
         }
 
-        Ok(root)
+        Ok((epoch, root))
     }
 }
 

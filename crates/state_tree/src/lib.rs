@@ -9,6 +9,9 @@ pub use error::*;
 pub mod key_mapper;
 pub mod memory_store;
 
+mod shard_state_leaf;
+pub use shard_state_leaf::*;
+
 mod staged_store;
 pub use staged_store::*;
 

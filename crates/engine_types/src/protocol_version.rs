@@ -20,6 +20,9 @@ pub enum ProtocolVersion {
     /// The genesis schema, which every network starts under.
     #[default]
     V0 = 0,
+    /// Each leaf of a block's state merkle root commits to its shard's state version as well as its shard root, so
+    /// a quorum-signed header fixes the version every shard of the group is at. Block IDs commit to the version.
+    V1 = 1,
 }
 
 impl ProtocolVersion {
@@ -71,6 +74,7 @@ impl ProtocolVersion {
     pub const fn from_u32(v: u32) -> Option<Self> {
         match v {
             0 => Some(Self::V0),
+            1 => Some(Self::V1),
             _ => None,
         }
     }

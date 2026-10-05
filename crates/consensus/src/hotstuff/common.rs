@@ -358,7 +358,8 @@ pub fn calculate_state_merkle_root<'a, TTx: StateStoreReadTransaction, I: IntoIt
             .push(ch.to_tree_change(network, epoch));
     });
     let mut sharded_tree = ShardedStateTree::new(tx).with_pending_diffs(pending_tree_diffs);
-    let root_hash = sharded_tree.put_substate_tree_changes(shard_group, change_map)?;
+    let root_hash =
+        sharded_tree.put_substate_tree_changes(ProtocolVersion::at(network, epoch), shard_group, change_map)?;
 
     Ok((
         FixedHash::new(root_hash.into_array()),

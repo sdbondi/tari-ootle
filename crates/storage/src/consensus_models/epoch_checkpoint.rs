@@ -10,6 +10,7 @@ use minicbor::{CborLen, Decode, Encode};
 use serde::{Deserialize, Serialize};
 use tari_common_types::types::{CompressedPublicKey, FixedHash};
 use tari_crypto::tari_utilities::ByteArray;
+use tari_engine_types::ProtocolVersion;
 use tari_ootle_common_types::{Epoch, ShardGroup, VotePower, shard::Shard};
 use tari_sidechain::{CommandCommitProof, SidechainBlockHeader, SidechainProofValidationError, ToCommand};
 use tari_state_tree::{
@@ -18,6 +19,7 @@ use tari_state_tree::{
     TreeHash,
     Version,
     compute_merkle_root_for_hashes,
+    shard_state_leaf,
 };
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 
@@ -87,12 +89,27 @@ impl EpochCheckpoint {
             .unwrap_or_default()
     }
 
+    /// The protocol version of the end-of-epoch block, which selects how its state merkle root's leaves are formed.
+    pub fn protocol_version(&self) -> Result<ProtocolVersion, EpochCheckpointValidationError> {
+        ProtocolVersion::try_from(self.header().protocol_version)
+            .map_err(|e| EpochCheckpointValidationError::InvalidEpochCheckpoint(e.into()))
+    }
+
+    /// From [`ProtocolVersion::V1`] the root commits to each shard's state version as well as its root, so a
+    /// checkpoint that validates fixes both.
     pub fn compute_state_merkle_root(&self) -> Result<TreeHash, EpochCheckpointValidationError> {
         let shard_group = self.checked_shard_group()?;
-        let hashes = iter::once(Shard::global())
+        let protocol_version = self.protocol_version()?;
+        let leaves = iter::once(Shard::global())
             .chain(shard_group.shard_iter())
-            .map(|shard| self.get_shard_root(shard));
-        let root = compute_merkle_root_for_hashes(hashes)?;
+            .map(|shard| {
+                shard_state_leaf(
+                    protocol_version,
+                    &self.get_shard_root(shard),
+                    self.get_shard_state_version(shard),
+                )
+            });
+        let root = compute_merkle_root_for_hashes(leaves)?;
         Ok(root)
     }
 

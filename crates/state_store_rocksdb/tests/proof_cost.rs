@@ -6,6 +6,7 @@ pub mod helpers;
 use std::{collections::BTreeMap, time::Instant};
 
 use helpers::{PROOF_TEST_TREE_VERSION, build_substate_record, commit_substates, create_rocksdb, num_preshards};
+use tari_engine_types::ProtocolVersion;
 use tari_ootle_common_types::{ShardGroup, SubstateVersion, shard::Shard};
 use tari_ootle_storage::{StateStore, SubstateProofGenerator, consensus_models::SubstateRecord};
 
@@ -49,7 +50,7 @@ fn proof_cost() {
     // One generator per substate: what the batch would cost without hoisting.
     let t = Instant::now();
     for s in &substates {
-        SubstateProofGenerator::new(&tx, shard_group, num_preshards())
+        SubstateProofGenerator::new(&tx, shard_group, num_preshards(), ProtocolVersion::V1)
             .unwrap()
             .generate(&s.to_versioned_substate_id())
             .unwrap()
@@ -59,7 +60,7 @@ fn proof_cost() {
 
     // Hoisted: one generator for the whole batch.
     let t = Instant::now();
-    let mut generator = SubstateProofGenerator::new(&tx, shard_group, num_preshards()).unwrap();
+    let mut generator = SubstateProofGenerator::new(&tx, shard_group, num_preshards(), ProtocolVersion::V1).unwrap();
     let construct = t.elapsed();
     let t = Instant::now();
     for s in &substates {
@@ -74,7 +75,7 @@ fn proof_cost() {
 
     // A single-substate request pays the whole fixed cost too.
     let t = Instant::now();
-    SubstateProofGenerator::new(&tx, shard_group, num_preshards())
+    SubstateProofGenerator::new(&tx, shard_group, num_preshards(), ProtocolVersion::V1)
         .unwrap()
         .generate(&substates[0].to_versioned_substate_id())
         .unwrap()
