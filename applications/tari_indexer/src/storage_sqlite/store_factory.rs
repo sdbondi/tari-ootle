@@ -459,6 +459,16 @@ mod tests {
         assert!(!set.has_more);
         assert!(read_updates(&store, u64::MAX, 1).await.updates.is_empty());
 
+        // A read whose limit straddles the boundary takes both sides in order.
+        let set = read_updates(&store, 0, 2).await;
+        assert_eq!(set.updates.len(), 2);
+        assert_eq!(set.max_state_version, StateVersion::new(high));
+        assert!(set.has_more);
+        let set = read_updates(&store, 0, 10).await;
+        assert_eq!(set.updates.len(), 3);
+        assert_eq!(set.max_state_version, StateVersion::new(u64::MAX));
+        assert!(!set.has_more);
+
         let max = store
             .with_read_tx(|tx| {
                 tx.utxos_get_max_state_version(utxo_resource(), tari_ootle_common_types::shard::Shard::from(1u32))

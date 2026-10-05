@@ -1248,7 +1248,13 @@ fn cursors_for(shards: &[Shard], progress: &SyncProgress) -> Vec<rpc::ShardCurso
         .iter()
         .filter_map(|&shard| {
             let start_state_version = match progress.last_state_version(shard) {
-                Some(version) => version.as_u64().checked_add(1)?,
+                Some(version) => {
+                    let Some(next) = version.as_u64().checked_add(1) else {
+                        warn!(target: LOG_TARGET, "⚠️ Shard {shard} is recorded at v{version}, the last representable state version, and is no longer synced. Resync this indexer from an empty data directory");
+                        return None;
+                    };
+                    next
+                },
                 None => 1,
             };
             Some(rpc::ShardCursor {
