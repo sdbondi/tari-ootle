@@ -29,6 +29,7 @@ mod faucet_template {
 
     pub struct ConfidentialFaucet {
         vault: Vault,
+        hook_calls: u64,
     }
 
     impl ConfidentialFaucet {
@@ -43,6 +44,7 @@ mod faucet_template {
 
             Component::new(Self {
                 vault: Vault::from_bucket(coins),
+                hook_calls: 0,
             })
             .with_access_rules(AccessRules::allow_all())
             .create()
@@ -61,9 +63,50 @@ mod faucet_template {
 
             Component::new(Self {
                 vault: Vault::from_bucket(coins),
+                hook_calls: 0,
             })
             .with_access_rules(AccessRules::allow_all())
             .create()
+        }
+
+        /// Like [`mint`], but the resource binds [`count_auth_hook`] on this component as its authorization hook.
+        pub fn mint_with_auth_hook(
+            confidential_proof: ConfidentialOutputStatement,
+            value_proofs: BTreeMap<PedersenCommitmentBytes, crypto::CommitmentValueProof>,
+        ) -> Component<Self> {
+            let alloc = CallerContext::allocate_component_address(None);
+            let coins = ResourceBuilder::confidential()
+                .mintable(rule!(allow_all), OWNER)
+                .freezable(rule!(allow_all), OWNER)
+                .with_authorization_hook(alloc.get_address(), "count_auth_hook")
+                .initial_supply_with_value_proofs(confidential_proof, value_proofs);
+
+            Component::new(Self {
+                vault: Vault::from_bucket(coins),
+                hook_calls: 0,
+            })
+            .with_address_allocation(alloc)
+            .with_access_rules(AccessRules::allow_all())
+            .create()
+        }
+
+        /// Records each invocation. The engine skips the hook when this component itself acts on the resource, so
+        /// [`freeze_confidential_outputs_of`] is what exercises it.
+        pub fn count_auth_hook(&mut self, _action: ResourceAuthAction, caller: AuthHookCaller) {
+            assert_eq!(
+                *caller.resource(),
+                self.vault.resource_address(),
+                "hook invoked for a foreign resource"
+            );
+            self.hook_calls += 1;
+        }
+
+        pub fn hook_calls(&self) -> u64 {
+            self.hook_calls
+        }
+
+        pub fn freeze_confidential_outputs_of(resource: ResourceAddress, commitments: Vec<PedersenCommitmentBytes>) {
+            ResourceManager::get(resource).freeze_confidential_outputs(commitments);
         }
 
         pub fn mint_revealed(&mut self, amount: Amount) {

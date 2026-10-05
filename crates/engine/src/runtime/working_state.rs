@@ -1587,14 +1587,18 @@ impl<TStore: StateReader> WorkingState<TStore> {
                     function: "get_auth_caller",
                     details: format!("Expected a resource lock, got {}", resource_lock.substate_id()),
                 })?;
-        let frame = self.call_frames.last().ok_or(RuntimeError::NoActiveCallFrame)?;
+        // A top-level instruction (e.g. a stealth transfer) acts outside any call frame, so no template or
+        // component is acting.
+        let Some(frame) = self.call_frames.last() else {
+            return Ok(AuthHookCaller::new(resource_address, None, None));
+        };
         let template = frame.current_template();
         let component = frame
             .scope()
             .get_current_component_lock()
             .and_then(|lock| lock.substate_id().as_component_address());
 
-        Ok(AuthHookCaller::new(resource_address, *template, component))
+        Ok(AuthHookCaller::new(resource_address, Some(*template), component))
     }
 
     pub fn push_frame(&mut self, mut new_frame: CallFrame, max_call_depth: usize) -> Result<(), RuntimeError> {

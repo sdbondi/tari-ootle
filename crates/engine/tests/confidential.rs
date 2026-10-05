@@ -651,6 +651,34 @@ fn freeze_then_attempt_spend() {
     );
 }
 
+#[test]
+fn freezing_confidential_outputs_invokes_the_auth_hook() {
+    let (confidential_proof, mask, value_proofs) = mint_statement(100, None);
+    let mut test = TemplateTest::new(CRATE_PATH, vec!["tests/templates/confidential/faucet"]);
+    let faucet: ComponentAddress = test.call_function(
+        "ConfidentialFaucet",
+        "mint_with_auth_hook",
+        args![confidential_proof, value_proofs],
+        vec![],
+    );
+    let faucet_resx = test
+        .get_previous_output_address(SubstateType::Resource)
+        .as_resource_address()
+        .unwrap();
+    let commitment = commit_amount(&mask, Amount::from(100u64)).unwrap().to_byte_type();
+
+    let owner = test.owner_proof();
+    test.call_function::<()>(
+        "ConfidentialFaucet",
+        "freeze_confidential_outputs_of",
+        args![faucet_resx, vec![commitment]],
+        vec![owner],
+    );
+
+    let hook_calls: u64 = test.call_method(faucet, "hook_calls", args![], vec![]);
+    assert_eq!(hook_calls, 1);
+}
+
 /// A pre-existing output that is unfrozen and spent by the same transaction must still be downed. The unfreeze
 /// mutates it, which moves it to the same place the engine holds newly-created substates, and a spend must not
 /// mistake that for "created in this transaction" and collapse it: that would leave it live in global state

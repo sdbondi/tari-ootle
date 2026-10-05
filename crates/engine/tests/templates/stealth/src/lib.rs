@@ -12,6 +12,7 @@ mod template {
     pub struct StealthFaucet {
         manager: ResourceManager,
         supply_vault: Vault,
+        hook_calls: u64,
     }
 
     impl StealthFaucet {
@@ -35,6 +36,7 @@ mod template {
             Component::new(Self {
                 manager: resource_address.into(),
                 supply_vault,
+                hook_calls: 0,
             })
             .with_access_rules(AccessRules::allow_all())
             .create()
@@ -58,9 +60,69 @@ mod template {
             Component::new(Self {
                 manager: resource_address.into(),
                 supply_vault,
+                hook_calls: 0,
             })
             .with_access_rules(AccessRules::allow_all())
             .create()
+        }
+
+        /// Like [`new`], but the resource binds [`count_auth_hook`] on this component as its authorization hook,
+        /// and its total supply is tracked only if `track_supply` is set.
+        pub fn new_with_auth_hook(
+            initial_supply: Amount,
+            mint: StealthTransferStatement,
+            track_supply: bool,
+        ) -> Component<Self> {
+            let alloc = CallerContext::allocate_component_address(None);
+            let bucket = ResourceBuilder::stealth()
+                .mintable(rule!(allow_all), OWNER)
+                .freezable(rule!(allow_all), OWNER)
+                .burnable(rule!(allow_all), OWNER)
+                .with_authorization_hook(alloc.get_address(), "count_auth_hook")
+                .then(|builder| {
+                    if track_supply {
+                        builder
+                    } else {
+                        builder.disable_total_supply_tracking()
+                    }
+                })
+                .initial_supply(initial_supply);
+
+            let resource_address = bucket.resource_address();
+            let revealed_output_bucket = bucket.stealth_transfer(mint);
+            let supply_vault = Vault::from_bucket(revealed_output_bucket);
+
+            Component::new(Self {
+                manager: resource_address.into(),
+                supply_vault,
+                hook_calls: 0,
+            })
+            .with_address_allocation(alloc)
+            .with_access_rules(AccessRules::allow_all())
+            .create()
+        }
+
+        /// Records each invocation. The engine skips the hook when this component itself acts on the resource, so
+        /// the `*_of` functions below are what exercise it.
+        pub fn count_auth_hook(&mut self, _action: ResourceAuthAction, caller: AuthHookCaller) {
+            assert_eq!(
+                *caller.resource(),
+                self.manager.resource_address(),
+                "hook invoked for a foreign resource"
+            );
+            self.hook_calls += 1;
+        }
+
+        pub fn hook_calls(&self) -> u64 {
+            self.hook_calls
+        }
+
+        pub fn freeze_utxos_of(resource: ResourceAddress, utxos: Vec<UtxoId>) {
+            ResourceManager::get(resource).freeze_utxos(utxos);
+        }
+
+        pub fn burn_utxo_of(resource: ResourceAddress, utxo: UtxoId, proof: CommitmentValueProof) {
+            ResourceManager::get(resource).burn_utxo(utxo, proof);
         }
 
         /// Returns the bucket alongside a proof that locks its funds, so a caller can hand a partially locked
@@ -150,7 +212,7 @@ mod template {
 
         pub fn burn_utxos(&self, utxos: Vec<(UtxoId, CommitmentValueProof)>) {
             for (utxo, proof) in utxos {
-                self.manager.burn_utxo(utxo, Some(proof));
+                self.manager.burn_utxo(utxo, proof);
             }
         }
     }

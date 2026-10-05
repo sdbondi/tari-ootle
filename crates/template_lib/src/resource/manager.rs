@@ -1080,12 +1080,12 @@ impl ResourceManager {
         resp.decode().expect("SetConfidentialOutputsFreeze failed")
     }
 
-    /// Burns the stealth UTXO, permanently removing them from circulation.
-    /// If total supply tracking is enabled for the resource, a valid `CommitmentValueProof` is required.
-    /// NOTE: that this essentially limits burns to the UTXO owner or the secret view key holder regardless of the
-    /// access rules (i.e. if burns are limited to an "admin" badge, the admin can only burn funds if they have the
-    /// secret view key or burn their own funds). This is a limitation of the current protocol.
-    pub fn burn_utxo(&self, utxo_id: UtxoId, value_proof: Option<CommitmentValueProof>) {
+    /// Burns the stealth UTXO, permanently removing it from circulation. A frozen UTXO cannot be burnt.
+    ///
+    /// `value_proof` must prove the UTXO's value, which only the UTXO owner or the secret view key holder can
+    /// produce, so burns are limited to them regardless of the access rules (i.e. if burns are limited to an
+    /// "admin" badge, the admin can only burn funds if they have the secret view key or burn their own funds).
+    pub fn burn_utxo(&self, utxo_id: UtxoId, value_proof: CommitmentValueProof) {
         let resp: InvokeResult = call_engine(EngineOp::ResourceInvoke, &ResourceInvokeArg {
             resource_ref: self.resource_address.into(),
             action: ResourceAction::StealthUtxoBurn,

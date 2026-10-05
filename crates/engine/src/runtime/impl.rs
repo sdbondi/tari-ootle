@@ -472,7 +472,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         self.invoke_modules_on_runtime_call("invoke_resource_access_hook")?;
         // Check if the component exist
         let skip_hook = self.tracker.read_with(|state| {
-            let current_component = state.current_component()?;
+            let current_component = auth_caller.component().copied();
             // Only execute hooks if the resource is being acted upon by an external component
             if current_component == Some(auth_hook.component_address) {
                 return Ok::<_, RuntimeError>(true);
@@ -542,6 +542,42 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
                     .remove_substate_from_referenced(&resource_id);
                 Ok::<_, RuntimeError>(())
             })?;
+        }
+        Ok(())
+    }
+
+    /// Authorizes `action` on a resource against its static access rule and then its auth hook. `validate` checks
+    /// the resource is one the action applies to. The resource is unlocked before the hook runs, so the hook may
+    /// read it.
+    fn authorize_resource_action<F>(
+        &self,
+        resource_address: ResourceAddress,
+        action: ResourceAuthAction,
+        validate: F,
+    ) -> Result<(), RuntimeError>
+    where
+        F: FnOnce(&Resource) -> Result<(), RuntimeError>,
+    {
+        let (maybe_auth_hook, auth_caller) = self.tracker.write_with(|state_mut| {
+            let resource_lock = state_mut.read_lock_substate(SubstateId::Resource(resource_address))?;
+            let resource = state_mut.get_resource(&resource_lock)?;
+            validate(resource)?;
+
+            state_mut.authorization().check_resource_access_rules(
+                action,
+                resource.as_ownership(),
+                resource.access_rules(),
+            )?;
+
+            let auth_hook = resource.auth_hook().cloned();
+            let auth_caller = state_mut.get_auth_caller(&resource_lock)?;
+
+            state_mut.unlock_substate(resource_lock)?;
+            Ok::<_, RuntimeError>((auth_hook, auth_caller))
+        })?;
+
+        if let Some(auth_hook) = maybe_auth_hook {
+            self.invoke_resource_access_hook(auth_hook, auth_caller, action)?;
         }
         Ok(())
     }
@@ -2206,24 +2242,17 @@ where
                     });
                 }
 
-                self.tracker.write_with(|state_mut| {
-                    let resource_lock = state_mut.read_lock_substate(SubstateId::Resource(resource_address))?;
-
-                    let resource = state_mut.get_resource(&resource_lock)?;
-
+                self.authorize_resource_action(resource_address, ResourceAuthAction::Freeze, |resource| {
                     if !resource.resource_type().is_stealth() {
                         return Err(RuntimeError::InvalidArgument {
                             argument: "resource_ref",
                             reason: "FreezeStealthUtxo can only be called on stealth resources".to_string(),
                         });
                     }
+                    Ok(())
+                })?;
 
-                    state_mut.authorization().check_resource_access_rules(
-                        ResourceAuthAction::Freeze,
-                        resource.as_ownership(),
-                        resource.access_rules(),
-                    )?;
-
+                self.tracker.write_with(|state_mut| {
                     for utxo in arg.utxos {
                         let id = SubstateId::Utxo(UtxoAddress::new(resource_address, utxo));
                         let locked = state_mut.write_lock_substate(id.clone())?;
@@ -2246,8 +2275,6 @@ where
                         state_mut.unlock_substate(locked)?;
                     }
 
-                    state_mut.unlock_substate(resource_lock)?;
-
                     Ok(InvokeResult::unit())
                 })
             },
@@ -2269,11 +2296,7 @@ where
                     });
                 }
 
-                self.tracker.write_with(|state_mut| {
-                    let resource_lock = state_mut.read_lock_substate(SubstateId::Resource(resource_address))?;
-
-                    let resource = state_mut.get_resource(&resource_lock)?;
-
+                self.authorize_resource_action(resource_address, ResourceAuthAction::Freeze, |resource| {
                     if !resource.resource_type().is_confidential() {
                         return Err(RuntimeError::InvalidArgument {
                             argument: "resource_ref",
@@ -2281,13 +2304,10 @@ where
                                 .to_string(),
                         });
                     }
+                    Ok(())
+                })?;
 
-                    state_mut.authorization().check_resource_access_rules(
-                        ResourceAuthAction::Freeze,
-                        resource.as_ownership(),
-                        resource.access_rules(),
-                    )?;
-
+                self.tracker.write_with(|state_mut| {
                     for commitment in arg.commitments {
                         let id = SubstateId::ConfidentialOutput(ConfidentialOutputAddress::new(
                             resource_address,
@@ -2313,8 +2333,6 @@ where
                         state_mut.unlock_substate(locked)?;
                     }
 
-                    state_mut.unlock_substate(resource_lock)?;
-
                     Ok(InvokeResult::unit())
                 })
             },
@@ -2330,31 +2348,23 @@ where
 
                 // Charge the value proof's native verification (a Schnorr/ElGamal check) against
                 // the payment-funded allowance before it runs.
-                if arg.value_proof.is_some() {
-                    self.tracker
-                        .charge_native_execution(tari_engine_types::limits::NativeExecutionPoints::PER_VALUE_PROOF)?;
-                }
+                self.tracker
+                    .charge_native_execution(crypto::value_proof_native_points(&arg.value_proof))?;
 
-                self.tracker.write_with(|state_mut| {
-                    let resource_lock = state_mut.read_lock_substate(SubstateId::Resource(resource_address))?;
-
-                    let resource = state_mut.get_resource(&resource_lock)?;
-
+                self.authorize_resource_action(resource_address, ResourceAuthAction::Burn, |resource| {
                     if !resource.resource_type().is_stealth() {
                         return Err(RuntimeError::InvalidArgument {
                             argument: "resource_ref",
-                            reason: "FreezeStealthUtxo can only be called on stealth resources".to_string(),
+                            reason: "StealthUtxoBurn can only be called on stealth resources".to_string(),
                         });
                     }
+                    Ok(())
+                })?;
 
+                self.tracker.write_with(|state_mut| {
+                    let resource_lock = state_mut.read_lock_substate(SubstateId::Resource(resource_address))?;
+                    let resource = state_mut.get_resource(&resource_lock)?;
                     let is_total_supply_tracking_enabled = resource.is_supply_tracking_enabled();
-                    if is_total_supply_tracking_enabled && arg.value_proof.is_none() {
-                        return Err(RuntimeError::InvalidArgument {
-                            argument: "BurnStealthUtxoArg",
-                            reason: "Burning from a total supply tracking resource requires a value proof".to_string(),
-                        });
-                    }
-
                     let maybe_view_key =
                         resource
                             .to_view_key_public_key()
@@ -2366,13 +2376,6 @@ where
                                     e
                                 ),
                             })?;
-
-                    state_mut.authorization().check_resource_access_rules(
-                        ResourceAuthAction::Burn,
-                        resource.as_ownership(),
-                        resource.access_rules(),
-                    )?;
-
                     state_mut.unlock_substate(resource_lock)?;
 
                     let id = SubstateId::Utxo(UtxoAddress::new(resource_address, arg.utxo_id));
@@ -2394,31 +2397,32 @@ where
                         }));
                     }
 
-                    if is_total_supply_tracking_enabled {
-                        let value_proof = arg.value_proof.as_ref().expect(
-                            "BUG: is_total_supply_tracking_enabled is true and value proof is some has been checked",
-                        );
-                        let commitment = arg.utxo_id.into_commitment_bytes();
-                        // Burning discards the output, so the proof is validated against the viewable balance first
-                        let elgamal_proof = utxo_mut
-                            .output
-                            .as_ref()
-                            .and_then(|o| o.output.viewable_balance.as_ref());
-                        let value = crypto::validate_value_proof(
-                            &commitment,
-                            maybe_view_key.as_ref(),
-                            elgamal_proof,
-                            value_proof,
-                        )?;
-                        utxo_mut.burn();
-                        if value.is_positive() {
-                            let resource_lock =
-                                state_mut.write_lock_substate(SubstateId::Resource(resource_address))?;
-                            state_mut.decrease_total_supply(&resource_lock, value)?;
-                            state_mut.unlock_substate(resource_lock)?;
-                        }
-                    } else {
-                        utxo_mut.burn();
+                    if utxo_mut.is_frozen() {
+                        return Err(RuntimeError::ResourceError(ResourceError::UtxoBurnFailed {
+                            id: arg.utxo_id,
+                            details: "frozen".to_string(),
+                        }));
+                    }
+
+                    // The value proof is the burner's proof that they hold the UTXO's opening (or the resource's
+                    // secret view key), so it is required whether or not the resource tracks its total supply.
+                    let commitment = arg.utxo_id.into_commitment_bytes();
+                    // Burning discards the output, so the proof is validated against the viewable balance first
+                    let elgamal_proof = utxo_mut
+                        .output
+                        .as_ref()
+                        .and_then(|o| o.output.viewable_balance.as_ref());
+                    let value = crypto::validate_value_proof(
+                        &commitment,
+                        maybe_view_key.as_ref(),
+                        elgamal_proof,
+                        &arg.value_proof,
+                    )?;
+                    utxo_mut.burn();
+                    if is_total_supply_tracking_enabled && value.is_positive() {
+                        let resource_lock = state_mut.write_lock_substate(SubstateId::Resource(resource_address))?;
+                        state_mut.decrease_total_supply(&resource_lock, value)?;
+                        state_mut.unlock_substate(resource_lock)?;
                     }
 
                     state_mut.unlock_substate(utxo_lock)?;
@@ -4154,18 +4158,20 @@ where
         // allowance before any of it runs (the authorisation pass below included), so a transaction
         // that will not pay traps here without extracting the crypto work. The resource peek is a
         // cheap substate read that determines whether the viewable-balance surcharge applies.
-        let has_view_key = self.tracker.write_with(|state| {
+        let (address, has_view_key) = self.tracker.write_with(|state| {
             let address = state.resolve_resource_address_ref(resource_address.clone())?;
             let resource_lock = state.read_lock_substate(SubstateId::Resource(address))?;
             let has_view_key = state.get_resource(&resource_lock)?.view_key().is_some();
             state.unlock_substate(resource_lock)?;
-            Ok::<_, RuntimeError>(has_view_key)
+            Ok::<_, RuntimeError>((address, has_view_key))
         })?;
         self.tracker
             .charge_native_execution(tari_engine_types::stealth::transfer_native_points(
                 &statement,
                 has_view_key,
             ))?;
+
+        self.authorize_resource_action(address, ResourceAuthAction::Withdraw, |_| Ok(()))?;
 
         // (T2) Spend time: authorise every input BEFORE the spend executes, so a rejection leaves the inputs unspent.
         // This is the authoritative, mandatory security gate for all spend paths (key path, AccessRule, and WASM

@@ -38,8 +38,10 @@ impl fmt::Display for AuthHook {
 pub struct AuthHookCaller {
     #[n(0)]
     component_address: Option<ComponentAddress>,
+    /// The template whose code performed the action, or `None` when a transaction instruction performed it
+    /// directly (e.g. a stealth transfer instruction).
     #[n(1)]
-    template_address: TemplateAddress,
+    template_address: Option<TemplateAddress>,
     #[n(2)]
     component_state: Option<tari_bor::Value>,
     /// The resource whose action triggered the hook. Any resource may bind any hook-shaped method, so a hook must
@@ -51,7 +53,7 @@ pub struct AuthHookCaller {
 impl AuthHookCaller {
     pub fn new(
         resource_address: ResourceAddress,
-        template_address: TemplateAddress,
+        template_address: Option<TemplateAddress>,
         component_address: Option<ComponentAddress>,
     ) -> Self {
         Self {
@@ -79,7 +81,9 @@ impl AuthHookCaller {
         self.component_address.as_ref()
     }
 
-    pub fn template(&self) -> &TemplateAddress {
-        &self.template_address
+    /// The template whose code performed the action, or `None` when a transaction instruction performed it
+    /// directly.
+    pub fn template(&self) -> Option<&TemplateAddress> {
+        self.template_address.as_ref()
     }
 }

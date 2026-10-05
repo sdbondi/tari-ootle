@@ -966,7 +966,7 @@ pub struct BurnStealthUtxoArg {
     #[n(0)]
     pub utxo_id: UtxoId,
     #[n(1)]
-    pub value_proof: Option<CommitmentValueProof>,
+    pub value_proof: CommitmentValueProof,
 }
 
 /// Arguments for [`BucketAction::Burn`].

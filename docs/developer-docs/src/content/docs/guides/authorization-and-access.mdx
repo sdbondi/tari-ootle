@@ -337,6 +337,10 @@ otherwise. It is skipped when the acting component *is* the hook's own component
 not exist yet — which is what lets a template allocate the address, build the resource, and create the component
 afterwards.
 
+On stealth and confidential resources, every stealth transfer runs the hook as `Withdraw`, freezing or unfreezing
+UTXOs or confidential outputs runs it as `Freeze`, and burning a UTXO runs it as `Burn`. A stealth transfer submitted
+directly as a transaction instruction has no acting template, so `AuthHookCaller::template()` is `None`.
+
 A hook frame is confined to its own component: it may take `&mut self` and update that component's state, and the
 engine refuses every other write, new substate, cross-template call, bucket and proof from inside it. That
 confinement is what makes a hook safe to run with the acting component's caller badges. The engine invokes the hook

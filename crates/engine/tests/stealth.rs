@@ -1250,6 +1250,213 @@ fn two_statements_may_not_spend_the_same_utxo() {
     assert_reject_reason(reason, "was already spent earlier in this transaction");
 }
 
+/// Sets up a faucet whose resource binds the faucet's counting auth hook, with freeze and burn open to anyone.
+fn setup_with_auth_hook(
+    test: &mut TemplateTest,
+    transfer_data: &StealthSecretTransferData,
+    track_supply: bool,
+) -> (ComponentAddress, ResourceAddress) {
+    test.enable_auto_add_proofs_from_signers();
+    let template_addr = test.get_template_address(TEMPLATE_NAME);
+    let initial_supply = transfer_data.statement.inputs_statement.revealed_amount;
+
+    test.execute_expect_success(
+        test.transaction()
+            .call_function(template_addr, "new_with_auth_hook", args![
+                initial_supply,
+                transfer_data.statement,
+                track_supply
+            ])
+            .build_and_seal(test.secret_key()),
+        vec![],
+    );
+
+    let faucet = test.get_previous_output_address(SubstateType::Component);
+    let resx = test.get_previous_output_address(SubstateType::Resource);
+    (
+        faucet.as_component_address().unwrap(),
+        resx.as_resource_address().unwrap(),
+    )
+}
+
+fn hook_calls(test: &mut TemplateTest, faucet: ComponentAddress) -> u64 {
+    test.call_method(faucet, "hook_calls", args![], vec![])
+}
+
+fn utxo_id_of(mask: &RistrettoSecretKey, value: u64) -> UtxoId {
+    UtxoId::from(get_commitment_factory().commit_value(mask, value).to_byte_type())
+}
+
+#[test]
+fn stealth_transfer_instruction_invokes_the_auth_hook() {
+    let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
+    let mint = stealth::generate_mint_statement([100u64], 0u64, None);
+    let (faucet, faucet_resx) = setup_with_auth_hook(&mut test, &mint, true);
+    assert_eq!(hook_calls(&mut test, faucet), 0);
+
+    let transfer = stealth::generate_transfer_data(
+        [MaskAndValue {
+            mask: mint.output_masks[0].clone(),
+            value: 100,
+        }],
+        0u64,
+        Some(100),
+        0,
+    );
+    test.execute_expect_success(
+        test.transaction()
+            .stealth_transfer(faucet_resx, transfer.statement)
+            .finish()
+            .add_signer(&test.to_public_key_bytes(), &mint.output_masks[0])
+            .seal(test.secret_key()),
+        vec![],
+    );
+
+    assert_eq!(hook_calls(&mut test, faucet), 1);
+}
+
+#[test]
+fn programmatic_stealth_transfer_invokes_the_auth_hook() {
+    let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
+    let mint = stealth::generate_mint_statement([100u64], 0u64, None);
+    let (faucet, faucet_resx) = setup_with_auth_hook(&mut test, &mint, true);
+
+    let transfer = stealth::generate_transfer_data(
+        [MaskAndValue {
+            mask: mint.output_masks[0].clone(),
+            value: 100,
+        }],
+        0u64,
+        Some(100),
+        0,
+    );
+    let template_addr = test.get_template_address(TEMPLATE_NAME);
+    test.execute_expect_success(
+        test.transaction()
+            .call_function(template_addr, "static_programmatic_transfer", args![
+                faucet_resx,
+                transfer.statement
+            ])
+            .finish()
+            .add_signer(&test.to_public_key_bytes(), &mint.output_masks[0])
+            .seal(test.secret_key()),
+        vec![],
+    );
+
+    assert_eq!(hook_calls(&mut test, faucet), 1);
+}
+
+#[test]
+fn freezing_utxos_invokes_the_auth_hook() {
+    let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
+    let mint = stealth::generate_mint_statement([100u64], 0u64, None);
+    let (faucet, faucet_resx) = setup_with_auth_hook(&mut test, &mint, true);
+    let utxo_id = utxo_id_of(&mint.output_masks[0], 100);
+
+    let template_addr = test.get_template_address(TEMPLATE_NAME);
+    test.execute_expect_success(
+        test.transaction()
+            .call_function(template_addr, "freeze_utxos_of", args![faucet_resx, vec![utxo_id]])
+            .build_and_seal(test.secret_key()),
+        vec![],
+    );
+
+    assert_eq!(hook_calls(&mut test, faucet), 1);
+    let utxo = test
+        .read_only_state_store()
+        .get_utxo(UtxoAddress::new(faucet_resx, utxo_id))
+        .unwrap();
+    assert!(utxo.is_frozen());
+}
+
+#[test]
+fn burning_a_utxo_invokes_the_auth_hook() {
+    let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
+    let mint = stealth::generate_mint_statement([100u64], 0u64, None);
+    let (faucet, faucet_resx) = setup_with_auth_hook(&mut test, &mint, true);
+    let utxo_id = utxo_id_of(&mint.output_masks[0], 100);
+    let proof = value_proof::generate_value_proof_mask_knowledge(100u64.into(), &mint.output_masks[0]);
+
+    let template_addr = test.get_template_address(TEMPLATE_NAME);
+    test.execute_expect_success(
+        test.transaction()
+            .call_function(template_addr, "burn_utxo_of", args![faucet_resx, utxo_id, proof])
+            .build_and_seal(test.secret_key()),
+        vec![],
+    );
+
+    assert_eq!(hook_calls(&mut test, faucet), 1);
+    let utxo = test
+        .read_only_state_store()
+        .get_utxo(UtxoAddress::new(faucet_resx, utxo_id))
+        .unwrap();
+    assert!(utxo.is_burnt());
+}
+
+#[test]
+fn a_frozen_utxo_cannot_be_burnt() {
+    let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
+    let mint = stealth::generate_mint_statement([100u64], 0u64, None);
+    let (_faucet, faucet_resx) = setup_with_auth_hook(&mut test, &mint, true);
+    let utxo_id = utxo_id_of(&mint.output_masks[0], 100);
+    let proof = value_proof::generate_value_proof_mask_knowledge(100u64.into(), &mint.output_masks[0]);
+
+    let template_addr = test.get_template_address(TEMPLATE_NAME);
+    test.execute_expect_success(
+        test.transaction()
+            .call_function(template_addr, "freeze_utxos_of", args![faucet_resx, vec![utxo_id]])
+            .build_and_seal(test.secret_key()),
+        vec![],
+    );
+
+    let reason = test.execute_expect_failure(
+        test.transaction()
+            .call_function(template_addr, "burn_utxo_of", args![faucet_resx, utxo_id, proof])
+            .build_and_seal(test.secret_key()),
+        vec![],
+    );
+
+    assert_reject_reason(reason, ResourceError::UtxoBurnFailed {
+        id: utxo_id,
+        details: "frozen".to_string(),
+    });
+    let utxo = test
+        .read_only_state_store()
+        .get_utxo(UtxoAddress::new(faucet_resx, utxo_id))
+        .unwrap();
+    assert!(!utxo.is_burnt());
+}
+
+/// A burn proves knowledge of the UTXO's opening whether or not the resource tracks its total supply, so only
+/// the owner or the view-key holder can burn it.
+#[test]
+fn burn_rejects_an_invalid_value_proof_without_supply_tracking() {
+    let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
+    let mint = stealth::generate_mint_statement([100u64], 0u64, None);
+    let (_faucet, faucet_resx) = setup_with_auth_hook(&mut test, &mint, false);
+    let utxo_id = utxo_id_of(&mint.output_masks[0], 100);
+    let (wrong_mask, _) = RistrettoPublicKey::random_keypair(&mut rand::rng());
+    let proof = value_proof::generate_value_proof_mask_knowledge(100u64.into(), &wrong_mask);
+
+    let template_addr = test.get_template_address(TEMPLATE_NAME);
+    let reason = test.execute_expect_failure(
+        test.transaction()
+            .call_function(template_addr, "burn_utxo_of", args![faucet_resx, utxo_id, proof])
+            .build_and_seal(test.secret_key()),
+        vec![],
+    );
+
+    assert_reject_reason(reason, ResourceError::InvalidValueProof {
+        commitment: utxo_id.into_commitment_bytes(),
+        details: "Invalid mask knowledge proof".to_string(),
+    });
+    let utxo = test
+        .read_only_state_store()
+        .get_utxo(UtxoAddress::new(faucet_resx, utxo_id))
+        .unwrap();
+    assert!(!utxo.is_burnt());
+}
+
 #[test]
 fn a_utxo_spent_in_this_transaction_cannot_also_be_burnt() {
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
