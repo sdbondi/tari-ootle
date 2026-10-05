@@ -169,7 +169,6 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
             &self.state_store,
             shard,
             checkpoint_shard_root,
-            checkpoint.get_shard_state_version(shard),
         );
         let maybe_persisted_state_version = shard_sync.discard_unverified_state()?;
 

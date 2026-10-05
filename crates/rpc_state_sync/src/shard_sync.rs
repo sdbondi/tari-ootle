@@ -65,15 +65,13 @@ fn rewind_shard<TTx: StateStoreWriteTransaction>(
     Ok(())
 }
 
-/// Syncs one shard's state from a peer's stream against the shard root and state version of a trusted
-/// checkpoint.
+/// Syncs one shard's state from a peer's stream against the shard root of a trusted checkpoint.
 pub(crate) struct ShardSync<'a, TStore> {
     network: Network,
     num_preshards: NumPreshards,
     store: &'a TStore,
     shard: Shard,
     checkpoint_shard_root: TreeHash,
-    checkpoint_state_version: Version,
 }
 
 impl<'a, TStore: StateStore> ShardSync<'a, TStore> {
@@ -83,7 +81,6 @@ impl<'a, TStore: StateStore> ShardSync<'a, TStore> {
         store: &'a TStore,
         shard: Shard,
         checkpoint_shard_root: TreeHash,
-        checkpoint_state_version: Version,
     ) -> Self {
         Self {
             network,
@@ -91,7 +88,6 @@ impl<'a, TStore: StateStore> ShardSync<'a, TStore> {
             store,
             shard,
             checkpoint_shard_root,
-            checkpoint_state_version,
         }
     }
 
@@ -259,15 +255,6 @@ impl<'a, TStore: StateStore> ShardSync<'a, TStore> {
                     "Received state version {} that is less than the persisted state version {}.",
                     batch.state_version,
                     start_state_version
-                )));
-            }
-            // The checkpoint commits the shard to its state version at the end of the epoch the stream runs to, so
-            // no version beyond it was committed by then.
-            if batch.state_version > self.checkpoint_state_version {
-                return Err(RpcStateSyncError::InvalidResponse(anyhow!(
-                    "Received state version {} for {shard}, beyond the checkpoint's v{}.",
-                    batch.state_version,
-                    self.checkpoint_state_version
                 )));
             }
 
@@ -653,11 +640,6 @@ mod tests {
         root
     }
 
-    /// The state version a checkpoint commits to once `versions` are applied in order.
-    fn version_after(versions: &Versions) -> Version {
-        versions.last().map_or(0, |(version, _)| *version)
-    }
-
     fn local_version<TStore: StateStore>(store: &TStore) -> Option<Version> {
         store
             .with_read_tx(|tx| tx.state_tree_versions_get_latest(shard()))
@@ -681,14 +663,7 @@ mod tests {
         checkpoint: &Versions,
         responses: Vec<Result<SyncStateResponse, RpcStatus>>,
     ) -> Result<Option<Version>, RpcStateSyncError> {
-        let sync = ShardSync::new(
-            NETWORK,
-            NUM_PRESHARDS,
-            store,
-            shard(),
-            root_after(checkpoint),
-            version_after(checkpoint),
-        );
+        let sync = ShardSync::new(NETWORK, NUM_PRESHARDS, store, shard(), root_after(checkpoint));
         let verified_version = sync.discard_unverified_state()?;
         sync.sync_from_stream(
             &mut StateSyncStats::default(),
@@ -767,14 +742,7 @@ mod tests {
         assert_eq!(local_version(&store), Some(1));
         assert!(substate(&store, HONEST).is_some_and(|s| s.is_up()));
         assert!(substate(&store, POISON).is_none());
-        let shard_sync = ShardSync::new(
-            NETWORK,
-            NUM_PRESHARDS,
-            &store,
-            shard(),
-            root_after(&verified),
-            version_after(&verified),
-        );
+        let shard_sync = ShardSync::new(NETWORK, NUM_PRESHARDS, &store, shard(), root_after(&verified));
         assert_eq!(shard_sync.local_state_root(Some(1)).unwrap(), root_after(&verified));
 
         sync(&store, &honest, vec![batch(2, vec![create(2)]), complete(2)])
@@ -812,36 +780,10 @@ mod tests {
         assert_eq!(local_version(&store), Some(1));
     }
 
-    #[tokio::test]
-    async fn a_version_beyond_the_checkpoint_is_rejected_and_leaves_no_state_behind() {
-        let (store, _tmp) = create_store();
-        let honest = vec![(1, vec![create(HONEST)])];
-
-        for version in [2, Version::MAX] {
-            let err = sync(&store, &honest, vec![
-                batch(version, vec![create(POISON)]),
-                complete(version),
-            ])
-            .await
-            .unwrap_err();
-
-            assert!(matches!(err, RpcStateSyncError::InvalidResponse(_)), "{err}");
-            assert_eq!(local_version(&store), None);
-            assert!(substate(&store, POISON).is_none());
-        }
-    }
-
     #[test]
     fn the_last_representable_version_has_no_successor() {
         let (store, _tmp) = create_store();
-        let sync = ShardSync::new(
-            NETWORK,
-            NUM_PRESHARDS,
-            &store,
-            shard(),
-            SPARSE_MERKLE_PLACEHOLDER_HASH,
-            Version::MAX,
-        );
+        let sync = ShardSync::new(NETWORK, NUM_PRESHARDS, &store, shard(), SPARSE_MERKLE_PLACEHOLDER_HASH);
         assert_eq!(sync.start_state_version(None).unwrap(), 1);
         assert_eq!(sync.start_state_version(Some(41)).unwrap(), 42);
         assert!(matches!(
@@ -854,14 +796,7 @@ mod tests {
     async fn an_interrupted_sync_is_discarded_before_the_next_attempt() {
         let (store, _tmp) = create_store();
         let honest = vec![(1, vec![create(HONEST)])];
-        let sync = ShardSync::new(
-            NETWORK,
-            NUM_PRESHARDS,
-            &store,
-            shard(),
-            root_after(&honest),
-            version_after(&honest),
-        );
+        let sync = ShardSync::new(NETWORK, NUM_PRESHARDS, &store, shard(), root_after(&honest));
 
         // The peer stalls after one version and the sync is dropped mid-stream, as on shutdown.
         let stalled = stream::iter(vec![batch(1, vec![create(POISON)])]).chain(stream::pending());
@@ -884,7 +819,7 @@ mod tests {
         shard: Shard,
         updates: Vec<SubstateUpdateProof>,
     ) -> Option<Result<Option<Version>, RpcStateSyncError>> {
-        let sync = ShardSync::new(NETWORK, NUM_PRESHARDS, store, shard, SPARSE_MERKLE_PLACEHOLDER_HASH, 1);
+        let sync = ShardSync::new(NETWORK, NUM_PRESHARDS, store, shard, SPARSE_MERKLE_PLACEHOLDER_HASH);
         let stalled = stream::iter(vec![batch_in(shard, 1, updates)]).chain(stream::pending());
         sync.sync_from_stream(&mut StateSyncStats::default(), None, stalled)
             .now_or_never()
@@ -900,7 +835,6 @@ mod tests {
             &store,
             other_shard(),
             root_after(&other_verified),
-            version_after(&other_verified),
         )
         .sync_from_stream(
             &mut StateSyncStats::default(),
