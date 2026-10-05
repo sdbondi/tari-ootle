@@ -4,9 +4,8 @@
 //! Cucumber steps for the offline break-glass rollback tool.
 //!
 //! These steps compose two independently useful primitives:
-//!   1. `I shut down validator node X`  — stops the in-process VN task and awaits it, guaranteeing the
-//!      `Arc<TransactionDB>` clones have dropped and RocksDB's LOCK file is released (axum's graceful shutdown is what
-//!      makes this complete in bounded time — see `json_rpc::server::spawn_json_rpc`).
+//!   1. `I shut down validator node X`  — stops the in-process VN task and awaits it, then waits until RocksDB's LOCK
+//!      file is released.
 //!   2. `I apply an offline rollback to epoch N on validator node X` — invokes the tool's library surface against the
 //!      stopped validator's data dir.
 //!
@@ -37,6 +36,23 @@ async fn shut_down_validator_node(world: &mut TariWorld, vn_name: String) {
         "state db path {} does not exist after shutdown",
         state_db_path.display(),
     );
+    // Tasks detached from the VN task can still hold a state store clone after it joins, so the RocksDB LOCK is only
+    // known to be free once the store can be opened.
+    const LOCK_RELEASE_TIMEOUT: Duration = Duration::from_secs(60);
+    let start = std::time::Instant::now();
+    loop {
+        match RocksDbStateStore::<String>::open(&state_db_path, DatabaseOptions::default()) {
+            Ok(store) => {
+                drop(store);
+                break;
+            },
+            Err(err) if start.elapsed() < LOCK_RELEASE_TIMEOUT => {
+                integration_tests::cucumber_log!("Waiting for {vn_name} to release its state db: {err}");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            },
+            Err(err) => panic!("{vn_name} did not release its state db within {LOCK_RELEASE_TIMEOUT:?}: {err}"),
+        }
+    }
     integration_tests::cucumber_log!(
         "Validator node {} shut down (state db at {})",
         vn_name,
