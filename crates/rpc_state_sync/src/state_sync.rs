@@ -18,6 +18,7 @@ use tari_consensus_types::{LeafBlock, ProposalCertificate};
 use tari_epoch_manager::EpochManagerReader;
 use tari_ootle_common_types::{
     Epoch,
+    NumPreshards,
     ShardGroup,
     VotePower,
     committee::{Committee, CommitteeMember},
@@ -43,7 +44,7 @@ use tari_validator_node_rpc::{
 
 use crate::{
     error::RpcStateSyncError,
-    shard_sync::{ShardSync, calculate_state_root_for_shard},
+    shard_sync::{ShardSync, calculate_state_root_for_shard, discard_all_unverified_state},
     stats::StateSyncStats,
 };
 
@@ -158,10 +159,17 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
         &mut self,
         client: &mut ValidatorNodeRpcClient,
         shard: Shard,
+        num_preshards: NumPreshards,
         checkpoint: &EpochCheckpoint,
     ) -> Result<Option<Version>, RpcStateSyncError> {
         let checkpoint_shard_root = checkpoint.get_shard_root(shard);
-        let shard_sync = ShardSync::new(self.network, &self.state_store, shard, checkpoint_shard_root);
+        let shard_sync = ShardSync::new(
+            self.network,
+            num_preshards,
+            &self.state_store,
+            shard,
+            checkpoint_shard_root,
+        );
         let maybe_persisted_state_version = shard_sync.discard_unverified_state()?;
 
         if shard_sync.local_state_root(maybe_persisted_state_version)? == checkpoint_shard_root {
@@ -286,6 +294,7 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
         shard: Shard,
         shard_group: ShardGroup,
         epoch: Epoch,
+        num_preshards: NumPreshards,
         source: &SyncSource,
     ) -> Result<Option<Version>, RpcStateSyncError> {
         let prev_epoch = epoch
@@ -344,7 +353,10 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
                 },
             };
 
-            match self.start_state_sync(&mut client, shard, &checkpoint).await {
+            match self
+                .start_state_sync(&mut client, shard, num_preshards, &checkpoint)
+                .await
+            {
                 Ok(maybe_version) => {
                     return Ok(maybe_version);
                 },
@@ -384,6 +396,7 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
     async fn sync_global_shard(
         &mut self,
         current_epoch: Epoch,
+        num_preshards: NumPreshards,
         sources: &HashMap<ShardGroup, SyncSource>,
     ) -> Result<Option<Version>, RpcStateSyncError> {
         let mut last_error = None;
@@ -391,7 +404,9 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
         for (sg, source) in sources {
             // Any previous-epoch checkpoint carries the global shard root, so the first shard group to succeed
             // justifies the whole global shard sync.
-            let result = self.sync_shard(Shard::global(), *sg, current_epoch, source).await;
+            let result = self
+                .sync_shard(Shard::global(), *sg, current_epoch, num_preshards, source)
+                .await;
             match result {
                 Ok(maybe_version) => {
                     let Some(version) = maybe_version else {
@@ -423,6 +438,7 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
     async fn sync_inner(&mut self, target_epoch: Option<Epoch>) -> Result<(), RpcStateSyncError> {
         let timer = Instant::now();
         self.unsaved_checkpoints.clear();
+        discard_all_unverified_state(&self.state_store)?;
         // Use the caller-provided target if any (typically the highest epoch resolved by a
         // stall-recovery probe), otherwise fall back to the oracle's current epoch.
         let current_epoch = match target_epoch {
@@ -464,8 +480,10 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
         }
 
         let local_shard_group = local_info.shard_group();
+        let num_preshards = local_info.num_preshards();
 
-        self.sync_global_shard(current_epoch, &sync_sources).await?;
+        self.sync_global_shard(current_epoch, num_preshards, &sync_sources)
+            .await?;
 
         // Sync data from each committee in range of the committee we're joining.
         // NOTE: we don't have to worry about substates in address range because shard boundaries are fixed.
@@ -478,7 +496,8 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
                 continue;
             };
             for shard in intersect_shard_group.shard_iter() {
-                self.sync_shard(shard, shard_group, current_epoch, &source).await?;
+                self.sync_shard(shard, shard_group, current_epoch, num_preshards, &source)
+                    .await?;
             }
             // The global shard synced first, so every shard this node takes from the checkpoint now matches it.
             if let Some(checkpoint) = self.unsaved_checkpoints.remove(&shard_group) {
@@ -738,6 +757,11 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress> + Send + Sync + 'static
     type Error = RpcStateSyncError;
 
     async fn check_sync(&self) -> Result<SyncStatus, Self::Error> {
+        // Every path to `Running` passes through here or through `sync`, so consensus never starts on top of state
+        // an interrupted sync left unverified, and the stale-node GC never runs while such state could still be
+        // rewound.
+        discard_all_unverified_state(&self.state_store)?;
+
         if self.skip_sync {
             warn!(target: LOG_TARGET, "🛜 State sync is disabled (--skip-sync). Reporting as up to date without checking.");
             return Ok(SyncStatus::UpToDate);

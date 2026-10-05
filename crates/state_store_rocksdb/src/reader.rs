@@ -1978,6 +1978,16 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         Ok(version)
     }
 
+    fn state_sync_rewind_points_get_all(&self) -> Result<Vec<(Shard, Version)>, StorageError> {
+        const OPERATION: &str = "state_sync_rewind_points_get_all";
+        let points = self
+            .db()
+            .cf(StateSyncRewindPointCf)?
+            .iterator(Ordering::Ascending, OPERATION)
+            .collect::<Result<_, _>>()?;
+        Ok(points)
+    }
+
     fn state_tree_versions_get_latest_for_shard_group(
         &self,
         shard_group: ShardGroup,

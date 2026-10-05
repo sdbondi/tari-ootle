@@ -445,6 +445,8 @@ pub trait StateStoreReadTransaction: Sized {
     /// The version `shard` must be rewound to because state sync committed versions above it that it has not yet
     /// verified, or `None` if every committed version of `shard` is verified.
     fn state_sync_rewind_point_get(&self, shard: Shard) -> Result<Option<Version>, StorageError>;
+    /// Every shard that has a rewind point, with that rewind point.
+    fn state_sync_rewind_points_get_all(&self) -> Result<Vec<(Shard, Version)>, StorageError>;
 
     // -------------------------------- Epoch checkpoint -------------------------------- //
     fn epoch_checkpoint_get_all_from_epoch(

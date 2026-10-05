@@ -7,7 +7,14 @@ use anyhow::anyhow;
 use futures::{Stream, StreamExt};
 use log::*;
 use ootle_network::Network;
-use tari_ootle_common_types::{Epoch, ToSubstateAddress, VersionedSubstateId, optional::Optional, shard::Shard};
+use tari_ootle_common_types::{
+    Epoch,
+    NumPreshards,
+    ToSubstateAddress,
+    VersionedSubstateId,
+    optional::Optional,
+    shard::Shard,
+};
 use tari_ootle_p2p::proto::rpc::{SyncStateResponse, sync_state_response};
 use tari_ootle_storage::{
     ShardScopedTreeStoreReader,
@@ -25,18 +32,54 @@ use crate::{error::RpcStateSyncError, stats::StateSyncStats};
 
 const LOG_TARGET: &str = "tari::ootle::rpc_state_sync::shard_sync";
 
+/// Rewinds every shard that a sync committed unverified versions of, so that everything the node reads or builds
+/// on afterwards is verified state.
+pub(crate) fn discard_all_unverified_state<TStore: StateStore>(store: &TStore) -> Result<(), RpcStateSyncError> {
+    store.with_write_tx(|tx| {
+        for (shard, rewind_point) in tx.state_sync_rewind_points_get_all()? {
+            rewind_shard(tx, shard, rewind_point)?;
+        }
+        Ok::<_, RpcStateSyncError>(())
+    })
+}
+
+fn rewind_shard<TTx: StateStoreWriteTransaction>(
+    tx: &mut TTx,
+    shard: Shard,
+    rewind_point: Version,
+) -> Result<(), StorageError> {
+    let tree_stats = tx.state_tree_truncate_to_version(shard, rewind_point)?;
+    let substate_stats = tx.substates_rewind_to_state_version(shard, rewind_point)?;
+    tx.state_sync_rewind_point_remove(shard)?;
+    warn!(
+        target: LOG_TARGET,
+        "🛜 Discarded unverified synced state for {shard} above v{rewind_point}: {} state version(s), {} tree node(s)",
+        substate_stats.transitions_processed,
+        tree_stats.nodes_deleted,
+    );
+    Ok(())
+}
+
 /// Syncs one shard's state from a peer's stream against the shard root of a trusted checkpoint.
 pub(crate) struct ShardSync<'a, TStore> {
     network: Network,
+    num_preshards: NumPreshards,
     store: &'a TStore,
     shard: Shard,
     checkpoint_shard_root: TreeHash,
 }
 
 impl<'a, TStore: StateStore> ShardSync<'a, TStore> {
-    pub fn new(network: Network, store: &'a TStore, shard: Shard, checkpoint_shard_root: TreeHash) -> Self {
+    pub fn new(
+        network: Network,
+        num_preshards: NumPreshards,
+        store: &'a TStore,
+        shard: Shard,
+        checkpoint_shard_root: TreeHash,
+    ) -> Self {
         Self {
             network,
+            num_preshards,
             store,
             shard,
             checkpoint_shard_root,
@@ -54,16 +97,7 @@ impl<'a, TStore: StateStore> ShardSync<'a, TStore> {
         let shard = self.shard;
         self.store.with_write_tx(|tx| {
             if let Some(rewind_point) = tx.state_sync_rewind_point_get(shard)? {
-                let tree_stats = tx.state_tree_truncate_to_version(shard, rewind_point)?;
-                let substate_stats = tx.substates_rewind_to_state_version(shard, rewind_point)?;
-                tx.state_sync_rewind_point_remove(shard)?;
-                warn!(
-                    target: LOG_TARGET,
-                    "🛜 Discarded unverified synced state for {shard} above v{rewind_point}: {} state version(s), {} \
-                     tree node(s)",
-                    substate_stats.transitions_processed,
-                    tree_stats.nodes_deleted,
-                );
+                rewind_shard(tx, shard, rewind_point)?;
             }
             Ok::<_, RpcStateSyncError>(tx.state_tree_versions_get_latest(shard)?)
         })
@@ -96,7 +130,7 @@ impl<'a, TStore: StateStore> ShardSync<'a, TStore> {
         result
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     async fn apply_stream<S, E>(
         &self,
         stats: &mut StateSyncStats,
@@ -232,6 +266,13 @@ impl<'a, TStore: StateStore> ShardSync<'a, TStore> {
             info!(target: LOG_TARGET, "🛜 Buffering {} state update(s) (state version: v{})", updates_for_state_version.len(), state_version);
             for result in updates_for_state_version {
                 let update = result?;
+                let id = update.to_versioned_substate_id();
+                let update_shard = id.to_shard(self.num_preshards);
+                if update_shard != shard {
+                    return Err(RpcStateSyncError::InvalidResponse(anyhow!(
+                        "Peer streamed an update to {id} in {update_shard} while syncing {shard}"
+                    )));
+                }
                 let tree_change = extract_tree_change(self.network, &update, msg_epoch);
 
                 debug!(target: LOG_TARGET, "🛜 -> state update (v{}) {}", state_version, update);
@@ -412,6 +453,7 @@ mod tests {
     use super::*;
 
     const NETWORK: Network = Network::LocalNet;
+    const NUM_PRESHARDS: NumPreshards = NumPreshards::P256;
     const EPOCH: Epoch = Epoch(1);
     const HONEST: u8 = 1;
     const POISON: u8 = 0xBA;
@@ -422,18 +464,29 @@ mod tests {
         Shard::from(3u32)
     }
 
+    fn other_shard() -> Shard {
+        Shard::from(4u32)
+    }
+
     fn create_store() -> (RocksDbStateStore<String>, TempDir) {
         let tmp = tempfile::tempdir().unwrap();
         let store = RocksDbStateStore::open(tmp.path().join("rocksdb"), DatabaseOptions::default()).unwrap();
         (store, tmp)
     }
 
-    fn substate_id(seed: u8) -> SubstateId {
-        SubstateId::Component(ComponentAddress::from_array([seed; ObjectKey::LENGTH]))
+    /// A substate that lands in `shard`: with 256 preshards the first address byte selects shard `byte + 1`.
+    fn substate_id_in(shard: Shard, seed: u8) -> SubstateId {
+        let mut bytes = [seed; ObjectKey::LENGTH];
+        bytes[0] = u8::try_from(shard.as_u32() - 1).unwrap();
+        SubstateId::Component(ComponentAddress::from_array(bytes))
+    }
+
+    fn address_in(shard: Shard, seed: u8) -> SubstateAddress {
+        SubstateAddress::from_substate_id(&substate_id_in(shard, seed), SubstateVersion::ZERO)
     }
 
     fn address(seed: u8) -> SubstateAddress {
-        SubstateAddress::from_substate_id(&substate_id(seed), SubstateVersion::ZERO)
+        address_in(shard(), seed)
     }
 
     fn create(seed: u8) -> SubstateUpdateProof {
@@ -441,9 +494,13 @@ mod tests {
     }
 
     fn create_with_value(seed: u8, value: u8) -> SubstateUpdateProof {
+        create_in(shard(), seed, value)
+    }
+
+    fn create_in(shard: Shard, seed: u8, value: u8) -> SubstateUpdateProof {
         SubstateUpdateProof::Create(Box::new(SubstateCreate {
             substate: SubstateData {
-                substate_id: substate_id(seed),
+                substate_id: substate_id_in(shard, seed),
                 version: SubstateVersion::ZERO,
                 value: SubstateValueOrHash::Hash(Hash32::from_array([value; 32])),
                 template_metadata: None,
@@ -452,20 +509,32 @@ mod tests {
     }
 
     fn destroy(seed: u8) -> SubstateUpdateProof {
+        destroy_in(shard(), seed)
+    }
+
+    fn destroy_in(shard: Shard, seed: u8) -> SubstateUpdateProof {
         SubstateUpdateProof::Destroy(SubstateDestroy {
-            substate_id: substate_id(seed),
+            substate_id: substate_id_in(shard, seed),
             version: SubstateVersion::ZERO,
         })
     }
 
     fn batch(state_version: Version, updates: Vec<SubstateUpdateProof>) -> Result<SyncStateResponse, RpcStatus> {
+        batch_in(shard(), state_version, updates)
+    }
+
+    fn batch_in(
+        shard: Shard,
+        state_version: Version,
+        updates: Vec<SubstateUpdateProof>,
+    ) -> Result<SyncStateResponse, RpcStatus> {
         Ok(SyncStateResponse {
             response: Some(sync_state_response::Response::Batch(SubstateBatch {
                 state_version,
                 updates: updates.into_iter().map(Into::into).collect(),
                 has_more: false,
                 epoch: Some(EPOCH.into()),
-                shard: shard().as_u32(),
+                shard: shard.as_u32(),
             })),
         })
     }
@@ -478,11 +547,15 @@ mod tests {
     }
 
     fn complete(synced_to_version: Version) -> Result<SyncStateResponse, RpcStatus> {
+        complete_in(shard(), synced_to_version)
+    }
+
+    fn complete_in(shard: Shard, synced_to_version: Version) -> Result<SyncStateResponse, RpcStatus> {
         Ok(SyncStateResponse {
             response: Some(sync_state_response::Response::Complete(SyncComplete {
                 synced_to_version,
                 epoch: Some(EPOCH.into()),
-                shard: shard().as_u32(),
+                shard: shard.as_u32(),
                 is_final: true,
             })),
         })
@@ -530,7 +603,7 @@ mod tests {
         checkpoint: &Versions,
         responses: Vec<Result<SyncStateResponse, RpcStatus>>,
     ) -> Result<Option<Version>, RpcStateSyncError> {
-        let sync = ShardSync::new(NETWORK, store, shard(), root_after(checkpoint));
+        let sync = ShardSync::new(NETWORK, NUM_PRESHARDS, store, shard(), root_after(checkpoint));
         let verified_version = sync.discard_unverified_state()?;
         sync.sync_from_stream(
             &mut StateSyncStats::default(),
@@ -609,7 +682,7 @@ mod tests {
         assert_eq!(local_version(&store), Some(1));
         assert!(substate(&store, HONEST).is_some_and(|s| s.is_up()));
         assert!(substate(&store, POISON).is_none());
-        let shard_sync = ShardSync::new(NETWORK, &store, shard(), root_after(&verified));
+        let shard_sync = ShardSync::new(NETWORK, NUM_PRESHARDS, &store, shard(), root_after(&verified));
         assert_eq!(shard_sync.local_state_root(Some(1)).unwrap(), root_after(&verified));
 
         sync(&store, &honest, vec![batch(2, vec![create(2)]), complete(2)])
@@ -649,7 +722,7 @@ mod tests {
     async fn an_interrupted_sync_is_discarded_before_the_next_attempt() {
         let (store, _tmp) = create_store();
         let honest = vec![(1, vec![create(HONEST)])];
-        let sync = ShardSync::new(NETWORK, &store, shard(), root_after(&honest));
+        let sync = ShardSync::new(NETWORK, NUM_PRESHARDS, &store, shard(), root_after(&honest));
 
         // The peer stalls after one version and the sync is dropped mid-stream, as on shutdown.
         let stalled = stream::iter(vec![batch(1, vec![create(POISON)])]).chain(stream::pending());
@@ -664,5 +737,81 @@ mod tests {
         assert_eq!(local_version(&store), None);
         assert!(substate(&store, POISON).is_none());
         assert_eq!(rewind_point(&store), None);
+    }
+
+    /// Starts a sync of `shard` that streams `updates` at v1 and is then dropped mid-stream.
+    fn interrupt_sync<TStore: StateStore>(
+        store: &TStore,
+        shard: Shard,
+        updates: Vec<SubstateUpdateProof>,
+    ) -> Option<Result<Option<Version>, RpcStateSyncError>> {
+        let sync = ShardSync::new(NETWORK, NUM_PRESHARDS, store, shard, SPARSE_MERKLE_PLACEHOLDER_HASH);
+        let stalled = stream::iter(vec![batch_in(shard, 1, updates)]).chain(stream::pending());
+        sync.sync_from_stream(&mut StateSyncStats::default(), None, stalled)
+            .now_or_never()
+    }
+
+    #[tokio::test]
+    async fn an_update_outside_the_synced_shard_is_rejected() {
+        let (store, _tmp) = create_store();
+        let other_verified = vec![(1, vec![create_in(other_shard(), HONEST, HONEST)])];
+        ShardSync::new(
+            NETWORK,
+            NUM_PRESHARDS,
+            &store,
+            other_shard(),
+            root_after(&other_verified),
+        )
+        .sync_from_stream(
+            &mut StateSyncStats::default(),
+            None,
+            stream::iter(vec![
+                batch_in(other_shard(), 1, other_verified[0].1.clone()),
+                complete_in(other_shard(), 1),
+            ]),
+        )
+        .await
+        .unwrap();
+
+        let result = interrupt_sync(&store, shard(), vec![destroy_in(other_shard(), HONEST)]);
+
+        assert!(
+            matches!(result, Some(Err(RpcStateSyncError::InvalidResponse(_)))),
+            "{result:?}"
+        );
+        let other = store
+            .with_read_tx(|tx| tx.substates_get(&address_in(other_shard(), HONEST)))
+            .unwrap();
+        assert!(other.is_up());
+        assert_eq!(rewind_point(&store), None);
+    }
+
+    #[tokio::test]
+    async fn discarding_all_unverified_state_rewinds_every_shard() {
+        let (store, _tmp) = create_store();
+        assert!(interrupt_sync(&store, shard(), vec![create(POISON)]).is_none());
+        assert!(interrupt_sync(&store, other_shard(), vec![create_in(other_shard(), POISON, POISON)]).is_none());
+        assert_eq!(
+            store
+                .with_read_tx(|tx| tx.state_sync_rewind_points_get_all())
+                .unwrap()
+                .len(),
+            2
+        );
+
+        discard_all_unverified_state(&store).unwrap();
+
+        let points = store.with_read_tx(|tx| tx.state_sync_rewind_points_get_all()).unwrap();
+        assert!(points.is_empty(), "{points:?}");
+        for shard in [shard(), other_shard()] {
+            let poison = store
+                .with_read_tx(|tx| tx.substates_get(&address_in(shard, POISON)).optional())
+                .unwrap();
+            assert!(poison.is_none(), "{shard}");
+            let version = store
+                .with_read_tx(|tx| tx.state_tree_versions_get_latest(shard))
+                .unwrap();
+            assert_eq!(version, None, "{shard}");
+        }
     }
 }
