@@ -2,7 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
     time::{Duration, Instant},
 };
@@ -23,7 +23,14 @@ use tari_ootle_common_types::{StateVersion, shard::Shard};
 /// once its first sync round lands - which is also when the transitions it missed while down arrive.
 #[derive(Debug, Default)]
 pub struct ShardWatermarks {
-    inner: RwLock<HashMap<Shard, Watermark>>,
+    inner: RwLock<Inner>,
+}
+
+#[derive(Debug, Default)]
+struct Inner {
+    watermarks: HashMap<Shard, Watermark>,
+    /// Shards closed for the rest of this run, whatever later markers say.
+    closed: HashSet<Shard>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -44,7 +51,10 @@ impl ShardWatermarks {
     pub fn confirm(&self, shard: Shard, state_version: StateVersion) {
         let now = Instant::now();
         let mut inner = self.write();
-        let entry = inner.entry(shard).or_insert(Watermark {
+        if inner.closed.contains(&shard) {
+            return;
+        }
+        let entry = inner.watermarks.entry(shard).or_insert(Watermark {
             state_version,
             confirmed_at: now,
         });
@@ -52,16 +62,20 @@ impl ShardWatermarks {
         entry.confirmed_at = now;
     }
 
-    /// Withdraws `shard`'s watermark, closing the shard until a completion marker confirms it again.
-    pub fn forget(&self, shard: Shard) {
-        self.write().remove(&shard);
+    /// Withdraws `shard`'s watermark and closes the shard for the rest of this run. A validated
+    /// checkpoint has contradicted what the indexer holds for it, so no completion marker can vouch
+    /// for it again: the versions the forged ones displaced never delivered their invalidations.
+    pub fn close(&self, shard: Shard) {
+        let mut inner = self.write();
+        inner.watermarks.remove(&shard);
+        inner.closed.insert(shard);
     }
 
     /// Re-stamps `shard`'s watermark as confirmed now, at the version it already holds. A shard that
     /// was never confirmed stays unconfirmed: liveness alone says nothing about what it holds.
     pub fn refresh(&self, shard: Shard) {
         let now = Instant::now();
-        if let Some(entry) = self.write().get_mut(&shard) {
+        if let Some(entry) = self.write().watermarks.get_mut(&shard) {
             entry.confirmed_at = now;
         }
     }
@@ -70,7 +84,7 @@ impl ShardWatermarks {
     /// confirmed longer than `max_lag` ago.
     pub fn get(&self, shard: Shard, max_lag: Duration) -> Option<StateVersion> {
         let inner = self.read();
-        let watermark = inner.get(&shard)?;
+        let watermark = inner.watermarks.get(&shard)?;
         (watermark.confirmed_at.elapsed() <= max_lag).then_some(watermark.state_version)
     }
 
@@ -79,18 +93,19 @@ impl ShardWatermarks {
     /// disagree.
     pub fn confirmed(&self, shard: Shard) -> Option<(StateVersion, Duration)> {
         self.read()
+            .watermarks
             .get(&shard)
             .map(|watermark| (watermark.state_version, watermark.confirmed_at.elapsed()))
     }
 
-    // Poisoning is recovered from rather than propagated: the map holds no invariant a panic could
+    // Poisoning is recovered from rather than propagated: the maps hold no invariant a panic could
     // break.
 
-    fn read(&self) -> RwLockReadGuard<'_, HashMap<Shard, Watermark>> {
+    fn read(&self) -> RwLockReadGuard<'_, Inner> {
         self.inner.read().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn write(&self) -> RwLockWriteGuard<'_, HashMap<Shard, Watermark>> {
+    fn write(&self) -> RwLockWriteGuard<'_, Inner> {
         self.inner.write().unwrap_or_else(|e| e.into_inner())
     }
 }
@@ -142,13 +157,19 @@ mod tests {
     }
 
     #[test]
-    fn a_forgotten_shard_is_closed_until_confirmed_again() {
+    fn a_closed_shard_stays_closed_whatever_later_markers_say() {
         let watermarks = ShardWatermarks::new();
         watermarks.confirm(SHARD, StateVersion::new(100));
-        watermarks.forget(SHARD);
+        watermarks.close(SHARD);
         assert_eq!(watermarks.get(SHARD, MAX_LAG), None);
-        watermarks.confirm(SHARD, StateVersion::new(7));
-        assert_eq!(watermarks.get(SHARD, MAX_LAG), Some(StateVersion::new(7)));
+        watermarks.confirm(SHARD, StateVersion::new(100));
+        watermarks.refresh(SHARD);
+        assert_eq!(watermarks.get(SHARD, MAX_LAG), None);
+        assert!(watermarks.confirmed(SHARD).is_none());
+
+        let other = Shard::from_u32(2);
+        watermarks.confirm(other, StateVersion::new(7));
+        assert_eq!(watermarks.get(other, MAX_LAG), Some(StateVersion::new(7)));
     }
 
     #[test]

@@ -511,10 +511,10 @@ impl NetworkWideStateSync {
                     target: LOG_TARGET,
                     "⚠️ Shard {shard} is synced to v{recorded_version}, but the validated {checkpoint_epoch} checkpoint \
                      commits it only to v{checkpoint_version}: a peer streamed versions its committee never committed. \
-                     The indexed data and economic totals for this shard cannot be trusted; resync this indexer from an \
-                     empty data directory"
+                     The indexed data and economic totals for this shard cannot be trusted, and its substates are not \
+                     served from cache until restart; resync this indexer from an empty data directory"
                 );
-                self.shard_watermarks.forget(*shard);
+                self.shard_watermarks.close(*shard);
             }
             progress.record_checkpoint(shard_group, checkpoint_epoch);
             let sync_progress_snapshot = progress.clone();
