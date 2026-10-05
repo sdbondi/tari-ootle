@@ -554,6 +554,17 @@ where TConsensusSpec: ConsensusSpec
             // justified block, and to propose a transaction that a foreign proposal in this block has just
             // moved to ABORT with the decision that move implies.
             change_set.apply_transaction_update(&mut transaction);
+            // Replicas withhold their vote unless the updated record is ready to leave its stage, so readiness is
+            // judged on the same record here.
+            if !transaction.is_ready_for_pending_stage(local_committee_info.shard_group()) {
+                debug!(
+                    target: LOG_TARGET,
+                    "🌿 PROPOSE: transaction {} is not ready to leave stage {} after this block's updates. Deferring.",
+                    transaction.id(),
+                    transaction.current_stage(),
+                );
+                continue;
+            }
             // Capture before the record is moved. The processing work below (incl. execution) is incurred
             // whether or not a command is produced, so accumulate for every processed transaction.
             executed_weight += transaction.proposal_weight();

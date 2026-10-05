@@ -1052,13 +1052,6 @@ where TConsensusSpec: ConsensusSpec
             return Ok(Some(NoVoteReason::TransactionNotInPool));
         };
 
-        // Readiness is evaluated before execution, which may change the decision and with it the readiness condition
-        if !tx_rec.current_stage().is_new() &&
-            let Some(reason) = check_ready_to_leave_stage(&tx_rec, block, "LocalAccept")
-        {
-            return Ok(Some(reason));
-        }
-
         if tx_rec.current_stage().is_new() {
             // CASE: This was sequenced immediately as LocalAccept, which can only mean either we are aborting or we are
             // an output-only Shard Group
@@ -1106,6 +1099,12 @@ where TConsensusSpec: ConsensusSpec
                     expected: TransactionPoolStage::LocalPrepared,
                     stage: tx_rec.current_stage(),
                 }));
+            }
+
+            // Readiness is evaluated before execution, which may change the decision and with it the readiness
+            // condition
+            if let Some(reason) = check_ready_to_leave_stage(&tx_rec, block, "LocalAccept") {
+                return Ok(Some(reason));
             }
 
             let transaction = tx_rec.get_transaction(tx)?;
@@ -1204,7 +1203,25 @@ where TConsensusSpec: ConsensusSpec
             );
             proposed_block_change_set.add_transaction_execution(*tx_rec.id(), execution)?;
         } else {
-            // Abort - nothing to do here
+            // CASE: We are in the LocalPrepared stage and have decided to ABORT. There is nothing to execute.
+            if !tx_rec.current_stage().is_local_prepared() {
+                warn!(
+                    target: LOG_TARGET,
+                    "❌ LocalAccept: ABORTED transaction {} in block {} is not in LocalPrepared stage (committed stage: {}, current stage: {})",
+                    tx_rec.id(),
+                    block,
+                    tx_rec.committed_stage(),
+                    tx_rec.current_stage(),
+                );
+                return Ok(Some(NoVoteReason::StageDisagreement {
+                    expected: TransactionPoolStage::LocalPrepared,
+                    stage: tx_rec.current_stage(),
+                }));
+            }
+
+            if let Some(reason) = check_ready_to_leave_stage(&tx_rec, block, "LocalAccept") {
+                return Ok(Some(reason));
+            }
         }
 
         if tx_rec.transaction_fee() != atom.transaction_fee {
@@ -1910,8 +1927,8 @@ mod tests {
             )
         }
 
-        /// A committed record at LocalAccepted for a transaction whose input shard group has prepared and whose local
-        /// output shard group has accepted.
+        /// A committed record at LocalAccepted for a transaction whose local output shard group has accepted. The input
+        /// shard group has prepared, and has also accepted when `input_group_accepted` is set.
         fn local_accepted_record(input_group_accepted: bool) -> TransactionPoolRecord {
             let mut evidence = Evidence::empty();
             let input = evidence
