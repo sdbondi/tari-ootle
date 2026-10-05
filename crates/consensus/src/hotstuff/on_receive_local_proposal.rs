@@ -598,14 +598,25 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
                 checkpoint.save(tx)?;
 
                 if let Some(next_shard_group) = next_shard_group.filter(|_| !shard_group_changed) {
+                    let next_protocol_version = ProtocolVersion::at(network, next_epoch);
+                    // The genesis root is formed under the next epoch's protocol version, which differs from the
+                    // end-of-epoch block's at an activation.
+                    let genesis_state_merkle_root = if next_protocol_version == eoe_block.header().protocol_version() {
+                        next_genesis_state_merkle_root
+                    } else {
+                        let root = checkpoint
+                            .compute_state_merkle_root_as(next_protocol_version)
+                            .map_err(|e| HotStuffError::InvariantError(format!("Next genesis state root: {e}")))?;
+                        FixedHash::new(root.into_array())
+                    };
                     // Create the next genesis
                     let mut genesis = Block::genesis(
                         network,
-                        ProtocolVersion::at(network, next_epoch),
+                        next_protocol_version,
                         next_epoch,
                         epoch_hash,
                         next_shard_group,
-                        next_genesis_state_merkle_root,
+                        genesis_state_merkle_root,
                         sidechain_id,
                         next_exhaust_burn_rate,
                     );

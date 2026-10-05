@@ -98,8 +98,16 @@ impl EpochCheckpoint {
     /// From [`ProtocolVersion::V1`] the root commits to each shard's state version as well as its root, so a
     /// checkpoint that validates fixes both.
     pub fn compute_state_merkle_root(&self) -> Result<TreeHash, EpochCheckpointValidationError> {
+        self.compute_state_merkle_root_as(self.protocol_version()?)
+    }
+
+    /// The state merkle root of this checkpoint's shard states with leaves formed under `protocol_version`, which is
+    /// the root the next epoch's genesis block commits when that epoch runs a different version.
+    pub fn compute_state_merkle_root_as(
+        &self,
+        protocol_version: ProtocolVersion,
+    ) -> Result<TreeHash, EpochCheckpointValidationError> {
         let shard_group = self.checked_shard_group()?;
-        let protocol_version = self.protocol_version()?;
         let leaves = iter::once(Shard::global())
             .chain(shard_group.shard_iter())
             .map(|shard| {

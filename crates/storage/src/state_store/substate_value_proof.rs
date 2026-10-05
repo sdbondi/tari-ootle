@@ -162,7 +162,7 @@ impl<'a, TTx: StateStoreReadTransaction> SubstateProofGenerator<'a, TTx> {
 ///
 /// `proof_epoch` is the epoch the substate was created at, which selects its value hash. `root_epoch`
 /// is the epoch of the block that committed `trusted_root`, which selects how that root's leaves are
-/// formed.
+/// formed: consensus rejects a header whose version is not the schedule's version at its epoch.
 pub fn verify_substate_value_proof_against_root(
     value_proof_bytes: &[u8],
     substate_id: &SubstateId,
