@@ -500,5 +500,20 @@ mod access_rules_template {
         pub fn mint_more_tokens(&mut self, amount: Amount) -> Bucket {
             ResourceManager::get(self.tokens.resource_address()).mint_fungible(amount)
         }
+
+        /// Issues a non-fungible resource holding token 1 with mutable data `0u32`. `None` keeps the builder's
+        /// default access rules.
+        pub fn issue_nft(resource_rules: Option<ResourceAccessRules>) -> Bucket {
+            ResourceBuilder::non_fungible()
+                .then(|builder| match resource_rules {
+                    Some(rules) => builder.with_access_rules(rules),
+                    None => builder,
+                })
+                .initial_supply_with_data([(NonFungibleId::from_u32(1), (&Metadata::new(), &0u32))])
+        }
+
+        pub fn set_nft_mutable_data(resource: ResourceAddress, id: NonFungibleId, value: u32) {
+            ResourceManager::get(resource).update_non_fungible_data(id, &value);
+        }
     }
 }

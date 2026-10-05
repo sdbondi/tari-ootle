@@ -386,7 +386,7 @@ ResourceBuilder::public_fungible()  // or non_fungible(), confidential(), stealt
     .freezable(rule!(deny_all))            // Who can freeze vaults holding this resource
     .withdrawable(rule!(allow_all))        // Who can withdraw (default: allow_all)
     .depositable(rule!(allow_all))         // Who can deposit (default: allow_all)
-    .update_non_fungible_data(rule!(...))  // Who can update NFT mutable data
+    .update_non_fungible_data(rule!(...))  // Who can update NFT mutable data (default: owner only)
     .update_access_rules(rule!(...))       // Who can change these rules later
 
     // Ownership

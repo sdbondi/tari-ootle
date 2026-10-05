@@ -292,9 +292,10 @@ let resource = ResourceBuilder::public_fungible()
 
 Calling `ResourceAccessRules::new()` (the default) yields safe baseline rules:
 
-- `mint`, `burn`, `recall`, `freeze`, `update_metadata`: `DenyAll`, updater `Locked`.
+- `mint`, `burn`, `recall`, `freeze`: `DenyAll`, updater `Locked`.
+- `update_metadata`, `update_non_fungible_data`: `DenyAll`, updater `Owner`. The resource owner can always update
+  metadata and NFT mutable data; anyone else needs an explicit rule.
 - `withdraw`, `deposit`: `AllowAll`, updater `Locked`.
-- `update_non_fungible_data`: `AllowAll`, updater `Owner`.
 - The auth hook updater: `Locked` (see [Authorization hooks](#authorization-hooks)).
 
 Locked-by-default means a resource issued with `ResourceAccessRules::new()` and no overrides can never have its

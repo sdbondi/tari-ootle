@@ -2737,3 +2737,106 @@ mod resource_access_rules {
         );
     }
 }
+
+mod non_fungible_data {
+    use tari_crypto::ristretto::RistrettoSecretKey;
+    use tari_engine_types::substate::SubstateId;
+    use tari_template_lib::types::NonFungibleAddress;
+
+    use super::*;
+
+    /// Issues a non-fungible resource signed by a fresh key, which owns it, and banks the single token in that
+    /// key's account. `None` leaves the builder's default access rules in place.
+    fn issue_nft(
+        test: &mut TemplateTest,
+        resource_rules: Option<ResourceAccessRules>,
+    ) -> (ResourceAddress, NonFungibleId, NonFungibleAddress, RistrettoSecretKey) {
+        let (owner_account, owner_proof, owner_key) = test.create_empty_account();
+        let template = test.get_template_address("AccessRulesTest");
+
+        let result = test.execute_expect_success(
+            Transaction::builder_localnet(Epoch(1))
+                .call_function(template, "issue_nft", args![resource_rules])
+                .put_last_instruction_output_on_workspace("nft")
+                .call_method(owner_account, "deposit", args![Workspace("nft")])
+                .build_and_seal(&owner_key),
+            vec![owner_proof.clone()],
+        );
+        let resource = result
+            .finalize
+            .result
+            .accept()
+            .unwrap()
+            .up_iter()
+            .find_map(|(id, _)| id.as_resource_address())
+            .unwrap();
+
+        (resource, NonFungibleId::from_u32(1), owner_proof, owner_key)
+    }
+
+    /// Calls a free function, so the resource's owner rule can be met only by the signer.
+    fn set_nft_data_tx(
+        test: &TemplateTest,
+        resource: ResourceAddress,
+        id: &NonFungibleId,
+        value: u32,
+        signer: &RistrettoSecretKey,
+    ) -> Transaction {
+        let template = test.get_template_address("AccessRulesTest");
+        Transaction::builder_localnet(Epoch(1))
+            .call_function(template, "set_nft_mutable_data", args![resource, id.clone(), value])
+            .build_and_seal(signer)
+    }
+
+    fn read_nft_data(test: &TemplateTest, resource: ResourceAddress, id: NonFungibleId) -> u32 {
+        test.read_only_state_store()
+            .get_substate(&SubstateId::NonFungible(NonFungibleAddress::new(resource, id)))
+            .unwrap()
+            .into_substate_value()
+            .into_non_fungible()
+            .unwrap()
+            .contents()
+            .unwrap()
+            .decode_mutable_data::<u32>()
+            .unwrap()
+    }
+
+    #[test]
+    fn it_denies_data_updates_to_non_owners_by_default() {
+        let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/access_rules"]);
+        let (resource, id, _, _) = issue_nft(&mut test, None);
+        let (user_proof, _, user_key) = test.create_owner_proof();
+
+        let tx = set_nft_data_tx(&test, resource, &id, 9999, &user_key);
+        let reason = test.execute_expect_failure(tx, vec![user_proof]);
+
+        assert_access_denied_for_action(reason, ResourceAuthAction::UpdateNonFungibleData);
+        assert_eq!(read_nft_data(&test, resource, id), 0);
+    }
+
+    #[test]
+    fn it_allows_the_owner_to_update_data_by_default() {
+        let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/access_rules"]);
+        let (resource, id, owner_proof, owner_key) = issue_nft(&mut test, None);
+
+        let tx = set_nft_data_tx(&test, resource, &id, 7, &owner_key);
+        test.execute_expect_success(tx, vec![owner_proof]);
+
+        assert_eq!(read_nft_data(&test, resource, id), 7);
+    }
+
+    #[test]
+    fn it_allows_data_updates_granted_by_an_explicit_rule() {
+        let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/access_rules"]);
+        let (user_proof, _, user_key) = test.create_owner_proof();
+        let (resource, id, _, _) = issue_nft(
+            &mut test,
+            Some(ResourceAccessRules::new().update_non_fungible_data(rule!(non_fungible(user_proof.clone())), OWNER)),
+        );
+
+        let tx = set_nft_data_tx(&test, resource, &id, 42, &user_key);
+        test.execute_expect_success(tx, vec![user_proof]);
+
+        assert_eq!(read_nft_data(&test, resource, id), 42);
+    }
+}

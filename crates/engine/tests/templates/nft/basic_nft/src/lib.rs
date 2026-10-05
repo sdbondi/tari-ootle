@@ -45,17 +45,20 @@ mod sparkle_nft_template {
                 NonFungibleId::from_string("Sparkle1"),
                 NonFungibleId::from_u256([0u8; 32]),
             ];
+            let component = CallerContext::allocate_component_address(None);
             let bucket = ResourceBuilder::non_fungible()
                 .with_token_symbol("SPKL")
                 // Allow minting and burning for tests
                 .mintable(rule!(allow_all), OWNER)
                 .burnable(rule!(allow_all), OWNER)
+                .update_non_fungible_data(rule!(component(component.get_address())), OWNER)
                 .initial_supply(tokens);
 
             Component::new(Self {
                 manager: bucket.resource_address().into(),
                 vault: Vault::from_bucket(bucket),
             })
+            .with_address_allocation(component)
             .with_access_rules(AccessRules::allow_all())
             .create()
         }

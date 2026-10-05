@@ -133,7 +133,9 @@ impl NonFungibleResourceBuilder {
     }
 
     /// Sets up who can update the mutable data of the tokens in the resource, and who may later
-    /// change that rule.
+    /// change that rule. By default only the resource owner may update the data, so a component that
+    /// mutates token data on behalf of other signers must be granted access here, e.g.
+    /// `rule!(component(address))`.
     pub fn update_non_fungible_data<U: Into<UpdateRule>>(mut self, rule: AccessRule, updater: U) -> Self {
         self.access_rules = self.access_rules.update_non_fungible_data(rule, updater);
         self

@@ -49,8 +49,8 @@ impl NonFungible {
     }
 
     /// Update the mutable data of the token, replacing it with the data provided as an argument.
-    /// Note that this operation may be protected via access rules, resulting in a panic if the caller does not have the
-    /// appropriate permissions
+    /// The caller must be the resource owner or satisfy the resource's `UpdateNonFungibleData` access rule, which
+    /// denies everyone else by default. Panics otherwise.
     pub fn set_mutable_data<T: Encode<()> + ?Sized>(&mut self, data: &T) {
         ResourceManager::get(*self.address.resource_address())
             .update_non_fungible_data(self.address.id().clone(), data);

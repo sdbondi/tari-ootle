@@ -889,6 +889,8 @@ impl ResourceManager {
     /// - Serialization of `data` fails,
     /// - The resource address does not exist,
     /// - The resource is not of type [`ResourceType::NonFungible`],
+    /// - The caller is neither the resource owner nor satisfies the resource's `UpdateNonFungibleData` access rule
+    ///   (which denies everyone else by default),
     /// - The engine call fails
     ///
     /// # Example

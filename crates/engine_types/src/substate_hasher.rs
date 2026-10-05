@@ -213,6 +213,7 @@ mod tests {
 
     use ootle_network::Network;
     use tari_template_lib::types::{
+        AccessRule,
         Metadata,
         ObjectKey,
         ResourceAddress,
@@ -232,11 +233,14 @@ mod tests {
         transaction_receipt::{DiffSummary, FinalizeOutcome},
     };
 
+    /// The non-fungible data rule is spelled out so that the pinned hash moves only with the preimage format.
     fn resource(auth_hook_updater: UpdateRule) -> SubstateValue {
         SubstateValue::Resource(Box::new(Resource::new(
             ResourceType::Fungible,
             SubstateOwnerRule::None,
-            ResourceAccessRules::new().set_auth_hook_updater(auth_hook_updater),
+            ResourceAccessRules::new()
+                .update_non_fungible_data(AccessRule::AllowAll, UpdateRule::Owner)
+                .set_auth_hook_updater(auth_hook_updater),
             Metadata::from_iter([("name", "baseline")]),
             None,
             None,

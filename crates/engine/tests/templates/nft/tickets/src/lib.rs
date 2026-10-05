@@ -51,6 +51,8 @@ mod tickets {
                 // The event description is common for all tickets
                 .add_metadata("event", event_description)
                 .mintable(rule!(all_of(component(component.get_address()), public_key(owner))), OWNER)
+                // Only this component may mark a ticket as redeemed
+                .update_non_fungible_data(rule!(component(component.get_address())), OWNER)
                 // We'll track it from inside the component
                 .disable_total_supply_tracking()
                 .build();

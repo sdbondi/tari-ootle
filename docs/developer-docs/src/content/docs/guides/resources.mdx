@@ -111,7 +111,7 @@ compliance, recovering lost tokens, or implementing certain business logic. Expl
 anything other than `DenyAll`. Default: `DenyAll`, updater `Locked` — once locked, even the owner cannot enable recall later.
 -   **Freezable:** Lets a privileged caller freeze resources in any vault on the ledger. Default: `DenyAll`, updater `Locked`.
 -   **Update Metadata:** Controls who can change the resource's metadata (the token symbol stays immutable). Default: `DenyAll`, updater `Owner`.
--   **Update Non-Fungible Data:** Applies to non-fungible resources. Controls who can update the mutable data of non-fungible tokens. Default: `AllowAll`, updater `Owner`.
+-   **Update Non-Fungible Data:** Applies to non-fungible resources. Controls who can update the mutable data of non-fungible tokens. Default: `DenyAll` (only the resource owner), updater `Owner`. A component that updates token data on behalf of its callers needs an explicit rule, e.g. `.update_non_fungible_data(rule!(component(component_address)), OWNER)`.
 
 These operations are typically exposed through methods on the `ResourceManager`. To change an individual access
 rule after creation, call `ResourceManager::update_access_rule(action, new_rule)`; the engine authorizes the

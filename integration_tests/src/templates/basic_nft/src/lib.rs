@@ -35,11 +35,13 @@ mod sparkle_nft_template {
 
     impl SparkleNft {
         pub fn new() -> Component<Self> {
+            let component = CallerContext::allocate_component_address(None);
             let resource_address = ResourceBuilder::non_fungible()
                 .with_token_symbol("SPKL")
                 // AllowAll makes testing easier
                 .mintable(rule!(allow_all), OWNER)
                 .burnable(rule!(allow_all), OWNER)
+                .update_non_fungible_data(rule!(component(component.get_address())), OWNER)
                 .build();
             let vault = Vault::new_empty(resource_address);
 
@@ -47,23 +49,27 @@ mod sparkle_nft_template {
                 resource_address,
                 vault,
             })
+            .with_address_allocation(component)
             .with_access_rules(AccessRules::allow_all())
             .create()
         }
 
         pub fn new_with_initial_nft(nft: NonFungibleId) -> Component<Self> {
             let empty = Metadata::new();
+            let component = CallerContext::allocate_component_address(None);
             let bucket = ResourceBuilder::non_fungible()
                 .with_token_symbol("SPKL")
                 // AllowAll makes testing easier
                 .mintable(rule!(allow_all), OWNER)
                 .burnable(rule!(allow_all), OWNER)
+                .update_non_fungible_data(rule!(component(component.get_address())), OWNER)
                 .initial_supply_with_data(Some((nft, (&(), &empty))));
 
             Component::new(Self {
                 resource_address: bucket.resource_address(),
                 vault: Vault::from_bucket(bucket),
             })
+            .with_address_allocation(component)
             .with_access_rules(AccessRules::allow_all())
             .create()
         }

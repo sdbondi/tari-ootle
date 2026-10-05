@@ -535,8 +535,9 @@ impl ResourceAccessRules {
     ///
     /// By default:
     /// * Updating the access rules is disabled for all users (i.e. only the OwnerRule applies)
-    /// * Minting, burning, recalling and freezing are disabled for all users
-    /// * Withdrawals, deposits and non-fungible data updates are allowed for all users
+    /// * Minting, burning, recalling, freezing, metadata updates and non-fungible data updates are disabled for all
+    ///   users. The resource owner may still update metadata and non-fungible data, and may open either rule later.
+    /// * Withdrawals and deposits are allowed for all users
     pub const fn new() -> Self {
         Self {
             // User should explicitly enable minting, burning etc
@@ -550,13 +551,13 @@ impl ResourceAccessRules {
             freeze_updater: UpdateRule::Locked,
             update_metadata: AccessRule::DenyAll,
             metadata_updater: UpdateRule::Owner,
-            // But explicitly disable withdrawing, updating and/or depositing
+            update_nft_data: AccessRule::DenyAll,
+            nft_data_updater: UpdateRule::Owner,
+            // But explicitly disable withdrawing and/or depositing
             withdraw: AccessRule::AllowAll,
             withdraw_updater: UpdateRule::Locked,
             deposit: AccessRule::AllowAll,
             deposit_updater: UpdateRule::Locked,
-            update_nft_data: AccessRule::AllowAll,
-            nft_data_updater: UpdateRule::Owner,
             auth_hook_updater: UpdateRule::Locked,
         }
     }
