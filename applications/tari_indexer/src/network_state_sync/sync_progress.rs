@@ -37,16 +37,16 @@ impl SyncProgress {
         self.last_state_versions.insert(shard, (state_version, epoch));
     }
 
-    pub fn forget_state_version(&mut self, shard: Shard) {
-        self.last_state_versions.shift_remove(&shard);
-    }
-
-    /// The shards whose state version was recorded at an epoch after `max_epoch`.
-    pub fn shards_recorded_after(&self, max_epoch: Epoch) -> Vec<Shard> {
+    /// Records at `max_epoch` every shard's state version that was recorded at an epoch after it,
+    /// returning the shards changed.
+    pub fn clamp_epochs(&mut self, max_epoch: Epoch) -> Vec<Shard> {
         self.last_state_versions
-            .iter()
+            .iter_mut()
             .filter(|(_, (_, epoch))| *epoch > max_epoch)
-            .map(|(shard, _)| *shard)
+            .map(|(shard, (_, epoch))| {
+                *epoch = max_epoch;
+                *shard
+            })
             .collect()
     }
 }

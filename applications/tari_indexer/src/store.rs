@@ -183,17 +183,6 @@ pub trait IndexerStoreReadTransaction {
     -> Result<Vec<EpochCheckpoint>, StorageError>;
     fn epoch_checkpoint_get_latest(&mut self) -> Result<EpochCheckpoint, StorageError>;
 
-    // -------------------------------- Substate transitions -------------------------------- //
-
-    /// The highest state version, and its epoch, at which a transition was committed for `shard`.
-    fn substate_transitions_get_latest_state_version(
-        &mut self,
-        shard: Shard,
-    ) -> Result<Option<(StateVersion, Epoch)>, StorageError>;
-
-    /// Whether `shard` holds a transition committed at a state version above `at_most`.
-    fn substate_transitions_exist_above(&mut self, shard: Shard, at_most: StateVersion) -> Result<bool, StorageError>;
-
     // -------------------------------- UTXOs -------------------------------- //
 
     fn utxos_get_max_state_version(

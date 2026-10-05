@@ -243,27 +243,6 @@ fn decode_event_row(row: EventRecord) -> Result<(i64, TransactionId, Event), Sto
     ))
 }
 
-// A state version spans the whole u64 range but is stored in a signed column as its two's complement
-// reinterpretation (`as i64`), so versions from 2^63 up read back negative. Every comparison and
-// ordering on a `state_version` column is made in unsigned terms: a negative value sorts above every
-// non-negative one, and the negatives sort among themselves in signed order. These express that in
-// one predicate, which defeats an index; a read that pages through an index splits at the sign
-// boundary instead.
-
-/// Matches rows whose `state_version` is above `version`.
-fn state_version_gt(version: StateVersion) -> diesel::expression::SqlLiteral<sql_types::Bool> {
-    let version = version.as_u64() as i64;
-    if version >= 0 {
-        dsl::sql(&format!("(state_version > {version} OR state_version < 0)"))
-    } else {
-        dsl::sql(&format!("(state_version < 0 AND state_version > {version})"))
-    }
-}
-
-fn state_version_order_desc() -> diesel::expression::SqlLiteral<sql_types::Bool> {
-    dsl::sql("state_version < 0 DESC, state_version DESC")
-}
-
 impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
     fn list_substates(
         &mut self,
@@ -786,39 +765,6 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
         deserialize_json(&json_data)
     }
 
-    fn substate_transitions_get_latest_state_version(
-        &mut self,
-        shard: Shard,
-    ) -> Result<Option<(StateVersion, Epoch)>, StorageError> {
-        const OPERATION: &str = "substate_transitions_get_latest_state_version";
-        use crate::storage_sqlite::schema::substate_transitions;
-        let latest = substate_transitions::table
-            .select((substate_transitions::state_version, substate_transitions::epoch))
-            .filter(substate_transitions::shard.eq(shard.as_u32() as i32))
-            .order_by(state_version_order_desc())
-            .first::<(i64, i64)>(self.connection())
-            .optional()
-            .map_err(|e| StorageError::QueryError {
-                reason: format!("{OPERATION}: {}", e),
-            })?;
-
-        Ok(latest.map(|(state_version, epoch)| (StateVersion::new(state_version as u64), Epoch(epoch as u64))))
-    }
-
-    fn substate_transitions_exist_above(&mut self, shard: Shard, at_most: StateVersion) -> Result<bool, StorageError> {
-        const OPERATION: &str = "substate_transitions_exist_above";
-        use crate::storage_sqlite::schema::substate_transitions;
-        diesel::select(diesel::dsl::exists(
-            substate_transitions::table
-                .filter(substate_transitions::shard.eq(shard.as_u32() as i32))
-                .filter(state_version_gt(at_most)),
-        ))
-        .get_result(self.connection())
-        .map_err(|e| StorageError::QueryError {
-            reason: format!("{OPERATION}: {}", e),
-        })
-    }
-
     fn utxos_get_max_state_version(
         &mut self,
         resource_address: ResourceAddress,
@@ -828,8 +774,9 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
         use crate::storage_sqlite::schema::utxos;
         let resource_address = resource_address.to_string();
         let shard = shard.as_u32() as i32;
-        // Each half is a seek on the (resource_address, state_version) index: the stored-negative
-        // versions are the highest when there are any.
+        // State versions are stored `as i64`, so those from 2^63 up read back negative and are the
+        // highest when there are any. Each half is a seek on the (resource_address, state_version)
+        // index.
         let mut max_version = None;
         for above_i64_max in [true, false] {
             let mut query = utxos::table

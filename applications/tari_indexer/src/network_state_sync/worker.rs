@@ -298,19 +298,21 @@ impl NetworkWideStateSync {
     async fn initialize_sync_plan(&self) -> Result<SyncPlan, NetworkStateSyncError> {
         let network_desc = self.epoch_manager.get_network_description().await?;
         let current_epoch = network_desc.epoch();
-        let (sync_progress, rewound) = self
+        let mut sync_progress = self
             .store
-            .with_read_tx(move |tx| {
-                let mut progress = tx
-                    .key_value_get_value::<_, SyncProgress>(Key::SyncProgress)
-                    .optional()?
-                    .unwrap_or_default();
-                let rewound = rewind_progress_from_future_epochs(tx, &mut progress, next_epoch(current_epoch))?;
-                Ok::<_, StorageError>((progress, rewound))
-            })
-            .await?;
-        if !rewound.is_empty() {
-            log_rewound(&sync_progress, &rewound, "Sync progress was recorded at a future epoch");
+            .with_read_tx(|tx| tx.key_value_get_value::<_, SyncProgress>(Key::SyncProgress))
+            .await
+            .optional()?
+            .unwrap_or_default();
+        // Progress only advances with a committed batch, so a shard recorded at an epoch no stream
+        // could name keeps its version; the epoch is brought back within reach of the checkpoint
+        // that reconciles it.
+        let max_epoch = next_epoch(current_epoch);
+        let clamped = sync_progress.clamp_epochs(max_epoch);
+        if !clamped.is_empty() {
+            for shard in &clamped {
+                warn!(target: LOG_TARGET, "⚠️ Sync progress for shard {shard} was recorded at an epoch after {max_epoch}. Recording it at {max_epoch}");
+            }
             let snapshot = sync_progress.clone();
             self.store
                 .with_write_tx(move |tx| tx.key_value_set(Key::SyncProgress, snapshot))
@@ -485,8 +487,8 @@ impl NetworkWideStateSync {
 
             info!(target: LOG_TARGET, "🌍️ Inserting checkpoint for {}, shard group {}", checkpoint.epoch(), checkpoint_shard_group);
 
-            // Only a quorum-validated checkpoint may rewind progress. The global shard is streamed
-            // from one committee only, so only that committee's checkpoint speaks for it.
+            // Only a quorum-validated checkpoint can contradict recorded progress. The global shard is
+            // streamed from one committee only, so only that committee's checkpoint speaks for it.
             let checkpoint_versions = (checkpoint.epoch() == prev_epoch).then(|| {
                 let reconciles_global = syncs_global_shard && checkpoint_shard_group == shard_group;
                 reconciles_global
@@ -501,20 +503,23 @@ impl NetworkWideStateSync {
             let xtr_exhausted = Amount::from(checkpoint.header().accumulated_data().total_exhaust_burn);
             let checkpoint_epoch = checkpoint.epoch();
             let mut progress = progress.lock().await;
-            let mut sync_progress_snapshot = progress.clone();
-            sync_progress_snapshot.record_checkpoint(shard_group, checkpoint_epoch);
-            let (sync_progress_snapshot, rewound) = self
-                .store
+            let forged = checkpoint_versions.map_or_else(Vec::new, |versions| {
+                shards_ahead_of_checkpoint(&progress, checkpoint_epoch, versions)
+            });
+            for (shard, recorded_version, checkpoint_version) in &forged {
+                error!(
+                    target: LOG_TARGET,
+                    "⚠️ Shard {shard} is synced to v{recorded_version}, but the validated {checkpoint_epoch} checkpoint \
+                     commits it only to v{checkpoint_version}: a peer streamed versions its committee never committed. \
+                     The indexed data and economic totals for this shard cannot be trusted; resync this indexer from an \
+                     empty data directory"
+                );
+                self.shard_watermarks.forget(*shard);
+            }
+            progress.record_checkpoint(shard_group, checkpoint_epoch);
+            let sync_progress_snapshot = progress.clone();
+            self.store
                 .with_write_tx(move |tx| {
-                    let rewound = match checkpoint_versions {
-                        Some(versions) => reconcile_progress_with_checkpoint(
-                            &mut **tx,
-                            &mut sync_progress_snapshot,
-                            checkpoint_epoch,
-                            versions,
-                        )?,
-                        None => Vec::new(),
-                    };
                     if !tx.epoch_checkpoint_exists(shard_group, checkpoint_epoch)? {
                         tx.insert_or_ignore_epoch_checkpoint(&checkpoint)?;
 
@@ -525,21 +530,9 @@ impl NetworkWideStateSync {
                         let new_exhausted = exhausted.unwrap_or_else(Amount::zero) + xtr_exhausted;
                         tx.key_value_set(Key::TariAccumulatedExhaustBurn, new_exhausted)?;
                     }
-                    tx.key_value_set(Key::SyncProgress, &sync_progress_snapshot)?;
-                    Ok::<_, StorageError>((sync_progress_snapshot, rewound))
+                    tx.key_value_set(Key::SyncProgress, sync_progress_snapshot)
                 })
                 .await?;
-            *progress = sync_progress_snapshot;
-            if !rewound.is_empty() {
-                log_rewound(
-                    &progress,
-                    &rewound,
-                    &format!("Recorded sync progress is ahead of the validated {checkpoint_epoch} checkpoint"),
-                );
-                for shard in &rewound {
-                    self.shard_watermarks.forget(*shard);
-                }
-            }
         }
         Ok(())
     }
@@ -1157,87 +1150,30 @@ enum StreamEnd {
     Cancelled,
 }
 
-/// Rewinds every shard whose progress was recorded at an epoch after `max_epoch`, which no stream
-/// could have legitimately delivered, returning the shards rewound.
-fn rewind_progress_from_future_epochs<TTx: IndexerStoreReadTransaction>(
-    tx: &mut TTx,
-    progress: &mut SyncProgress,
-    max_epoch: Epoch,
-) -> Result<Vec<Shard>, StorageError> {
-    let future = progress.shards_recorded_after(max_epoch);
-    for shard in &future {
-        rewind_shard(tx, progress, *shard, None)?;
-    }
-    Ok(future)
-}
-
-/// Rewinds every shard whose recorded progress, made at or before `checkpoint_epoch`, is ahead of
-/// the version a validated checkpoint at that epoch commits the shard to, returning the shards
-/// rewound. The checkpoint is quorum-signed and a shard's version only grows, so such progress came
-/// from a peer claiming versions its committee never committed.
-fn reconcile_progress_with_checkpoint<TTx: IndexerStoreReadTransaction>(
-    tx: &mut TTx,
-    progress: &mut SyncProgress,
+/// The shards whose recorded progress, made at or before `checkpoint_epoch`, is ahead of the version
+/// a validated checkpoint at that epoch commits the shard to, with both versions. The checkpoint is
+/// quorum-signed and a shard's version only grows, so such progress came from a peer streaming
+/// versions its committee never committed.
+///
+/// Progress only advances with a committed batch, so every version recorded was written to the
+/// store. Streaming beneath it again would re-apply what is already committed, so such a shard is
+/// reported rather than rewound.
+fn shards_ahead_of_checkpoint(
+    progress: &SyncProgress,
     checkpoint_epoch: Epoch,
     checkpoint_versions: impl IntoIterator<Item = (Shard, StateVersion)>,
-) -> Result<Vec<Shard>, StorageError> {
-    let mut rewound = Vec::new();
-    for (shard, checkpoint_version) in checkpoint_versions {
-        let Some(&(recorded_version, recorded_epoch)) = progress.last_state_versions.get(&shard) else {
-            continue;
-        };
-        if recorded_epoch <= checkpoint_epoch && recorded_version > checkpoint_version {
-            rewind_shard(tx, progress, shard, Some(checkpoint_version))?;
-            rewound.push(shard);
-        }
-    }
-    Ok(rewound)
-}
-
-fn log_rewound(progress: &SyncProgress, shards: &[Shard], reason: &str) {
-    for shard in shards {
-        match progress.last_state_version(*shard) {
-            Some(version) => {
-                error!(target: LOG_TARGET, "⚠️ {reason} for shard {shard}. Resuming it after v{version}");
-            },
-            None => {
-                error!(target: LOG_TARGET, "⚠️ {reason} for shard {shard}. Resyncing it from its head state");
-            },
-        }
-    }
-}
-
-/// Rewinds `shard`'s recorded progress, which its committee never reached, to the highest version
-/// at which a transition was committed for it, or leaves it unrecorded to resume from scratch if
-/// there is none.
-///
-/// That is the lowest point the shard resumes from without re-applying anything: every row and
-/// running total a version contributes is committed with a transition at that version, so the
-/// versions above it that are re-streamed carried nothing but cache invalidations, which are
-/// idempotent. A transition committed above `committed_to`, the highest version the committee is
-/// known to have reached, was forged by a peer; the shard resumes after it all the same, since
-/// re-streaming beneath a committed row would collide with it.
-fn rewind_shard<TTx: IndexerStoreReadTransaction>(
-    tx: &mut TTx,
-    progress: &mut SyncProgress,
-    shard: Shard,
-    committed_to: Option<StateVersion>,
-) -> Result<(), StorageError> {
-    progress.forget_state_version(shard);
-    if let Some(committed_to) = committed_to &&
-        tx.substate_transitions_exist_above(shard, committed_to)?
-    {
-        error!(
-            target: LOG_TARGET,
-            "⚠️ Shard {shard} holds state transitions above v{committed_to}, which its committee never committed. The \
-             indexed data and economic totals for this shard cannot be trusted; resync this indexer from an empty data \
-             directory"
-        );
-    }
-    if let Some((state_version, epoch)) = tx.substate_transitions_get_latest_state_version(shard)? {
-        progress.record_state_version(shard, state_version, epoch);
-    }
-    Ok(())
+) -> Vec<(Shard, StateVersion, StateVersion)> {
+    checkpoint_versions
+        .into_iter()
+        .filter_map(|(shard, checkpoint_version)| {
+            let &(recorded_version, recorded_epoch) = progress.last_state_versions.get(&shard)?;
+            (recorded_epoch <= checkpoint_epoch && recorded_version > checkpoint_version).then_some((
+                shard,
+                recorded_version,
+                checkpoint_version,
+            ))
+        })
+        .collect()
 }
 
 /// A cursor per shard resuming after the version recorded for it, in the order of `shards`. A shard
@@ -1887,177 +1823,58 @@ mod tests {
         }
     }
 
-    mod rewind_progress {
-        use tari_engine_types::substate::SubstateId;
-        use tari_ootle_common_types::SubstateVersion;
-        use tari_ootle_storage::consensus_models::SubstateDestroy;
-        use tari_template_lib_types::ValidatorFeePoolAddress;
-
+    mod checkpoint_reconciliation {
         use super::*;
 
         const S1: Shard = Shard::from_u32(1);
         const S2: Shard = Shard::from_u32(2);
+        const S3: Shard = Shard::from_u32(3);
 
-        fn destroyed(n: u8) -> SubstateUpdateProof {
-            SubstateUpdateProof::Destroy(SubstateDestroy {
-                substate_id: SubstateId::ValidatorFeePool(ValidatorFeePoolAddress::from_array([n; 32])),
-                version: SubstateVersion::new(0),
-            })
+        fn v(n: u64) -> StateVersion {
+            StateVersion::new(n)
         }
 
-        async fn store_with_transitions(transitions: &[(Shard, u64, u64)]) -> (tempfile::TempDir, SqliteIndexerStore) {
-            let dir = tempfile::tempdir().unwrap();
-            let store = SqliteIndexerStore::try_create(dir.path().join("indexer.db")).unwrap();
-            let transitions = transitions.to_vec();
-            store
-                .with_write_tx(move |tx| {
-                    for (n, (shard, state_version, epoch)) in transitions.into_iter().enumerate() {
-                        tx.batch_insert_substate_transitions(
-                            Network::LocalNet,
-                            shard,
-                            StateVersion::new(state_version),
-                            [(Epoch(epoch), destroyed(n as u8))],
-                        )?;
-                    }
-                    Ok::<_, StorageError>(())
-                })
-                .await
-                .unwrap();
-            (dir, store)
-        }
-
-        const CURRENT_EPOCH: Epoch = Epoch(5);
-
-        async fn rewind(store: &SqliteIndexerStore, progress: SyncProgress) -> (SyncProgress, Vec<Shard>) {
-            store
-                .with_read_tx(move |tx| {
-                    let mut progress = progress;
-                    let rewound = rewind_progress_from_future_epochs(tx, &mut progress, CURRENT_EPOCH)?;
-                    Ok::<_, StorageError>((progress, rewound))
-                })
-                .await
-                .unwrap()
-        }
-
-        async fn reconcile(
-            store: &SqliteIndexerStore,
-            progress: SyncProgress,
+        fn ahead(
+            progress: &SyncProgress,
             checkpoint_epoch: Epoch,
             checkpoint_versions: &[(Shard, u64)],
-        ) -> (SyncProgress, Vec<Shard>) {
-            let checkpoint_versions = checkpoint_versions
-                .iter()
-                .map(|&(shard, version)| (shard, StateVersion::new(version)))
-                .collect::<Vec<_>>();
-            store
-                .with_read_tx(move |tx| {
-                    let mut progress = progress;
-                    let rewound =
-                        reconcile_progress_with_checkpoint(tx, &mut progress, checkpoint_epoch, checkpoint_versions)?;
-                    Ok::<_, StorageError>((progress, rewound))
-                })
-                .await
-                .unwrap()
+        ) -> Vec<(Shard, StateVersion, StateVersion)> {
+            shards_ahead_of_checkpoint(
+                progress,
+                checkpoint_epoch,
+                checkpoint_versions.iter().map(|&(shard, version)| (shard, v(version))),
+            )
         }
 
-        #[tokio::test]
-        async fn progress_recorded_at_a_future_epoch_resumes_after_the_last_committed_transition() {
-            let (_dir, store) = store_with_transitions(&[(S1, 5, 2), (S1, 9, 3), (S2, 100, 4)]).await;
+        #[test]
+        fn progress_ahead_of_the_checkpoint_is_reported() {
             let mut progress = SyncProgress::default();
-            progress.record_state_version(S1, StateVersion::new(50), Epoch(u64::MAX));
-            progress.record_state_version(S2, StateVersion::new(120), CURRENT_EPOCH);
-
-            let (progress, rewound) = rewind(&store, progress).await;
-
-            assert_eq!(rewound, vec![S1]);
-            assert_eq!(
-                progress.last_state_versions.get(&S1),
-                Some(&(StateVersion::new(9), Epoch(3)))
-            );
-            assert_eq!(progress.last_state_version(S2), Some(StateVersion::new(120)));
-        }
-
-        #[tokio::test]
-        async fn a_future_epoch_shard_with_no_transitions_resumes_from_scratch() {
-            let (_dir, store) = store_with_transitions(&[(S2, 100, 4)]).await;
-            let mut progress = SyncProgress::default();
-            progress.record_state_version(S1, StateVersion::new(50), Epoch(6));
-
-            let (progress, rewound) = rewind(&store, progress).await;
-
-            assert_eq!(rewound, vec![S1]);
-            assert_eq!(progress.last_state_version(S1), None);
-            assert_eq!(cursors_for(&[S1], &progress)[0].start_state_version, 1);
-        }
-
-        #[tokio::test]
-        async fn transitions_compare_as_unsigned_across_the_whole_range() {
-            // Versions from 2^63 up are stored negative in the signed column.
-            let high = i64::MAX as u64 + 1;
-            let (_dir, store) =
-                store_with_transitions(&[(S1, 5, 2), (S1, high, 3), (S1, u64::MAX, 4), (S2, 7, 1)]).await;
-            let (latest, above_5, above_high, above_max) = store
-                .with_read_tx(move |tx| {
-                    Ok::<_, StorageError>((
-                        tx.substate_transitions_get_latest_state_version(S1)?,
-                        tx.substate_transitions_exist_above(S1, StateVersion::new(5))?,
-                        tx.substate_transitions_exist_above(S1, StateVersion::new(high))?,
-                        tx.substate_transitions_exist_above(S1, StateVersion::new(u64::MAX))?,
-                    ))
-                })
-                .await
-                .unwrap();
-            assert_eq!(latest, Some((StateVersion::new(u64::MAX), Epoch(4))));
-            assert!(above_5);
-            assert!(above_high);
-            assert!(!above_max);
-        }
-
-        #[tokio::test]
-        async fn progress_ahead_of_the_checkpoint_resumes_after_the_last_committed_transition() {
-            let (_dir, store) = store_with_transitions(&[(S1, 5, 2), (S1, 9, 3)]).await;
-            let mut progress = SyncProgress::default();
-            // Claimed by a peer past anything its committee committed in epoch 3.
-            progress.record_state_version(S1, StateVersion::new(100_000), Epoch(3));
-
-            let (progress, rewound) = reconcile(&store, progress, Epoch(3), &[(S1, 12)]).await;
-
-            assert_eq!(rewound, vec![S1]);
-            assert_eq!(
-                progress.last_state_versions.get(&S1),
-                Some(&(StateVersion::new(9), Epoch(3)))
-            );
-            // Versions 10 to 12, skipped by the claim, are requested again.
-            assert_eq!(cursors_for(&[S1], &progress)[0].start_state_version, 10);
-        }
-
-        #[tokio::test]
-        async fn progress_the_checkpoint_does_not_contradict_is_left_alone() {
-            let (_dir, store) = store_with_transitions(&[(S1, 5, 2)]).await;
-            let mut progress = SyncProgress::default();
-            progress.record_state_version(S1, StateVersion::new(12), Epoch(3));
+            // Streamed by a peer past anything its committee committed in epoch 3.
+            progress.record_state_version(S1, v(100_000), Epoch(3));
+            progress.record_state_version(S2, v(12), Epoch(3));
             // Recorded after the checkpoint's epoch, so ahead of it legitimately.
-            progress.record_state_version(S2, StateVersion::new(50), Epoch(4));
+            progress.record_state_version(S3, v(50), Epoch(4));
 
-            let (progress, rewound) = reconcile(&store, progress, Epoch(3), &[(S1, 12), (S2, 20)]).await;
+            let ahead = ahead(&progress, Epoch(3), &[(S1, 12), (S2, 12), (S3, 20)]);
 
-            assert!(rewound.is_empty());
-            assert_eq!(progress.last_state_version(S1), Some(StateVersion::new(12)));
-            assert_eq!(progress.last_state_version(S2), Some(StateVersion::new(50)));
+            assert_eq!(ahead, vec![(S1, v(100_000), v(12))]);
         }
 
-        #[tokio::test]
-        async fn a_shard_rewound_beneath_a_committed_transition_resumes_after_it() {
-            // A transition above the checkpoint version was forged, but re-streaming beneath it would
-            // collide with it.
-            let (_dir, store) = store_with_transitions(&[(S1, 5, 2), (S1, 15, 3)]).await;
+        #[test]
+        fn a_shard_never_synced_is_not_reported() {
+            assert!(ahead(&SyncProgress::default(), Epoch(3), &[(S1, 12)]).is_empty());
+        }
+
+        #[test]
+        fn progress_at_a_future_epoch_is_brought_within_reach_of_reconciliation() {
             let mut progress = SyncProgress::default();
-            progress.record_state_version(S1, StateVersion::new(100_000), Epoch(3));
+            progress.record_state_version(S1, v(100_000), Epoch(u64::MAX));
+            progress.record_state_version(S2, v(50), Epoch(4));
 
-            let (progress, rewound) = reconcile(&store, progress, Epoch(3), &[(S1, 12)]).await;
-
-            assert_eq!(rewound, vec![S1]);
-            assert_eq!(progress.last_state_version(S1), Some(StateVersion::new(15)));
+            assert_eq!(progress.clamp_epochs(Epoch(5)), vec![S1]);
+            assert_eq!(progress.last_state_versions.get(&S1), Some(&(v(100_000), Epoch(5))));
+            assert_eq!(progress.last_state_versions.get(&S2), Some(&(v(50), Epoch(4))));
+            assert_eq!(ahead(&progress, Epoch(5), &[(S1, 12)]), vec![(S1, v(100_000), v(12))]);
         }
     }
 }
