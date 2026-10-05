@@ -306,6 +306,11 @@ impl ValidatorNodeProcess {
         }
     }
 
+    #[must_use = "is_stopped serves no purpose without using the returned boolean value"]
+    pub fn is_stopped(&self) -> bool {
+        self.handle.is_finished()
+    }
+
     /// Absolute path to the validator's on-disk RocksDB state store. Mirrors the
     /// default resolved by `ValidatorNodeConfig::set_base_path` in
     /// `spawn_validator_node`.

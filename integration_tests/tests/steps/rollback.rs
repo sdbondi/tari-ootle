@@ -26,11 +26,14 @@ use tari_validator_rollback::{
     apply::{ApplyOptions, run_with_options},
     storage::rollback_history_list,
 };
+use tokio::time;
 
 #[when(expr = "I shut down validator node {word}")]
 async fn shut_down_validator_node(world: &mut TariWorld, vn_name: String) {
     let vn = world.get_validator_node_mut(&vn_name);
     vn.stop_and_wait().await;
+    // Give the validator time to clean up and the OS time to flush the LOCK file
+    time::sleep(Duration::from_secs(1)).await;
     let state_db_path = vn.state_db_path();
     assert!(
         state_db_path.exists(),
@@ -46,7 +49,9 @@ async fn shut_down_validator_node(world: &mut TariWorld, vn_name: String) {
 
 #[when(expr = "I apply an offline rollback to epoch {int} on validator node {word}")]
 async fn apply_offline_rollback_on_validator_node(world: &mut TariWorld, target_epoch: u64, vn_name: String) {
-    let state_db_path: PathBuf = world.get_validator_node(&vn_name).state_db_path();
+    let vn = world.get_validator_node(&vn_name);
+    assert!(vn.is_stopped(), "Validator {vn_name} must be stopped before this step");
+    let state_db_path = vn.state_db_path();
     let audit_out = state_db_path
         .parent()
         .expect("state db path has no parent")
