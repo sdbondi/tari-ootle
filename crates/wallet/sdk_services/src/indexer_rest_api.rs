@@ -70,9 +70,11 @@ const INVALID_REQUEST_CODE: i64 = 400;
 
 /// Consecutive unavailability failures on the active indexer after which the next configured indexer is used.
 const FAILOVER_THRESHOLD: u32 = 3;
-/// How long to wait for a TCP connection to an indexer. Bounds how long an unreachable host holds up a request before
-/// it counts towards failover. Only the connect is bounded: SSE subscriptions and long polls legitimately stay open.
+/// How long to wait for a TCP connection to an indexer, so that an unreachable host counts towards failover promptly.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a request to an indexer may take before it counts as the indexer being unavailable. For a stream this
+/// bounds opening it, not how long it stays open.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The wallet's connection to the network through one of a set of indexers.
 ///
@@ -83,6 +85,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct IndexerRestApiNetworkInterface {
     client: IndexerRestApiClient,
     endpoints: Arc<Mutex<EndpointPool>>,
+    request_timeout: Duration,
 }
 
 #[derive(Debug)]
@@ -173,6 +176,7 @@ impl IndexerRestApiNetworkInterface {
         Ok(Self {
             client,
             endpoints: Arc::new(Mutex::new(pool)),
+            request_timeout: REQUEST_TIMEOUT,
         })
     }
 
@@ -204,15 +208,23 @@ impl IndexerRestApiNetworkInterface {
         }
     }
 
-    /// Records what `result` says about the indexer `client` was sent to, failing over once the active indexer has
-    /// been unavailable [`FAILOVER_THRESHOLD`] times in a row, and passes `result` through.
-    fn observe<T>(
+    /// Awaits `request` to the indexer `client` was sent to and records what its result says about that indexer,
+    /// failing over once the active indexer has been unavailable [`FAILOVER_THRESHOLD`] times in a row. A request
+    /// that does not complete within the request timeout is abandoned and counts as the indexer being unavailable.
+    async fn observe<T>(
         &self,
         client: &TrackedClient,
-        result: Result<T, IndexerRestClientError>,
-    ) -> Result<T, IndexerRestClientError> {
+        request: impl Future<Output = Result<T, IndexerRestClientError>>,
+    ) -> Result<T, IndexerRestApiNetworkInterfaceError> {
+        let Ok(result) = tokio::time::timeout(self.request_timeout, request).await else {
+            self.record_health(&client.endpoint, IndexerHealth::Unavailable);
+            return Err(IndexerRestApiNetworkInterfaceError::IndexerTimedOut {
+                endpoint: client.endpoint.clone(),
+                timeout: self.request_timeout,
+            });
+        };
         self.record_health(&client.endpoint, IndexerHealth::of(&result));
-        result
+        Ok(result?)
     }
 
     fn record_health(&self, endpoint: &Url, health: IndexerHealth) {
@@ -259,16 +271,16 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
         local_search_only: bool,
     ) -> Result<SubstateQueryResult, Self::Error> {
         let client = self.tracked_client();
-        let result = self.observe(
-            &client,
-            client
-                .get_substate(substate_id, GetSubstateRequest {
+        let result = self
+            .observe(
+                &client,
+                client.get_substate(substate_id, GetSubstateRequest {
                     version,
                     local_search_only,
                     include_proof: false,
-                })
-                .await,
-        )?;
+                }),
+            )
+            .await?;
         Ok(SubstateQueryResult {
             version: result.version,
             substate: result.substate,
@@ -284,22 +296,21 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
         let client = self.tracked_client();
         let mut substates = HashMap::with_capacity(substate_ids.len());
         for chunk in substate_ids.chunks(MAX_IDS_PER_REQUEST) {
-            let resp = self.observe(
-                &client,
-                client
-                    .fetch_substates(GetSubstatesRequest {
-                        requests: chunk.to_vec().try_into().map_err(|_| {
-                            IndexerRestApiNetworkInterfaceError::IndexerClientError(
-                                IndexerRestClientError::RequestInvariant {
-                                    details: "Too many substate IDs requested".to_string(),
-                                },
-                            )
-                        })?,
+            let requests = chunk.to_vec().try_into().map_err(|_| {
+                IndexerRestApiNetworkInterfaceError::IndexerClientError(IndexerRestClientError::RequestInvariant {
+                    details: "Too many substate IDs requested".to_string(),
+                })
+            })?;
+            let resp = self
+                .observe(
+                    &client,
+                    client.fetch_substates(GetSubstatesRequest {
+                        requests,
                         cached_only: false,
                         include_proofs: false,
-                    })
-                    .await,
-            )?;
+                    }),
+                )
+                .await?;
             substates.extend(resp.substates);
         }
 
@@ -316,12 +327,12 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
         transaction: TransactionEnvelope,
     ) -> Result<TransactionId, Self::Error> {
         let client = self.tracked_client();
-        let result = self.observe(
-            &client,
-            client
-                .submit_transaction(SubmitTransactionRequest { transaction })
-                .await,
-        )?;
+        let result = self
+            .observe(
+                &client,
+                client.submit_transaction(SubmitTransactionRequest { transaction }),
+            )
+            .await?;
         Ok(result.transaction_id)
     }
 
@@ -338,15 +349,14 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
             ));
         }
 
+        let transaction = TransactionEnvelope::encode(transaction)?;
         let client = self.tracked_client();
-        let resp = self.observe(
-            &client,
-            client
-                .submit_transaction_dry_run(SubmitTransactionRequest {
-                    transaction: TransactionEnvelope::encode(transaction)?,
-                })
-                .await,
-        )?;
+        let resp = self
+            .observe(
+                &client,
+                client.submit_transaction_dry_run(SubmitTransactionRequest { transaction }),
+            )
+            .await?;
 
         Ok(TransactionQueryResult {
             transaction_id: resp.transaction_id,
@@ -366,15 +376,15 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
         transaction_id: TransactionId,
     ) -> Result<TransactionQueryResult, Self::Error> {
         let client = self.tracked_client();
-        let resp = self.observe(
-            &client,
-            client
-                .get_transaction_result(GetTransactionResultRequest {
+        let resp = self
+            .observe(
+                &client,
+                client.get_transaction_result(GetTransactionResultRequest {
                     transaction_id,
                     include_proof: false,
-                })
-                .await,
-        )?;
+                }),
+            )
+            .await?;
 
         Ok(TransactionQueryResult {
             transaction_id,
@@ -384,7 +394,7 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
 
     async fn subscribe_transaction_finalized(&self) -> Result<TransactionFinalizedStream<Self::Error>, Self::Error> {
         let client = self.tracked_client();
-        let events = self.observe(&client, client.sse_events().await)?;
+        let events = self.observe(&client, client.sse_events()).await?;
         let stream = events
             .map_err(|e| IndexerRestApiNetworkInterfaceError::StreamDecodeError(e.into()))
             .try_filter_map(|event| async move {
@@ -418,7 +428,9 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
         template_address: TemplateAddress,
     ) -> Result<tari_template_abi::TemplateDef, Self::Error> {
         let client = self.tracked_client();
-        let resp = self.observe(&client, client.get_template_definition(template_address).await)?;
+        let resp = self
+            .observe(&client, client.get_template_definition(template_address))
+            .await?;
         Ok(resp.definition)
     }
 
@@ -430,18 +442,18 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
         unspent_only: bool,
     ) -> Result<UtxoUpdateStream<Self::Error>, Self::Error> {
         let client = self.tracked_client();
-        let stream = self.observe(
-            &client,
-            client
-                .stream_utxo_updates_protobuf(GetUtxoUpdatesRequest {
+        let stream = self
+            .observe(
+                &client,
+                client.stream_utxo_updates_protobuf(GetUtxoUpdatesRequest {
                     from_epoch,
                     shard_state_versions,
                     resource_address,
                     unspent_only,
                     per_shard_limit: 1000,
-                })
-                .await,
-        )?;
+                }),
+            )
+            .await?;
         let stream = stream
             .map_err(|e| IndexerRestApiNetworkInterfaceError::StreamDecodeError(e.into()))
             .and_then(|res| async move {
@@ -506,15 +518,15 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
         let client = self.tracked_client();
         // TODO: Given the potential size of substates protobuf, json + hex encoding may be too inefficient. Consider
         // supporting the application/x-protobuf content type in the indexer REST API.
-        let resp = self.observe(
-            &client,
-            client
-                .get_utxos(GetUtxosRequest {
+        let resp = self
+            .observe(
+                &client,
+                client.get_utxos(GetUtxosRequest {
                     resource_address,
                     tag_and_nonce_pairs,
-                })
-                .await,
-        )?;
+                }),
+            )
+            .await?;
         Ok(resp.utxos)
     }
 
@@ -526,29 +538,29 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
     ) -> Result<Vec<WatchedSubstateItem>, Self::Error> {
         let client = self.tracked_client();
 
-        let resp = self.observe(
-            &client,
-            client
-                .list_watched_substates(ListWatchedSubstatesRequest {
+        let resp = self
+            .observe(
+                &client,
+                client.list_watched_substates(ListWatchedSubstatesRequest {
                     template_address,
                     limit,
                     offset,
-                })
-                .await,
-        )?;
+                }),
+            )
+            .await?;
 
         Ok(resp.substates)
     }
 
     async fn get_current_epoch(&self) -> Result<Epoch, Self::Error> {
         let client = self.tracked_client();
-        let stats = self.observe(&client, client.get_epoch_manager_stats().await)?;
+        let stats = self.observe(&client, client.get_epoch_manager_stats()).await?;
         Ok(stats.consensus_epoch.unwrap_or(stats.current_epoch))
     }
 
     async fn wait_until_ready(&self) -> Result<(), Self::Error> {
         let client = self.tracked_client();
-        self.observe(&client, client.wait_until_ready().await)?;
+        self.observe(&client, client.wait_until_ready()).await?;
         Ok(())
     }
 }
@@ -568,6 +580,8 @@ pub enum IndexerRestApiNetworkInterfaceError {
     },
     #[error("At least one indexer URL is required")]
     NoIndexerEndpoints,
+    #[error("Indexer {endpoint} did not respond within {timeout:?}")]
+    IndexerTimedOut { endpoint: Url, timeout: Duration },
 }
 
 impl IsNotFoundError for IndexerRestApiNetworkInterfaceError {
@@ -626,7 +640,8 @@ impl TransactionStatusResponseError for IndexerRestApiNetworkInterfaceError {
             IndexerRestApiNetworkInterfaceError::EncodeError { source } => ResponseErrorStatus::InternalError {
                 message: format!("Transaction encode error: {source}"),
             },
-            IndexerRestApiNetworkInterfaceError::NoIndexerEndpoints => ResponseErrorStatus::InternalError {
+            IndexerRestApiNetworkInterfaceError::NoIndexerEndpoints |
+            IndexerRestApiNetworkInterfaceError::IndexerTimedOut { .. } => ResponseErrorStatus::InternalError {
                 message: self.to_string(),
             },
         }
@@ -852,5 +867,52 @@ mod tests {
             Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap()
         };
         assert_eq!(health_of_request_to(unreachable).await, IndexerHealth::Unavailable);
+    }
+
+    /// Accepts connections and holds them open without ever responding.
+    async fn spawn_silent_server() -> Url {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            loop {
+                let (socket, _) = listener.accept().await.unwrap();
+                held.push(socket);
+            }
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn an_indexer_that_never_responds_is_failed_over() {
+        let silent = spawn_silent_server().await;
+        let other = spawn_status_server("503 Service Unavailable", "{}").await;
+        let mut network = IndexerRestApiNetworkInterface::init(vec![silent.clone()]).unwrap();
+        network.request_timeout = Duration::from_millis(200);
+        network.set_endpoints(vec![silent.clone(), other.clone()]).unwrap();
+
+        for _ in 0..FAILOVER_THRESHOLD {
+            assert_eq!(network.get_endpoint(), silent);
+            tokio::time::timeout(Duration::from_secs(5), network.get_current_epoch())
+                .await
+                .expect("request to a silent indexer was not bounded")
+                .unwrap_err();
+        }
+
+        assert_eq!(network.get_endpoint(), other);
+    }
+
+    #[tokio::test]
+    async fn opening_a_stream_to_an_indexer_that_never_responds_is_bounded() {
+        let mut network = IndexerRestApiNetworkInterface::init(vec![spawn_silent_server().await]).unwrap();
+        network.request_timeout = Duration::from_millis(200);
+
+        let result = tokio::time::timeout(Duration::from_secs(5), network.subscribe_transaction_finalized())
+            .await
+            .expect("subscribing to a silent indexer was not bounded");
+        assert!(matches!(
+            result,
+            Err(IndexerRestApiNetworkInterfaceError::IndexerTimedOut { .. })
+        ));
     }
 }
