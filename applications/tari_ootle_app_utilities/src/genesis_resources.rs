@@ -25,11 +25,11 @@ use tari_template_lib::{
     },
 };
 
-/// The access rules every non-fungible resource in `network`'s genesis state starts from.
+/// The access rules every resource in `network`'s genesis state starts from.
 ///
 /// Esmeralda's genesis state was committed with non-fungible data updates open to every caller. Its genesis
 /// resources keep that rule so that the genesis state, and the state roots built on it, stay the same.
-pub fn genesis_non_fungible_access_rules(network: Network) -> ResourceAccessRules {
+pub fn genesis_resource_access_rules(network: Network) -> ResourceAccessRules {
     match network {
         Network::Esmeralda => ResourceAccessRules::new().update_non_fungible_data(AccessRule::AllowAll, OWNER),
         Network::MainNet | Network::StageNet | Network::NextNet | Network::Igor | Network::LocalNet => {
@@ -42,7 +42,7 @@ pub fn get_public_identity_resource(network: Network) -> (ResourceAddress, Resou
     let value = Resource::new(
         ResourceType::NonFungible,
         SubstateOwnerRule::None,
-        genesis_non_fungible_access_rules(network),
+        genesis_resource_access_rules(network),
         Metadata::from([(TOKEN_SYMBOL, "ID".to_string())]),
         None,
         None,
@@ -58,7 +58,7 @@ pub fn get_xtr_faucet_claim_resource(network: Network) -> (ResourceAddress, Reso
     let resource = Resource::new(
         ResourceType::NonFungible,
         SubstateOwnerRule::None,
-        genesis_non_fungible_access_rules(network)
+        genesis_resource_access_rules(network)
             .mintable(rule!(component(XTR_FAUCET_COMPONENT_ADDRESS)), LOCKED)
             .burnable(rule!(component(XTR_FAUCET_COMPONENT_ADDRESS)), LOCKED),
         Metadata::new(),
@@ -74,7 +74,7 @@ pub fn get_nft_faucet_resource(network: Network) -> (ResourceAddress, Resource) 
     let resource = Resource::new(
         ResourceType::NonFungible,
         SubstateOwnerRule::None,
-        genesis_non_fungible_access_rules(network).mintable(rule!(component(NFT_FAUCET_COMPONENT_ADDRESS)), LOCKED),
+        genesis_resource_access_rules(network).mintable(rule!(component(NFT_FAUCET_COMPONENT_ADDRESS)), LOCKED),
         Metadata::from([("name", "NFT Faucet"), (TOKEN_SYMBOL, "tNFT")]),
         None,
         None,
@@ -89,7 +89,7 @@ pub fn get_stealth_tari_resource(network: Network) -> (ResourceAddress, Resource
     let xtr_resource = Resource::new(
         ResourceType::Stealth,
         SubstateOwnerRule::None,
-        ResourceAccessRules::new()
+        genesis_resource_access_rules(network)
             // These are defaults, but just for explicitness
             .mintable(rule!(deny_all), LOCKED)
             .burnable(rule!(deny_all), LOCKED)
@@ -123,12 +123,13 @@ mod tests {
             .clone()
     }
 
-    /// Pins Esmeralda's genesis non-fungible resources to the substate hashes its genesis state was committed
-    /// with. A change to any of them changes Esmeralda's genesis state roots.
+    /// Pins Esmeralda's genesis resources to the substate hashes its genesis state was committed with. A change to
+    /// any of them changes Esmeralda's genesis state roots.
     #[test]
     fn esmeralda_genesis_resource_hashes_are_pinned() {
         let hashes = [
             get_public_identity_resource(Network::Esmeralda),
+            get_stealth_tari_resource(Network::Esmeralda),
             get_xtr_faucet_claim_resource(Network::Esmeralda),
             get_nft_faucet_resource(Network::Esmeralda),
         ]
@@ -143,6 +144,7 @@ mod tests {
         });
         assert_eq!(hashes, [
             "8f1fd34d82253e61b05ee47f766f1f54edd836df10226b503733adc7855a37a1",
+            "81c89bf3f153f96cdda650e45f376dbd69d5b4771313d46136d0c95ee9b0e063",
             "f5c69d18813fd4a0d75eddf6a5d6044d328d9de1c2e204b17ac0374fd3d31f14",
             "7d172c41821c747c92a76e38cb7d58c6623e16487c622586490669767bdaea12",
         ]);
