@@ -54,6 +54,7 @@ use super::{
     BlockDiff,
     BlockPledge,
     BookkeepingModel,
+    FinalizedTransactionLeaf,
     ForeignProposalAtom,
     ForeignProposalRecord,
     LivenessThresholds,
@@ -63,6 +64,8 @@ use super::{
     SubstateDestroy,
     SubstateRecord,
     ValidatorStatsUpdate,
+    build_finalized_transaction_tree,
+    transaction_leaf_key,
 };
 use crate::{
     StateStoreReadTransaction,
@@ -88,6 +91,13 @@ pub enum BlockError {
     InvalidShardStateVersions { details: String },
     #[error("Merke proof generation command index out of bounds: {index}/{len}")]
     MerkleProofGenerationCommandIndexOutOfBounds { index: usize, len: usize },
+    #[error(
+        "Block {block_id} was produced under protocol version {protocol_version}, which has no transaction merkle root"
+    )]
+    NoTransactionMerkleRoot {
+        block_id: BlockId,
+        protocol_version: ProtocolVersion,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, CborLen)]
@@ -494,6 +504,32 @@ impl Block {
             "Value not found in proof. This is a bug because the hash is taken from commands that generate the tree",
         );
         Ok(proof)
+    }
+
+    /// Proves against [`BlockHeader::transaction_merkle_root`] the decision this block reached for `transaction_id`,
+    /// or that this block did not finalize it. Returns the leaf, if the block finalized the transaction, and the proof.
+    pub fn compute_transaction_proof(
+        &self,
+        transaction_id: &TransactionId,
+    ) -> Result<(Option<FinalizedTransactionLeaf<'_>>, SparseMerkleProofExt), BlockError> {
+        if self.header.transaction_merkle_root().is_none() {
+            return Err(BlockError::NoTransactionMerkleRoot {
+                block_id: *self.id(),
+                protocol_version: self.header.protocol_version(),
+            });
+        }
+        let leaf = self
+            .commands
+            .iter()
+            .filter_map(Command::finalising)
+            .find(|atom| atom.id() == transaction_id)
+            .map(|atom| FinalizedTransactionLeaf {
+                transaction_id: atom.id(),
+                decision: atom.decision(),
+            });
+        let tree = build_finalized_transaction_tree(&self.commands)?;
+        let (_, proof) = tree.get_proof(&transaction_leaf_key(transaction_id))?;
+        Ok((leaf, proof))
     }
 
     pub fn set_justify_qc(&mut self, justify_qc_id: PcId) {

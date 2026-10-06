@@ -187,7 +187,7 @@ pub fn convert_block_to_sidechain_block_header(header: &BlockHeader) -> Result<S
         })?,
         state_merkle_root: *header.state_merkle_root(),
         command_merkle_root: *header.command_merkle_root(),
-        transaction_merkle_root: None,
+        transaction_merkle_root: header.transaction_merkle_root().copied(),
         metadata_hash: header.calculate_metadata_hash(),
         signature,
         accumulated_data: (*header.accumulated_data()).into(),
@@ -252,8 +252,11 @@ fn convert_validator_block_signature(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use tari_common_types::types::FixedHash;
     use tari_consensus_types::{
+        Decision,
         ProposalCertificate,
         ShardGroupAccumulatedData,
         TcId,
@@ -261,6 +264,7 @@ mod tests {
         ValidatorSchnorrSignature,
     };
     use tari_crypto::tari_utilities::epoch_time::EpochTime;
+    use tari_engine_types::commit_result::AbortReason;
     use tari_ootle_common_types::{
         Epoch,
         ExtraData,
@@ -270,8 +274,12 @@ mod tests {
         ShardGroup,
         crypto::create_key_pair_from_seed,
     };
-    use tari_ootle_storage::{StateStore, StateStoreWriteTransaction};
-    use tari_ootle_transaction::Network;
+    use tari_ootle_storage::{
+        StateStore,
+        StateStoreWriteTransaction,
+        consensus_models::{Command, LocalOnlyAtom, MultiShardAtom},
+    };
+    use tari_ootle_transaction::{Network, TransactionId};
     use tari_sidechain::{ProposalVoteMessage, QuorumDecision, ValidatorQcSignature, check_proof_elements};
     use tari_state_store_rocksdb::{DatabaseOptions, RocksDbStateStore};
 
@@ -460,12 +468,35 @@ mod tests {
 
     #[test]
     fn it_hashes_the_header_identically_to_sidechain_header() {
-        for timeout_certificate_id in [None, Some(TcId::from([4u8; 32]))] {
-            assert_hashes_identically_to_sidechain_header(ProtocolVersion::V0, timeout_certificate_id);
+        let finalizing = BTreeSet::from([
+            Command::LocalOnly(LocalOnlyAtom {
+                id: TransactionId::new([7; 32]),
+                decision: Decision::Abort(AbortReason::ExecutionFailure),
+                transaction_fee: 0,
+                leader_fee: None,
+            }),
+            Command::AllAccept(MultiShardAtom {
+                id: TransactionId::new([8; 32]),
+                decision: Decision::Commit,
+                evidence: Default::default(),
+                transaction_fee: 0,
+                leader_fee: None,
+            }),
+        ]);
+        for protocol_version in [ProtocolVersion::V0, ProtocolVersion::V1] {
+            for timeout_certificate_id in [None, Some(TcId::from([4u8; 32]))] {
+                for commands in [BTreeSet::new(), finalizing.clone()] {
+                    assert_hashes_identically_to_sidechain_header(protocol_version, timeout_certificate_id, &commands);
+                }
+            }
         }
     }
 
-    fn build_header(protocol_version: ProtocolVersion, timeout_certificate_id: Option<TcId>) -> BlockHeader {
+    fn build_header(
+        protocol_version: ProtocolVersion,
+        timeout_certificate_id: Option<TcId>,
+        commands: &BTreeSet<Command>,
+    ) -> BlockHeader {
         let parent_id = seed_hash(1).into_array().into();
         let shard_group = ShardGroup::all_shards(NumPreshards::P256);
         let qc1 = ProposalCertificate::new(
@@ -491,7 +522,7 @@ mod tests {
             shard_group,
             Default::default(),
             Default::default(),
-            &Default::default(),
+            commands,
             1,
             SchnorrSignatureBytes::zero(),
             EpochTime::now().as_u64(),
@@ -536,8 +567,9 @@ mod tests {
     fn assert_hashes_identically_to_sidechain_header(
         protocol_version: ProtocolVersion,
         timeout_certificate_id: Option<TcId>,
+        commands: &BTreeSet<Command>,
     ) {
-        let block = build_header(protocol_version, timeout_certificate_id);
+        let block = build_header(protocol_version, timeout_certificate_id, commands);
         let sidechain_header = SidechainBlockHeader {
             network: block.network().as_byte(),
             protocol_version: block.protocol_version().as_u32(),
@@ -552,8 +584,8 @@ mod tests {
             },
             proposed_by: Default::default(),
             state_merkle_root: Default::default(),
-            command_merkle_root: Default::default(),
-            transaction_merkle_root: None,
+            command_merkle_root: *block.command_merkle_root(),
+            transaction_merkle_root: block.transaction_merkle_root().copied(),
             signature: ValidatorBlockSignature::new(
                 CompressedPublicKey::from_canonical_bytes(block.signature().unwrap().public_nonce().as_bytes())
                     .unwrap(),
