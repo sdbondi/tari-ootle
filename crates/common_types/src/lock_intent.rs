@@ -7,6 +7,7 @@ use borsh::BorshSerialize;
 use minicbor::{CborLen, Decode, Encode};
 use tari_bor::{Deserialize, Serialize};
 use tari_engine_types::{SubstateVersion, substate::SubstateId};
+use tari_template_lib_types::Hash32;
 
 use crate::{SubstateAddress, ToSubstateAddress, VersionedSubstateIdRef};
 
@@ -15,6 +16,14 @@ pub trait LockIntent {
     fn lock_type(&self) -> SubstateLockType;
     fn version_to_lock(&self) -> SubstateVersion;
     fn requested_version(&self) -> Option<SubstateVersion>;
+
+    /// The hash of the substate value an input lock was taken on, from
+    /// [`hash_pledged_substate_value`](crate::hashing::hash_pledged_substate_value). Evidence built from the lock
+    /// carries it, so that a shard group receiving the value as a pledge can check it against what the locking shard
+    /// group committed to.
+    fn pledged_value_hash(&self) -> Option<Hash32> {
+        None
+    }
 
     fn to_versioned_substate_id_ref(&self) -> VersionedSubstateIdRef<'_> {
         VersionedSubstateIdRef::new(self.substate_id(), self.version_to_lock())

@@ -129,6 +129,7 @@ impl<TStateStore: StateStore> BlockTransactionExecutor<TStateStore> for TestBloc
                     lock_type,
                     true,
                 )
+                .with_pledged_value(substate.substate_value())
             })
             .collect::<Vec<_>>();
 

@@ -303,10 +303,17 @@ pub enum ProposalValidationError {
     #[error("Foreign proposal commit proof error: {0}")]
     ForeignProposalCommitProofError(#[from] ForeignProposalCommitProofError),
 
-    // TODO: remove some foreign proposal validation variants
-    #[error("Foreign node in {shard_group} submitted malformed BlockPledge for block {block_id}")]
-    ForeignMalformedPledges { block_id: BlockId, shard_group: ShardGroup },
+    #[error(
+        "Foreign proposal for block {block_id} from {shard_group} is missing a pledge for transaction \
+         {transaction_id}, or pledges a value that the block's evidence does not commit to"
+    )]
+    ForeignPledgesNotCommitted {
+        block_id: BlockId,
+        shard_group: ShardGroup,
+        transaction_id: TransactionId,
+    },
 
+    // TODO: remove some foreign proposal validation variants
     #[error(
         "Foreign node in {shard_group} submitted invalid pledge for block {block}, transaction {transaction_id}: \
          {details}"

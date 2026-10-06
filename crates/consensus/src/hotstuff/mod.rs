@@ -45,5 +45,6 @@ pub use current_view::*;
 pub use error::*;
 pub use event::*;
 pub use leader_skip::LeaderSkipSet;
+pub use on_receive_foreign_proposal::MAX_PENDING_REQUESTS_PER_NOTIFIER;
 pub use state_machine::*;
 pub use worker::*;

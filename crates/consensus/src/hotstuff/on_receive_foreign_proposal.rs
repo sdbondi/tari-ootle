@@ -50,6 +50,9 @@ const MAX_CONCURRENT_PROPOSAL_REQUESTS: usize = 20;
 const MAX_PROPOSAL_REQUESTS_PER_PEER: usize = 2;
 /// How long we wait for a foreign proposal we asked for before asking again.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Notifications a peer may have awaiting a foreign proposal at once. An honest notifier has one outstanding per
+/// recently committed foreign block that involves us, each normally answered well within [`REQUEST_TIMEOUT`].
+pub const MAX_PENDING_REQUESTS_PER_NOTIFIER: usize = 32;
 /// The same deadline the requester applies, so a permit is never held for a response its asker has given up on.
 const PROPOSAL_RESPONSE_TIMEOUT: Duration = REQUEST_TIMEOUT;
 
@@ -105,8 +108,18 @@ where TConsensusSpec: ConsensusSpec
             return Ok(());
         }
 
-        self.store.with_write_tx(|tx| {
+        let is_saved = self.store.with_write_tx(|tx| {
             if let Err(err) = self.validate_and_save(tx, &proposal, local_committee_info) {
+                if matches!(
+                    err.validation_error(),
+                    Some(ProposalValidationError::ForeignPledgesNotCommitted { .. })
+                ) {
+                    // The pledges travel beside the commit proof, so a bad set says nothing about the block itself.
+                    // Nothing is recorded against the block id, and the timed-out request is retried with another
+                    // member of the foreign committee.
+                    warn!(target: LOG_TARGET, "⚠️ Discarding foreign proposal: {}", err);
+                    return Ok(false);
+                }
                 error!(target: LOG_TARGET, "❌ Error validating and saving foreign proposal: {}", err);
                 // Should not cause consensus to crash and should commit the Invalid proposal status
                 proposal.save(tx)?;
@@ -114,10 +127,13 @@ where TConsensusSpec: ConsensusSpec
                 // TODO: reattempt from different node? and then abort on persistent failure
                 // If we miss a foreign proposal, we want to implement the ability to request it - so we could just rely
                 // on that functionality without doing anything extra here
-                return Ok(());
+                return Ok(true);
             }
-            Ok::<_, HotStuffError>(())
+            Ok::<_, HotStuffError>(true)
         })?;
+        if !is_saved {
+            return Ok(());
+        }
 
         self.pending_requests.remove(&block_id);
 
@@ -147,18 +163,6 @@ where TConsensusSpec: ConsensusSpec
             );
             return Ok(());
         }
-        if self
-            .store
-            .with_read_tx(|tx| ForeignProposalRecord::record_exists(tx, &message.block_id))?
-        {
-            // This is expected behaviour, we may receive the same foreign proposal notification multiple times
-            debug!(
-                target: LOG_TARGET,
-                "FOREIGN PROPOSAL: Already received proposal for block {}",
-                message.block_id,
-            );
-            return Ok(());
-        }
 
         // The notification is gossiped on a single network-wide topic, so every validator receives it. Only fetch the
         // foreign proposal if our shard group is in the intended audience.
@@ -168,6 +172,33 @@ where TConsensusSpec: ConsensusSpec
                 "🌐 FOREIGN PROPOSAL: notification for block {} does not target our shard group {}. Ignoring.",
                 message.block_id,
                 local_committee_info.shard_group(),
+            );
+            return Ok(());
+        }
+
+        // Checked before any storage or epoch manager work, because every notification that gets past it costs a
+        // lookup and an outbound request.
+        if self.pending_requests.num_notified_by(&from) >= MAX_PENDING_REQUESTS_PER_NOTIFIER {
+            warn!(
+                target: LOG_TARGET,
+                "⚠️ FOREIGN PROPOSAL: {} already has {} unanswered notifications outstanding. Ignoring notification for \
+                 block {}.",
+                from,
+                MAX_PENDING_REQUESTS_PER_NOTIFIER,
+                message.block_id,
+            );
+            return Ok(());
+        }
+
+        if self
+            .store
+            .with_read_tx(|tx| ForeignProposalRecord::record_exists(tx, &message.block_id))?
+        {
+            // This is expected behaviour, we may receive the same foreign proposal notification multiple times
+            debug!(
+                target: LOG_TARGET,
+                "FOREIGN PROPOSAL: Already received proposal for block {}",
+                message.block_id,
             );
             return Ok(());
         }
@@ -226,7 +257,7 @@ where TConsensusSpec: ConsensusSpec
             .await?;
 
         self.pending_requests
-            .insert(selected.address.clone(), message.block_id, foreign_committee_info);
+            .insert(from, selected.address.clone(), message.block_id, foreign_committee_info);
 
         Ok(())
     }
@@ -329,11 +360,7 @@ where TConsensusSpec: ConsensusSpec
         &mut self,
         local_committee_info: &CommitteeInfo,
     ) -> Result<(), HotStuffError> {
-        let timed_out = self
-            .pending_requests
-            .drain_timed_out(REQUEST_TIMEOUT)
-            .take(10)
-            .collect::<Vec<_>>();
+        let timed_out = self.pending_requests.drain_timed_out(REQUEST_TIMEOUT);
         if !timed_out.is_empty() {
             info!(
                 target: LOG_TARGET,
@@ -359,7 +386,7 @@ where TConsensusSpec: ConsensusSpec
                     "FOREIGN PROPOSAL: Already received proposal for block {}",
                     block_id,
                 );
-                return Ok(());
+                continue;
             }
 
             if requests.num_unique_peers() >= local_committee_info.num_shard_group_members() as usize {
@@ -371,7 +398,7 @@ where TConsensusSpec: ConsensusSpec
                     block_id,
                 );
                 // If a FP is never received + proposed by any local member, the transaction will TIMEOUT and ABORT
-                return Ok(());
+                continue;
             }
 
             let shard_group = requests.shard_group();
@@ -400,8 +427,12 @@ where TConsensusSpec: ConsensusSpec
                 )
                 .await?;
 
-            self.pending_requests
-                .insert(selected.address.clone(), block_id, requests.committee_info)
+            self.pending_requests.insert(
+                requests.notified_by,
+                selected.address.clone(),
+                block_id,
+                requests.committee_info,
+            )
         }
 
         Ok(())
@@ -441,8 +472,8 @@ where TConsensusSpec: ConsensusSpec
         proposal: &ForeignProposal,
         local_committee_info: &CommitteeInfo,
     ) -> Result<(), ProposalValidationError> {
-        // TODO: validations specific to the foreign proposal. General block validations (signature etc) are already
-        //       performed in on_message_validate. These should be in the validator helper module.
+        // Callers authenticate the proposal against its committee with `check_foreign_proposal` before this runs.
+        // TODO: these should be in the validator helper module.
         let epoch = local_committee_info.epoch();
         // Allow one epoch behind as Prepare/Accept rounds may have been conducted in the previous/subsequent epoch
         // before/after epoch end
@@ -554,19 +585,16 @@ fn validate_evidence_and_pledges_match(
         {
             warn!(
                 target: LOG_TARGET,
-                "⚠️ FOREIGN PROPOSAL: Invalid proposal: some input pledges for {}({}) are missing. Local Shard Group: {}, All Pledges: {}",
+                "⚠️ FOREIGN PROPOSAL: Invalid proposal: some input pledges for {}({}) are missing or not the committed value. Local Shard Group: {}, All Pledges: {}",
                 if is_local_accept { "LocalAccept" } else { "LocalPrepare" },
                 atom.id,
                 local_shard_group,
                 proposal.block_pledge(),
             );
-            return Err(ProposalValidationError::ForeignProposalInvalid {
+            return Err(ProposalValidationError::ForeignPledgesNotCommitted {
                 block_id: proposal.calculate_block_id(),
                 shard_group: foreign_shard_group,
-                details: anyhow!(
-                    "input pledges are missing one or more substate values for transaction {}",
-                    atom.id
-                ),
+                transaction_id: atom.id,
             });
         }
     }
@@ -612,14 +640,19 @@ fn generate_transaction_commands_commit_proof_for_shard_group<TTx: StateStoreRea
     Ok(command_commit_proof)
 }
 
+/// Requests for foreign proposals we were notified of and have not yet received. Each entry is charged to the peer
+/// whose notification created it, so that no single peer can grow the set beyond
+/// [`MAX_PENDING_REQUESTS_PER_NOTIFIER`].
 struct PendingRequests<TAddr> {
     pending: HashMap<BlockId, ForeignRequests<TAddr>>,
+    num_pending_by_notifier: HashMap<TAddr, usize>,
 }
 
 impl<TAddr: NodeAddressable> PendingRequests<TAddr> {
     pub(self) fn new() -> Self {
         Self {
             pending: HashMap::new(),
+            num_pending_by_notifier: HashMap::new(),
         }
     }
 
@@ -627,18 +660,30 @@ impl<TAddr: NodeAddressable> PendingRequests<TAddr> {
         self.pending.contains_key(block_id)
     }
 
-    pub(self) fn insert(&mut self, address: TAddr, block_id: BlockId, committee_info: CommitteeInfo) {
+    pub(self) fn num_notified_by(&self, notifier: &TAddr) -> usize {
+        self.num_pending_by_notifier.get(notifier).copied().unwrap_or(0)
+    }
+
+    pub(self) fn insert(
+        &mut self,
+        notified_by: TAddr,
+        requested_from: TAddr,
+        block_id: BlockId,
+        committee_info: CommitteeInfo,
+    ) {
         match self.pending.entry(block_id) {
             Entry::Occupied(occupied) => {
                 let entry = occupied.into_mut();
-                entry.peers.insert(address);
+                entry.peers.insert(requested_from);
                 entry.at = Instant::now();
             },
             Entry::Vacant(vacant) => {
+                *self.num_pending_by_notifier.entry(notified_by.clone()).or_default() += 1;
                 let mut peers = HashSet::new();
-                peers.insert(address);
+                peers.insert(requested_from);
                 vacant.insert(ForeignRequests {
                     peers,
+                    notified_by,
                     committee_info,
                     at: Instant::now(),
                 });
@@ -648,22 +693,39 @@ impl<TAddr: NodeAddressable> PendingRequests<TAddr> {
 
     pub(self) fn remove(&mut self, block_id: &BlockId) -> Option<ForeignRequests<TAddr>> {
         let item = self.pending.remove(block_id);
+        if let Some(requests) = &item {
+            self.release_notifier(&requests.notified_by);
+        }
         if self.pending.capacity() >= 1000 {
             self.pending.shrink_to_fit();
         }
         item
     }
 
-    pub(self) fn drain_timed_out(
-        &mut self,
-        timeout: Duration,
-    ) -> impl Iterator<Item = (BlockId, ForeignRequests<TAddr>)> + '_ {
-        self.pending.extract_if(move |_, reqs| reqs.at.elapsed() >= timeout)
+    pub(self) fn drain_timed_out(&mut self, timeout: Duration) -> Vec<(BlockId, ForeignRequests<TAddr>)> {
+        let timed_out = self
+            .pending
+            .extract_if(|_, reqs| reqs.at.elapsed() >= timeout)
+            .collect::<Vec<_>>();
+        for (_, requests) in &timed_out {
+            self.release_notifier(&requests.notified_by);
+        }
+        timed_out
+    }
+
+    fn release_notifier(&mut self, notifier: &TAddr) {
+        if let Entry::Occupied(mut count) = self.num_pending_by_notifier.entry(notifier.clone()) {
+            *count.get_mut() -= 1;
+            if *count.get() == 0 {
+                count.remove();
+            }
+        }
     }
 }
 
 struct ForeignRequests<TAddr> {
     pub peers: HashSet<TAddr>,
+    pub notified_by: TAddr,
     pub committee_info: CommitteeInfo,
     pub at: Instant,
 }

@@ -13,10 +13,16 @@ use std::{
 
 use tari_common_types::types::PrivateKey;
 use tari_consensus::{
-    messages::{ForeignProposalRequestMessage, HotstuffMessage, MissingTransactionsRequest},
+    hotstuff::MAX_PENDING_REQUESTS_PER_NOTIFIER,
+    messages::{
+        ForeignProposalNotificationMessage,
+        ForeignProposalRequestMessage,
+        HotstuffMessage,
+        MissingTransactionsRequest,
+    },
     traits::InboundMessagingError,
 };
-use tari_consensus_types::Decision;
+use tari_consensus_types::{BlockId, Decision};
 use tari_ootle_common_types::{Epoch, NodeHeight, SubstateLockType};
 use tari_ootle_transaction::{Transaction, TransactionId};
 use tokio::time::sleep;
@@ -124,6 +130,64 @@ async fn requests_from_an_unregistered_peer_are_not_served() {
     test.stop();
 
     assert_eq!(replies_to_outsider.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn foreign_proposal_notifications_awaiting_a_reply_are_bounded_per_peer() {
+    setup_logger();
+    let victim = TestAddress::new("1");
+    let requests_sent = Arc::new(AtomicUsize::new(0));
+    let mut test = Test::builder()
+        .add_committee(0, vec!["1"])
+        .add_committee(1, vec!["2", "3"])
+        .with_message_filter(Box::new({
+            let victim = victim.clone();
+            let requests_sent = requests_sent.clone();
+            move |from, _to, msg| {
+                if *from == victim && matches!(msg, HotstuffMessage::ForeignProposalRequest(_)) {
+                    requests_sent.fetch_add(1, Ordering::SeqCst);
+                }
+                true
+            }
+        }))
+        .start()
+        .await;
+    test.start_epoch(Epoch(1)).await;
+    test.wait_for_all_validators_to_start_consensus().await;
+
+    let shard_group = test.get_validator(&victim).shard_group;
+    let tx_inbound = test.get_validator(&victim).tx_inbound_message.clone();
+    let notification = |seed: usize| {
+        HotstuffMessage::ForeignProposalNotification(ForeignProposalNotificationMessage {
+            block_id: BlockId::from([u8::try_from(seed).unwrap(); 32]),
+            epoch: Epoch(1),
+            shard_groups: vec![shard_group],
+        })
+    };
+
+    // None of these blocks exist, so every request stays unanswered
+    let num_notifications = MAX_PENDING_REQUESTS_PER_NOTIFIER + 20;
+    for seed in 0..num_notifications {
+        tx_inbound
+            .send((TestAddress::new("2"), notification(seed)))
+            .await
+            .unwrap();
+    }
+    sleep(Duration::from_secs(2)).await;
+    assert_eq!(requests_sent.load(Ordering::SeqCst), MAX_PENDING_REQUESTS_PER_NOTIFIER);
+
+    // Another peer's notification is still followed up
+    tx_inbound
+        .send((TestAddress::new("3"), notification(num_notifications)))
+        .await
+        .unwrap();
+    sleep(Duration::from_secs(2)).await;
+    assert_eq!(
+        requests_sent.load(Ordering::SeqCst),
+        MAX_PENDING_REQUESTS_PER_NOTIFIER + 1
+    );
+
+    test.stop();
 }
 
 /// Commits a transaction with inputs on committee 0 and outputs on committees 1 and 2.
