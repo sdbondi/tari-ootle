@@ -4,8 +4,9 @@
 use tari_engine_types::resource::Resource;
 use tari_ootle_transaction::Network;
 use tari_template_lib::{
-    prelude::LOCKED,
+    prelude::{LOCKED, OWNER},
     types::{
+        AccessRule,
         Metadata,
         ResourceAddress,
         ResourceType,
@@ -16,11 +17,24 @@ use tari_template_lib::{
     },
 };
 
-pub fn get_public_identity_resource() -> (ResourceAddress, Resource) {
+/// The access rules every non-fungible resource in `network`'s genesis state starts from.
+///
+/// Esmeralda's genesis state was committed with non-fungible data updates open to every caller. Its genesis
+/// resources keep that rule so that the genesis state, and the state roots built on it, stay the same.
+pub fn genesis_non_fungible_access_rules(network: Network) -> ResourceAccessRules {
+    match network {
+        Network::Esmeralda => ResourceAccessRules::new().update_non_fungible_data(AccessRule::AllowAll, OWNER),
+        Network::MainNet | Network::StageNet | Network::NextNet | Network::Igor | Network::LocalNet => {
+            ResourceAccessRules::new()
+        },
+    }
+}
+
+pub fn get_public_identity_resource(network: Network) -> (ResourceAddress, Resource) {
     let value = Resource::new(
         ResourceType::NonFungible,
         SubstateOwnerRule::None,
-        ResourceAccessRules::new(),
+        genesis_non_fungible_access_rules(network),
         Metadata::from([(TOKEN_SYMBOL, "ID".to_string())]),
         None,
         None,
@@ -52,4 +66,37 @@ pub fn get_stealth_tari_resource(network: Network) -> (ResourceAddress, Resource
         false,
     );
     (STEALTH_TARI_RESOURCE_ADDRESS, xtr_resource)
+}
+
+#[cfg(test)]
+mod tests {
+    use tari_template_lib::types::access_rules::ResourceAuthAction;
+
+    use super::*;
+
+    fn nft_data_rule(network: Network) -> AccessRule {
+        let (_, resource) = get_public_identity_resource(network);
+        resource
+            .access_rules()
+            .get_access_rule(&ResourceAuthAction::UpdateNonFungibleData)
+            .clone()
+    }
+
+    #[test]
+    fn esmeralda_genesis_keeps_its_committed_nft_data_rule() {
+        assert_eq!(nft_data_rule(Network::Esmeralda), AccessRule::AllowAll);
+    }
+
+    #[test]
+    fn other_networks_deny_nft_data_updates_in_genesis() {
+        for network in [
+            Network::MainNet,
+            Network::StageNet,
+            Network::NextNet,
+            Network::Igor,
+            Network::LocalNet,
+        ] {
+            assert_eq!(nft_data_rule(network), AccessRule::DenyAll, "{network}");
+        }
+    }
 }

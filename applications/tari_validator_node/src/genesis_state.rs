@@ -13,7 +13,7 @@ use tari_engine_types::{
 };
 use tari_ootle_app_utilities::{
     genesis_governance::GenesisCouncil,
-    genesis_resources::{get_public_identity_resource, get_stealth_tari_resource},
+    genesis_resources::{genesis_non_fungible_access_rules, get_public_identity_resource, get_stealth_tari_resource},
     shared_consts::txtr_faucet_initial_supply,
 };
 use tari_ootle_common_types::{
@@ -40,7 +40,7 @@ use tari_template_lib::types::{
     Metadata,
     ResourceType,
     SubstateOwnerRule,
-    access_rules::{ComponentAccessRules, LOCKED, ResourceAccessRules},
+    access_rules::{ComponentAccessRules, LOCKED},
     constants::{
         BURN_RATE_GOVERNANCE_COMPONENT_ADDRESS,
         NFT_FAUCET_COMPONENT_ADDRESS,
@@ -85,7 +85,7 @@ where
 
     let mut substates: Vec<(SubstateId, SubstateValue)> = Vec::new();
 
-    let (public_identity_address, resource) = get_public_identity_resource();
+    let (public_identity_address, resource) = get_public_identity_resource(network);
     substates.push((public_identity_address.into(), resource.into()));
 
     let (xtr_address, xtr_resource) = get_stealth_tari_resource(network);
@@ -97,7 +97,7 @@ where
         // Create tXTR faucet
         substates.extend(xtr_faucet_substates(network));
         // Create NFT faucet
-        substates.extend(nft_faucet_substates());
+        substates.extend(nft_faucet_substates(network));
     }
 
     commit_genesis_substates(tx, network, num_preshards, substates)?;
@@ -158,7 +158,7 @@ fn xtr_faucet_substates(network: Network) -> Vec<(SubstateId, SubstateValue)> {
     let claim_resource = Resource::new(
         ResourceType::NonFungible,
         SubstateOwnerRule::None,
-        ResourceAccessRules::new()
+        genesis_non_fungible_access_rules(network)
             .mintable(rule!(component(XTR_FAUCET_COMPONENT_ADDRESS)), LOCKED)
             .burnable(rule!(component(XTR_FAUCET_COMPONENT_ADDRESS)), LOCKED),
         Metadata::new(),
@@ -175,7 +175,7 @@ fn xtr_faucet_substates(network: Network) -> Vec<(SubstateId, SubstateValue)> {
     ]
 }
 
-fn nft_faucet_substates() -> Vec<(SubstateId, SubstateValue)> {
+fn nft_faucet_substates(network: Network) -> Vec<(SubstateId, SubstateValue)> {
     let component = Component {
         header: ComponentHeader {
             template_address: tari_template_builtin::NFT_FAUCET_TEMPLATE_ADDRESS,
@@ -189,7 +189,8 @@ fn nft_faucet_substates() -> Vec<(SubstateId, SubstateValue)> {
     };
 
     let metadata = Metadata::from([("name", "NFT Faucet"), (TOKEN_SYMBOL, "tNFT")]);
-    let access_rules = ResourceAccessRules::new().mintable(rule!(component(NFT_FAUCET_COMPONENT_ADDRESS)), LOCKED);
+    let access_rules =
+        genesis_non_fungible_access_rules(network).mintable(rule!(component(NFT_FAUCET_COMPONENT_ADDRESS)), LOCKED);
     let resource = Resource::new(
         ResourceType::NonFungible,
         SubstateOwnerRule::None,
