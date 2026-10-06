@@ -282,6 +282,91 @@ fn v2_shard_group_root_commits_to_the_shard_of_each_root() {
 }
 
 #[test]
+fn v2_empty_shard_has_no_leaf_in_the_shard_group_root() {
+    let root = hash_value_from_seed(1);
+    assert_eq!(
+        compute_shard_group_root(ProtocolVersion::V2, [
+            (Shard::global(), SPARSE_MERKLE_PLACEHOLDER_HASH, 0),
+            (Shard::first(), root, 1)
+        ])
+        .unwrap(),
+        compute_shard_group_root(ProtocolVersion::V2, [(Shard::first(), root, 1)]).unwrap()
+    );
+    assert_eq!(
+        compute_shard_group_root(ProtocolVersion::V2, [(
+            Shard::global(),
+            SPARSE_MERKLE_PLACEHOLDER_HASH,
+            0
+        )])
+        .unwrap(),
+        SPARSE_MERKLE_PLACEHOLDER_HASH
+    );
+    // A shard whose substates have all gone down has the empty-tree root at a later state version,
+    // which its leaf commits to.
+    assert_ne!(
+        compute_shard_group_root(ProtocolVersion::V2, [(
+            Shard::first(),
+            SPARSE_MERKLE_PLACEHOLDER_HASH,
+            3
+        )])
+        .unwrap(),
+        SPARSE_MERKLE_PLACEHOLDER_HASH
+    );
+}
+
+/// An empty shard's state is proved by the absence of its leaf from the shard-group root, and that
+/// absence can only be claimed for a shard that has no state.
+#[test]
+fn v2_substate_in_an_empty_shard_is_provably_absent() {
+    use tari_state_tree::{SpreadPrefixStateTree, StateTreePayload, SubstateValueProof, memory_store::MemoryTreeStore};
+
+    let substate = make_value(2);
+    let own_shard = substate.to_shard(NUM_PRESHARDS);
+    let sibling_shard = sibling_of(own_shard);
+
+    let mut empty = MemoryTreeStore::<StateTreePayload>::new();
+    SpreadPrefixStateTree::new(&mut empty)
+        .put_substate_changes(None, 1, vec![])
+        .unwrap();
+    let (_, _, empty_leaf_proof) = SpreadPrefixStateTree::new(&mut empty).get_proof(1, &substate).unwrap();
+
+    let empty_group = ShardGroupRootTree::build(ProtocolVersion::V2, [
+        (own_shard, SPARSE_MERKLE_PLACEHOLDER_HASH, 0),
+        (sibling_shard, hash_value_from_seed(99), 1),
+    ])
+    .unwrap();
+    let (value, absent_proof) = empty_group.get_proof(own_shard).unwrap();
+    assert!(value.is_none());
+    SubstateValueProof::new(
+        SPARSE_MERKLE_PLACEHOLDER_HASH,
+        0,
+        absent_proof,
+        empty_leaf_proof.clone(),
+    )
+    .verify_exclusion(ProtocolVersion::V2, &empty_group.root(), NUM_PRESHARDS, &substate)
+    .unwrap();
+
+    // Once the shard holds state, its leaf is present and no state cannot be claimed for it - even
+    // when every substate in it has gone down.
+    for own_state in [(hash_value_from_seed(1), 1), (SPARSE_MERKLE_PLACEHOLDER_HASH, 3)] {
+        let populated_group = ShardGroupRootTree::build(ProtocolVersion::V2, [
+            (own_shard, own_state.0, own_state.1),
+            (sibling_shard, hash_value_from_seed(99), 1),
+        ])
+        .unwrap();
+        let (_, present_proof) = populated_group.get_proof(own_shard).unwrap();
+        SubstateValueProof::new(
+            SPARSE_MERKLE_PLACEHOLDER_HASH,
+            0,
+            present_proof,
+            empty_leaf_proof.clone(),
+        )
+        .verify_exclusion(ProtocolVersion::V2, &populated_group.root(), NUM_PRESHARDS, &substate)
+        .unwrap_err();
+    }
+}
+
+#[test]
 fn two_level_substate_inclusion_proof() {
     use tari_state_tree::{SpreadPrefixStateTree, StateTreePayload, SubstateValueProof, memory_store::MemoryTreeStore};
 

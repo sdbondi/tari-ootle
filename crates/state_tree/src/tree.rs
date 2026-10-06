@@ -341,7 +341,9 @@ impl RootProofTree {
 ///
 /// - [`ProtocolVersion::V0`] and [`ProtocolVersion::V1`]: the leaf is [`shard_state_leaf`], keyed by its own hash. The
 ///   tree is a set of leaves, so a proof against such a root shows only that a leaf is one of the group's.
-/// - [`ProtocolVersion::V2`]: the leaf is keyed by the shard, so a proof names the shard a leaf belongs to.
+/// - [`ProtocolVersion::V2`]: the leaf is keyed by the shard, so a proof names the shard a leaf belongs to. A shard
+///   with no state - the empty-tree root at state version 0 - has no leaf, and the absence of its key proves its state.
+///   This keeps the tree, and the cost of building it for every block, proportional to the shards that hold state.
 #[derive(Debug, Clone)]
 pub struct ShardGroupLeaf {
     pub key: LeafKey,
@@ -351,13 +353,18 @@ pub struct ShardGroupLeaf {
 impl ShardGroupLeaf {
     pub fn new(protocol_version: ProtocolVersion, shard: Shard, shard_root: &TreeHash, state_version: Version) -> Self {
         let value = shard_state_leaf(protocol_version, shard_root, state_version);
-        let key = match protocol_version {
-            ProtocolVersion::V0 | ProtocolVersion::V1 => HashIdentityKeyMapper::map_to_leaf_key(&value),
-            ProtocolVersion::V2 => ShardKeyMapper::map_to_leaf_key(&shard),
-        };
-        Self {
-            key,
-            value: Some(value),
+        match protocol_version {
+            ProtocolVersion::V0 | ProtocolVersion::V1 => Self {
+                key: HashIdentityKeyMapper::map_to_leaf_key(&value),
+                value: Some(value),
+            },
+            ProtocolVersion::V2 => {
+                let has_state = *shard_root != SPARSE_MERKLE_PLACEHOLDER_HASH || state_version != 0;
+                Self {
+                    key: ShardKeyMapper::map_to_leaf_key(&shard),
+                    value: has_state.then_some(value),
+                }
+            },
         }
     }
 }
@@ -412,7 +419,8 @@ impl ShardGroupRootTree {
         self.root
     }
 
-    /// Proves the leaf the tree holds for `shard`.
+    /// Proves the leaf the tree holds for `shard`, or under [`ProtocolVersion::V2`] that it holds
+    /// none - which is the proof that the shard has no state.
     pub fn get_proof(&self, shard: Shard) -> Result<(Option<ProofValue<()>>, SparseMerkleProofExt), StateTreeError> {
         let leaf = self
             .leaves

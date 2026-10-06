@@ -28,7 +28,8 @@ use crate::{
 pub struct SubstateValueProof {
     /// The substate's shard JMT root.
     pub shard_root: TreeHash,
-    /// Proof of the shard's leaf in the shard-group root tree.
+    /// Proof of the shard's leaf in the shard-group root tree, or under [`ProtocolVersion::V2`] of
+    /// its absence when the shard has no state.
     pub shard_root_proof: SparseMerkleProofExt,
     /// Proof for the substate leaf within its shard JMT (inclusion or exclusion).
     pub leaf_proof: SparseMerkleProofExt,
@@ -91,7 +92,8 @@ impl SubstateValueProof {
     ///
     /// A substate is absent from every shard but its own, so an exclusion proof is only meaningful
     /// against its own shard's root. Under [`ProtocolVersion::V2`] the shard is derived from the
-    /// substate being proved, never taken from the prover.
+    /// substate being proved, never taken from the prover, and a shard with no state is proved by
+    /// the absence of its leaf.
     fn verify_shard_root(
         &self,
         protocol_version: ProtocolVersion,
