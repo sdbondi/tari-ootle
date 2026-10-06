@@ -4,29 +4,31 @@
 use serde::{Deserialize, Serialize};
 use tari_engine_types::ProtocolVersion;
 use tari_jellyfish::{SparseMerkleProofExt, TreeHash, Version};
-use tari_ootle_common_types::VersionedSubstateId;
+use tari_ootle_common_types::{NumPreshards, VersionedSubstateId};
 
 use crate::{
-    key_mapper::{DbKeyMapper, HashIdentityKeyMapper, SpreadPrefixKeyMapper},
-    shard_state_leaf,
+    ShardGroupLeaf,
+    key_mapper::{DbKeyMapper, SpreadPrefixKeyMapper},
 };
 
 /// A two-level Merkle proof binding a single substate to a shard-group state Merkle root (the
 /// `state_merkle_root` committed in an L2 block header):
 ///   1. the substate leaf is included in (or excluded from) its shard's JMT, rooted at `shard_root`;
-///   2. the shard's leaf (see [`shard_state_leaf`]) is a leaf of the shard-group root tree, rooted at the block
-///      header's `state_merkle_root` (an ephemeral tree over the `[global, shard_0, shard_1, ...]` leaves).
+///   2. the shard's state is committed in the shard-group root tree, rooted at the block header's `state_merkle_root`
+///      (see [`ShardGroupLeaf`] for how each protocol version lays that tree out).
 ///
 /// Verifying both levels against a *trusted* group root proves the substate's committed value (via
 /// [`SubstateValueProof::verify_inclusion`]) or its absence (via
-/// [`SubstateValueProof::verify_exclusion`]) without trusting the node that produced the proof. The
-/// caller is responsible for obtaining a trusted `group_root` (e.g. from a verified committed block
-/// proof) and, for inclusion, for binding `value_hash` to the returned substate value.
+/// [`SubstateValueProof::verify_exclusion`]) without trusting the node that produced the proof. From
+/// [`ProtocolVersion::V2`] the verifier derives the substate's shard itself and checks the shard's own
+/// leaf, so the proof can only cite that shard's state. The caller is responsible for obtaining a
+/// trusted `group_root` (e.g. from a verified committed block proof) and, for inclusion, for binding
+/// `value_hash` to the returned substate value.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubstateValueProof {
     /// The substate's shard JMT root.
     pub shard_root: TreeHash,
-    /// Proof that the shard's leaf is a leaf of the shard-group root tree.
+    /// Proof of the shard's leaf in the shard-group root tree.
     pub shard_root_proof: SparseMerkleProofExt,
     /// Proof for the substate leaf within its shard JMT (inclusion or exclusion).
     pub leaf_proof: SparseMerkleProofExt,
@@ -57,10 +59,11 @@ impl SubstateValueProof {
         &self,
         protocol_version: ProtocolVersion,
         group_root: &TreeHash,
+        num_preshards: NumPreshards,
         versioned_id: &VersionedSubstateId,
         value_hash: &TreeHash,
     ) -> Result<(), SubstateValueProofError> {
-        self.verify_shard_root(protocol_version, group_root)?;
+        self.verify_shard_root(protocol_version, group_root, num_preshards, versioned_id)?;
         let leaf_key = SpreadPrefixKeyMapper::map_to_leaf_key(versioned_id);
         self.leaf_proof
             .verify_inclusion(&self.shard_root, &leaf_key, value_hash)
@@ -73,27 +76,36 @@ impl SubstateValueProof {
         &self,
         protocol_version: ProtocolVersion,
         group_root: &TreeHash,
+        num_preshards: NumPreshards,
         versioned_id: &VersionedSubstateId,
     ) -> Result<(), SubstateValueProofError> {
-        self.verify_shard_root(protocol_version, group_root)?;
+        self.verify_shard_root(protocol_version, group_root, num_preshards, versioned_id)?;
         let leaf_key = SpreadPrefixKeyMapper::map_to_leaf_key(versioned_id);
         self.leaf_proof
             .verify_exclusion(&self.shard_root, &leaf_key)
             .map_err(|e| SubstateValueProofError::LeafProof(e.to_string()))
     }
 
-    /// Level 2: prove the shard's leaf is a leaf of the shard-group root tree. That tree stores each
-    /// leaf hash as both the source of its key and its value (see `compute_proof_for_hashes`).
+    /// Level 2: prove the shard-group root tree holds `shard_root` at `shard_state_version` for the
+    /// substate's shard.
+    ///
+    /// A substate is absent from every shard but its own, so an exclusion proof is only meaningful
+    /// against its own shard's root. Under [`ProtocolVersion::V2`] the shard is derived from the
+    /// substate being proved, never taken from the prover.
     fn verify_shard_root(
         &self,
         protocol_version: ProtocolVersion,
         group_root: &TreeHash,
+        num_preshards: NumPreshards,
+        versioned_id: &VersionedSubstateId,
     ) -> Result<(), SubstateValueProofError> {
-        let leaf = shard_state_leaf(protocol_version, &self.shard_root, self.shard_state_version);
-        let leaf_key = HashIdentityKeyMapper::map_to_leaf_key(&leaf);
-        self.shard_root_proof
-            .verify_inclusion(group_root, &leaf_key, &leaf)
-            .map_err(|e| SubstateValueProofError::ShardRootProof(e.to_string()))
+        let shard = versioned_id.to_shard(num_preshards);
+        let leaf = ShardGroupLeaf::new(protocol_version, shard, &self.shard_root, self.shard_state_version);
+        let result = match leaf.value {
+            Some(value) => self.shard_root_proof.verify_inclusion(group_root, &leaf.key, &value),
+            None => self.shard_root_proof.verify_exclusion(group_root, &leaf.key),
+        };
+        result.map_err(|e| SubstateValueProofError::ShardRootProof(e.to_string()))
     }
 }
 

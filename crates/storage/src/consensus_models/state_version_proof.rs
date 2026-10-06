@@ -10,16 +10,14 @@ use tari_consensus_types::BlockId;
 use tari_engine_types::ProtocolVersion;
 use tari_ootle_common_types::shard::Shard;
 use tari_state_tree::{
-    RootProofTree,
     SPARSE_MERKLE_PLACEHOLDER_HASH,
+    ShardGroupLeaf,
+    ShardGroupRootTree,
     SparseMerkleProofExt,
     SpreadPrefixStateTree,
     StateTreeError,
     TreeHash,
     Version,
-    compute_merkle_root_for_hashes,
-    key_mapper::{DbKeyMapper, HashIdentityKeyMapper},
-    shard_state_leaf,
 };
 
 use crate::{
@@ -105,16 +103,17 @@ pub fn verify_state_version_leaf(
         )));
     }
 
-    let leaf = shard_state_leaf(protocol_version, shard_root, state_version);
-    let leaf_key = HashIdentityKeyMapper::map_to_leaf_key(&leaf);
+    let leaf = ShardGroupLeaf::new(protocol_version, shard, shard_root, state_version);
     let state_merkle_root = TreeHash::new(commit_proof.state_merkle_root().into_array());
-    shard_root_proof
-        .verify_inclusion(&state_merkle_root, &leaf_key, &leaf)
-        .map_err(|e| StateVersionProofError::LeafNotIncluded {
-            shard,
-            state_version,
-            details: e.to_string(),
-        })
+    let result = match leaf.value {
+        Some(value) => shard_root_proof.verify_inclusion(&state_merkle_root, &leaf.key, &value),
+        None => shard_root_proof.verify_exclusion(&state_merkle_root, &leaf.key),
+    };
+    result.map_err(|e| StateVersionProofError::LeafNotIncluded {
+        shard,
+        state_version,
+        details: e.to_string(),
+    })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -154,8 +153,7 @@ where
     if version_updates.is_empty() || protocol_version < ProtocolVersion::V1 {
         return Ok(());
     }
-    let mut leaves = Vec::with_capacity(block.shard_group().len() + 1);
-    let mut shard_leaves = HashMap::with_capacity(version_updates.len());
+    let mut shard_states = Vec::with_capacity(block.shard_group().len() + 1);
     for shard in block.shard_group().shard_iter_with_global() {
         let version = tx.state_tree_versions_get_latest(shard)?;
         let root = match version {
@@ -169,17 +167,14 @@ where
             },
             None => SPARSE_MERKLE_PLACEHOLDER_HASH,
         };
-        let leaf = shard_state_leaf(protocol_version, &root, version.unwrap_or(0));
-        if version_updates.contains_key(&shard) {
-            shard_leaves.insert(shard, leaf);
-        }
-        leaves.push(leaf);
+        shard_states.push((shard, root, version.unwrap_or(0)));
     }
 
     let to_storage_error = |e: StateTreeError| StorageError::QueryError {
         reason: format!("state version proofs for block {}: {e}", block.id()),
     };
-    let root = compute_merkle_root_for_hashes(leaves.iter().copied()).map_err(to_storage_error)?;
+    let root_tree = ShardGroupRootTree::build(protocol_version, shard_states).map_err(to_storage_error)?;
+    let root = root_tree.root();
     // The proofs are only served to syncing peers, so a node that cannot produce them keeps committing.
     if root.as_slice() != block.state_merkle_root().as_slice() {
         error!(
@@ -192,16 +187,17 @@ where
         return Ok(());
     }
 
-    let root_tree = RootProofTree::build(leaves).map_err(to_storage_error)?;
     for (shard, state_version) in version_updates {
-        let leaf = shard_leaves.get(shard).ok_or_else(|| StorageError::QueryError {
-            reason: format!(
-                "block {} updated {shard}, which is outside {}",
-                block.id(),
-                block.shard_group()
-            ),
-        })?;
-        let (_, shard_root_proof) = root_tree.get_proof(*leaf).map_err(to_storage_error)?;
+        if !block.shard_group().contains_or_global(shard) {
+            return Err(StorageError::QueryError {
+                reason: format!(
+                    "block {} updated {shard}, which is outside {}",
+                    block.id(),
+                    block.shard_group()
+                ),
+            });
+        }
+        let (_, shard_root_proof) = root_tree.get_proof(*shard).map_err(to_storage_error)?;
         tx.state_version_proofs_insert(&StateVersionProof {
             shard: *shard,
             state_version: *state_version,
@@ -221,17 +217,21 @@ mod tests {
     use super::*;
 
     /// A commit proof for a block of `network` at epoch 1 under `protocol_version` whose state root holds the leaf of
-    /// a shard at `shard_root` and `state_version`.
+    /// `shard` at `shard_root` and `state_version`, with the proof of that leaf.
     fn proof_of_leaf(
         network: Network,
         protocol_version: ProtocolVersion,
+        shard: Shard,
         shard_root: TreeHash,
         state_version: Version,
     ) -> (CommittedBlockProof, SparseMerkleProofExt) {
-        let leaf = shard_state_leaf(protocol_version, &shard_root, state_version);
-        let leaves = vec![SPARSE_MERKLE_PLACEHOLDER_HASH, leaf];
-        let root = compute_merkle_root_for_hashes(leaves.clone()).unwrap();
-        let (_, shard_root_proof) = RootProofTree::build(leaves).unwrap().get_proof(leaf).unwrap();
+        let root_tree = ShardGroupRootTree::build(protocol_version, [
+            (Shard::global(), SPARSE_MERKLE_PLACEHOLDER_HASH, 0),
+            (shard, shard_root, state_version),
+        ])
+        .unwrap();
+        let root = root_tree.root();
+        let (_, shard_root_proof) = root_tree.get_proof(shard).unwrap();
         let header = SidechainBlockHeader {
             network: network.as_byte(),
             protocol_version: protocol_version.as_u32(),
@@ -260,13 +260,28 @@ mod tests {
     }
 
     #[test]
-    fn a_v2_leaf_proves_its_state_version_only() {
+    fn a_leaf_proves_its_state_version_only() {
         let root = TreeHash::new([7; 32]);
         let shard = Shard::from(3u32);
-        let (commit_proof, leaf_proof) = proof_of_leaf(Network::LocalNet, ProtocolVersion::V2, root, 64);
-        verify_state_version_leaf(Network::LocalNet, &commit_proof, shard, 64, &root, &leaf_proof).unwrap();
+        let network = Network::LocalNet;
+        let protocol_version = ProtocolVersion::genesis(network);
+        let (commit_proof, leaf_proof) = proof_of_leaf(network, protocol_version, shard, root, 64);
+        verify_state_version_leaf(network, &commit_proof, shard, 64, &root, &leaf_proof).unwrap();
         assert!(matches!(
-            verify_state_version_leaf(Network::LocalNet, &commit_proof, shard, 96, &root, &leaf_proof),
+            verify_state_version_leaf(network, &commit_proof, shard, 96, &root, &leaf_proof),
+            Err(StateVersionProofError::LeafNotIncluded { .. })
+        ));
+    }
+
+    /// From V2 a leaf proves the state of its own shard only, however equal another shard's state is.
+    #[test]
+    fn a_v2_leaf_proves_its_own_shard_only() {
+        let root = TreeHash::new([7; 32]);
+        let network = Network::LocalNet;
+        assert_eq!(ProtocolVersion::genesis(network), ProtocolVersion::V2);
+        let (commit_proof, leaf_proof) = proof_of_leaf(network, ProtocolVersion::V2, Shard::from(3u32), root, 64);
+        assert!(matches!(
+            verify_state_version_leaf(network, &commit_proof, Shard::from(4u32), 64, &root, &leaf_proof),
             Err(StateVersionProofError::LeafNotIncluded { .. })
         ));
     }
@@ -275,7 +290,7 @@ mod tests {
     fn a_v0_block_proves_no_state_version() {
         let root = TreeHash::new([7; 32]);
         let shard = Shard::from(3u32);
-        let (commit_proof, leaf_proof) = proof_of_leaf(Network::Esmeralda, ProtocolVersion::V0, root, 64);
+        let (commit_proof, leaf_proof) = proof_of_leaf(Network::Esmeralda, ProtocolVersion::V0, shard, root, 64);
         for claimed in [64, 96] {
             assert!(matches!(
                 verify_state_version_leaf(Network::Esmeralda, &commit_proof, shard, claimed, &root, &leaf_proof),

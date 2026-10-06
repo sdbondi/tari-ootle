@@ -1,9 +1,13 @@
 //   Copyright 2024 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::{collections::BTreeMap, marker::PhantomData};
+use std::{
+    collections::{BTreeMap, HashMap},
+    marker::PhantomData,
+};
 
 use serde::{Deserialize, Serialize};
+use tari_engine_types::ProtocolVersion;
 use tari_jellyfish::{
     JellyfishMerkleTree,
     LeafKey,
@@ -19,7 +23,7 @@ use tari_jellyfish::{
     TreeUpdateBatch,
     Version,
 };
-use tari_ootle_common_types::{ToSubstateAddress, VersionedSubstateId};
+use tari_ootle_common_types::{ToSubstateAddress, VersionedSubstateId, shard::Shard};
 use tari_template_lib_types::Hash32;
 
 use crate::{
@@ -27,8 +31,9 @@ use crate::{
     StateTreePayload,
     TreeStoreBatchWriter,
     error::StateTreeError,
-    key_mapper::{DbKeyMapper, HashIdentityKeyMapper, SpreadPrefixKeyMapper},
+    key_mapper::{DbKeyMapper, HashIdentityKeyMapper, ShardKeyMapper, SpreadPrefixKeyMapper},
     memory_store::MemoryTreeStore,
+    shard_state_leaf,
 };
 
 const LOG_TARGET: &str = "tari::ootle::state_tree";
@@ -329,6 +334,105 @@ impl RootProofTree {
         let proof_tuple = jmt.get_with_proof_ext(key.as_ref(), 1)?;
         Ok(proof_tuple)
     }
+}
+
+/// Where a shard's state sits in its shard group's root tree: the key of its leaf, and the leaf's
+/// value, or `None` when the tree holds no leaf for the shard.
+///
+/// - [`ProtocolVersion::V0`] and [`ProtocolVersion::V1`]: the leaf is [`shard_state_leaf`], keyed by its own hash. The
+///   tree is a set of leaves, so a proof against such a root shows only that a leaf is one of the group's.
+/// - [`ProtocolVersion::V2`]: the leaf is keyed by the shard, so a proof names the shard a leaf belongs to.
+#[derive(Debug, Clone)]
+pub struct ShardGroupLeaf {
+    pub key: LeafKey,
+    pub value: Option<TreeHash>,
+}
+
+impl ShardGroupLeaf {
+    pub fn new(protocol_version: ProtocolVersion, shard: Shard, shard_root: &TreeHash, state_version: Version) -> Self {
+        let value = shard_state_leaf(protocol_version, shard_root, state_version);
+        let key = match protocol_version {
+            ProtocolVersion::V0 | ProtocolVersion::V1 => HashIdentityKeyMapper::map_to_leaf_key(&value),
+            ProtocolVersion::V2 => ShardKeyMapper::map_to_leaf_key(&shard),
+        };
+        Self {
+            key,
+            value: Some(value),
+        }
+    }
+}
+
+/// The shard-group state root tree: an ephemeral tree over the shard group's per-shard states,
+/// global shard included, laid out as [`ShardGroupLeaf`] describes for the protocol version. Its
+/// root is the `state_merkle_root` a block header commits.
+pub struct ShardGroupRootTree {
+    store: MemoryTreeStore<()>,
+    root: TreeHash,
+    leaves: HashMap<Shard, ShardGroupLeaf>,
+}
+
+impl ShardGroupRootTree {
+    /// Builds the tree over `(shard, shard root, state version)` entries, in the canonical
+    /// `[global, shard_0, ...]` order a V0 root is formed in. Each shard must appear at most once.
+    pub fn build<I: IntoIterator<Item = (Shard, TreeHash, Version)>>(
+        protocol_version: ProtocolVersion,
+        shard_states: I,
+    ) -> Result<Self, StateTreeError> {
+        let mut store = MemoryTreeStore::<()>::new();
+        let shard_states = shard_states.into_iter();
+        let mut leaves = HashMap::with_capacity(shard_states.size_hint().0);
+        let mut changes = Vec::with_capacity(shard_states.size_hint().0);
+        for (shard, shard_root, state_version) in shard_states {
+            let leaf = ShardGroupLeaf::new(protocol_version, shard, &shard_root, state_version);
+            if let Some(value) = leaf.value {
+                changes.push((leaf.key.clone(), Some((value, ()))));
+            }
+            leaves.insert(shard, leaf);
+        }
+        if changes.is_empty() {
+            return Ok(Self {
+                store,
+                root: SPARSE_MERKLE_PLACEHOLDER_HASH,
+                leaves,
+            });
+        }
+        let (root, update) = JellyfishMerkleTree::<_, ()>::new(&store).batch_put_value_set(
+            changes,
+            None,
+            None,
+            SHARD_GROUP_ROOT_VERSION,
+        )?;
+        for (key, node) in update.node_batch {
+            store.insert_node(key, node)?;
+        }
+        Ok(Self { store, root, leaves })
+    }
+
+    pub fn root(&self) -> TreeHash {
+        self.root
+    }
+
+    /// Proves the leaf the tree holds for `shard`.
+    pub fn get_proof(&self, shard: Shard) -> Result<(Option<ProofValue<()>>, SparseMerkleProofExt), StateTreeError> {
+        let leaf = self
+            .leaves
+            .get(&shard)
+            .ok_or(StateTreeError::ShardNotInShardGroupTree { shard })?;
+        let jmt = JellyfishMerkleTree::new(&self.store);
+        let proof_tuple = jmt.get_with_proof_ext(leaf.key.as_ref(), SHARD_GROUP_ROOT_VERSION)?;
+        Ok(proof_tuple)
+    }
+}
+
+const SHARD_GROUP_ROOT_VERSION: Version = 1;
+
+/// Computes the shard-group state root over `(shard, shard root, state version)` entries. See
+/// [`ShardGroupRootTree`].
+pub fn compute_shard_group_root<I: IntoIterator<Item = (Shard, TreeHash, Version)>>(
+    protocol_version: ProtocolVersion,
+    shard_states: I,
+) -> Result<TreeHash, StateTreeError> {
+    Ok(ShardGroupRootTree::build(protocol_version, shard_states)?.root())
 }
 
 /// Computes a Merkle proof for the given hash is either included in the provided the hashes, or proof of absence.
