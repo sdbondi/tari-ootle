@@ -6,14 +6,18 @@ use std::{collections::HashMap, ops::Deref};
 use serde::Serialize;
 use tari_engine_types::{
     component::{Component, ComponentBody, ComponentHeader},
-    resource::Resource,
     resource_container::ResourceContainer,
     substate::{SubstateId, SubstateValue, hash_substate},
     vault::Vault,
 };
 use tari_ootle_app_utilities::{
     genesis_governance::GenesisCouncil,
-    genesis_resources::{genesis_non_fungible_access_rules, get_public_identity_resource, get_stealth_tari_resource},
+    genesis_resources::{
+        get_nft_faucet_resource,
+        get_public_identity_resource,
+        get_stealth_tari_resource,
+        get_xtr_faucet_claim_resource,
+    },
     shared_consts::txtr_faucet_initial_supply,
 };
 use tari_ootle_common_types::{
@@ -37,23 +41,17 @@ use tari_state_tree::{SpreadPrefixStateTree, SubstateTreeChange, Version};
 use tari_template_builtin::{NftFaucetState, XtrFaucetState};
 use tari_template_lib::types::{
     EntityId,
-    Metadata,
-    ResourceType,
     SubstateOwnerRule,
-    access_rules::{ComponentAccessRules, LOCKED},
+    access_rules::ComponentAccessRules,
     constants::{
         BURN_RATE_GOVERNANCE_COMPONENT_ADDRESS,
         NFT_FAUCET_COMPONENT_ADDRESS,
-        NFT_FAUCET_RESOURCE_ADDRESS,
         PUBLIC_IDENTITY_RESOURCE_ADDRESS,
         STEALTH_TARI_RESOURCE_ADDRESS,
-        TOKEN_SYMBOL,
-        XTR_FAUCET_CLAIM_RESOURCE_ADDRESS,
         XTR_FAUCET_COMPONENT_ADDRESS,
         XTR_FAUCET_VAULT_ADDRESS,
     },
     governance::BurnRateGovernanceState,
-    rule,
 };
 
 /// The state version (and epoch) that bootstrapped genesis state is committed at. Consensus and
@@ -153,25 +151,12 @@ fn xtr_faucet_substates(network: Network) -> Vec<(SubstateId, SubstateValue)> {
         ),
     };
 
-    // Create the claim receipt resource: one NFT per claimant public key, immediately burned after minting.
-    // The burned substate key persists on-chain, preventing duplicate claims.
-    let claim_resource = Resource::new(
-        ResourceType::NonFungible,
-        SubstateOwnerRule::None,
-        genesis_non_fungible_access_rules(network)
-            .mintable(rule!(component(XTR_FAUCET_COMPONENT_ADDRESS)), LOCKED)
-            .burnable(rule!(component(XTR_FAUCET_COMPONENT_ADDRESS)), LOCKED),
-        Metadata::new(),
-        None,
-        None,
-        0,
-        false,
-    );
+    let (claim_resource_address, claim_resource) = get_xtr_faucet_claim_resource(network);
 
     vec![
         (XTR_FAUCET_VAULT_ADDRESS.into(), vault.into()),
         (XTR_FAUCET_COMPONENT_ADDRESS.into(), component.into()),
-        (XTR_FAUCET_CLAIM_RESOURCE_ADDRESS.into(), claim_resource.into()),
+        (claim_resource_address.into(), claim_resource.into()),
     ]
 }
 
@@ -188,23 +173,11 @@ fn nft_faucet_substates(network: Network) -> Vec<(SubstateId, SubstateValue)> {
         ),
     };
 
-    let metadata = Metadata::from([("name", "NFT Faucet"), (TOKEN_SYMBOL, "tNFT")]);
-    let access_rules =
-        genesis_non_fungible_access_rules(network).mintable(rule!(component(NFT_FAUCET_COMPONENT_ADDRESS)), LOCKED);
-    let resource = Resource::new(
-        ResourceType::NonFungible,
-        SubstateOwnerRule::None,
-        access_rules,
-        metadata,
-        None,
-        None,
-        0,
-        true,
-    );
+    let (resource_address, resource) = get_nft_faucet_resource(network);
 
     vec![
         (NFT_FAUCET_COMPONENT_ADDRESS.into(), component.into()),
-        (NFT_FAUCET_RESOURCE_ADDRESS.into(), resource.into()),
+        (resource_address.into(), resource.into()),
     ]
 }
 
