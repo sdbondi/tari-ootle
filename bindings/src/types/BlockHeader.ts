@@ -89,7 +89,7 @@ export type BlockHeader = {
   timeout_certificate_id: string | null;
   /**
    * A Merkle root over the outcome of each transaction this block finalizes, keyed by transaction id (see
-   * [`FinalizedTransactionLeaf`](super::FinalizedTransactionLeaf)). Present from protocol version 1, where the block id
+   * [`FinalizedTransactionLeaf`](super::FinalizedTransactionLeaf)). Present from protocol version 2, where the block id
    * commits to it.
    */
   transaction_merkle_root: string | null;

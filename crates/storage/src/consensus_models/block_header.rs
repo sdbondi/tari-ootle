@@ -122,7 +122,7 @@ pub struct BlockHeader {
     #[n(17)]
     timeout_certificate_id: Option<TcId>,
     /// A Merkle root over the outcome of each transaction this block finalizes, keyed by transaction id (see
-    /// [`FinalizedTransactionLeaf`](super::FinalizedTransactionLeaf)). Present from protocol version 1, where the
+    /// [`FinalizedTransactionLeaf`](super::FinalizedTransactionLeaf)). Present from protocol version 2, where the
     /// block id commits to it.
     #[cfg_attr(feature = "ts", ts(type = "string | null"))]
     #[serde(default, with = "ootle_serde::hex::option")]
@@ -422,21 +422,23 @@ impl BlockHeader {
                 accumulated_data: &accumulated_data,
                 metadata_hash: &metadata_hash,
             }),
-            protocol_version @ ProtocolVersion::V1 => BlockHeaderHashFields::V2(BlockHeaderHashFieldsV2 {
-                network: self.network.as_byte(),
-                protocol_version: protocol_version.as_u32(),
-                justify_id: self.justify_id.hash(),
-                height: self.height.as_u64(),
-                epoch: self.epoch.as_u64(),
-                epoch_hash: &self.epoch_hash,
-                shard_group,
-                proposed_by: self.proposed_by.as_bytes(),
-                state_merkle_root: &self.state_merkle_root,
-                command_merkle_root: &self.command_merkle_root,
-                accumulated_data: &accumulated_data,
-                transaction_merkle_root: self.transaction_merkle_root.as_ref(),
-                metadata_hash: &metadata_hash,
-            }),
+            protocol_version @ (ProtocolVersion::V1 | ProtocolVersion::V2) => {
+                BlockHeaderHashFields::V2(BlockHeaderHashFieldsV2 {
+                    network: self.network.as_byte(),
+                    protocol_version: protocol_version.as_u32(),
+                    justify_id: self.justify_id.hash(),
+                    height: self.height.as_u64(),
+                    epoch: self.epoch.as_u64(),
+                    epoch_hash: &self.epoch_hash,
+                    shard_group,
+                    proposed_by: self.proposed_by.as_bytes(),
+                    state_merkle_root: &self.state_merkle_root,
+                    command_merkle_root: &self.command_merkle_root,
+                    accumulated_data: &accumulated_data,
+                    transaction_merkle_root: self.transaction_merkle_root.as_ref(),
+                    metadata_hash: &metadata_hash,
+                })
+            },
         };
 
         hashing::block_hasher().chain(&fields).finalize().into()
@@ -614,14 +616,14 @@ impl BlockHeader {
         Ok(FixedHash::from(hash.into_array()))
     }
 
-    /// The root over the transactions `commands` finalize, which a header carries from protocol version 1.
+    /// The root over the transactions `commands` finalize, which a header carries from protocol version 2.
     pub fn compute_transaction_merkle_root(
         protocol_version: ProtocolVersion,
         commands: &BTreeSet<Command>,
     ) -> Result<Option<FixedHash>, BlockError> {
         match protocol_version {
-            ProtocolVersion::V0 => Ok(None),
-            ProtocolVersion::V1 => {
+            ProtocolVersion::V0 | ProtocolVersion::V1 => Ok(None),
+            ProtocolVersion::V2 => {
                 let root = build_finalized_transaction_tree(commands)?.root();
                 Ok(Some(FixedHash::from(root.into_array())))
             },

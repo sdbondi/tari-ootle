@@ -130,23 +130,25 @@ mod tests {
         let root = block
             .header()
             .transaction_merkle_root()
-            .expect("a version 1 block has a root");
+            .expect("a version 2 block has a root");
         TreeHash::from(root.into_array())
     }
 
     #[test]
-    fn a_version_0_block_has_no_transaction_merkle_root() {
-        let block = block(ProtocolVersion::V0, commands()).unwrap();
-        assert_eq!(block.header().transaction_merkle_root(), None);
-        assert!(matches!(
-            block.compute_transaction_proof(&tx(1)),
-            Err(BlockError::NoTransactionMerkleRoot { .. })
-        ));
+    fn a_block_before_version_2_has_no_transaction_merkle_root() {
+        for protocol_version in [ProtocolVersion::V0, ProtocolVersion::V1] {
+            let block = block(protocol_version, commands()).unwrap();
+            assert_eq!(block.header().transaction_merkle_root(), None);
+            assert!(matches!(
+                block.compute_transaction_proof(&tx(1)),
+                Err(BlockError::NoTransactionMerkleRoot { .. })
+            ));
+        }
     }
 
     #[test]
     fn each_finalized_transaction_proves_its_decision() {
-        let block = block(ProtocolVersion::V1, commands()).unwrap();
+        let block = block(ProtocolVersion::V2, commands()).unwrap();
         let root = root_of(&block);
 
         for (seed, decision) in [(1, abort()), (2, Decision::Commit), (3, abort())] {
@@ -169,7 +171,7 @@ mod tests {
 
     #[test]
     fn a_transaction_the_block_does_not_finalize_proves_absent() {
-        let block = block(ProtocolVersion::V1, commands()).unwrap();
+        let block = block(ProtocolVersion::V2, commands()).unwrap();
         let root = root_of(&block);
 
         for seed in [4, 5, 6] {
@@ -181,12 +183,12 @@ mod tests {
 
     #[test]
     fn the_block_id_commits_to_each_decision() {
-        let original = block(ProtocolVersion::V1, commands()).unwrap();
+        let original = block(ProtocolVersion::V2, commands()).unwrap();
 
         let mut commands = commands();
         commands.remove(&local_only(1, abort()));
         commands.insert(local_only(1, Decision::Abort(AbortReason::InsufficientFeesPaid)));
-        let changed = block(ProtocolVersion::V1, commands).unwrap();
+        let changed = block(ProtocolVersion::V2, commands).unwrap();
 
         assert_ne!(root_of(&original), root_of(&changed));
         assert_ne!(original.id(), changed.id());
@@ -194,7 +196,7 @@ mod tests {
 
     #[test]
     fn an_empty_block_commits_to_the_empty_tree() {
-        let block = block(ProtocolVersion::V1, BTreeSet::new()).unwrap();
+        let block = block(ProtocolVersion::V2, BTreeSet::new()).unwrap();
         assert_eq!(root_of(&block), tari_state_tree::SPARSE_MERKLE_PLACEHOLDER_HASH);
     }
 }
