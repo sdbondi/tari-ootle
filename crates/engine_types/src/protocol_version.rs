@@ -43,12 +43,12 @@ impl ProtocolVersion {
     /// one.
     const fn activations(network: Network) -> &'static [(Epoch, Self)] {
         match network {
-            Network::MainNet => &[(Epoch(0), Self::V0)],
-            Network::StageNet => &[(Epoch(0), Self::V0)],
-            Network::NextNet => &[(Epoch(0), Self::V0)],
-            Network::Igor => &[(Epoch(0), Self::V0)],
+            Network::MainNet => &[(Epoch(0), Self::V1)],
+            Network::StageNet => &[(Epoch(0), Self::V1)],
+            Network::NextNet => &[(Epoch(0), Self::V1)],
+            Network::Igor => &[(Epoch(0), Self::V1)],
             Network::Esmeralda => &[(Epoch(0), Self::V0)],
-            Network::LocalNet => &[(Epoch(0), Self::V0)],
+            Network::LocalNet => &[(Epoch(0), Self::V1)],
         }
     }
 
