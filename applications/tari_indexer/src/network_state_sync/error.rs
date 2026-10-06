@@ -38,6 +38,7 @@ impl NetworkStateSyncError {
             Self::RequestFailed(_) |
                 Self::RpcError(_) |
                 Self::InvalidStateUpdate { .. } |
+                Self::InvalidCheckpoint { .. } |
                 Self::InvalidCommitProof { .. } |
                 Self::ValidatorCommitteeClientError(_)
         )
@@ -66,5 +67,6 @@ mod tests {
     fn a_rejection_by_the_peer_is_attributed_to_the_peer() {
         assert!(NetworkStateSyncError::RequestFailed(RpcStatus::bad_request("nope")).is_peer_fault());
         assert!(NetworkStateSyncError::InvalidStateUpdate { details: String::new() }.is_peer_fault());
+        assert!(NetworkStateSyncError::InvalidCheckpoint { details: String::new() }.is_peer_fault());
     }
 }

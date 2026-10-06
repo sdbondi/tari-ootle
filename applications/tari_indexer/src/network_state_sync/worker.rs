@@ -362,7 +362,7 @@ impl NetworkWideStateSync {
         // Perform sync operations using the pool and checkpoint
         let validator_status = self.validator_status.clone();
         let consensus_epoch = self.consensus_epoch.clone();
-        let checkpoints: Vec<_> = pool
+        let mut checkpoints: Vec<_> = pool
             .try_with_random_members(|mut session| {
                 let validator_status = validator_status.clone();
                 let consensus_epoch = consensus_epoch.clone();
@@ -406,6 +406,7 @@ impl NetworkWideStateSync {
                 }
             })
             .await?;
+        retain_checkpoints_in_sync_range(&mut checkpoints, from_epoch, prev_epoch);
 
         if checkpoints.is_empty() {
             info!(target: LOG_TARGET, "🌍️ No checkpoints found for shard group {shard_group} from epoch {from_epoch} (prev_epoch {prev_epoch})");
@@ -468,23 +469,17 @@ impl NetworkWideStateSync {
 
             info!(target: LOG_TARGET, "🌍️ Inserting checkpoint for {}, shard group {}", checkpoint.epoch(), checkpoint_shard_group);
 
+            let xtr_exhausted = checkpoint_exhaust_burn(&checkpoint)?;
             self.stats.increment_checkpoints();
-            let xtr_exhausted = Amount::from(checkpoint.header().accumulated_data().total_exhaust_burn);
             let checkpoint_epoch = checkpoint.epoch();
             let mut progress = progress.lock().await;
             progress.record_checkpoint(shard_group, checkpoint_epoch);
             let sync_progress_snapshot = progress.clone();
             self.store
                 .with_write_tx(move |tx| {
-                    if !tx.epoch_checkpoint_exists(shard_group, checkpoint_epoch)? {
+                    if !tx.epoch_checkpoint_exists(checkpoint_shard_group, checkpoint_epoch)? {
                         tx.insert_or_ignore_epoch_checkpoint(&checkpoint)?;
-
-                        let exhausted = tx
-                            .key_value_get_value::<_, Amount>(Key::TariAccumulatedExhaustBurn)
-                            .optional()?;
-
-                        let new_exhausted = exhausted.unwrap_or_else(Amount::zero) + xtr_exhausted;
-                        tx.key_value_set(Key::TariAccumulatedExhaustBurn, new_exhausted)?;
+                        add_to_total(tx, Key::TariAccumulatedExhaustBurn, xtr_exhausted)?;
                     }
                     tx.key_value_set(Key::SyncProgress, sync_progress_snapshot)
                 })
@@ -1031,15 +1026,9 @@ impl NetworkWideStateSync {
                     }
 
                     tx.key_value_set(Key::SyncProgress, sync_progress_snapshot)?;
-                    let claimed = tx.key_value_get_value(Key::TariAccumulatedClaimed).optional()?;
-                    let new_claimed = claimed.unwrap_or_else(Amount::zero) + xtr_claimed_snapshot;
-                    tx.key_value_set(Key::TariAccumulatedClaimed, new_claimed)?;
-                    let fees = tx.key_value_get_value(Key::TariAccumulatedFees).optional()?;
-                    let new_fees = fees.unwrap_or_else(Amount::zero) + xtr_fees_snapshot;
-                    tx.key_value_set(Key::TariAccumulatedFees, new_fees)?;
-                    let receipt_burn = tx.key_value_get_value(Key::TariAccumulatedReceiptExhaustBurn).optional()?;
-                    let new_receipt_burn = receipt_burn.unwrap_or_else(Amount::zero) + xtr_receipt_burn_snapshot;
-                    tx.key_value_set(Key::TariAccumulatedReceiptExhaustBurn, new_receipt_burn)?;
+                    add_to_total(tx, Key::TariAccumulatedClaimed, xtr_claimed_snapshot)?;
+                    add_to_total(tx, Key::TariAccumulatedFees, xtr_fees_snapshot)?;
+                    add_to_total(tx, Key::TariAccumulatedReceiptExhaustBurn, xtr_receipt_burn_snapshot)?;
                     Ok((inserted, retired_cache_entries))
                 })
                 .await?;
@@ -1256,6 +1245,49 @@ impl StreamOrder {
     }
 }
 
+/// Adds `amount` to the running total persisted under `key`.
+fn add_to_total(tx: &mut SqliteStoreWriteTransaction<'_>, key: Key, amount: Amount) -> Result<(), StorageError> {
+    use crate::store::IndexerStoreWriteTransaction;
+
+    let total = tx
+        .key_value_get_value::<_, Amount>(&key)
+        .optional()?
+        .unwrap_or_else(Amount::zero);
+    let new_total = total
+        .checked_add(amount)
+        .ok_or_else(|| StorageError::DataInconsistency {
+            details: format!(
+                "Adding {amount} to the {} total of {total} overflows it",
+                key.as_key_str()
+            ),
+        })?;
+    tx.key_value_set(key, new_total)
+}
+
+/// The exhaust burn `checkpoint` reports for its shard group and epoch.
+///
+/// Every Tari amount is a `u64` of microtari and the whole supply fits in one, so no shard group can
+/// burn more in an epoch. A checkpoint claiming more is rejected: bounding each one keeps the running
+/// total, summed over every epoch and shard group, from approaching `Amount::MAX`.
+fn checkpoint_exhaust_burn(checkpoint: &EpochCheckpoint) -> Result<Amount, NetworkStateSyncError> {
+    let burn = checkpoint.header().accumulated_data().total_exhaust_burn;
+    u64::try_from(burn)
+        .map(Amount::from)
+        .map_err(|_| NetworkStateSyncError::InvalidCheckpoint {
+            details: format!(
+                "Checkpoint for epoch {} claims an exhaust burn of {burn}, more than the total supply",
+                checkpoint.epoch()
+            ),
+        })
+}
+
+/// Keeps the checkpoints a sync from `from_epoch` can use: those from `from_epoch` up to `prev_epoch`.
+/// Later ones are for an epoch that has not ended for this indexer, and earlier ones were already
+/// synced.
+fn retain_checkpoints_in_sync_range(checkpoints: &mut Vec<EpochCheckpoint>, from_epoch: Epoch, prev_epoch: Epoch) {
+    checkpoints.retain(|checkpoint| (from_epoch..=prev_epoch).contains(&checkpoint.epoch()));
+}
+
 fn process_watched_substate_events(
     tx: &mut SqliteStoreWriteTransaction<'_>,
     events: &[InsertedEvent],
@@ -1446,6 +1478,121 @@ fn extend_bufs_from_substate_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod running_totals {
+        use super::*;
+        use crate::store::{IndexerStore, IndexerStoreWriteTransaction};
+
+        async fn store_with_total(key: Key, total: Amount) -> (tempfile::TempDir, SqliteIndexerStore) {
+            let dir = tempfile::tempdir().unwrap();
+            let store = SqliteIndexerStore::try_create(dir.path().join("indexer.db")).unwrap();
+            store
+                .with_write_tx(move |tx| tx.key_value_set(key, total))
+                .await
+                .unwrap();
+            (dir, store)
+        }
+
+        async fn total(store: &SqliteIndexerStore, key: Key) -> Amount {
+            store
+                .with_read_tx(move |tx| tx.key_value_get_value::<_, Amount>(key))
+                .await
+                .unwrap()
+        }
+
+        #[tokio::test]
+        async fn an_addition_that_overflows_the_total_is_refused() {
+            let (_dir, store) = store_with_total(Key::TariAccumulatedExhaustBurn, Amount::MAX).await;
+
+            let result = store
+                .with_write_tx(|tx| add_to_total(tx, Key::TariAccumulatedExhaustBurn, Amount::from(1u64)))
+                .await;
+
+            assert!(
+                matches!(result, Err(StorageError::DataInconsistency { .. })),
+                "{result:?}"
+            );
+            assert_eq!(total(&store, Key::TariAccumulatedExhaustBurn).await, Amount::MAX);
+        }
+
+        #[tokio::test]
+        async fn an_addition_is_folded_into_the_total() {
+            let (_dir, store) = store_with_total(Key::TariAccumulatedFees, Amount::from(40u64)).await;
+
+            store
+                .with_write_tx(|tx| add_to_total(tx, Key::TariAccumulatedFees, Amount::from(2u64)))
+                .await
+                .unwrap();
+
+            assert_eq!(total(&store, Key::TariAccumulatedFees).await, Amount::from(42u64));
+        }
+    }
+
+    mod served_checkpoints {
+        use indexmap::IndexMap;
+        use tari_common_types::types::FixedHash;
+        use tari_ootle_storage::consensus_models::EndOfEpochCommand;
+        use tari_sidechain::{CommandCommitProof, SidechainBlockCommitProof, SidechainBlockHeader};
+        use tari_state_tree::{TreeHash, compute_proof_for_hashes};
+
+        use super::*;
+
+        fn checkpoint(epoch: u64, total_exhaust_burn: u128) -> EpochCheckpoint {
+            let key = TreeHash::new([1; 32]);
+            let (_, inclusion_proof) = compute_proof_for_hashes([key].into_iter(), key).unwrap();
+            let commit_proof = SidechainBlockCommitProof {
+                header: SidechainBlockHeader {
+                    network: 0,
+                    protocol_version: 0,
+                    parent_id: FixedHash::zero(),
+                    justify_id: FixedHash::zero(),
+                    height: 0,
+                    epoch,
+                    epoch_hash: FixedHash::zero(),
+                    shard_group: tari_sidechain::ShardGroup {
+                        start: 0,
+                        end_inclusive: 255,
+                    },
+                    proposed_by: Default::default(),
+                    state_merkle_root: FixedHash::zero(),
+                    command_merkle_root: FixedHash::zero(),
+                    signature: Default::default(),
+                    accumulated_data: tari_sidechain::ShardGroupAccumulatedData { total_exhaust_burn },
+                    metadata_hash: FixedHash::zero(),
+                },
+                proof_elements: vec![],
+            };
+            EpochCheckpoint::new(
+                CommandCommitProof::new(EndOfEpochCommand::new(FixedHash::zero()), commit_proof, inclusion_proof),
+                IndexMap::new(),
+            )
+        }
+
+        #[test]
+        fn a_burn_the_supply_could_pay_is_accepted() {
+            let burn = checkpoint_exhaust_burn(&checkpoint(3, u128::from(u64::MAX))).unwrap();
+            assert_eq!(burn, Amount::from(u64::MAX));
+        }
+
+        #[test]
+        fn a_burn_beyond_the_supply_is_rejected() {
+            let result = checkpoint_exhaust_burn(&checkpoint(3, u128::from(u64::MAX) + 1));
+            assert!(
+                matches!(result, Err(NetworkStateSyncError::InvalidCheckpoint { .. })),
+                "{result:?}"
+            );
+        }
+
+        #[test]
+        fn only_checkpoints_from_the_synced_epoch_to_the_previous_epoch_are_kept() {
+            let mut checkpoints = (1..=6).map(|epoch| checkpoint(epoch, 0)).collect();
+
+            retain_checkpoints_in_sync_range(&mut checkpoints, Epoch(2), Epoch(4));
+
+            let epochs = checkpoints.iter().map(|c| c.epoch().as_u64()).collect::<Vec<_>>();
+            assert_eq!(epochs, [2, 3, 4]);
+        }
+    }
 
     mod plan_absorbs_epoch {
         use tari_epoch_manager::service::ShardGroupInfo;

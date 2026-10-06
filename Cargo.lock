@@ -12048,6 +12048,7 @@ dependencies = [
  "tari_rpc_framework",
  "tari_shutdown",
  "tari_sidechain",
+ "tari_state_tree",
  "tari_template_builtin",
  "tari_template_lib_types",
  "tari_validator_node_rpc",
