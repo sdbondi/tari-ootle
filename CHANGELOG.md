@@ -3,6 +3,79 @@
 All notable changes to this project will be documented in this file.
 See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [0.44.0](https://github.com/tari-project/tari-ootle/compare/v0.43.0...v0.44.0) (2026-10-06)
+
+Introduces protocol version V1, which commits each shard's state version in the state merkle root
+and lets state sync verify streamed state incrementally. Esmeralda activates V1 at epoch 11925;
+every other network starts at V1. Also tightens resource authorization and bounds several peer and
+indexer inputs.
+
+### ⚠️ Upgrade notes
+
+- **Every esmeralda validator upgrades before epoch 11925.** V1 activates there and changes the state
+  merkle root; a node still on 0.43.x forks off. (#2784)
+- **A synced node below its checkpoint version must resync.** (#2795)
+- **Non-fungible data updates are denied to non-owners by default.** `ResourceAccessRules::new()`
+  sets `update_nft_data` to `DenyAll`; templates that relied on the open default must allow it
+  explicitly. (#2786)
+- **The resource auth hook runs on stealth and confidential actions.** `AuthHookCaller::template()`
+  returns `Option` — `None` when a transaction instruction performed the action. (#2787)
+- **Only a liquidity pool may mint or burn its LP tokens.** Pools created before this release keep
+  their old rules. (#2759)
+- **Wallet daemon settings take `indexer_urls`.** `settings.get` also returns the configured list.
+  (#2753)
+
+### Consensus
+
+- `feat!` — **Each shard's state version is committed in the state merkle root under V1.** (#2784)
+- `fix` — **A transaction is voted forward only once its shard groups are ready.** (#2771)
+- `fix` — **Requested transactions are decoded only once the response is matched.** (#2788)
+
+### State sync
+
+- `feat` — **Streamed state is verified incrementally with state version proofs.** (#2796)
+- `fix!` — **Synced shards end at the checkpoint version.** (#2795)
+- `fix` — **Synced state that never matches the checkpoint is discarded.** (#2765)
+- `fix` — **Only a signed same-group QC counts as stall-probe progress.** (#2774)
+
+### Engine
+
+- `fix!` — **Non-fungible data updates are denied to non-owners by default.** (#2786)
+- `fix` — **The resource auth hook runs on stealth and confidential actions.** (#2787)
+- `fix` — **Scalar inversion is priced as an exponentiation.** (#2794)
+- `fix!` — **Only the pool may mint or burn its LP tokens**, and swaps are rejected while either
+  reserve is empty. (#2759, #2763)
+
+### Validator node and networking
+
+- `fix` — **Transaction decode is bounded by byte size and instruction count.** (#2761)
+- `fix` — **A history sync request is bounded in the epoch it may ask for.** (#2776)
+- `fix` — **A peer can hold a messaging stream only for a bounded time.** (#2770)
+- `fix` — **A failed RPC session start releases its per-client slot.** (#2764)
+
+### Indexer
+
+- `feat!` — **Substate and transaction receipt proofs are served on request** with `include_proofs`.
+  (#2760)
+- `feat` — **Receipts and events have a retention period**, and SQLite contention is reported as
+  metrics. (#2757)
+- `feat` — **The economics page reports the fees validators can claim.** (#2756)
+- `fix` — **State versions accepted from sync peers are bounded.** (#2767)
+- `fix` — **Checkpoint exhaust burns are bounded and overflowing economic totals refused.** (#2789)
+- `fix` — **Rate limits key on `CF-Connecting-IP` or the last `X-Forwarded-For` entry.** (#2755)
+- `fix` — **The UI shows transactions whose execution result validators have pruned.** (#2768)
+
+### Wallet
+
+- `feat` — **The wallet daemon takes several indexers and fails over between them.** (#2753)
+- `fix` — **`nfts.transfer` requires transfer scope on the fee payer.** (#2785)
+
+### Other
+
+- `fix` — **`tari_bor` escapes text-keyed maps holding a reserved key in the JSON form.** (#2777)
+- `fix` — **A `blob!` name that is not an identifier is a manifest error.** (#2766)
+- `feat` — **A swarm smoke test script.** (#2782)
+
 ## [0.43.0](https://github.com/tari-project/tari-ootle/compare/v0.42.0...v0.43.0) (2026-10-01)
 
 A security release on v0.42.0. Empty proofs no longer pass resource access rules, covenant balance
