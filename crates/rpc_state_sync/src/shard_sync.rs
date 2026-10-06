@@ -72,6 +72,7 @@ pub(crate) struct ShardSync<'a, TStore> {
     store: &'a TStore,
     shard: Shard,
     checkpoint_shard_root: TreeHash,
+    checkpoint_state_version: Version,
 }
 
 impl<'a, TStore: StateStore> ShardSync<'a, TStore> {
@@ -81,6 +82,7 @@ impl<'a, TStore: StateStore> ShardSync<'a, TStore> {
         store: &'a TStore,
         shard: Shard,
         checkpoint_shard_root: TreeHash,
+        checkpoint_state_version: Version,
     ) -> Self {
         Self {
             network,
@@ -88,7 +90,40 @@ impl<'a, TStore: StateStore> ShardSync<'a, TStore> {
             store,
             shard,
             checkpoint_shard_root,
+            checkpoint_state_version,
         }
+    }
+
+    /// Advances the shard from `verified_version`, whose root matches the checkpoint, to the checkpoint's state
+    /// version, and returns the version the shard is then at.
+    ///
+    /// A shard's trailing versions can change its tree without changing any substate, so the last version a stream
+    /// writes can lie below the checkpoint's version while already holding the checkpoint's root. Every node that
+    /// ran consensus is at the checkpoint's version, and from [`ProtocolVersion::V1`] the state merkle root commits
+    /// to each shard's version, so a node left below it computes a different root for every block.
+    ///
+    /// [`ProtocolVersion::V1`]: tari_engine_types::ProtocolVersion::V1
+    pub fn align_to_checkpoint_version(
+        &self,
+        verified_version: Option<Version>,
+    ) -> Result<Option<Version>, RpcStateSyncError> {
+        let target = self.checkpoint_state_version;
+        if verified_version.unwrap_or(0) >= target {
+            return Ok(verified_version);
+        }
+        self.store.with_write_tx(|tx| {
+            let mut store = ShardScopedTreeStoreWriter::new(tx, self.shard);
+            SpreadPrefixStateTree::new(&mut store).batch_put_substate_changes(verified_version, target, [])?;
+            store.set_state_version(target)?;
+            Ok::<_, RpcStateSyncError>(())
+        })?;
+        info!(
+            target: LOG_TARGET,
+            "🛜 Advanced {} from v{} to the checkpoint's v{target}",
+            self.shard,
+            verified_version.unwrap_or(0),
+        );
+        Ok(Some(target))
     }
 
     /// The first version to stream on top of `persisted_version`.
@@ -223,7 +258,7 @@ impl<'a, TStore: StateStore> ShardSync<'a, TStore> {
                         "🛜 ✅ State root for {shard} matches checkpoint: {local_state_root} (v{})",
                         maybe_persisted_state_version.unwrap_or(0),
                     );
-                    return Ok(maybe_persisted_state_version);
+                    return self.align_to_checkpoint_version(maybe_persisted_state_version);
                 },
                 None => {
                     return Err(RpcStateSyncError::InvalidResponse(anyhow!(
@@ -640,6 +675,11 @@ mod tests {
         root
     }
 
+    /// The shard state version a checkpoint records once `versions` are applied in order.
+    fn version_after(versions: &Versions) -> Version {
+        versions.last().map_or(0, |(version, _)| *version)
+    }
+
     fn local_version<TStore: StateStore>(store: &TStore) -> Option<Version> {
         store
             .with_read_tx(|tx| tx.state_tree_versions_get_latest(shard()))
@@ -663,7 +703,14 @@ mod tests {
         checkpoint: &Versions,
         responses: Vec<Result<SyncStateResponse, RpcStatus>>,
     ) -> Result<Option<Version>, RpcStateSyncError> {
-        let sync = ShardSync::new(NETWORK, NUM_PRESHARDS, store, shard(), root_after(checkpoint));
+        let sync = ShardSync::new(
+            NETWORK,
+            NUM_PRESHARDS,
+            store,
+            shard(),
+            root_after(checkpoint),
+            version_after(checkpoint),
+        );
         let verified_version = sync.discard_unverified_state()?;
         sync.sync_from_stream(
             &mut StateSyncStats::default(),
@@ -690,6 +737,34 @@ mod tests {
         assert_eq!(local_version(&store), Some(2));
         assert!(substate(&store, HONEST).is_some_and(|s| s.is_up()));
         assert!(substate(&store, 2).is_some_and(|s| s.is_up()));
+        assert_eq!(rewind_point(&store), None);
+    }
+
+    #[tokio::test]
+    async fn a_shard_whose_trailing_versions_change_no_substate_ends_at_the_checkpoint_version() {
+        let (store, _tmp) = create_store();
+        // v3 changes the tree without changing a substate, so the peer has nothing to stream for it.
+        let checkpoint = vec![(1, vec![create(HONEST)]), (2, vec![create(2)]), (3, vec![])];
+
+        let synced = sync(&store, &checkpoint, vec![
+            batch(1, vec![create(HONEST)]),
+            batch(2, vec![create(2)]),
+            complete(3),
+        ])
+        .await
+        .unwrap();
+
+        assert_eq!(synced, Some(3));
+        assert_eq!(local_version(&store), Some(3));
+        let sync = ShardSync::new(
+            NETWORK,
+            NUM_PRESHARDS,
+            &store,
+            shard(),
+            root_after(&checkpoint),
+            version_after(&checkpoint),
+        );
+        assert_eq!(sync.local_state_root(Some(3)).unwrap(), root_after(&checkpoint));
         assert_eq!(rewind_point(&store), None);
     }
 
@@ -742,7 +817,14 @@ mod tests {
         assert_eq!(local_version(&store), Some(1));
         assert!(substate(&store, HONEST).is_some_and(|s| s.is_up()));
         assert!(substate(&store, POISON).is_none());
-        let shard_sync = ShardSync::new(NETWORK, NUM_PRESHARDS, &store, shard(), root_after(&verified));
+        let shard_sync = ShardSync::new(
+            NETWORK,
+            NUM_PRESHARDS,
+            &store,
+            shard(),
+            root_after(&verified),
+            version_after(&verified),
+        );
         assert_eq!(shard_sync.local_state_root(Some(1)).unwrap(), root_after(&verified));
 
         sync(&store, &honest, vec![batch(2, vec![create(2)]), complete(2)])
@@ -783,7 +865,14 @@ mod tests {
     #[test]
     fn the_last_representable_version_has_no_successor() {
         let (store, _tmp) = create_store();
-        let sync = ShardSync::new(NETWORK, NUM_PRESHARDS, &store, shard(), SPARSE_MERKLE_PLACEHOLDER_HASH);
+        let sync = ShardSync::new(
+            NETWORK,
+            NUM_PRESHARDS,
+            &store,
+            shard(),
+            SPARSE_MERKLE_PLACEHOLDER_HASH,
+            0,
+        );
         assert_eq!(sync.start_state_version(None).unwrap(), 1);
         assert_eq!(sync.start_state_version(Some(41)).unwrap(), 42);
         assert!(matches!(
@@ -796,7 +885,14 @@ mod tests {
     async fn an_interrupted_sync_is_discarded_before_the_next_attempt() {
         let (store, _tmp) = create_store();
         let honest = vec![(1, vec![create(HONEST)])];
-        let sync = ShardSync::new(NETWORK, NUM_PRESHARDS, &store, shard(), root_after(&honest));
+        let sync = ShardSync::new(
+            NETWORK,
+            NUM_PRESHARDS,
+            &store,
+            shard(),
+            root_after(&honest),
+            version_after(&honest),
+        );
 
         // The peer stalls after one version and the sync is dropped mid-stream, as on shutdown.
         let stalled = stream::iter(vec![batch(1, vec![create(POISON)])]).chain(stream::pending());
@@ -819,7 +915,7 @@ mod tests {
         shard: Shard,
         updates: Vec<SubstateUpdateProof>,
     ) -> Option<Result<Option<Version>, RpcStateSyncError>> {
-        let sync = ShardSync::new(NETWORK, NUM_PRESHARDS, store, shard, SPARSE_MERKLE_PLACEHOLDER_HASH);
+        let sync = ShardSync::new(NETWORK, NUM_PRESHARDS, store, shard, SPARSE_MERKLE_PLACEHOLDER_HASH, 0);
         let stalled = stream::iter(vec![batch_in(shard, 1, updates)]).chain(stream::pending());
         sync.sync_from_stream(&mut StateSyncStats::default(), None, stalled)
             .now_or_never()
@@ -835,6 +931,7 @@ mod tests {
             &store,
             other_shard(),
             root_after(&other_verified),
+            version_after(&other_verified),
         )
         .sync_from_stream(
             &mut StateSyncStats::default(),

@@ -169,11 +169,13 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
             &self.state_store,
             shard,
             checkpoint_shard_root,
+            checkpoint.get_shard_state_version(shard),
         );
         let maybe_persisted_state_version = shard_sync.discard_unverified_state()?;
 
         if shard_sync.local_state_root(maybe_persisted_state_version)? == checkpoint_shard_root {
             info!(target: LOG_TARGET, "Checkpoint state root indicates no further state changes. Nothing to sync for {shard}");
+            shard_sync.align_to_checkpoint_version(maybe_persisted_state_version)?;
             return Ok(None);
         }
 
