@@ -2,18 +2,17 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use log::*;
-use tari_consensus_types::Decision;
+use tari_consensus_types::{BlockId, Decision};
 use tari_ootle_common_types::{Epoch, committee::CommitteeInfo};
 use tari_ootle_storage::{
     StateStore,
     consensus_models::{TransactionPool, TransactionRecord},
 };
-use tari_ootle_transaction::TransactionId;
+use tari_ootle_transaction::{Transaction, TransactionId};
 use tokio::sync::mpsc;
 
 use crate::{
     hotstuff::error::HotStuffError,
-    messages::MissingTransactionsResponse,
     tracing::TraceTimer,
     traits::{BlockTransactionValidator, ConsensusSpec},
 };
@@ -56,13 +55,14 @@ where TConsensusSpec: ConsensusSpec
         &mut self,
         current_epoch: Epoch,
         from: TConsensusSpec::Addr,
-        msg: MissingTransactionsResponse,
+        block_id: BlockId,
+        transactions: Vec<Transaction>,
         local_committee_info: &CommitteeInfo,
     ) -> Result<(), HotStuffError> {
         let _timer = TraceTimer::debug(LOG_TARGET, "OnReceiveRequestedTransactions");
-        info!(target: LOG_TARGET, "Received {} requested transaction(s) for block {} from {:?}", msg.transactions.len(), msg.block_id, from);
+        info!(target: LOG_TARGET, "Received {} requested transaction(s) for block {} from {:?}", transactions.len(), block_id, from);
         self.store.with_write_tx(|tx| {
-            let recs = TransactionRecord::get_any_or_build(&**tx, msg.transactions)?;
+            let recs = TransactionRecord::get_any_or_build(&**tx, transactions)?;
             let mut batch = Vec::with_capacity(recs.len());
             debug!(target: LOG_TARGET, "Processing {} requested transactions", recs.len());
             for transaction in recs {

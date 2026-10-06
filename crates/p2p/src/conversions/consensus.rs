@@ -28,6 +28,7 @@ use std::{
 use anyhow::{Context, anyhow};
 use tari_consensus::messages::{
     CatchUpRequestMessage,
+    EncodedTransaction,
     ForeignProposalMessage,
     ForeignProposalNotificationMessage,
     ForeignProposalRequestMessage,
@@ -455,7 +456,13 @@ impl From<&MissingTransactionsResponse> for proto::consensus::MissingTransaction
             request_id: msg.request_id,
             epoch: msg.epoch.as_u64(),
             block_id: msg.block_id.as_bytes().to_vec(),
-            transactions: msg.transactions.iter().map(|tx| tx.into()).collect(),
+            transactions: msg
+                .transactions
+                .iter()
+                .map(|tx| proto::transaction::Transaction {
+                    bor_encoded: tx.as_bytes().to_vec(),
+                })
+                .collect(),
         }
     }
 }
@@ -478,8 +485,8 @@ impl TryFrom<proto::consensus::MissingTransactionsResponse> for MissingTransacti
             transactions: value
                 .transactions
                 .into_iter()
-                .map(|tx| tx.try_into())
-                .collect::<Result<Vec<_>, _>>()?,
+                .map(|tx| EncodedTransaction::from_bytes(tx.bor_encoded))
+                .collect(),
         })
     }
 }
@@ -1238,8 +1245,7 @@ mod tests {
     }
 
     #[test]
-    fn a_response_with_more_transactions_than_can_be_requested_is_refused_before_decoding_them() {
-        // Bytes that are not a transaction: an error about the count shows none of them was decoded.
+    fn a_response_with_more_transactions_than_can_be_requested_is_refused() {
         let response = proto::consensus::MissingTransactionsResponse {
             request_id: 1,
             epoch: 1,

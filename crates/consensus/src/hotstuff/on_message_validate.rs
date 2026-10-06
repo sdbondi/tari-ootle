@@ -4,6 +4,7 @@
 use std::collections::{HashSet, VecDeque};
 
 use log::*;
+use tari_bor::BorError;
 use tari_consensus_types::BlockId;
 use tari_epoch_manager::EpochManagerReader;
 use tari_ootle_common_types::{
@@ -17,7 +18,7 @@ use tari_ootle_storage::{
     StateStoreWriteTransaction,
     consensus_models::{Block, ForeignParkedProposal, ForeignProposal, TransactionRecord},
 };
-use tari_ootle_transaction::TransactionId;
+use tari_ootle_transaction::{Transaction, TransactionId};
 use tokio::sync::broadcast;
 
 use super::config::HotstuffConfig;
@@ -31,6 +32,7 @@ use crate::{
         on_receive_new_transaction::OnReceiveNewTransaction,
     },
     messages::{
+        EncodedTransaction,
         ForeignProposalMessage,
         ForeignProposalRequestMessage,
         HotstuffMessage,
@@ -122,33 +124,20 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
                     return Ok(MessageValidationResult::Discard);
                 };
 
-                if msg.transactions.len() > request.transactions.len() {
-                    warn!(target: LOG_TARGET, "⚠️Peer {from} sent {} transaction(s) for req_id = {} but only {} were requested. Discarding message", msg.transactions.len(), msg.request_id, request.transactions.len());
-                    return Ok(MessageValidationResult::Discard);
+                match request.decode_response(
+                    msg.transactions,
+                    self.config.consensus_constants.max_transaction_size_bytes,
+                ) {
+                    Ok(transactions) => Ok(MessageValidationResult::RequestedTransactions {
+                        from,
+                        block_id: msg.block_id,
+                        transactions,
+                    }),
+                    Err(err) => {
+                        warn!(target: LOG_TARGET, "⚠️Peer {from} sent an invalid response to req_id = {}: {err}. Discarding message", msg.request_id);
+                        Ok(MessageValidationResult::Discard)
+                    },
                 }
-
-                let returned_ids = msg
-                    .transactions
-                    .iter()
-                    .map(|transaction| transaction.calculate_id())
-                    .collect::<HashSet<_>>();
-
-                if let Some(unrequested) = returned_ids.difference(&request.transactions).next() {
-                    warn!(target: LOG_TARGET, "⚠️Peer {from} sent transaction {unrequested} for req_id = {} that we did not request. Discarding message", msg.request_id);
-                    return Ok(MessageValidationResult::Discard);
-                }
-
-                // Each requested transaction is returned at most once, so that the count check above bounds
-                // the work one response can ask for.
-                if returned_ids.len() != msg.transactions.len() {
-                    warn!(target: LOG_TARGET, "⚠️Peer {from} sent duplicate transactions for req_id = {}. Discarding message", msg.request_id);
-                    return Ok(MessageValidationResult::Discard);
-                }
-
-                Ok(MessageValidationResult::Ready {
-                    from,
-                    message: HotstuffMessage::MissingTransactionsResponse(msg),
-                })
             },
             HotstuffMessage::MissingTransactionsRequest(msg) => {
                 if !self
@@ -702,6 +691,12 @@ pub enum MessageValidationResult<TAddr> {
         from: TAddr,
         message: HotstuffMessage,
     },
+    /// The decoded transactions of a response to a missing-transactions request this node made.
+    RequestedTransactions {
+        from: TAddr,
+        block_id: BlockId,
+        transactions: Vec<Transaction>,
+    },
     ParkedProposal {
         block_id: BlockId,
         epoch: Epoch,
@@ -722,6 +717,60 @@ struct PendingMissingTransactionsRequest<TAddr> {
     /// The peer the request went to. A response only counts when it comes back from this peer.
     to: TAddr,
     transactions: HashSet<TransactionId>,
+}
+
+impl<TAddr> PendingMissingTransactionsRequest<TAddr> {
+    /// Decodes the transactions a peer returned for this request, one at a time, refusing the response at the first
+    /// transaction that is over `max_transaction_size_bytes`, was not requested or is returned twice. Only
+    /// transactions this request names are ever held decoded, so the heap a response costs is bounded by the
+    /// transactions this node asked for.
+    fn decode_response(
+        &self,
+        transactions: Vec<EncodedTransaction>,
+        max_transaction_size_bytes: usize,
+    ) -> Result<Vec<Transaction>, RequestedTransactionsError> {
+        if transactions.len() > self.transactions.len() {
+            return Err(RequestedTransactionsError::TooMany {
+                returned: transactions.len(),
+                requested: self.transactions.len(),
+            });
+        }
+
+        let mut returned_ids = HashSet::with_capacity(transactions.len());
+        let mut decoded = Vec::with_capacity(transactions.len());
+        for encoded in transactions {
+            if encoded.len() > max_transaction_size_bytes {
+                return Err(RequestedTransactionsError::TooLarge {
+                    size: encoded.len(),
+                    max: max_transaction_size_bytes,
+                });
+            }
+            let transaction = encoded.decode().map_err(RequestedTransactionsError::Malformed)?;
+            let id = transaction.calculate_id();
+            if !self.transactions.contains(&id) {
+                return Err(RequestedTransactionsError::Unrequested { transaction_id: id });
+            }
+            if !returned_ids.insert(id) {
+                return Err(RequestedTransactionsError::Duplicate { transaction_id: id });
+            }
+            decoded.push(transaction);
+        }
+        Ok(decoded)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum RequestedTransactionsError {
+    #[error("returned {returned} transaction(s) but only {requested} were requested")]
+    TooMany { returned: usize, requested: usize },
+    #[error("returned a {size} byte transaction, over the {max} byte limit")]
+    TooLarge { size: usize, max: usize },
+    #[error("returned a transaction that does not decode: {0}")]
+    Malformed(BorError),
+    #[error("returned transaction {transaction_id}, which was not requested")]
+    Unrequested { transaction_id: TransactionId },
+    #[error("returned transaction {transaction_id} more than once")]
+    Duplicate { transaction_id: TransactionId },
 }
 
 /// A fixed-capacity ring of in-flight missing-transaction requests. Capacity is a bound on concurrent
@@ -803,5 +852,89 @@ mod tests {
                 .take(MissingTransactionRequests::<&str>::CAPACITY as u32, &"alice")
                 .is_some()
         );
+    }
+
+    const MAX_SIZE: usize = 1024 * 1024;
+
+    fn transaction(n: u64) -> Transaction {
+        Transaction::builder_localnet(Epoch(1)).build_and_seal(&tari_common_types::types::PrivateKey::from(n))
+    }
+
+    fn encoded(transaction: &Transaction) -> EncodedTransaction {
+        EncodedTransaction::encode(transaction).unwrap()
+    }
+
+    fn undecodable() -> EncodedTransaction {
+        EncodedTransaction::from_bytes(vec![0xff; 16])
+    }
+
+    fn request_for(transactions: &[&Transaction]) -> PendingMissingTransactionsRequest<&'static str> {
+        PendingMissingTransactionsRequest {
+            request_id: 1,
+            to: "alice",
+            transactions: transactions.iter().map(|t| t.calculate_id()).collect(),
+        }
+    }
+
+    #[test]
+    fn the_requested_transactions_decode() {
+        let (a, b) = (transaction(1), transaction(2));
+        let request = request_for(&[&a, &b]);
+
+        let decoded = request
+            .decode_response(vec![encoded(&b), encoded(&a)], MAX_SIZE)
+            .unwrap();
+
+        let ids = decoded.iter().map(|t| t.calculate_id()).collect::<Vec<_>>();
+        assert_eq!(ids, vec![b.calculate_id(), a.calculate_id()]);
+    }
+
+    #[test]
+    fn more_transactions_than_were_requested_are_refused_before_any_is_decoded() {
+        let a = transaction(1);
+        let request = request_for(&[&a]);
+
+        let err = request
+            .decode_response(vec![undecodable(), undecodable()], MAX_SIZE)
+            .unwrap_err();
+
+        assert!(matches!(err, RequestedTransactionsError::TooMany { .. }), "{err}");
+    }
+
+    #[test]
+    fn an_oversized_transaction_is_refused_before_it_is_decoded() {
+        let a = transaction(1);
+        let request = request_for(&[&a]);
+
+        let err = request.decode_response(vec![undecodable()], 8).unwrap_err();
+
+        assert!(matches!(err, RequestedTransactionsError::TooLarge { .. }), "{err}");
+    }
+
+    #[test]
+    fn decoding_stops_at_the_first_unrequested_transaction() {
+        let (a, b, c) = (transaction(1), transaction(2), transaction(3));
+        let request = request_for(&[&a, &c]);
+
+        let err = request
+            .decode_response(vec![encoded(&b), undecodable()], MAX_SIZE)
+            .unwrap_err();
+
+        assert!(
+            matches!(err, RequestedTransactionsError::Unrequested { transaction_id } if transaction_id == b.calculate_id()),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_transaction_returned_twice_is_refused() {
+        let (a, b) = (transaction(1), transaction(2));
+        let request = request_for(&[&a, &b]);
+
+        let err = request
+            .decode_response(vec![encoded(&a), encoded(&a)], MAX_SIZE)
+            .unwrap_err();
+
+        assert!(matches!(err, RequestedTransactionsError::Duplicate { .. }), "{err}");
     }
 }

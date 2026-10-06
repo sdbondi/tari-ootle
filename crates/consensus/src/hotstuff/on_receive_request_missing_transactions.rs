@@ -7,7 +7,7 @@ use tari_ootle_storage::{StateStore, consensus_models::TransactionRecord};
 
 use crate::{
     hotstuff::error::HotStuffError,
-    messages::{HotstuffMessage, MissingTransactionsRequest, MissingTransactionsResponse},
+    messages::{EncodedTransaction, HotstuffMessage, MissingTransactionsRequest, MissingTransactionsResponse},
     tracing::TraceTimer,
     traits::{ConsensusSpec, OutboundMessaging},
 };
@@ -46,6 +46,15 @@ where TConsensusSpec: ConsensusSpec
             )
         }
 
+        let transactions = txs
+            .iter()
+            .map(|tx| {
+                EncodedTransaction::encode(tx.transaction()).map_err(|e| {
+                    HotStuffError::InvariantError(format!("Failed to encode transaction {}: {e}", tx.id()))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+
         self.outbound_messaging
             .send(
                 from,
@@ -53,7 +62,7 @@ where TConsensusSpec: ConsensusSpec
                     request_id: msg.request_id,
                     epoch: msg.epoch,
                     block_id: msg.block_id,
-                    transactions: txs.into_iter().map(|tx| tx.into_transaction()).collect(),
+                    transactions,
                 }),
             )
             .await?;

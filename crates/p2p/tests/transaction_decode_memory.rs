@@ -15,6 +15,8 @@ use std::{
     },
 };
 
+use prost::Message;
+use tari_consensus::messages::MissingTransactionsResponse;
 use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_ootle_p2p::proto;
 use tari_ootle_transaction::{Epoch, Instruction, MAX_TRANSACTION_INSTRUCTIONS, Transaction};
@@ -24,6 +26,9 @@ static SERIAL: Mutex<()> = Mutex::new(());
 /// `ConsensusConstants::max_transaction_size_bytes`: the most bytes a transaction may encode to and
 /// still be relayed.
 const MAX_TRANSACTION_SIZE_BYTES: usize = 1_310_720;
+
+/// The most bytes the direct messaging protocol accepts in one consensus message.
+const MAX_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
 struct Counting;
 
@@ -124,5 +129,41 @@ fn a_max_size_transaction_over_the_instruction_limit_is_refused_within_the_same_
     assert!(
         peak <= MAX_DECODE_HEAP,
         "refusing {wire_len} bytes peaked at {peak} bytes of heap, over the {MAX_DECODE_HEAP} byte bound"
+    );
+}
+
+/// A missing-transactions response arrives from a peer before it can be matched to a request this node made,
+/// so building it from the wire must cost no more than the bytes it arrived as, however many costly
+/// transactions the frame packs.
+#[test]
+fn a_frame_of_costly_transactions_builds_a_response_within_its_wire_size() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let transaction = wire_with_drop_instructions(MAX_TRANSACTION_INSTRUCTIONS, MAX_TRANSACTION_INSTRUCTIONS);
+    let mut response = proto::consensus::MissingTransactionsResponse {
+        request_id: 1,
+        epoch: 1,
+        block_id: vec![0; 32],
+        transactions: vec![],
+    };
+    while response.encoded_len() + transaction.encoded_len() + 8 <= MAX_MESSAGE_SIZE {
+        response.transactions.push(transaction.clone());
+    }
+    let num_transactions = response.transactions.len();
+    let wire_len = response.encoded_len();
+
+    let baseline = OUTSTANDING.load(Ordering::Relaxed);
+    PEAK.store(baseline, Ordering::Relaxed);
+    let built = MissingTransactionsResponse::try_from(response);
+    let peak = PEAK.load(Ordering::Relaxed).saturating_sub(baseline);
+    let is_ok = built.is_ok();
+    drop(black_box(built));
+
+    assert!(
+        is_ok,
+        "a response of {num_transactions} transactions is accepted from the wire"
+    );
+    assert!(
+        peak <= wire_len,
+        "building a response of {num_transactions} transactions from {wire_len} bytes peaked at {peak} bytes of heap"
     );
 }

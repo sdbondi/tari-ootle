@@ -588,6 +588,26 @@ impl<TConsensusSpec: ConsensusSpec> HotstuffWorker<TConsensusSpec> {
                 }
                 Ok(())
             },
+            MessageValidationResult::RequestedTransactions {
+                from,
+                block_id,
+                transactions,
+            } => {
+                let result = self
+                    .on_receive_new_transaction
+                    .process_requested(
+                        epoch_state.epoch(),
+                        from,
+                        block_id,
+                        transactions,
+                        epoch_state.local_committee_info(),
+                    )
+                    .await;
+                if let Err(e) = log_err("on_receive_new_transaction", result) {
+                    return self.handle_hotstuff_error(current_height, epoch_state, None, e).await;
+                }
+                Ok(())
+            },
             MessageValidationResult::ParkedProposal {
                 epoch,
                 missing_txs,
@@ -1428,12 +1448,16 @@ impl<TConsensusSpec: ConsensusSpec> HotstuffWorker<TConsensusSpec> {
                 "on_receive_request_missing_transactions",
                 self.on_receive_request_missing_txs.handle(from, msg).await,
             ),
-            HotstuffMessage::MissingTransactionsResponse(msg) => log_err(
-                "on_receive_new_transaction",
-                self.on_receive_new_transaction
-                    .process_requested(epoch_state.epoch(), from, msg, epoch_state.local_committee_info())
-                    .await,
-            ),
+            // Validation decodes a response and hands its transactions over as `RequestedTransactions`, so a
+            // response is never dispatched as a message.
+            HotstuffMessage::MissingTransactionsResponse(msg) => {
+                warn!(
+                    target: LOG_TARGET,
+                    "Ignoring undecoded missing transactions response (req_id = {}) from {from}",
+                    msg.request_id
+                );
+                Ok(())
+            },
             HotstuffMessage::CatchUpSyncRequest(msg) => {
                 self.on_sync_request.handle(from, epoch_state.epoch(), msg);
                 Ok(())
