@@ -75,6 +75,7 @@ use tari_ootle_storage::{
         LivenessCounters,
         LockedSubstateValue,
         PendingShardStateTreeDiff,
+        StateVersionProof,
         StateVersionTransitions,
         SubstateChange,
         SubstateCreate,
@@ -142,6 +143,7 @@ use crate::{
         state_tree::StateTreeCf,
         state_tree_shard_versions,
         state_tree_shard_versions::StateTreeShardVersionCf,
+        state_version_proof::StateVersionProofCf,
         substate,
         substate::SubstateCf,
         substate_locks,
@@ -1976,6 +1978,22 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
             .get(&shard, OPERATION)
             .optional()?;
         Ok(version)
+    }
+
+    fn state_version_proofs_get_range(
+        &self,
+        shard: Shard,
+        from: Version,
+        to: Version,
+    ) -> Result<Vec<StateVersionProof>, StorageError> {
+        let cf = self.db().cf(StateVersionProofCf)?;
+        let start = cf.encode_key(&(shard, from));
+        let end = cf.encode_key(&(shard, to.saturating_add(1)));
+        let proofs = cf
+            .range_iterator(Ordering::Ascending, start..end)
+            .map(|res| res.map(|(_, proof)| proof))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(proofs)
     }
 
     fn state_sync_rewind_points_get_all(&self) -> Result<Vec<(Shard, Version)>, StorageError> {

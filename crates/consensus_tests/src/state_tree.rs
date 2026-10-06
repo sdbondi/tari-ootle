@@ -132,3 +132,84 @@ async fn check_state_transitions() {
         .unwrap();
     test.assert_clean_shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_committed_state_version_is_provable_against_its_block() {
+    use tari_consensus::hotstuff::commit_proofs::generate_block_commit_proof;
+    use tari_ootle_storage::consensus_models::{
+        Block,
+        CommittedBlockProof,
+        StateVersionProofSource,
+        verify_state_version_leaf,
+    };
+
+    setup_logger();
+    let mut test = Test::builder()
+        .modify_config(|config_mut| {
+            config_mut.epoch_end_grace_period = Duration::from_secs(0);
+        })
+        .modify_consensus_constants(|config| {
+            config.pacemaker_block_time = Duration::from_millis(500);
+        })
+        .add_committee(0, vec!["1"])
+        .start()
+        .await;
+    let _ignore = test.send_transaction_to_all(Decision::Commit, 100, 1, 10).await;
+    let _ignore = test.send_transaction_to_all(Decision::Commit, 200, 1, 1).await;
+    test.start_epoch(Epoch(1)).await;
+
+    loop {
+        test.on_block_committed().await;
+        if test.is_transaction_pool_empty() {
+            break;
+        }
+        let leaf = test.get_validator(&TestAddress::new("1")).get_leaf_block();
+        if leaf.height >= NodeHeight(10) {
+            panic!("Not all transactions committed after {} blocks", leaf.height);
+        }
+    }
+    test.stop();
+
+    test.get_validator(&TestAddress::new("1"))
+        .state_store
+        .with_read_tx(|tx| {
+            let mut num_proven = 0usize;
+            for shard in TEST_NUM_PRESHARDS.all_shards_iter() {
+                let Some(latest) = tx.state_tree_versions_get_latest(shard).unwrap() else {
+                    continue;
+                };
+                let proofs = tx.state_version_proofs_get_range(shard, 1, latest).unwrap();
+                assert_eq!(
+                    proofs.iter().map(|p| p.state_version).collect::<Vec<_>>(),
+                    (1..=latest).collect::<Vec<_>>(),
+                    "{shard} must hold a proof for every version a block produced"
+                );
+                for proof in proofs {
+                    let StateVersionProofSource::Committed { block_id } = proof.source else {
+                        panic!("{shard} v{} was not indexed at commit", proof.state_version);
+                    };
+                    let block = Block::get(tx, &block_id).unwrap();
+                    let commit_qc = block.get_commit_qc(tx).unwrap();
+                    let commit_proof =
+                        CommittedBlockProof::new(generate_block_commit_proof(tx, &commit_qc, &block).unwrap());
+                    let mut store = tari_ootle_storage::ShardScopedTreeStoreReader::new(tx, shard);
+                    let shard_root = tari_state_tree::SpreadPrefixStateTree::new(&mut store)
+                        .get_root_hash(proof.state_version)
+                        .unwrap();
+                    verify_state_version_leaf(
+                        Network::LocalNet,
+                        &commit_proof,
+                        shard,
+                        proof.state_version,
+                        &shard_root,
+                        &proof.shard_root_proof,
+                    )
+                    .unwrap();
+                    num_proven += 1;
+                }
+            }
+            assert!(num_proven > 0, "the test committed no state");
+            Ok::<_, tari_ootle_storage::StorageError>(())
+        })
+        .unwrap();
+}

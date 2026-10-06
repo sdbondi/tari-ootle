@@ -63,6 +63,7 @@ pub enum KeyPrefix {
     SubstateLockChainOrderIndex = 49,
     ForeignProposalMissingTransactionsBlockIdIndex = 50,
     StateSyncRewindPoint = 51,
+    StateVersionProofs = 52,
 }
 
 impl KeyPrefix {

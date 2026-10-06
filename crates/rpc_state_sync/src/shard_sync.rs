@@ -8,6 +8,7 @@ use futures::{Stream, StreamExt};
 use log::*;
 use ootle_network::Network;
 use prost::Message;
+use tari_engine_types::{ProtocolVersion, limits::MAX_CBOR_NESTING_DEPTH};
 use tari_ootle_common_types::{
     Epoch,
     NumPreshards,
@@ -16,7 +17,7 @@ use tari_ootle_common_types::{
     optional::Optional,
     shard::Shard,
 };
-use tari_ootle_p2p::proto::rpc::{SyncStateResponse, sync_state_response};
+use tari_ootle_p2p::proto::rpc::{self as proto, SyncStateResponse, sync_state_response};
 use tari_ootle_storage::{
     ShardScopedTreeStoreReader,
     ShardScopedTreeStoreWriter,
@@ -24,12 +25,25 @@ use tari_ootle_storage::{
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
     StorageError,
-    consensus_models::{SubstateRecord, SubstateTransition, SubstateUpdateBatch, SubstateUpdateProof},
+    consensus_models::{
+        CommittedBlockProof,
+        StateVersionProof,
+        StateVersionProofSource,
+        SubstateRecord,
+        SubstateTransition,
+        SubstateUpdateBatch,
+        SubstateUpdateProof,
+        verify_state_version_leaf,
+    },
 };
 use tari_state_tree::{SPARSE_MERKLE_PLACEHOLDER_HASH, SpreadPrefixStateTree, SubstateTreeChange, TreeHash, Version};
 use tari_validator_node_rpc::STATE_SYNC_MAX_BATCH_SIZE;
 
-use crate::{error::RpcStateSyncError, stats::StateSyncStats};
+use crate::{
+    error::RpcStateSyncError,
+    stats::StateSyncStats,
+    version_proofs::{CommitProofValidator, ProofSchedule},
+};
 
 const LOG_TARGET: &str = "tari::ootle::rpc_state_sync::shard_sync";
 /// The most a peer may stream, in encoded bytes, for one state version before completing it. A
@@ -65,14 +79,27 @@ fn rewind_shard<TTx: StateStoreWriteTransaction>(
     Ok(())
 }
 
+/// A validator for a stream that carries no state version proofs, which rejects any it is given.
+pub(crate) struct NoVersionProofs;
+
+impl CommitProofValidator for NoVersionProofs {
+    async fn validate(&self, _commit_proof: &CommittedBlockProof) -> Result<(), RpcStateSyncError> {
+        Err(RpcStateSyncError::InvalidResponse(anyhow!(
+            "Peer sent a state version proof that was not requested"
+        )))
+    }
+}
+
 /// Syncs one shard's state from a peer's stream against the shard root of a trusted checkpoint.
-pub(crate) struct ShardSync<'a, TStore> {
+pub(crate) struct ShardSync<'a, TStore, TValidator = NoVersionProofs> {
     network: Network,
     num_preshards: NumPreshards,
     store: &'a TStore,
     shard: Shard,
     checkpoint_shard_root: TreeHash,
     checkpoint_state_version: Version,
+    /// Validates the commit proofs of the state version proofs the stream carries, if it was asked to carry them.
+    version_proofs: Option<&'a TValidator>,
 }
 
 impl<'a, TStore: StateStore> ShardSync<'a, TStore> {
@@ -91,7 +118,93 @@ impl<'a, TStore: StateStore> ShardSync<'a, TStore> {
             shard,
             checkpoint_shard_root,
             checkpoint_state_version,
+            version_proofs: None,
         }
+    }
+}
+
+impl<'a, TStore: StateStore, TValidator: CommitProofValidator> ShardSync<'a, TStore, TValidator> {
+    /// Holds the stream to the proof schedule, validating each proof's commit proof with `validator`.
+    pub fn with_version_proofs<V: CommitProofValidator>(self, validator: &'a V) -> ShardSync<'a, TStore, V> {
+        ShardSync {
+            network: self.network,
+            num_preshards: self.num_preshards,
+            store: self.store,
+            shard: self.shard,
+            checkpoint_shard_root: self.checkpoint_shard_root,
+            checkpoint_state_version: self.checkpoint_state_version,
+            version_proofs: Some(validator),
+        }
+    }
+
+    /// The proof schedule for a stream starting at `start_state_version`, if the stream carries proofs. A network
+    /// launched at V1 or later has every version since genesis proven, so it is held to the schedule from the
+    /// start.
+    fn proof_schedule(&self, start_state_version: Version) -> Option<ProofSchedule> {
+        self.version_proofs.map(|_| {
+            ProofSchedule::new(
+                ProtocolVersion::genesis(self.network) >= ProtocolVersion::V1,
+                start_state_version,
+                self.checkpoint_state_version,
+            )
+        })
+    }
+
+    /// Verifies that `proof` proves the shard at `proof.state_version` with the root of `written_version`, the last
+    /// version the stream wrote, and keeps it to re-serve to peers that sync from this node.
+    async fn apply_version_proof(
+        &self,
+        validator: &TValidator,
+        proof: proto::StateVersionProof,
+        written_version: Option<Version>,
+    ) -> Result<Version, RpcStateSyncError> {
+        let shard = self.shard;
+        if proof.shard != shard.as_u32() {
+            return Err(RpcStateSyncError::InvalidResponse(anyhow!(
+                "Received a state version proof for shard {} while syncing {shard}",
+                proof.shard
+            )));
+        }
+        let state_version = proof.state_version;
+        if state_version < written_version.unwrap_or(0) || state_version > self.checkpoint_state_version {
+            return Err(RpcStateSyncError::InvalidResponse(anyhow!(
+                "Received a proof of v{state_version} for {shard}, outside v{}..=v{}",
+                written_version.unwrap_or(0),
+                self.checkpoint_state_version
+            )));
+        }
+        let commit_proof = CommittedBlockProof::from_bytes(&proof.commit_proof)
+            .map_err(|e| RpcStateSyncError::InvalidResponse(anyhow!("Undecodable commit proof: {e}")))?;
+        let shard_root_proof =
+            tari_bor::serde_codec::from_slice_with_max_depth(&proof.shard_root_proof, MAX_CBOR_NESTING_DEPTH)
+                .map_err(|e| RpcStateSyncError::InvalidResponse(anyhow!("Undecodable shard root proof: {e}")))?;
+
+        let shard_root = self.local_state_root(written_version)?;
+        verify_state_version_leaf(
+            self.network,
+            &commit_proof,
+            shard,
+            state_version,
+            &shard_root,
+            &shard_root_proof,
+        )
+        .map_err(|e| RpcStateSyncError::InvalidResponse(e.into()))?;
+        validator.validate(&commit_proof).await?;
+
+        self.store.with_write_tx(|tx| {
+            tx.state_version_proofs_insert(&StateVersionProof {
+                shard,
+                state_version,
+                source: StateVersionProofSource::Received {
+                    commit_proof: proof.commit_proof,
+                },
+                shard_root_proof,
+            })?;
+            // The state through the written version is now proven, so a later failure rewinds no further back.
+            tx.state_sync_rewind_point_remove(shard)
+        })?;
+        debug!(target: LOG_TARGET, "🛜 ✅ {shard} proven at v{state_version}");
+        Ok(state_version)
     }
 
     /// Advances the shard from `verified_version`, whose root matches the checkpoint, to the checkpoint's state
@@ -203,7 +316,7 @@ impl<'a, TStore: StateStore> ShardSync<'a, TStore> {
         RpcStateSyncError: From<E>,
     {
         let shard = self.shard;
-        let rewind_point = maybe_persisted_state_version.unwrap_or(0);
+        let mut rewind_point = maybe_persisted_state_version.unwrap_or(0);
         let mut has_unverified_state = false;
         let start_state_version = self.start_state_version(maybe_persisted_state_version)?;
         let mut last_state_version = start_state_version;
@@ -211,13 +324,38 @@ impl<'a, TStore: StateStore> ShardSync<'a, TStore> {
         let mut updates = vec![];
         let mut expected_state_version = None;
         let mut buffered = VersionBuffer::default();
+        let mut proof_schedule = self.proof_schedule(start_state_version);
 
         // syncing states
         while let Some(result) = state_stream.next().await {
             let msg = result?;
             let batch = match msg.response {
                 Some(sync_state_response::Response::Batch(batch)) => batch,
+                Some(sync_state_response::Response::VersionProof(proof)) => {
+                    let (Some(validator), Some(schedule)) = (self.version_proofs, proof_schedule.as_mut()) else {
+                        return Err(RpcStateSyncError::InvalidResponse(anyhow!(
+                            "Peer sent a state version proof that was not requested"
+                        )));
+                    };
+                    if let Some(version) = expected_state_version {
+                        return Err(RpcStateSyncError::InvalidResponse(anyhow!(
+                            "Peer sent a state version proof in the middle of v{version}"
+                        )));
+                    }
+                    let proven = self
+                        .apply_version_proof(validator, proof, maybe_persisted_state_version)
+                        .await?;
+                    schedule.proven(proven);
+                    has_unverified_state = false;
+                    rewind_point = maybe_persisted_state_version.unwrap_or(0);
+                    // Every version up to the proven one is settled, so the stream must continue above it.
+                    last_state_version = last_state_version.max(proven.saturating_add(1));
+                    continue;
+                },
                 Some(sync_state_response::Response::Complete(complete)) => {
+                    if let Some(schedule) = &proof_schedule {
+                        schedule.check_complete()?;
+                    }
                     if complete.shard != shard.as_u32() {
                         return Err(RpcStateSyncError::InvalidResponse(anyhow!(
                             "Received completion marker for shard {} but requested {shard}",
@@ -310,6 +448,9 @@ impl<'a, TStore: StateStore> ShardSync<'a, TStore> {
                 )));
             }
 
+            if let Some(schedule) = &proof_schedule {
+                schedule.check_batch(state_version)?;
+            }
             last_state_version = state_version;
             buffered.charge(state_version, batch.encoded_len())?;
 
@@ -984,5 +1125,161 @@ mod tests {
                 .unwrap();
             assert_eq!(version, None, "{shard}");
         }
+    }
+
+    /// Accepts every commit proof, standing in for a committee's signatures.
+    struct AcceptAll;
+
+    impl CommitProofValidator for AcceptAll {
+        async fn validate(&self, _commit_proof: &CommittedBlockProof) -> Result<(), RpcStateSyncError> {
+            Ok(())
+        }
+    }
+
+    const N: Version = tari_ootle_storage::consensus_models::STATE_VERSION_PROOF_INTERVAL;
+
+    /// `N` versions, each creating one substate, so that the last is a proof point.
+    fn versions_to_proof_point() -> Versions {
+        (1..=N)
+            .map(|version| (version, vec![create(u8::try_from(version).unwrap())]))
+            .collect()
+    }
+
+    /// A proof that the shard was at `state_version` with `shard_root`, in a block whose state root holds that leaf.
+    fn version_proof(state_version: Version, shard_root: TreeHash) -> Result<SyncStateResponse, RpcStatus> {
+        use tari_common_types::types::FixedHash;
+        use tari_sidechain::{SidechainBlockCommitProof, SidechainBlockHeader};
+        use tari_state_tree::{RootProofTree, compute_merkle_root_for_hashes, shard_state_leaf};
+
+        let protocol_version = ProtocolVersion::at(NETWORK, EPOCH);
+        let leaf = shard_state_leaf(protocol_version, &shard_root, state_version);
+        let leaves = vec![SPARSE_MERKLE_PLACEHOLDER_HASH, leaf];
+        let state_merkle_root = compute_merkle_root_for_hashes(leaves.clone()).unwrap();
+        let (_, shard_root_proof) = RootProofTree::build(leaves).unwrap().get_proof(leaf).unwrap();
+        let header = SidechainBlockHeader {
+            network: NETWORK.as_byte(),
+            protocol_version: protocol_version.as_u32(),
+            parent_id: FixedHash::zero(),
+            justify_id: FixedHash::zero(),
+            height: 1,
+            epoch: EPOCH.as_u64(),
+            epoch_hash: FixedHash::zero(),
+            shard_group: tari_sidechain::ShardGroup {
+                start: 1,
+                end_inclusive: 256,
+            },
+            proposed_by: Default::default(),
+            state_merkle_root: FixedHash::from(state_merkle_root.into_array()),
+            command_merkle_root: FixedHash::zero(),
+            signature: Default::default(),
+            accumulated_data: Default::default(),
+            metadata_hash: FixedHash::zero(),
+        };
+        let commit_proof = CommittedBlockProof::new(SidechainBlockCommitProof {
+            header,
+            proof_elements: vec![],
+        });
+        Ok(SyncStateResponse {
+            response: Some(sync_state_response::Response::VersionProof(proto::StateVersionProof {
+                shard: shard().as_u32(),
+                state_version,
+                commit_proof: commit_proof.to_bytes(),
+                shard_root_proof: tari_bor::serde_codec::to_vec(&shard_root_proof).unwrap(),
+            })),
+        })
+    }
+
+    async fn sync_with_proofs<TStore: StateStore>(
+        store: &TStore,
+        checkpoint: &Versions,
+        responses: Vec<Result<SyncStateResponse, RpcStatus>>,
+    ) -> Result<Option<Version>, RpcStateSyncError> {
+        let validator = AcceptAll;
+        let sync = ShardSync::new(
+            NETWORK,
+            NUM_PRESHARDS,
+            store,
+            shard(),
+            root_after(checkpoint),
+            version_after(checkpoint),
+        )
+        .with_version_proofs(&validator);
+        let verified_version = sync.discard_unverified_state()?;
+        sync.sync_from_stream(
+            &mut StateSyncStats::default(),
+            verified_version,
+            stream::iter(responses),
+        )
+        .await
+    }
+
+    fn held_proofs<TStore: StateStore>(store: &TStore) -> Vec<Version> {
+        store
+            .with_read_tx(|tx| tx.state_version_proofs_get_range(shard(), 0, Version::MAX - 1))
+            .unwrap()
+            .into_iter()
+            .map(|proof| proof.state_version)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_proven_stream_is_kept_with_its_proofs() {
+        let (store, _tmp) = create_store();
+        let checkpoint = versions_to_proof_point();
+        let mut responses = stream_of(&checkpoint);
+        responses.push(version_proof(N, root_after(&checkpoint)));
+        responses.push(complete(N));
+
+        sync_with_proofs(&store, &checkpoint, responses).await.unwrap();
+
+        assert_eq!(local_version(&store), Some(N));
+        assert_eq!(held_proofs(&store), vec![N]);
+        assert_eq!(rewind_point(&store), None);
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_skips_a_proof_point_is_rejected() {
+        let (store, _tmp) = create_store();
+        let checkpoint = versions_to_proof_point();
+        let mut responses = stream_of(&checkpoint);
+        responses.push(complete(N));
+
+        let err = sync_with_proofs(&store, &checkpoint, responses).await.unwrap_err();
+
+        assert!(matches!(err, RpcStateSyncError::InvalidResponse(_)), "{err}");
+        assert_eq!(local_version(&store), None);
+        assert!(held_proofs(&store).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_proof_of_a_root_the_stream_did_not_produce_is_rejected() {
+        let (store, _tmp) = create_store();
+        let checkpoint = versions_to_proof_point();
+        let mut responses = stream_of(&checkpoint);
+        responses.push(version_proof(N, TreeHash::new([POISON; 32])));
+        responses.push(complete(N));
+
+        let err = sync_with_proofs(&store, &checkpoint, responses).await.unwrap_err();
+
+        assert!(matches!(err, RpcStateSyncError::InvalidResponse(_)), "{err}");
+        assert_eq!(local_version(&store), None);
+    }
+
+    #[tokio::test]
+    async fn a_failure_after_a_proof_keeps_the_proven_state() {
+        let (store, _tmp) = create_store();
+        let proven = versions_to_proof_point();
+        let mut checkpoint = proven.clone();
+        checkpoint.push((N + 1, vec![create(200)]));
+        let mut responses = stream_of(&proven);
+        responses.push(version_proof(N, root_after(&proven)));
+        responses.push(batch(N + 1, vec![create(POISON)]));
+        responses.push(complete(N + 1));
+
+        let err = sync_with_proofs(&store, &checkpoint, responses).await.unwrap_err();
+
+        assert!(matches!(err, RpcStateSyncError::StateRootMismatch { .. }), "{err}");
+        assert_eq!(local_version(&store), Some(N));
+        assert!(substate(&store, POISON).is_none());
     }
 }

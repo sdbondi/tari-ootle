@@ -9,12 +9,14 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+tari_bor = { workspace = true }
 tari_consensus = { workspace = true }
 tari_consensus_types = { workspace = true }
 ootle-network = { workspace = true }
 tari_ootle_common_types = { workspace = true }
 tari_ootle_p2p = { workspace = true }
 tari_ootle_storage = { workspace = true }
+tari_engine_types = { workspace = true }
 tari_epoch_manager = { workspace = true }
 tari_rpc_framework = { workspace = true }
 tari_state_tree = { workspace = true }
@@ -29,7 +31,8 @@ rand = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-tari_engine_types = { workspace = true }
+tari_common_types = { workspace = true }
+tari_sidechain = { workspace = true }
 tari_state_store_rocksdb = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, default-features = false, features = ["macros", "rt"] }

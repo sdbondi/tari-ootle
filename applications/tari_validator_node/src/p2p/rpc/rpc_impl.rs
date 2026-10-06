@@ -713,6 +713,12 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
             Some(TipAuthority::new(epoch, local_committee_info))
         };
 
+        if req.include_version_proofs && end_epoch.is_none() {
+            return Err(RpcStatus::bad_request(
+                "State version proofs are only streamed for a request bounded by until_epoch",
+            ));
+        }
+
         let value_filter_flags = SubstateValueFilterFlags::from_bits_truncate(req.value_filters);
         if value_filter_flags.is_empty() {
             return Err(RpcStatus::bad_request(
@@ -745,6 +751,7 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
                     .try_into()
                     .expect("STATE_SYNC_MAX_BATCH_SIZE is not zero"),
                 value_filter_flags,
+                req.include_version_proofs,
             )
             .run(),
         );

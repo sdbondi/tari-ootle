@@ -43,6 +43,7 @@ pub mod state_sync_rewind_point;
 pub mod state_transition;
 pub mod state_tree;
 pub mod state_tree_shard_versions;
+pub mod state_version_proof;
 pub mod substate;
 pub mod substate_locks;
 pub mod transaction;

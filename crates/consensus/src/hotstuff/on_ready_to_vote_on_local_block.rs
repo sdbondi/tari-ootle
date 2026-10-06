@@ -35,6 +35,7 @@ use tari_ootle_storage::{
         TransactionRecord,
         ValidBlock,
         ValidatorStatsUpdate,
+        index_committed_block_state_versions,
     },
 };
 use tari_sidechain::QuorumDecision;
@@ -1769,6 +1770,7 @@ where TConsensusSpec: ConsensusSpec
         let mut state_tree = ShardedStateTree::new(tx);
         let version_updates = state_tree.commit_diffs(pending)?;
         let tx = state_tree.into_transaction();
+        index_committed_block_state_versions(tx, block, &version_updates)?;
 
         {
             let _timer = TraceTimer::debug(LOG_TARGET, "commit_block");

@@ -280,13 +280,30 @@ message SyncStateRequest {
   // nothing to send. Only valid for an unbounded request. A responder that does not support following
   // closes the stream at the tip as usual, final marker included.
   bool follow = 6;
+  // Interleave a StateVersionProof into the stream at every state version that is a multiple of the
+  // proof interval, and at other versions the responder chooses, so that the caller can verify the
+  // streamed state as it arrives rather than only against a checkpoint at the end.
+  bool include_version_proofs = 7;
 }
 
 message SyncStateResponse {
   oneof response {
     SubstateBatch batch = 1;
     SyncComplete complete = 2;
+    StateVersionProof version_proof = 3;
   }
+}
+
+// Proves that a shard was at state_version, with the root the caller computes from the state streamed up to
+// it, in a block its committee committed. Sent after the last batch of state_version, or, for a version that
+// changed no substate, before the batch of the next version that did.
+message StateVersionProof {
+  uint32 shard = 1;
+  uint64 state_version = 2;
+  // CBOR-encoded CommittedBlockProof of the block whose state merkle root the shard's leaf is proven in.
+  bytes commit_proof = 3;
+  // CBOR-encoded SparseMerkleProofExt of the shard's leaf in that block's state merkle root.
+  bytes shard_root_proof = 4;
 }
 
 // A batch of substate updates at a single state version of a single shard. A state version whose

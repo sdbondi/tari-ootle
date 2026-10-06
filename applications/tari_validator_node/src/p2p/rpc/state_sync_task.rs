@@ -4,7 +4,8 @@
 use std::num::NonZeroUsize;
 
 use log::*;
-use tari_consensus::hotstuff::HotstuffEvent;
+use prost::Message;
+use tari_consensus::hotstuff::{HotstuffEvent, commit_proofs::generate_block_commit_proof};
 use tari_epoch_manager::{EpochManagerReader, service::EpochManagerHandle};
 use tari_ootle_common_types::{
     Epoch,
@@ -19,7 +20,17 @@ use tari_ootle_storage::{
     StateStore,
     StateStoreReadTransaction,
     StorageError,
-    consensus_models::{StateTransition, StateVersionTransitions, SubstateValueFilterFlags},
+    consensus_models::{
+        Block,
+        CommittedBlockProof,
+        EpochCheckpoint,
+        StateTransition,
+        StateVersionProof,
+        StateVersionProofSource,
+        StateVersionTransitions,
+        SubstateValueFilterFlags,
+        is_state_version_proof_point,
+    },
 };
 use tari_rpc_framework::RpcStatus;
 use tari_state_tree::Version;
@@ -28,6 +39,19 @@ use tokio::sync::{broadcast, mpsc};
 use crate::{consensus::ConsensusHandle, p2p::rpc::CONSENSUS_NOT_RUNNING};
 
 const LOG_TARGET: &str = "tari::ootle::rpc::sync_task";
+/// Once this many bytes of a shard's updates have streamed since its last proof, the next version this node can
+/// prove is proven even if it is not a proof point, which bounds what the caller downloads before it can verify.
+const MAX_BYTES_BETWEEN_VERSION_PROOFS: usize = 16 * 1024 * 1024;
+
+/// Where a shard's stream stands in proving the versions it streams.
+#[derive(Debug, Clone, Copy)]
+struct ProofProgress {
+    /// The first version not yet considered for a proof.
+    next: Version,
+    /// The last version the stream covers: the shard's version in the checkpoint it syncs to.
+    last: Version,
+    bytes_since_proof: usize,
+}
 
 /// A validated resume point for a single shard.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +231,8 @@ pub struct StateSyncTask<TStateStore: StateStore> {
     follow: bool,
     batch_size: NonZeroUsize,
     value_filters: SubstateValueFilterFlags,
+    /// Whether to interleave state version proofs, which only a bounded stream does.
+    include_version_proofs: bool,
 }
 
 impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
@@ -221,6 +247,7 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
         follow: bool,
         batch_size: NonZeroUsize,
         value_filters: SubstateValueFilterFlags,
+        include_version_proofs: bool,
     ) -> Self {
         Self {
             store,
@@ -233,6 +260,7 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
             follow,
             batch_size,
             value_filters,
+            include_version_proofs,
         }
     }
 
@@ -358,6 +386,14 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
         let mut current_state_version = cursor.start_state_version;
         let mut counter = 0usize;
         let mut last_sent_version: Option<Version> = None;
+        let mut proofs = match self.proof_progress(cursor) {
+            Ok(proofs) => proofs,
+            Err(err) => {
+                error!(target: LOG_TARGET, "🌍 Error reading the checkpoint version of {}: {}", shard, err);
+                self.send(Err(RpcStatus::log_internal_error(LOG_TARGET)(err))).await?;
+                return Err(());
+            },
+        };
         loop {
             match self.fetch_next_batch(shard, current_state_version) {
                 Ok(Some(transitions)) => {
@@ -378,7 +414,14 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
 
                     let state_version = transitions.state_version;
                     let has_updates = !transitions.updates.is_empty();
-                    self.send_batches(transitions).await?;
+                    if let Some(proofs) = proofs.as_mut() {
+                        self.send_proof_points_before(shard, proofs, state_version).await?;
+                    }
+                    let bytes = self.send_batches(transitions).await?;
+                    if let Some(proofs) = proofs.as_mut() {
+                        self.send_proof_after_version(shard, proofs, state_version, bytes)
+                            .await?;
+                    }
                     // A version whose updates are all filtered out streams no batch, so only versions we
                     // actually sent count towards the client's recorded progress.
                     if has_updates {
@@ -396,6 +439,11 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
                     return Err(());
                 },
             }
+        }
+
+        if let Some(proofs) = proofs.as_mut() {
+            let end = proofs.last.saturating_add(1);
+            self.send_proof_points_before(shard, proofs, end).await?;
         }
 
         let synced_to_version = self
@@ -516,15 +564,119 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
         Ok(())
     }
 
-    async fn send_batches(&mut self, transitions: StateVersionTransitions) -> Result<(), ()> {
+    /// The proof progress of a bounded stream for `cursor`'s shard, or `None` if the caller did not ask for proofs.
+    fn proof_progress(&self, cursor: &ShardCursor) -> Result<Option<ProofProgress>, StorageError> {
+        let (true, Some(end_epoch)) = (self.include_version_proofs, self.end_epoch) else {
+            return Ok(None);
+        };
+        let last = self.store.with_read_tx(|tx| {
+            let checkpoint = EpochCheckpoint::get_all_for_epoch(tx, end_epoch)?
+                .into_iter()
+                .find(|checkpoint| {
+                    checkpoint
+                        .checked_shard_group()
+                        .is_ok_and(|group| group.contains_or_global(&cursor.shard))
+                })
+                .ok_or_else(|| StorageError::NotFound {
+                    item: "EpochCheckpoint",
+                    key: format!("{} at epoch {end_epoch}", cursor.shard),
+                })?;
+            Ok::<_, StorageError>(checkpoint.get_shard_state_version(cursor.shard))
+        })?;
+        Ok(Some(ProofProgress {
+            next: cursor.start_state_version,
+            last,
+            bytes_since_proof: 0,
+        }))
+    }
+
+    /// Sends a proof for every proof point from `proofs.next` up to `until`, exclusive, and no further than the
+    /// last version the stream covers. Versions in that range changed no substate, so the caller has already
+    /// written the root each of them is proven against.
+    async fn send_proof_points_before(
+        &mut self,
+        shard: Shard,
+        proofs: &mut ProofProgress,
+        until: Version,
+    ) -> Result<(), ()> {
+        let to = until.min(proofs.last.saturating_add(1));
+        if proofs.next < to {
+            let held = self.read_proofs(shard, proofs.next, to - 1).await?;
+            for proof in held {
+                if is_state_version_proof_point(proof.state_version) {
+                    self.send_proof(proof).await?;
+                    proofs.bytes_since_proof = 0;
+                }
+            }
+        }
+        proofs.next = proofs.next.max(until);
+        Ok(())
+    }
+
+    /// Proves `state_version`, whose updates were just sent, if it is a proof point or enough has streamed since
+    /// the last proof.
+    async fn send_proof_after_version(
+        &mut self,
+        shard: Shard,
+        proofs: &mut ProofProgress,
+        state_version: Version,
+        bytes: usize,
+    ) -> Result<(), ()> {
+        proofs.next = state_version.saturating_add(1);
+        proofs.bytes_since_proof = proofs.bytes_since_proof.saturating_add(bytes);
+        if state_version > proofs.last ||
+            !(is_state_version_proof_point(state_version) ||
+                proofs.bytes_since_proof >= MAX_BYTES_BETWEEN_VERSION_PROOFS)
+        {
+            return Ok(());
+        }
+        if let Some(proof) = self.read_proofs(shard, state_version, state_version).await?.pop() {
+            self.send_proof(proof).await?;
+            proofs.bytes_since_proof = 0;
+        }
+        Ok(())
+    }
+
+    async fn read_proofs(&mut self, shard: Shard, from: Version, to: Version) -> Result<Vec<StateVersionProof>, ()> {
+        match self
+            .store
+            .with_read_tx(|tx| tx.state_version_proofs_get_range(shard, from, to))
+        {
+            Ok(proofs) => Ok(proofs),
+            Err(err) => {
+                error!(target: LOG_TARGET, "🌍 Error reading state version proofs for {}: {}", shard, err);
+                self.send(Err(RpcStatus::log_internal_error(LOG_TARGET)(err))).await?;
+                Err(())
+            },
+        }
+    }
+
+    async fn send_proof(&mut self, proof: StateVersionProof) -> Result<(), ()> {
+        let message = match self.store.with_read_tx(|tx| version_proof_message(tx, proof)) {
+            Ok(message) => message,
+            Err(err) => {
+                error!(target: LOG_TARGET, "🌍 Error building a state version proof: {}", err);
+                self.send(Err(RpcStatus::log_internal_error(LOG_TARGET)(err))).await?;
+                return Err(());
+            },
+        };
+        self.send(Ok(rpc::SyncStateResponse {
+            response: Some(rpc::sync_state_response::Response::VersionProof(message)),
+        }))
+        .await
+    }
+
+    /// Sends `transitions` in batches and returns the number of encoded bytes sent.
+    async fn send_batches(&mut self, transitions: StateVersionTransitions) -> Result<usize, ()> {
         let shard = transitions.shard;
         let chunks = transitions.into_chunks(self.batch_size);
         let num_chunks = chunks.len();
 
+        let mut bytes = 0usize;
         for (i, chunk) in chunks.into_iter().enumerate() {
             let updates = chunk.updates.into_iter().map(Into::into).collect();
 
-            self.send(Ok(rpc::SyncStateResponse {
+            let response = rpc::SyncStateResponse {
                 response: Some(rpc::sync_state_response::Response::Batch(rpc::SubstateBatch {
                     state_version: chunk.state_version,
                     updates,
@@ -532,12 +684,42 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
                     epoch: Some(chunk.epoch.into()),
                     shard: shard.as_u32(),
                 })),
-            }))
-            .await?;
+            };
+            bytes = bytes.saturating_add(response.encoded_len());
+            self.send(Ok(response)).await?;
         }
 
-        Ok(())
+        Ok(bytes)
     }
+}
+
+/// The wire form of `proof`, generating the commit proof of a block this node committed.
+fn version_proof_message<TTx: StateStoreReadTransaction>(
+    tx: &TTx,
+    proof: StateVersionProof,
+) -> Result<rpc::StateVersionProof, StorageError> {
+    let commit_proof = match proof.source {
+        StateVersionProofSource::Committed { block_id } => {
+            let block = Block::get(tx, &block_id)?;
+            let commit_qc = block.get_commit_qc(tx)?;
+            let commit_proof =
+                generate_block_commit_proof(tx, &commit_qc, &block).map_err(|e| StorageError::QueryError {
+                    reason: format!("generate_block_commit_proof for {block_id}: {e}"),
+                })?;
+            CommittedBlockProof::new(commit_proof).to_bytes()
+        },
+        StateVersionProofSource::Received { commit_proof } => commit_proof,
+    };
+    let shard_root_proof =
+        tari_bor::serde_codec::to_vec(&proof.shard_root_proof).map_err(|e| StorageError::QueryError {
+            reason: format!("encode shard root proof: {e}"),
+        })?;
+    Ok(rpc::StateVersionProof {
+        shard: proof.shard.as_u32(),
+        state_version: proof.state_version,
+        commit_proof,
+        shard_root_proof,
+    })
 }
 
 #[cfg(test)]

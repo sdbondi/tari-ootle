@@ -46,6 +46,7 @@ use crate::{
     error::RpcStateSyncError,
     shard_sync::{ShardSync, calculate_state_root_for_shard, discard_all_unverified_state},
     stats::StateSyncStats,
+    version_proofs::CommitteeProofValidator,
 };
 
 const LOG_TARGET: &str = "tari::ootle::rpc_state_sync";
@@ -171,6 +172,8 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
             checkpoint_shard_root,
             checkpoint.get_shard_state_version(shard),
         );
+        let validator = CommitteeProofValidator::new(&self.epoch_manager, checkpoint.epoch());
+        let shard_sync = shard_sync.with_version_proofs(&validator);
         let maybe_persisted_state_version = shard_sync.discard_unverified_state()?;
 
         if shard_sync.local_state_root(maybe_persisted_state_version)? == checkpoint_shard_root {
@@ -195,6 +198,7 @@ where TConsensusSpec: ConsensusSpec<Addr = PeerAddress>
                 until_epoch: Some(checkpoint.epoch().into()),
                 value_filters: SubstateValueFilterFlags::all_substates().bits(),
                 follow: false,
+                include_version_proofs: true,
             })
             .await?;
 

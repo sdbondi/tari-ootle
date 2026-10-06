@@ -77,6 +77,7 @@ use tari_ootle_storage::{
         LockConflict,
         NoVoteReason,
         PendingShardStateTreeDiff,
+        StateVersionProof,
         SubstateChange,
         SubstateCreated,
         SubstateDestroyed,
@@ -152,6 +153,7 @@ use crate::{
         state_tree,
         state_tree::{StateTreeCf, StateTreeStaleNodesCf},
         state_tree_shard_versions::StateTreeShardVersionCf,
+        state_version_proof::StateVersionProofCf,
         substate,
         substate::{SubstateCf, SubstateHeadData},
         substate_locks,
@@ -1703,7 +1705,20 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
             stale_cf.delete(key, OPERATION)?;
         }
 
-        // 3. Reset the latest-version pointer to the highest version with surviving tree nodes. The pointer must
+        // 3. Delete the proofs of versions > target for this shard: they prove state that no longer exists.
+        let proofs_cf = db.cf(StateVersionProofCf)?;
+        let proof_keys = proofs_cf
+            .range_iterator(
+                Ordering::Ascending,
+                proofs_cf.encode_key(&(shard, start_version))..proofs_cf.encode_key(&(shard, Version::MAX)),
+            )
+            .map(|res| res.map(|(key, _)| key))
+            .collect::<Result<Vec<_>, _>>()?;
+        for key in &proof_keys {
+            proofs_cf.delete(key, OPERATION)?;
+        }
+
+        // 4. Reset the latest-version pointer to the highest version with surviving tree nodes. The pointer must
         //    reference a version at which a JMT root node exists — downstream readers (JMT root lookup, state sync's
         //    root check) load the root at Some(v) and treat a missing entry as the empty tree (placeholder hash).
         //    Version 0 is a valid committed version: genesis substates are bootstrapped into the tree at version 0, so
@@ -1735,6 +1750,14 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
     fn state_sync_rewind_point_set(&mut self, shard: Shard, version: Version) -> Result<(), StorageError> {
         const OPERATION: &str = "state_sync_rewind_point_set";
         self.db().cf(StateSyncRewindPointCf)?.put(&shard, &version, OPERATION)?;
+        Ok(())
+    }
+
+    fn state_version_proofs_insert(&mut self, proof: &StateVersionProof) -> Result<(), StorageError> {
+        const OPERATION: &str = "state_version_proofs_insert";
+        self.db()
+            .cf(StateVersionProofCf)?
+            .put(&(proof.shard, proof.state_version), proof, OPERATION)?;
         Ok(())
     }
 

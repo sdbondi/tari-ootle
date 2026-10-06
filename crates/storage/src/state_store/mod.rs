@@ -71,6 +71,7 @@ use crate::{
         LockedSubstateValue,
         NoVoteReason,
         PendingShardStateTreeDiff,
+        StateVersionProof,
         StateVersionTransitions,
         SubstateChange,
         SubstateLock,
@@ -447,6 +448,13 @@ pub trait StateStoreReadTransaction: Sized {
     fn state_sync_rewind_point_get(&self, shard: Shard) -> Result<Option<Version>, StorageError>;
     /// Every shard that has a rewind point, with that rewind point.
     fn state_sync_rewind_points_get_all(&self) -> Result<Vec<(Shard, Version)>, StorageError>;
+    /// The state version proofs held for `shard` at versions in `from..=to`, in ascending version order.
+    fn state_version_proofs_get_range(
+        &self,
+        shard: Shard,
+        from: Version,
+        to: Version,
+    ) -> Result<Vec<StateVersionProof>, StorageError>;
 
     // -------------------------------- Epoch checkpoint -------------------------------- //
     fn epoch_checkpoint_get_all_from_epoch(
@@ -764,6 +772,7 @@ pub trait StateStoreWriteTransaction {
     /// that they can be rewound if the sync never verifies them, even across a restart.
     fn state_sync_rewind_point_set(&mut self, shard: Shard, version: Version) -> Result<(), StorageError>;
     fn state_sync_rewind_point_remove(&mut self, shard: Shard) -> Result<(), StorageError>;
+    fn state_version_proofs_insert(&mut self, proof: &StateVersionProof) -> Result<(), StorageError>;
 
     // -------------------------------- Epoch checkpoint -------------------------------- //
     fn epoch_checkpoint_save(&mut self, checkpoint: &EpochCheckpoint) -> Result<(), StorageError>;

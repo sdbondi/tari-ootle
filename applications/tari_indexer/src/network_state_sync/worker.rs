@@ -832,6 +832,7 @@ impl NetworkWideStateSync {
                     until_epoch: None,
                     value_filters: value_filters.bits(),
                     follow,
+                    include_version_proofs: false,
                 },
                 options,
             )
@@ -890,6 +891,11 @@ impl NetworkWideStateSync {
             };
             let batch = match msg.response {
                 Some(rpc::sync_state_response::Response::Batch(batch)) => batch,
+                Some(rpc::sync_state_response::Response::VersionProof(_)) => {
+                    return Err(NetworkStateSyncError::InvalidStateUpdate {
+                        details: "Received a state version proof that was not requested".to_string(),
+                    });
+                },
                 Some(rpc::sync_state_response::Response::Complete(complete)) => {
                     let shard = Shard::from(complete.shard);
                     let synced_to = StateVersion::new(complete.synced_to_version);
