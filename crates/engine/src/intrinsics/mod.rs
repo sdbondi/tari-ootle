@@ -80,9 +80,9 @@ pub fn price(intrinsic: IntrinsicId, args: &EngineArgs) -> Result<u64, RuntimeEr
         I::SCALAR_SUB |
         I::SCALAR_MUL |
         I::SCALAR_NEGATE |
-        I::SCALAR_INVERT |
         I::SCALAR_FROM_UNIFORM_BYTES |
         I::SCALAR_IS_CANONICAL => NativeExecutionPoints::PER_SCALAR_OP,
+        I::SCALAR_INVERT => NativeExecutionPoints::PER_SCALAR_INVERT,
         I::HASH_BLAKE2B | I::HASH_SHA256 | I::HASH_SHA512 | I::HASH_KECCAK256 => {
             NativeExecutionPoints::PER_HASH.saturating_add(per_byte(args))
         },
@@ -362,6 +362,19 @@ mod tests {
                 "1000 unpriced {side} cost the same {empty} points as none",
             );
         }
+    }
+
+    /// An inversion is an exponentiation by `l - 2`, hundreds of field multiplications, and measures over
+    /// 20x a scalar addition through `dispatch`, so its price must carry at least that ratio.
+    #[test]
+    fn scalar_inversion_is_priced_above_a_field_operation() {
+        let scalar = || Bytes::from(tari_bor::encode(&Scalar32Bytes::zero()).unwrap());
+        let add = price(IntrinsicId::SCALAR_ADD, &EngineArgs::from(vec![scalar(), scalar()])).unwrap();
+        let invert = price(IntrinsicId::SCALAR_INVERT, &EngineArgs::from(vec![scalar()])).unwrap();
+        assert!(
+            invert >= 20 * add,
+            "an inversion costs {invert} points, under 20x the {add} of a scalar addition"
+        );
     }
 
     /// An id priced but not dispatched charges for work never done; one dispatched but not priced

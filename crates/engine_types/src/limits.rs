@@ -344,6 +344,10 @@ impl NativeExecutionPoints {
     pub const PER_RISTRETTO_MUL_BASE: u64 = 300_000;
     /// One Ristretto group operation: decompress the operands, one addition or negation, recompress.
     pub const PER_RISTRETTO_OP: u64 = 50_000;
+    /// One scalar inversion: an exponentiation by `l - 2`, hundreds of field multiplications rather
+    /// than one, so within a small factor of a group multiplication (~11µs measured through the
+    /// intrinsic dispatch). Priced with the headroom the group multiplications carry.
+    pub const PER_SCALAR_INVERT: u64 = 200_000;
     /// One scalar field operation. No point decompression, so orders of magnitude below a
     /// multiplication on the group.
     pub const PER_SCALAR_OP: u64 = 3_000;
