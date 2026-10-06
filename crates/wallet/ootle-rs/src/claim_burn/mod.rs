@@ -99,8 +99,12 @@ impl<'a, P: Provider> ClaimBurn<'a, P> {
         }
     }
 
-    /// Set the maximum fee to pay for the claim. This amount is revealed from the claimed funds to
-    /// pay the transaction fee; any overpayment is refunded. A positive fee is required.
+    /// Set the fee to pay for the claim. This amount is revealed from the claimed funds and paid
+    /// from a bucket, which the engine does not refund: the whole amount is spent, even where the
+    /// claim costs less. A positive fee is required.
+    ///
+    /// A dry run's fee is the figure the indexer that ran it reports. Bound it by what the claim
+    /// should cost before passing it here.
     pub fn with_max_fee<A: Into<Amount>>(mut self, max_fee: A) -> Self {
         self.max_fee = max_fee.into();
         self
@@ -136,6 +140,8 @@ impl<'a, P: WalletProvider<Wallet = OotleWallet>> ClaimBurn<'a, P> {
     /// Submit it via a [`TransactionRequest`](crate::TransactionRequest) sealed with the returned
     /// [`BurnClaimSealer`], or estimate fees first with
     /// [`sign_and_send_dry_run_with`](crate::provider::IndexerProvider::sign_and_send_dry_run_with).
+    /// The fee set with [`with_max_fee`](Self::with_max_fee) is spent in full, so bound a dry run's
+    /// figure before building the claim at it.
     pub async fn prepare(self) -> WalletResult<(UnsignedTransaction, BurnClaimSealer)> {
         let Self {
             provider,
