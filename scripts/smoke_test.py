@@ -877,30 +877,38 @@ fn main() {{
             raise StageSkipped("no console wallet running in the swarm")
         swarm = JsonRpc(f"{self.args.swarm_url.rstrip('/')}/json_rpc", timeout=300)
         amount = self.args.burn * TARI
-        before = total(balances(self.wallet, SMOKE_ACCOUNT).get(TARI_TOKEN))
-        start_epoch = self.consensus_epoch()
-        swarm.call("burn_funds", {"amount": amount, "wallet_instance_id": instance_id, "account_name": SMOKE_ACCOUNT})
-        info(f"🔥 burned {fmt_tari(amount)} to {bold(SMOKE_ACCOUNT)} at consensus epoch {start_epoch}")
+        account = self.smoke["account"]["component_address"]
+        res = swarm.call("burn_funds", {"amount": amount, "wallet_instance_id": instance_id, "account_name": SMOKE_ACCOUNT})
+        info(f"🔥 burned {fmt_tari(amount)} to {bold(SMOKE_ACCOUNT)} at consensus epoch {self.consensus_epoch()}")
 
+        # The claim tombstones the burn's commitment, which identifies the claim among other wallet traffic.
+        proof_url = f"{self.args.swarm_url.rstrip('/')}{res['url']}"
+        tombstone = None
+        claim_tx = None
         deadline = time.monotonic() + self.args.burn_timeout
         next_mine = 0
-        while True:
-            gained = total(balances(self.wallet, SMOKE_ACCOUNT).get(TARI_TOKEN)) - before
-            if gained > 0:
-                break
+        while claim_tx is None:
             if time.monotonic() > deadline:
-                raise StageFailed(f"burn not claimed after {self.args.burn_timeout}s "
+                waiting = "for the burn proof" if tombstone is None else f"for a claim writing {short(tombstone)}"
+                raise StageFailed(f"still waiting {waiting} after {self.args.burn_timeout}s "
                                   f"(consensus epoch {self.consensus_epoch()})")
-            # Consensus only passes the burn's epoch once the base layer mines into the next one.
+            # The proof needs base-layer confirmations, and the claim needs consensus past the burn's epoch.
             if time.monotonic() >= next_mine:
-                swarm.call("mine", {"num_blocks": self.args.epoch_mine or 10})
-                detail(f"⛏️  mined {self.args.epoch_mine or 10} blocks · consensus epoch {self.consensus_epoch()}")
-                next_mine = time.monotonic() + 60
+                swarm.call("mine", {"num_blocks": 10})
+                detail(f"⛏️  mined 10 blocks · consensus epoch {self.consensus_epoch()}")
+                next_mine = time.monotonic() + 30
+            if tombstone is None:
+                status, proof = http_get(proof_url)
+                if status == 200:
+                    commitment = proof["claim_proof"]["output_proof"]["output"]["commitment"]
+                    tombstone = f"tombstone_{commitment}"
+                    detail(f"📜 burn proof mined in L1 epoch {proof['mined_in_epoch']}")
+            else:
+                txs = self.wallet.call("transactions.list", {"status": "Accepted", "account": account})["transactions"]
+                claim_tx = next((t["id"] for t in txs if tombstone in json.dumps(t["finalize"]["result"])), None)
             time.sleep(3)
-        # The claim fee comes out of the claimed amount.
-        if gained > amount or gained < amount - TARI:
-            raise StageFailed(f"balance moved by {fmt_tari(gained)}, expected about {fmt_tari(amount)}")
-        return f"claimed {fmt_tari(gained)} of {fmt_tari(amount)} burned (fee {amount - gained} µT)"
+        paid, _ = self.indexer_check(claim_tx, "claim_burn")
+        return f"{fmt_tari(amount)} burn claimed in {short(claim_tx)} · fee {paid} µT"
 
     # ---- fees
 
