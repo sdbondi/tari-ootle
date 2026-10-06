@@ -3,14 +3,14 @@
 All notable changes to this project will be documented in this file.
 See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
-## [0.44.1](https://github.com/tari-project/tari-ootle/compare/v0.44.0...v0.44.1) (2026-10-06)
+## [0.45.0](https://github.com/tari-project/tari-ootle/compare/v0.44.0...v0.45.0) (2026-10-06)
 
 Updates the minotari dependencies to 6.1.0-pre.0 and tari_crypto to 0.24.
 
 ### ⚠️ Upgrade notes
 
 - **V1 block IDs change.** Networks already running V1 upgrade together; esmeralda, still on V0
-  until epoch 11925, is unaffected now but must run 0.44.1 before activation. (#2799)
+  until epoch 11925, is unaffected now but must run 0.45.0 before activation. (#2799)
 - **Validator L1 registration and exit signatures commit to the network**, and an exit also
   commits to the activation epoch of the registration it exits. Exit payload files written by an
   older validator no longer load. (#2799)
