@@ -18,8 +18,13 @@
 //! of microtari, and a builder that reveals the figure it settled on cannot get that back.
 //! `stealth_fee_estimate.rs` in `tari_engine`'s test suite holds both properties against real
 //! executions across a matrix of shapes.
+//!
+//! [`ClaimBurnShape::estimate_fee`] prices an L1 burn claim the same way, so a claimant has a figure
+//! of its own to bound the fee it reveals by. `claim_burn.rs` in the same suite holds it.
 
 use tari_template_lib::types::{
+    ClaimedOutputTombstoneAddress,
+    ObjectKey,
     ResourceAddress,
     UtxoAddress,
     UtxoId,
@@ -30,8 +35,10 @@ use tari_template_lib::types::{
 use crate::{
     Epoch,
     UtxoOutput,
+    confidential::ClaimedOutputTombstone,
     crypto::{ElgamalVerifiableBalanceBytes, OutputBody},
     fees::FeeRates,
+    limits::NativeExecutionPoints,
     stealth::transfer_native_points_for_shape,
     substate::{SubstateId, SubstateValue},
     transaction_receipt::TransactionReceipt,
@@ -127,6 +134,75 @@ impl MergedStealthTransferShape {
         // The epoch is measured at its widest rather than taken from the caller: a receipt priced
         // for one epoch would otherwise come in under a transaction that lands in a wider one.
         TransactionReceipt::encoded_size_upper_bound(&[], &[], upped.iter(), downed.iter(), Epoch(u64::MAX))
+    }
+}
+
+/// The shape of an L1 burn claim that pays its own fee out of the burn it claims.
+///
+/// This is the transaction a wallet builds to claim a burn: the claim mints the burnt value as a UTXO,
+/// one stealth transfer spends it into a single stealth output and reveals the fee, and the revealed
+/// bucket is paid straight to `pay_fee`. A fee paid from a bucket is not refunded, so whatever the
+/// claim reveals is gone even where the claim costs a fraction of it. [`Self::estimate_fee`] prices
+/// the shape locally, giving a claimant the most the claim can cost without trusting anyone else's
+/// figure for it.
+///
+/// Everything but the stored output and the transaction weight is fixed by the shape. The UTXO the
+/// claim mints is spent by the same transaction, so it never reaches state and costs only the
+/// verification of spending it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClaimBurnShape {
+    /// Bytes the claimed value's stealth output occupies in persisted state, measured with
+    /// [`persisted_utxo_bytes`] from the output the builder generated.
+    pub persisted_output_bytes: usize,
+    /// The weight of the transaction this shape builds into, which the builder supplies for the same
+    /// reason [`MergedStealthTransferShape::transaction_weight`] does.
+    pub transaction_weight: u64,
+}
+
+impl ClaimBurnShape {
+    /// Engine host calls this shape's instruction sequence makes: the merged transfer's three, as the
+    /// engine runs the claim instruction directly. `the_runtime_call_count_matches_the_claim_sequence` in
+    /// `tari_engine`'s claim-burn tests holds it to what the engine counts.
+    pub const RUNTIME_CALLS: u64 = MergedStealthTransferShape::RUNTIME_CALLS;
+
+    /// An upper bound, in microtari, on what the engine charges a transaction of this shape.
+    pub fn estimate_fee(&self, rates: &FeeRates) -> u64 {
+        let weight_cost = self
+            .transaction_weight
+            .saturating_mul(rates.per_transaction_weight_cost());
+        let runtime_call_cost = Self::RUNTIME_CALLS.saturating_mul(rates.per_module_call_cost());
+        // The claim's proof verification, then a transfer spending the claimed UTXO into one output.
+        // TARI carries no view key.
+        let native_cost = rates.execution_cost(
+            NativeExecutionPoints::PER_CLAIM_BURN.saturating_add(transfer_native_points_for_shape(1, 1, false)),
+        );
+        let storage_cost = rates.storage_cost(self.persisted_bytes_upper_bound() as u64);
+        // The tombstone, the output and the receipt each occupy a created slot.
+        let create_cost = 3u64.saturating_mul(rates.per_substate_create_cost());
+
+        weight_cost
+            .saturating_add(runtime_call_cost)
+            .saturating_add(native_cost)
+            .saturating_add(storage_cost)
+            .saturating_add(create_cost)
+    }
+
+    /// An upper bound on the bytes of permanent state this shape persists: the stealth output, the
+    /// tombstone that marks the burn claimed, and the receipt.
+    fn persisted_bytes_upper_bound(&self) -> usize {
+        let tombstone = encoded_len(&SubstateValue::ClaimedOutputTombstone(ClaimedOutputTombstone {
+            value: u64::MAX,
+        }));
+        let upped = [
+            SubstateId::ClaimedOutputTombstone(ClaimedOutputTombstoneAddress::new(ObjectKey::from_array(
+                [0xff; ObjectKey::LENGTH],
+            ))),
+            SubstateId::Utxo(widest_utxo_address()),
+        ];
+        let receipt = TransactionReceipt::encoded_size_upper_bound(&[], &[], upped.iter(), [].iter(), Epoch(u64::MAX));
+        self.persisted_output_bytes
+            .saturating_add(tombstone)
+            .saturating_add(receipt)
     }
 }
 

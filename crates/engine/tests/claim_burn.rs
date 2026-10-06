@@ -288,3 +288,168 @@ fn the_burner_cannot_claim_a_burn_made_out_to_someone_else() {
         );
     }
 }
+
+/// Holds `ClaimBurnShape::estimate_fee` to what the engine charges the claim a wallet builds.
+mod fee_estimate {
+    use tari_crypto::keys::SecretKey as _;
+    use tari_engine::fees::FeeTable;
+    use tari_engine_types::{
+        fees::{FeeRates, FeeSource},
+        stealth::{ClaimBurnShape, persisted_utxo_bytes},
+    };
+    use tari_template_lib::types::{Amount, constants::TARI_TOKEN, stealth::StealthTransferStatement};
+    use tari_template_test_tooling::{support::stealth, wallet_crypto::MaskAndValue};
+
+    use super::*;
+
+    /// What the burn being claimed is worth. Comfortably above any claim's fee, so the fee is never
+    /// the binding constraint on it.
+    const CLAIMED_VALUE: u64 = 10_000_000;
+
+    /// The burn every shipped network is configured with: a share of the payment, so it must move
+    /// nothing the estimate prices.
+    const BURN_RATE_BPS: u16 = 500;
+
+    /// The margin the estimate may carry over the real charge. The tombstone's value and the
+    /// receipt's epoch are priced at their widest encodings, which leaves a handful of microtari, and
+    /// a claim cannot get back what it reveals over the charge.
+    const MAX_OVERSHOOT: u64 = 12;
+
+    /// Stands in for the fee while the claim is built only to be weighed.
+    const PLACEHOLDER_FEE: u64 = 1_000_000;
+
+    fn setup() -> TemplateTest {
+        let mut test = TemplateTest::new(CRATE_PATH, &[] as &[&str]);
+        test.set_claim_proof_verifier(AcceptingVerifier);
+        // Price a created substate as the shipped tables do, so the slots the claim creates carry the
+        // weight they do on a real network.
+        test.set_fee_table(FeeTable {
+            per_substate_create_cost: 25,
+            ..test.fee_table().clone()
+        });
+        test.enable_fees();
+        test.set_burn_rate_bps(BURN_RATE_BPS);
+        test
+    }
+
+    fn rates(test: &TemplateTest) -> FeeRates {
+        test.fee_table().to_rates()
+    }
+
+    fn new_claim() -> MaskAndValue {
+        MaskAndValue::new(CLAIMED_VALUE, RistrettoSecretKey::random(&mut rand::rng()))
+    }
+
+    struct Build {
+        transaction: Transaction,
+        statement: StealthTransferStatement,
+    }
+
+    /// Builds the transaction a wallet builds to claim a burn: claim it, spend the claimed UTXO into
+    /// one stealth output revealing `revealed_fee`, and pay the revealed bucket as the fee. The claim
+    /// key seals, so the claim, the claimed UTXO and the revealed output all answer to one signer.
+    fn build(test: &TemplateTest, claimed: &MaskAndValue, revealed_fee: u64) -> Build {
+        let (mut proof, output_data) = claim_to(test.to_public_key_bytes());
+        proof.commitment = claimed.to_commitment().to_byte_type();
+        proof.value = claimed.value;
+
+        let transfer = stealth::generate_transfer_data(
+            [claimed.clone()],
+            Amount::zero(),
+            [claimed.value - revealed_fee],
+            Amount::from(revealed_fee),
+        );
+        let transaction = Transaction::builder_localnet(Epoch(1))
+            .with_fee_instructions_builder(|builder| {
+                builder
+                    .claim_burn(proof, output_data)
+                    .stealth_transfer(TARI_TOKEN, transfer.statement.clone())
+                    .put_last_instruction_output_on_workspace("fee")
+                    .pay_fee_from_bucket("fee")
+            })
+            .build_and_seal(test.secret_key());
+        Build {
+            transaction,
+            statement: transfer.statement,
+        }
+    }
+
+    fn shape_of(build: &Build) -> ClaimBurnShape {
+        ClaimBurnShape {
+            persisted_output_bytes: build
+                .statement
+                .outputs_statement
+                .outputs
+                .iter()
+                .map(persisted_utxo_bytes)
+                .sum(),
+            transaction_weight: build.transaction.calculate_transaction_weight().as_u64(),
+        }
+    }
+
+    #[test]
+    fn the_estimate_bounds_what_the_engine_charges_a_claim() {
+        let mut test = setup();
+        let claimed = new_claim();
+
+        let shape = shape_of(&build(&test, &claimed, PLACEHOLDER_FEE));
+        let settled = build(&test, &claimed, shape.estimate_fee(&rates(&test)));
+        assert_eq!(
+            shape_of(&settled),
+            shape,
+            "the fee a claim reveals must not move the shape it is priced at"
+        );
+
+        // A bucket-paid fee is not refunded, so the claim commits only if the estimate covered the
+        // charge, and whatever it did not need is recorded as the overcharge.
+        let result = test.execute_expect_success(settled.transaction, vec![]);
+        let receipt = result.finalize.fee_receipt;
+        assert!(
+            receipt.is_paid_in_full(),
+            "{shape:?} left {} unpaid",
+            receipt.unpaid_debt()
+        );
+        let overshoot = receipt.total_fee_overcharge();
+        assert!(
+            overshoot <= MAX_OVERSHOOT,
+            "{shape:?} was charged {} and overpaid {overshoot}",
+            receipt.total_fees_charged(),
+        );
+    }
+
+    /// The estimate's host-call count is a constant standing in for an instruction sequence it cannot
+    /// see. Reading the charge back at a known per-call rate pins it to what the engine counted.
+    #[test]
+    fn the_runtime_call_count_matches_the_claim_sequence() {
+        let mut test = setup();
+        let mut fee_table = FeeTable::zero_rated();
+        fee_table.per_module_call_cost = 1;
+        test.set_fee_table(fee_table);
+        test.set_burn_rate_bps(0);
+
+        let result = test.execute_expect_success(build(&test, &new_claim(), PLACEHOLDER_FEE).transaction, vec![]);
+        assert_eq!(
+            result.finalize.fee_receipt.fee_breakdown().get(FeeSource::RuntimeCall),
+            ClaimBurnShape::RUNTIME_CALLS,
+        );
+    }
+
+    /// The bound rests on an underpaid claim being rejected. Revealing half the estimate shows that it
+    /// is, so the bound is not passing vacuously.
+    #[test]
+    fn revealing_under_the_charge_rejects_the_claim() {
+        let mut test = setup();
+        let claimed = new_claim();
+        let shape = shape_of(&build(&test, &claimed, PLACEHOLDER_FEE));
+        let too_little = shape.estimate_fee(&rates(&test)) / 2;
+
+        let result = test
+            .try_execute(build(&test, &claimed, too_little).transaction, vec![])
+            .unwrap();
+        assert!(
+            result.finalize.fee_receipt.unpaid_debt() > 0,
+            "revealing {too_little} should have left a debt"
+        );
+        result.expect_failure();
+    }
+}

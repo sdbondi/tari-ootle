@@ -525,7 +525,9 @@ impl AutoClaimBurnService {
             )));
         };
 
-        // Delegate all crypto work and submission to the shared handler function.
+        // Delegate all crypto work and submission to the shared handler function. The dry run's fee is
+        // the indexer's figure, so the handler treats it as a ceiling and reveals no more than its own
+        // price for the claim.
         // Any error here is treated as permanent: by this point the file is readable and the account
         // is known, so failures indicate a bad proof (wrong key, ownership check failed, fee too high,
         // corrupt encrypted data). Retrying would produce the same result.
