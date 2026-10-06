@@ -260,10 +260,10 @@ mod tests {
     }
 
     #[test]
-    fn a_v1_leaf_proves_its_state_version_only() {
+    fn a_v2_leaf_proves_its_state_version_only() {
         let root = TreeHash::new([7; 32]);
         let shard = Shard::from(3u32);
-        let (commit_proof, leaf_proof) = proof_of_leaf(Network::LocalNet, ProtocolVersion::V1, root, 64);
+        let (commit_proof, leaf_proof) = proof_of_leaf(Network::LocalNet, ProtocolVersion::V2, root, 64);
         verify_state_version_leaf(Network::LocalNet, &commit_proof, shard, 64, &root, &leaf_proof).unwrap();
         assert!(matches!(
             verify_state_version_leaf(Network::LocalNet, &commit_proof, shard, 96, &root, &leaf_proof),
