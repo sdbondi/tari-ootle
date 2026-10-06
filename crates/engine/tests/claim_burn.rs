@@ -22,9 +22,10 @@ use tari_ootle_transaction::{Epoch, Transaction};
 use tari_template_lib::types::{
     EncryptedData,
     Hash32,
+    constants::TARI_TOKEN,
     crypto::{PedersenCommitmentBytes, RistrettoPublicKeyBytes, SchnorrSignatureBytes},
 };
-use tari_template_test_tooling::TemplateTest;
+use tari_template_test_tooling::{TemplateTest, support::stealth, wallet_crypto::MaskAndValue};
 
 const CRATE_PATH: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -214,6 +215,45 @@ fn a_claim_co_signed_by_the_claim_key_is_accepted() {
     if let Some(reason) = result.finalize.any_reject() {
         panic!("a claim co-signed by the claim key must be accepted: {reason}");
     }
+}
+
+#[test]
+fn a_claim_sealed_by_another_key_is_spendable_by_the_claim_key_alone() {
+    let mut test = TemplateTest::new(CRATE_PATH, &[] as &[&str]);
+    test.set_claim_proof_verifier(AcceptingVerifier);
+    let (claim_secret, claim_public_key) = keypair();
+    let (relayer_secret, relayer_public_key) = keypair();
+    let opening = MaskAndValue {
+        mask: keypair().0,
+        value: 1_000,
+    };
+    let (mut proof, output_data) = claim_to(claim_public_key);
+    proof.commitment = opening.to_commitment().to_byte_type();
+    proof.value = opening.value;
+
+    let result = test.execute_expect_success(
+        Transaction::builder_localnet(Epoch(1))
+            .claim_burn(proof, output_data)
+            .add_signer(&relayer_public_key, &claim_secret)
+            .seal(&relayer_secret),
+        vec![],
+    );
+    let diff = result.finalize.any_accept().unwrap();
+    let spend_key = diff
+        .up_iter()
+        .find_map(|(_, substate)| substate.substate_value().as_utxo())
+        .expect("claim_burn mints a UTXO")
+        .spender_public_key()
+        .copied();
+    assert_eq!(spend_key, Some(claim_public_key));
+
+    let transfer = stealth::generate_transfer_data([opening.clone()], 0u64, [opening.value], 0u64);
+    test.execute_expect_success(
+        Transaction::builder_localnet(Epoch(1))
+            .stealth_transfer(TARI_TOKEN, transfer.statement)
+            .build_and_seal(&claim_secret),
+        vec![],
+    );
 }
 
 #[test]

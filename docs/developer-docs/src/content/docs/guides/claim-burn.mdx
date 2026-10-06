@@ -173,16 +173,16 @@ its first fee from the funds it is claiming. On success the engine writes two su
       ├─▶ ClaimedOutputTombstone @ address(C)      { value }
       │
       └─▶ Utxo @ address(TARI, C)                  stealth UTXO worth v,
-                                                   spendable by the sealer
+                                                   spendable by the claim key S
 ```
 
-The UTXO is minted directly into the genesis TARI resource with the transaction's sealer as the spend
-authorization. A typical claim transaction immediately spends it in a stealth transfer: a small revealed amount pays
+The UTXO is minted directly into the genesis TARI resource with the claim key `S` as the spend authorization, so the
+claimant alone can spend it, whoever sealed the claim. A typical claim transaction immediately spends it in a stealth transfer: a small revealed amount pays
 the fee and the remainder becomes a stealth output owned by the claiming account.
 
 ```
    fee instructions:
-     ClaimBurn(proof, output_data)             mint UTXO(C) owned by the sealer
+     ClaimBurn(proof, output_data)             mint UTXO(C) owned by S
      StealthTransfer { input: UTXO(C),
                        reveal: max_fee,        → bucket used to pay the fee
                        output: stealth → account }

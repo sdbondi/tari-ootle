@@ -3699,7 +3699,7 @@ where
                     minimum_value_promise: 0,
                     viewable_balance: None,
                 },
-                auth: SpendAuthorization::Key(self.seal_signer_public_key),
+                auth: SpendAuthorization::Key(claim_public_key),
                 tag: UtxoTag::new(0),
             });
 
