@@ -553,7 +553,7 @@ impl ResourceAccessRules {
             metadata_updater: UpdateRule::Owner,
             update_nft_data: AccessRule::DenyAll,
             nft_data_updater: UpdateRule::Owner,
-            // But explicitly disable withdrawing and/or depositing
+            // Withdrawals and deposits are open to everyone
             withdraw: AccessRule::AllowAll,
             withdraw_updater: UpdateRule::Locked,
             deposit: AccessRule::AllowAll,
