@@ -29,6 +29,7 @@ use crate::{
         ProposalValidationError,
         epoch_state::EpochState,
         error::HotStuffError,
+        on_receive_foreign_proposal::validate_evidence_and_pledges_match,
         on_receive_new_transaction::OnReceiveNewTransaction,
     },
     messages::{
@@ -645,6 +646,15 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
                 target: LOG_TARGET,
                 "⏳ Foreign Block {} has {} missing transactions", msg.proposal, missing_tx_ids.len(),
             );
+
+            // The first parked copy of a block holds its slot until unparked, so a copy whose pledges its evidence does
+            // not commit to is turned away here, leaving the slot for the genuine proposal.
+            if let Err(err @ ProposalValidationError::ForeignPledgesNotCommitted { .. }) =
+                validate_evidence_and_pledges_match(&msg.proposal, epoch_state.local_committee_info().shard_group())
+            {
+                warn!(target: LOG_TARGET, "⚠️ Discarding foreign proposal from {from}: {err}");
+                return Ok(MessageValidationResult::Discard);
+            }
 
             let parked_block = ForeignParkedProposal::from(msg);
             if parked_block.save(tx)? {

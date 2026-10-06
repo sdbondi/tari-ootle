@@ -133,7 +133,7 @@ async fn requests_from_an_unregistered_peer_are_not_served() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn foreign_proposal_notifications_awaiting_a_reply_are_bounded_per_peer() {
+async fn a_notification_from_a_peer_at_its_pending_cap_is_still_followed_up() {
     setup_logger();
     let victim = TestAddress::new("1");
     let requests_sent = Arc::new(AtomicUsize::new(0));
@@ -165,7 +165,7 @@ async fn foreign_proposal_notifications_awaiting_a_reply_are_bounded_per_peer() 
         })
     };
 
-    // None of these blocks exist, so every request stays unanswered
+    // None of these blocks exist, so every request stays unanswered and the peer reaches its cap
     let num_notifications = MAX_PENDING_REQUESTS_PER_NOTIFIER + 20;
     for seed in 0..num_notifications {
         tx_inbound
@@ -174,18 +174,15 @@ async fn foreign_proposal_notifications_awaiting_a_reply_are_bounded_per_peer() 
             .unwrap();
     }
     sleep(Duration::from_secs(2)).await;
-    assert_eq!(requests_sent.load(Ordering::SeqCst), MAX_PENDING_REQUESTS_PER_NOTIFIER);
+    assert_eq!(requests_sent.load(Ordering::SeqCst), num_notifications);
 
-    // Another peer's notification is still followed up
+    // Gossip delivers one copy of each notification, so the next one from the same peer must still be followed up
     tx_inbound
-        .send((TestAddress::new("3"), notification(num_notifications)))
+        .send((TestAddress::new("2"), notification(num_notifications)))
         .await
         .unwrap();
     sleep(Duration::from_secs(2)).await;
-    assert_eq!(
-        requests_sent.load(Ordering::SeqCst),
-        MAX_PENDING_REQUESTS_PER_NOTIFIER + 1
-    );
+    assert_eq!(requests_sent.load(Ordering::SeqCst), num_notifications + 1);
 
     test.stop();
 }

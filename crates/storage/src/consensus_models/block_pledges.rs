@@ -84,12 +84,6 @@ impl BlockPledge {
         true
     }
 
-    pub fn has_some_input_substate_values_for(&self, evidence: &ShardGroupEvidence) -> bool {
-        evidence
-            .all_pledged_inputs_iter()
-            .any(|(substate_id, ev)| self.get_committed_pledge(substate_id, ev).is_some())
-    }
-
     /// The pledge for `substate_id` if it is the version and value that the evidence commits to. The pledge values
     /// travel outside the commit proof, so the evidence's value hash is the only thing that authenticates them.
     fn get_committed_pledge(&self, substate_id: &SubstateId, ev: &EvidenceInputLockData) -> Option<&Substate> {
@@ -99,7 +93,7 @@ impl BlockPledge {
         }
         let committed_hash = ev.pledged_value_hash?;
         if hash_pledged_substate_value(substate.substate_value()) != committed_hash {
-            warn!(
+            debug!(
                 target: LOG_TARGET,
                 "Pledged value for {} v{} does not match the value hash in the evidence",
                 substate_id,
@@ -385,7 +379,6 @@ mod tests {
         let mut substituted = BlockPledge::new();
         substituted.add_substate_pledge(id.substate_id().clone(), id.version(), substate_value(2));
         assert!(!substituted.has_all_input_substate_values_for(&evidence));
-        assert!(!substituted.has_some_input_substate_values_for(&evidence));
         assert!(substituted.get_all_pledges_for_evidence(&evidence).is_none());
     }
 

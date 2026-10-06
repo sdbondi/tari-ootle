@@ -176,20 +176,6 @@ where TConsensusSpec: ConsensusSpec
             return Ok(());
         }
 
-        // Checked before any storage or epoch manager work, because every notification that gets past it costs a
-        // lookup and an outbound request.
-        if self.pending_requests.num_notified_by(&from) >= MAX_PENDING_REQUESTS_PER_NOTIFIER {
-            warn!(
-                target: LOG_TARGET,
-                "⚠️ FOREIGN PROPOSAL: {} already has {} unanswered notifications outstanding. Ignoring notification for \
-                 block {}.",
-                from,
-                MAX_PENDING_REQUESTS_PER_NOTIFIER,
-                message.block_id,
-            );
-            return Ok(());
-        }
-
         if self
             .store
             .with_read_tx(|tx| ForeignProposalRecord::record_exists(tx, &message.block_id))?
@@ -504,7 +490,7 @@ where TConsensusSpec: ConsensusSpec
     }
 }
 
-fn validate_evidence_and_pledges_match(
+pub(super) fn validate_evidence_and_pledges_match(
     proposal: &ForeignProposal,
     local_shard_group: ShardGroup,
 ) -> Result<(), ProposalValidationError> {
@@ -664,6 +650,9 @@ impl<TAddr: NodeAddressable> PendingRequests<TAddr> {
         self.num_pending_by_notifier.get(notifier).copied().unwrap_or(0)
     }
 
+    /// Records a request. A notifier at [`MAX_PENDING_REQUESTS_PER_NOTIFIER`] gives up its longest-waiting request to
+    /// make room, so its newest notification is always followed up: gossip delivers a single copy of each
+    /// notification, and dropping it would leave that block unrequested.
     pub(self) fn insert(
         &mut self,
         notified_by: TAddr,
@@ -671,24 +660,40 @@ impl<TAddr: NodeAddressable> PendingRequests<TAddr> {
         block_id: BlockId,
         committee_info: CommitteeInfo,
     ) {
-        match self.pending.entry(block_id) {
-            Entry::Occupied(occupied) => {
-                let entry = occupied.into_mut();
-                entry.peers.insert(requested_from);
-                entry.at = Instant::now();
-            },
-            Entry::Vacant(vacant) => {
-                *self.num_pending_by_notifier.entry(notified_by.clone()).or_default() += 1;
-                let mut peers = HashSet::new();
-                peers.insert(requested_from);
-                vacant.insert(ForeignRequests {
-                    peers,
-                    notified_by,
-                    committee_info,
-                    at: Instant::now(),
-                });
-            },
+        if let Some(entry) = self.pending.get_mut(&block_id) {
+            entry.peers.insert(requested_from);
+            entry.at = Instant::now();
+            return;
         }
+
+        if self.num_notified_by(&notified_by) >= MAX_PENDING_REQUESTS_PER_NOTIFIER {
+            let longest_waiting = self
+                .pending
+                .iter()
+                .filter(|(_, reqs)| reqs.notified_by == notified_by)
+                .min_by_key(|(_, reqs)| reqs.at)
+                .map(|(id, _)| *id);
+            if let Some(evicted) = longest_waiting {
+                debug!(
+                    target: LOG_TARGET,
+                    "🌐 FOREIGN PROPOSAL: {} has {} requests outstanding. Dropping the request for block {}.",
+                    notified_by,
+                    MAX_PENDING_REQUESTS_PER_NOTIFIER,
+                    evicted,
+                );
+                self.remove(&evicted);
+            }
+        }
+
+        *self.num_pending_by_notifier.entry(notified_by.clone()).or_default() += 1;
+        let mut peers = HashSet::new();
+        peers.insert(requested_from);
+        self.pending.insert(block_id, ForeignRequests {
+            peers,
+            notified_by,
+            committee_info,
+            at: Instant::now(),
+        });
     }
 
     pub(self) fn remove(&mut self, block_id: &BlockId) -> Option<ForeignRequests<TAddr>> {
@@ -741,5 +746,58 @@ impl<TAddr> ForeignRequests<TAddr> {
 
     pub fn num_unique_peers(&self) -> usize {
         self.peers.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tari_ootle_common_types::{NumPreshards, VotePower};
+
+    use super::*;
+
+    fn committee_info() -> CommitteeInfo {
+        CommitteeInfo::new(
+            NumPreshards::P64,
+            1,
+            2,
+            ShardGroup::new(0, 31),
+            Epoch(1),
+            VotePower::of(1),
+        )
+    }
+
+    fn block_id(seed: usize) -> BlockId {
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&seed.to_le_bytes());
+        BlockId::from(bytes)
+    }
+
+    #[test]
+    fn a_notifier_holds_at_most_its_cap_of_pending_requests_and_keeps_its_newest() {
+        let mut pending = PendingRequests::<String>::new();
+        let flooder = "flooder".to_string();
+        let num_notifications = MAX_PENDING_REQUESTS_PER_NOTIFIER + 20;
+        for seed in 0..num_notifications {
+            pending.insert(flooder.clone(), "foreign".to_string(), block_id(seed), committee_info());
+        }
+
+        assert_eq!(pending.pending.len(), MAX_PENDING_REQUESTS_PER_NOTIFIER);
+        assert_eq!(pending.num_notified_by(&flooder), MAX_PENDING_REQUESTS_PER_NOTIFIER);
+        assert!(pending.contains(&block_id(num_notifications - 1)));
+
+        // Another notifier has its own allowance
+        let other = "other".to_string();
+        pending.insert(
+            other.clone(),
+            "foreign".to_string(),
+            block_id(usize::MAX),
+            committee_info(),
+        );
+        assert!(pending.contains(&block_id(usize::MAX)));
+        assert_eq!(pending.num_notified_by(&other), 1);
+        assert_eq!(pending.num_notified_by(&flooder), MAX_PENDING_REQUESTS_PER_NOTIFIER);
+
+        pending.remove(&block_id(usize::MAX));
+        assert_eq!(pending.num_notified_by(&other), 0);
     }
 }
