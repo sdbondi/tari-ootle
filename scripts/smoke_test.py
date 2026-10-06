@@ -15,6 +15,7 @@ Stages (default order; select with --only / --skip):
   nfts          🖼️  Mint testnet NFTs from the builtin faucet
   negative      🚫 Low fee, overspend, unauthorised withdraw and orphaned resource must all fail
   multi_wallet  👥 Stealth transfer to a second wallet daemon (skipped unless one is running)
+  claim_burn    🔥 Burn tTARI on the base layer and wait for the wallet daemon to auto-claim it
   epoch         ⏳ Mine into the next epoch and keep flooding until consensus crosses it (opt-in: --epoch)
   fees          💸 Fee report, compared with the previous run's fees
   health        🩺 Validators are running, agree on the epoch, and advanced during the run
@@ -64,7 +65,7 @@ SPEND_BACK_MAX_FEE = 100_000
 
 STAGES = [
     "flood", "templates", "stealth", "token", "component", "swap", "spend_back", "concurrent",
-    "nfts", "negative", "multi_wallet", "epoch", "fees", "health",
+    "nfts", "negative", "multi_wallet", "claim_burn", "epoch", "fees", "health",
 ]
 OPT_IN_STAGES = {"epoch"}
 STAGE_TITLES = {
@@ -79,6 +80,7 @@ STAGE_TITLES = {
     "nfts": "🖼️  Mint faucet NFTs",
     "negative": "🚫 Transactions that must fail",
     "multi_wallet": "👥 Transfer to a second wallet",
+    "claim_burn": "🔥 Claim a base-layer burn",
     "epoch": "⏳ Flood across an epoch boundary",
     "fees": "💸 Fee report",
     "health": "🩺 Validator health",
@@ -282,6 +284,12 @@ class Swarm:
     def indexer_url(self):
         idx = self.running("TariIndexer")
         return f"http://127.0.0.1:{idx[0]['ports']['api']}" if idx else None
+
+    def instance_id_for(self, wallet_url):
+        for i in self.running("TariWalletDaemon"):
+            if f":{i['ports']['jrpc']}/" in wallet_url:
+                return i["id"]
+        return None
 
     def validators(self):
         return [(i["name"], f"http://127.0.0.1:{i['ports']['jrpc']}/json_rpc") for i in self.running("TariValidatorNode")]
@@ -857,6 +865,51 @@ fn main() {{
             time.sleep(2)
         return "peer wallet detected the incoming stealth output"
 
+    # ---- claim burn
+
+    def stage_claim_burn(self):
+        """The swarm's console wallet writes the burn proof to the shared burn_proofs directory, which the
+        wallet daemon watches and claims from once consensus is past the epoch the burn was mined in."""
+        instance_id = self.swarm.instance_id_for(self.wallet_url)
+        if instance_id is None:
+            raise StageSkipped("wallet daemon is not managed by the swarm; cannot burn into it")
+        if not self.swarm.running("MinoTariConsoleWallet"):
+            raise StageSkipped("no console wallet running in the swarm")
+        swarm = JsonRpc(f"{self.args.swarm_url.rstrip('/')}/json_rpc", timeout=300)
+        amount = self.args.burn * TARI
+        account = self.smoke["account"]["component_address"]
+        res = swarm.call("burn_funds", {"amount": amount, "wallet_instance_id": instance_id, "account_name": SMOKE_ACCOUNT})
+        info(f"🔥 burned {fmt_tari(amount)} to {bold(SMOKE_ACCOUNT)} at consensus epoch {self.consensus_epoch()}")
+
+        # The claim tombstones the burn's commitment, which identifies the claim among other wallet traffic.
+        proof_url = f"{self.args.swarm_url.rstrip('/')}{res['url']}"
+        tombstone = None
+        claim_tx = None
+        deadline = time.monotonic() + self.args.burn_timeout
+        next_mine = 0
+        while claim_tx is None:
+            if time.monotonic() > deadline:
+                waiting = "for the burn proof" if tombstone is None else f"for a claim writing {short(tombstone)}"
+                raise StageFailed(f"still waiting {waiting} after {self.args.burn_timeout}s "
+                                  f"(consensus epoch {self.consensus_epoch()})")
+            # The proof needs base-layer confirmations, and the claim needs consensus past the burn's epoch.
+            if time.monotonic() >= next_mine:
+                swarm.call("mine", {"num_blocks": 10})
+                detail(f"⛏️  mined 10 blocks · consensus epoch {self.consensus_epoch()}")
+                next_mine = time.monotonic() + 30
+            if tombstone is None:
+                status, proof = http_get(proof_url)
+                if status == 200:
+                    commitment = proof["claim_proof"]["output_proof"]["output"]["commitment"]
+                    tombstone = f"tombstone_{commitment}"
+                    detail(f"📜 burn proof mined in L1 epoch {proof['mined_in_epoch']}")
+            else:
+                txs = self.wallet.call("transactions.list", {"status": "Accepted", "account": account})["transactions"]
+                claim_tx = next((t["id"] for t in txs if tombstone in json.dumps(t["finalize"]["result"])), None)
+            time.sleep(3)
+        paid, _ = self.indexer_check(claim_tx, "claim_burn")
+        return f"{fmt_tari(amount)} burn claimed in {short(claim_tx)} · fee {paid} µT"
+
     # ---- fees
 
     def stage_fees(self):
@@ -955,6 +1008,8 @@ def main():
     p.add_argument("--concurrent", type=int, default=3, help="concurrent stealth transfers (default 3)")
     p.add_argument("--nfts", type=int, default=3, help="faucet NFTs to mint (default 3)")
     p.add_argument("--min-balance", type=int, default=100, help="claim faucet coins below this many tTARI")
+    p.add_argument("--burn", type=int, default=10, help="tTARI to burn in the claim_burn stage (default 10)")
+    p.add_argument("--burn-timeout", type=int, default=600, help="seconds to wait for a burn to be claimed")
     p.add_argument("--epoch", action="store_true", help="also run the epoch stage")
     p.add_argument("--epoch-timeout", type=int, default=1800, help="seconds to wait for an epoch change")
     p.add_argument("--epoch-mine", type=int, default=12,

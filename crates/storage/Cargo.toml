@@ -41,4 +41,4 @@ ts-rs = { workspace = true, optional = true }
 tari_template_lib = { workspace = true, features = ["borsh"] }
 
 [features]
-ts = ["ts-rs"]
+ts = ["ts-rs", "tari_template_lib/ts", "tari_ootle_transaction/ts", "tari_consensus_types/ts"]

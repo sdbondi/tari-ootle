@@ -23,6 +23,9 @@ pub enum ProtocolVersion {
     /// Each leaf of a block's state merkle root commits to its shard's state version as well as its shard root, so
     /// a quorum-signed header fixes the version every shard of the group is at. Block IDs commit to the version.
     V1 = 1,
+    /// Each block header commits to a transaction merkle root over the decision it reached for every transaction it
+    /// finalizes.
+    V2 = 2,
 }
 
 impl ProtocolVersion {
@@ -43,12 +46,12 @@ impl ProtocolVersion {
     /// one.
     const fn activations(network: Network) -> &'static [(Epoch, Self)] {
         match network {
-            Network::MainNet => &[(Epoch(0), Self::V1)],
-            Network::StageNet => &[(Epoch(0), Self::V1)],
-            Network::NextNet => &[(Epoch(0), Self::V1)],
-            Network::Igor => &[(Epoch(0), Self::V1)],
+            Network::MainNet => &[(Epoch(0), Self::V2)],
+            Network::StageNet => &[(Epoch(0), Self::V2)],
+            Network::NextNet => &[(Epoch(0), Self::V2)],
+            Network::Igor => &[(Epoch(0), Self::V2)],
             Network::Esmeralda => &[(Epoch(0), Self::V0), (Epoch(11925), Self::V1)],
-            Network::LocalNet => &[(Epoch(0), Self::V1)],
+            Network::LocalNet => &[(Epoch(0), Self::V2)],
         }
     }
 
@@ -75,6 +78,7 @@ impl ProtocolVersion {
         match v {
             0 => Some(Self::V0),
             1 => Some(Self::V1),
+            2 => Some(Self::V2),
             _ => None,
         }
     }

@@ -17,3 +17,8 @@ pub fn quorum_certificate_id_hasher() -> TariConsensusHasher {
 pub fn timeout_certificate_id_hasher() -> TariConsensusHasher {
     tari_consensus_hasher("TimeoutCertificateId")
 }
+
+/// Hashes a transaction's outcome into a leaf of a block's transaction merkle root.
+pub fn finalized_transaction_hasher() -> TariConsensusHasher {
+    tari_consensus_hasher("FinalizedTransaction")
+}

@@ -1,7 +1,7 @@
 //   Copyright 2024 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use tari_jellyfish::{JmtStorageError, Version};
+use tari_jellyfish::{JmtStorageError, TreeHash, Version};
 use tari_ootle_common_types::optional::IsNotFoundError;
 
 #[derive(Debug, thiserror::Error)]
@@ -16,6 +16,8 @@ pub enum StateTreeError {
         current_version: Version,
         next_version: Version,
     },
+    #[error("Two leaves share the key {key}, so a keyed tree cannot hold both")]
+    DuplicateLeafKey { key: TreeHash },
 }
 
 impl IsNotFoundError for StateTreeError {

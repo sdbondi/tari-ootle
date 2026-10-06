@@ -40,7 +40,7 @@ use tari_sidechain::{BlockHeaderHashFields, BlockHeaderHashFieldsV1, BlockHeader
 use tari_state_tree::{TreeHash, compute_merkle_root_for_hashes};
 use tari_template_lib_types::crypto::{RistrettoPublicKeyBytes, SchnorrSignatureBytes};
 
-use super::{BlockError, Command};
+use super::{BlockError, Command, build_finalized_transaction_tree};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, CborLen)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -121,6 +121,14 @@ pub struct BlockHeader {
     #[cfg_attr(feature = "ts", ts(type = "string | null"))]
     #[n(17)]
     timeout_certificate_id: Option<TcId>,
+    /// A Merkle root over the outcome of each transaction this block finalizes, keyed by transaction id (see
+    /// [`FinalizedTransactionLeaf`](super::FinalizedTransactionLeaf)). Present from protocol version 2, where the
+    /// block id commits to it.
+    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
+    #[serde(default, with = "ootle_serde::hex::option")]
+    #[n(18)]
+    #[cbor(with = "tari_bor::adapters::serde_bridge")]
+    transaction_merkle_root: Option<FixedHash>,
 }
 
 impl BlockHeader {
@@ -190,6 +198,7 @@ impl BlockHeader {
         extra_data: ExtraData,
     ) -> Result<Self, BlockError> {
         let command_merkle_root = Self::compute_command_merkle_root(commands)?;
+        let transaction_merkle_root = Self::compute_transaction_merkle_root(protocol_version, commands)?;
         let mut header = BlockHeader {
             id: BlockId::zero(),
             network,
@@ -202,6 +211,7 @@ impl BlockHeader {
             proposed_by,
             state_merkle_root,
             command_merkle_root,
+            transaction_merkle_root,
             total_leader_fee,
             signature: None,
             timestamp,
@@ -275,6 +285,7 @@ impl BlockHeader {
             accumulated_data: ShardGroupAccumulatedData::default(),
             extra_data: ExtraData::new(),
             timeout_certificate_id: None,
+            transaction_merkle_root: None,
         }
     }
 
@@ -316,6 +327,8 @@ impl BlockHeader {
             accumulated_data: parent_accumulated_data,
             extra_data,
             timeout_certificate_id: None,
+            transaction_merkle_root: BlockHeader::compute_transaction_merkle_root(protocol_version, &BTreeSet::new())
+                .expect("compute_transaction_merkle_root is infallible for empty commands"),
         };
         block.id = block.calculate_id();
         block
@@ -409,21 +422,23 @@ impl BlockHeader {
                 accumulated_data: &accumulated_data,
                 metadata_hash: &metadata_hash,
             }),
-            protocol_version @ ProtocolVersion::V1 => BlockHeaderHashFields::V2(BlockHeaderHashFieldsV2 {
-                network: self.network.as_byte(),
-                protocol_version: protocol_version.as_u32(),
-                justify_id: self.justify_id.hash(),
-                height: self.height.as_u64(),
-                epoch: self.epoch.as_u64(),
-                epoch_hash: &self.epoch_hash,
-                shard_group,
-                proposed_by: self.proposed_by.as_bytes(),
-                state_merkle_root: &self.state_merkle_root,
-                command_merkle_root: &self.command_merkle_root,
-                accumulated_data: &accumulated_data,
-                transaction_merkle_root: None,
-                metadata_hash: &metadata_hash,
-            }),
+            protocol_version @ (ProtocolVersion::V1 | ProtocolVersion::V2) => {
+                BlockHeaderHashFields::V2(BlockHeaderHashFieldsV2 {
+                    network: self.network.as_byte(),
+                    protocol_version: protocol_version.as_u32(),
+                    justify_id: self.justify_id.hash(),
+                    height: self.height.as_u64(),
+                    epoch: self.epoch.as_u64(),
+                    epoch_hash: &self.epoch_hash,
+                    shard_group,
+                    proposed_by: self.proposed_by.as_bytes(),
+                    state_merkle_root: &self.state_merkle_root,
+                    command_merkle_root: &self.command_merkle_root,
+                    accumulated_data: &accumulated_data,
+                    transaction_merkle_root: self.transaction_merkle_root.as_ref(),
+                    metadata_hash: &metadata_hash,
+                })
+            },
         };
 
         hashing::block_hasher().chain(&fields).finalize().into()
@@ -531,6 +546,10 @@ impl BlockHeader {
         &self.command_merkle_root
     }
 
+    pub fn transaction_merkle_root(&self) -> Option<&FixedHash> {
+        self.transaction_merkle_root.as_ref()
+    }
+
     pub fn is_dummy(&self) -> bool {
         self.signature.is_none()
     }
@@ -595,6 +614,20 @@ impl BlockHeader {
         let hashes = commands.iter().map(|cmd| TreeHash::from(cmd.hash().into_array()));
         let hash = compute_merkle_root_for_hashes(hashes).map_err(BlockError::StateTreeError)?;
         Ok(FixedHash::from(hash.into_array()))
+    }
+
+    /// The root over the transactions `commands` finalize, which a header carries from protocol version 2.
+    pub fn compute_transaction_merkle_root(
+        protocol_version: ProtocolVersion,
+        commands: &BTreeSet<Command>,
+    ) -> Result<Option<FixedHash>, BlockError> {
+        match protocol_version {
+            ProtocolVersion::V0 | ProtocolVersion::V1 => Ok(None),
+            ProtocolVersion::V2 => {
+                let root = build_finalized_transaction_tree(commands)?.root();
+                Ok(Some(FixedHash::from(root.into_array())))
+            },
+        }
     }
 }
 
@@ -685,6 +718,19 @@ mod tests {
             ExtraData::new(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn a_header_without_a_transaction_merkle_root_encodes_as_before_the_field_existed() {
+        let header = header_with_timeout_certificate(ProtocolVersion::V0, Some(TcId::from([4u8; 32])));
+        let bytes = tari_bor::encode(&header).unwrap();
+
+        // Fields 0 to 17, so a header stored before field 18 existed has this shape and decodes to the same header.
+        let len = minicbor::Decoder::new(&bytes).array().unwrap();
+        assert_eq!(len, Some(18));
+        let decoded: BlockHeader = tari_bor::decode(&bytes).unwrap();
+        assert_eq!(decoded.transaction_merkle_root(), None);
+        assert_eq!(decoded.calculate_hash(), header.calculate_hash());
     }
 
     #[test]

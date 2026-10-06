@@ -1,7 +1,7 @@
 //   Copyright 2024 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::marker::PhantomData;
+use std::{collections::BTreeMap, marker::PhantomData};
 
 use serde::{Deserialize, Serialize};
 use tari_jellyfish::{
@@ -15,6 +15,7 @@ use tari_jellyfish::{
     TreeHash,
     TreeStore,
     TreeStoreReader,
+    TreeStoreWriter,
     TreeUpdateBatch,
     Version,
 };
@@ -337,4 +338,46 @@ pub fn compute_proof_for_hashes<I: Iterator<Item = TreeHash>>(
     hash_to_prove: TreeHash,
 ) -> Result<(Option<ProofValue<()>>, SparseMerkleProofExt), StateTreeError> {
     RootProofTree::build(hashes)?.get_proof(hash_to_prove)
+}
+
+/// An ephemeral tree over leaves placed at caller-chosen keys. Each leaf can be proved, and any other key shown
+/// absent, against [`Self::root`].
+pub struct KeyedProofTree {
+    store: MemoryTreeStore<()>,
+    root: TreeHash,
+}
+
+impl KeyedProofTree {
+    /// Builds the tree over `(key, value hash)` leaves. Fails if two leaves share a key, since the tree holds one
+    /// value per key.
+    pub fn build<I: IntoIterator<Item = (LeafKey, TreeHash)>>(leaves: I) -> Result<Self, StateTreeError> {
+        let mut leaves_by_key = BTreeMap::new();
+        for (key, value) in leaves {
+            if leaves_by_key.insert(key, value).is_some() {
+                return Err(StateTreeError::DuplicateLeafKey { key: key.bytes });
+            }
+        }
+
+        let mut store = MemoryTreeStore::new();
+        let (root, batch) = JellyfishMerkleTree::<_, ()>::new(&store).batch_put_value_set(
+            leaves_by_key.into_iter().map(|(key, value)| (key, Some((value, ())))),
+            None,
+            None,
+            1,
+        )?;
+        for (key, node) in batch.node_batch {
+            store.insert_node(key, node)?;
+        }
+        Ok(Self { store, root })
+    }
+
+    pub fn root(&self) -> TreeHash {
+        self.root
+    }
+
+    /// Proves the value at `key`, or that no leaf has that key. Returns the value (if it exists) and the Merkle proof.
+    pub fn get_proof(&self, key: &LeafKey) -> Result<(Option<ProofValue<()>>, SparseMerkleProofExt), StateTreeError> {
+        let jmt = JellyfishMerkleTree::new(&self.store);
+        Ok(jmt.get_with_proof_ext(key.as_ref(), 1)?)
+    }
 }
