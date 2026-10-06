@@ -751,7 +751,11 @@ fn build_claim_burn_transaction(
     // A fee paid from a bucket is not refunded, so whatever the claim reveals beyond its cost is lost to
     // the claimant. `max_fee` is therefore a ceiling: it can come from a dry run that the
     // configured indexer answers, so the claim is priced here and reveals no more than that.
-    let (transaction, statement) = build(max_fee)?;
+    //
+    // The transaction's weight and the stored output's size follow the claim's shape alone, so a probe
+    // built at the smallest fee a claim can reveal prices the claim at any fee.
+    const PROBE_FEE: u64 = 1;
+    let (probe, statement) = build(PROBE_FEE)?;
     let price = ClaimBurnShape {
         persisted_output_bytes: statement
             .outputs_statement
@@ -759,21 +763,22 @@ fn build_claim_burn_transaction(
             .iter()
             .map(persisted_utxo_bytes)
             .sum(),
-        transaction_weight: transaction.calculate_transaction_weight().as_u64(),
+        transaction_weight: probe.calculate_transaction_weight().as_u64(),
     }
     .estimate_fee(&fee_rates_by_network(network))
     .saturating_add(FEE_ESTIMATE_ALLOWANCE);
-    if max_fee <= price {
-        return Ok(transaction);
-    }
 
-    debug!(
-        target: LOG_TARGET,
-        "Claim burn max_fee {max_fee} exceeds the claim's price of {price}; revealing {price}",
-    );
-    // The transaction's weight and the stored output's size follow the claim's shape alone, so the claim
-    // rebuilt at `price` is priced at `price` too.
-    let (transaction, _) = build(price)?;
+    if max_fee > price {
+        debug!(
+            target: LOG_TARGET,
+            "Claim burn max_fee {max_fee} exceeds the claim's price of {price}; revealing {price}",
+        );
+    }
+    let fee = max_fee.min(price);
+    if fee == PROBE_FEE {
+        return Ok(probe);
+    }
+    let (transaction, _) = build(fee)?;
     Ok(transaction)
 }
 
@@ -3189,6 +3194,17 @@ mod claim_burn_fee_tests {
             price < CLAIMED_VALUE / 1000,
             "a claim priced at {price} µT is implausible"
         );
+    }
+
+    #[test]
+    fn a_max_fee_at_or_over_the_claimed_value_is_capped_at_the_price() {
+        let test = setup();
+        for max_fee in [CLAIMED_VALUE, u64::MAX] {
+            let proof = burn_to_account(&test, CLAIMED_VALUE);
+            let transaction =
+                build_claim_burn_transaction(&test.sdk, &test.account, proof, max_fee, Epoch(10), false).unwrap();
+            assert_eq!(revealed_fee(&transaction), Amount::from(local_price(&transaction)));
+        }
     }
 
     #[test]
