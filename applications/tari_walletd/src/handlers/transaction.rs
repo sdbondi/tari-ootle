@@ -76,6 +76,7 @@ pub async fn handle_submit_instruction(
     // fee account is only the fee payer, not a scope boundary. Require the
     // broad `transactions:create` grant.
     context.authorize(token, &[Permission::Transactions(Crud::Create)])?;
+    context.enforce_max_fee_limit(req.max_fee)?;
     let sdk = context.wallet_sdk();
 
     let fee_account = get_account(&req.fee_account, &sdk.accounts_api())?;
@@ -477,6 +478,9 @@ pub async fn handle_submit_manifest(
     // implicit fee payer but instructions can touch any account. Require
     // the broad `transactions:create` grant.
     context.authorize(token, &[Permission::Transactions(Crud::Create)])?;
+    if !req.dry_run {
+        context.enforce_max_fee_limit(req.max_fee)?;
+    }
     let default_account = sdk
         .accounts_api()
         .get_default()
@@ -717,6 +721,9 @@ pub async fn handle_publish_template(
     req: PublishTemplateRequest,
 ) -> Result<PublishTemplateResponse, anyhow::Error> {
     context.authorize(token, &[Permission::Templates(Crud::Create)])?;
+    if !req.dry_run {
+        context.enforce_max_fee_limit(req.max_fee)?;
+    }
     let sdk = context.wallet_sdk();
 
     let fee_account = get_account_or_default(req.fee_account.as_ref(), &sdk.accounts_api())?;

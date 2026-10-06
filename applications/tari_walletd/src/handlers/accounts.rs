@@ -511,6 +511,9 @@ pub async fn handle_claim_burn(
     } = req;
 
     let max_fee = max_fee.max(1);
+    if !is_dry_run {
+        context.enforce_max_fee_limit(max_fee)?;
+    }
 
     let accounts_api = sdk.accounts_api();
     let account = get_account(&account, &accounts_api)?;
@@ -854,6 +857,7 @@ pub async fn handle_create_free_test_coins(
     let amount = Amount::from(XTR_FAUCET_AMOUNT);
 
     let max_fee = max_fee.max(1);
+    context.enforce_max_fee_limit(max_fee)?;
 
     let account = get_account(&account, &accounts_api)
         .optional()?
@@ -1016,6 +1020,9 @@ pub async fn handle_transfer(
     req: AccountsTransferRequest,
 ) -> Result<AccountsTransferResponse, anyhow::Error> {
     let granted = context.check_auth(token)?;
+    if !req.dry_run {
+        context.enforce_max_fee_limit(req.max_fee)?;
+    }
     let sdk = context.wallet_sdk().clone();
 
     let (account, mut inputs) = get_account_with_inputs(req.account.as_ref(), &sdk)?;
@@ -1219,6 +1226,9 @@ pub async fn handle_confidential_transfer(
     req: ConfidentialTransferRequest,
 ) -> Result<ConfidentialTransferResponse, anyhow::Error> {
     let granted = context.check_auth(token)?;
+    if !req.dry_run {
+        context.enforce_max_fee_limit(req.max_fee)?;
+    }
     let sdk = context.wallet_sdk().clone();
     let notifier = context.notifier().clone();
 
@@ -1298,6 +1308,9 @@ pub async fn handle_stealth_transfer(
     req: StealthTransferRequest,
 ) -> Result<StealthTransferResponse, anyhow::Error> {
     let granted = context.check_auth(token)?;
+    if !req.dry_run {
+        context.enforce_max_fee_limit(req.max_fee)?;
+    }
     let sdk = context.wallet_sdk().clone();
     let network = sdk.sdk_config().network;
     let notifier = context.notifier().clone();

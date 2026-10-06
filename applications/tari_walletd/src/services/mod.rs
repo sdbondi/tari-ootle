@@ -45,6 +45,7 @@ pub fn spawn_services(
     wallet_sdk: WalletSdk<OotleWalletDaemonSpec>,
     burn_proof_dir: PathBuf,
     auto_claim_burns: bool,
+    max_fee_limit: u64,
 ) -> Services {
     let (transaction_service, transaction_service_handle) =
         TransactionService::new(notify.clone(), wallet_sdk.clone(), shutdown_signal.clone());
@@ -87,6 +88,7 @@ pub fn spawn_services(
             wallet_sdk,
             transaction_service_handle.clone(),
             burn_proof_dir,
+            max_fee_limit,
             &notify,
             shutdown_signal,
         );

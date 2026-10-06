@@ -25,10 +25,13 @@ use webauthn_rs::Webauthn;
 use crate::{
     WalletSdk,
     config::WalletDaemonConfig,
-    handlers::auth::{
-        WalletAuthenticator,
-        api_keys,
-        jwt::{AuthError, JwtApi, enforce_scopes},
+    handlers::{
+        auth::{
+            WalletAuthenticator,
+            api_keys,
+            jwt::{AuthError, JwtApi, enforce_scopes},
+        },
+        helpers::invalid_params,
     },
     services::{RefreshTokenStore, WebauthnService},
 };
@@ -287,6 +290,22 @@ impl HandlerContext {
         &self.config
     }
 
+    /// Refuses a `max_fee` above the wallet's configured `max_fee_limit`. Every handler that submits
+    /// a transaction at a caller's `max_fee` calls this before building it.
+    pub fn enforce_max_fee_limit(&self, max_fee: u64) -> Result<(), anyhow::Error> {
+        let limit = self.config.max_fee_limit;
+        if max_fee > limit {
+            return Err(invalid_params(
+                "max_fee",
+                Some(format!(
+                    "{max_fee} µT is above this wallet's max_fee_limit of {limit} µT. Lower max_fee, or raise \
+                     max_fee_limit in the wallet daemon config"
+                )),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn authenticator(&self) -> &WalletAuthenticator {
         &self.authenticator
     }
@@ -366,5 +385,209 @@ impl HandlerContext {
     pub async fn transaction_builder(&self) -> Result<TransactionBuilder, anyhow::Error> {
         let max_epoch = self.transaction_max_epoch().await?;
         Ok(Transaction::builder(self.config().network.as_byte(), max_epoch).with_nonce(rand::random()))
+    }
+}
+
+#[cfg(test)]
+mod max_fee_limit_tests {
+    use std::str::FromStr;
+
+    use axum_extra::headers::Authorization;
+    use tari_ootle_address::Network;
+    use tari_ootle_common_types::Epoch;
+    use tari_ootle_wallet_sdk::{
+        WalletSdkConfig,
+        cipher_seed::CipherSeedRestore,
+        models::{EpochBirthday, KeyBranch, KeyId},
+    };
+    use tari_ootle_wallet_sdk_services::{
+        account_monitor::AccountMonitor,
+        indexer_rest_api::IndexerRestApiNetworkInterface,
+        transaction_service::TransactionService,
+        utxo_scanner::StealthUtxoScannerWorker,
+    };
+    use tari_ootle_walletd_client::{
+        ComponentAddressOrName,
+        types::{CallInstructionRequest, ClaimBurnProof, ClaimBurnRequest, PublishTemplateRequest},
+    };
+    use tari_shutdown::Shutdown;
+    use tari_template_lib_types::ComponentAddress;
+
+    use super::*;
+    use crate::{
+        config::WalletDaemonAuth,
+        handlers::{accounts::handle_claim_burn, auth::create_authenticator, transaction::*},
+    };
+
+    const LIMIT: u64 = 10_000;
+
+    /// A handler context with one account and `max_fee_limit = LIMIT`. The indexer URL points at a
+    /// closed port, so a request that gets past the limit fails fast on its first network call.
+    struct LimitTest {
+        context: HandlerContext,
+        account: ComponentAddress,
+        bearer: Bearer,
+        _temp: tempfile::TempDir,
+    }
+
+    async fn setup() -> LimitTest {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SqliteWalletStore::try_open(temp.path().join("wallet.sqlite")).unwrap();
+        store.run_migrations().unwrap();
+        let mut sdk = WalletSdk::initialize_with_local_key_store(
+            store.clone(),
+            IndexerRestApiNetworkInterface::new("http://127.0.0.1:1"),
+            WalletSdkConfig {
+                network: Network::LocalNet,
+                override_keyring_password: Some(SafePassword::from_str("test wallet password").unwrap()),
+            },
+            EpochBirthday::far_future(),
+        )
+        .unwrap();
+        sdk.initialize_cipher_seed(CipherSeedRestore::CreateNewIfRequired)
+            .unwrap();
+        let account = ComponentAddress::from_array([0xaa; 32]);
+        sdk.accounts_api()
+            .add_account(
+                Some("payer"),
+                &account,
+                KeyId::derived(KeyBranch::ViewOnlyKey, 0),
+                KeyId::derived(KeyBranch::Account, 0),
+                Epoch::zero(),
+                false,
+                true,
+            )
+            .unwrap();
+
+        let notify = Notify::new(10);
+        let shutdown = Shutdown::new();
+        let (transaction_service, transaction_service_handle) =
+            TransactionService::new(notify.clone(), sdk.clone(), shutdown.to_signal());
+        let (utxo_worker, utxo_scanner_handle) = StealthUtxoScannerWorker::new(sdk.clone(), notify.clone()).spawn();
+        let (account_monitor, account_monitor_handle) =
+            AccountMonitor::new(notify.clone(), sdk.clone(), utxo_scanner_handle, shutdown.to_signal());
+        let mut config = WalletDaemonConfig::default();
+        config.network = Network::LocalNet;
+        config.authentication = WalletDaemonAuth::None;
+        config.max_fee_limit = LIMIT;
+        let context = HandlerContext::new(
+            sdk,
+            notify,
+            transaction_service_handle,
+            account_monitor_handle,
+            config.clone(),
+            create_authenticator(&config, store).unwrap(),
+            SafePassword::from_str("test jwt secret").unwrap(),
+            shutdown.to_signal(),
+        );
+
+        // These handlers need only the context, so the background workers shut down now.
+        shutdown.trigger();
+        drop(account_monitor);
+        drop(transaction_service);
+        utxo_worker.abort();
+        drop(utxo_worker.await);
+
+        let claims = context
+            .jwt_api()
+            .generate_auth_claims(Permissions::from_str("admin").unwrap())
+            .unwrap();
+        let bearer = Authorization::<Bearer>::bearer(&context.jwt_api().grant(&claims).unwrap())
+            .unwrap()
+            .0;
+        LimitTest {
+            context,
+            account,
+            bearer,
+            _temp: temp,
+        }
+    }
+
+    fn is_over_the_limit(err: &anyhow::Error) -> bool {
+        err.to_string().contains("max_fee_limit")
+    }
+
+    fn call_instruction(test: &LimitTest, max_fee: u64) -> CallInstructionRequest {
+        CallInstructionRequest {
+            instructions: vec![],
+            fee_account: ComponentAddressOrName::ComponentAddress(test.account),
+            max_fee,
+            inputs: vec![],
+            override_inputs: None,
+            new_outputs: None,
+            proof_ids: vec![],
+            min_epoch: None,
+            max_epoch: None,
+        }
+    }
+
+    fn publish(test: &LimitTest, max_fee: u64, dry_run: bool) -> PublishTemplateRequest {
+        PublishTemplateRequest {
+            binary: vec![0],
+            fee_account: Some(ComponentAddressOrName::ComponentAddress(test.account)),
+            max_fee,
+            detect_inputs: false,
+            dry_run,
+            metadata: None,
+        }
+    }
+
+    fn claim_burn(test: &LimitTest, max_fee: u64, is_dry_run: bool) -> ClaimBurnRequest {
+        ClaimBurnRequest {
+            account: ComponentAddressOrName::ComponentAddress(test.account),
+            claim_proof: ClaimBurnProof::FromFile {
+                file_name: "absent.json".to_string(),
+            },
+            max_fee,
+            is_dry_run,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_submission_over_the_limit_is_refused_before_it_is_built() {
+        let test = setup().await;
+        let bearer = Some(&test.bearer);
+
+        let err = handle_submit_instruction(&test.context, bearer, call_instruction(&test, LIMIT + 1))
+            .await
+            .unwrap_err();
+        assert!(is_over_the_limit(&err), "submit_instruction: {err}");
+
+        let err = handle_publish_template(&test.context, bearer, publish(&test, LIMIT + 1, false))
+            .await
+            .unwrap_err();
+        assert!(is_over_the_limit(&err), "publish_template: {err}");
+
+        let err = handle_claim_burn(&test.context, bearer, claim_burn(&test, LIMIT + 1, false))
+            .await
+            .unwrap_err();
+        assert!(is_over_the_limit(&err), "claim_burn: {err}");
+    }
+
+    #[tokio::test]
+    async fn a_submission_at_the_limit_gets_past_it() {
+        let test = setup().await;
+        let err = handle_submit_instruction(&test.context, Some(&test.bearer), call_instruction(&test, LIMIT))
+            .await
+            .expect_err("the offline indexer fails the request after the limit");
+        assert!(!is_over_the_limit(&err), "{err}");
+    }
+
+    /// A dry run commits nothing, so callers may cap it at any figure, e.g. the account's balance
+    /// while learning what a publish costs.
+    #[tokio::test]
+    async fn a_dry_run_is_exempt() {
+        let test = setup().await;
+        let bearer = Some(&test.bearer);
+
+        let err = handle_publish_template(&test.context, bearer, publish(&test, u64::MAX, true))
+            .await
+            .expect_err("the offline indexer fails the request after the limit");
+        assert!(!is_over_the_limit(&err), "publish_template: {err}");
+
+        let err = handle_claim_burn(&test.context, bearer, claim_burn(&test, u64::MAX, true))
+            .await
+            .expect_err("the absent proof file fails the request after the limit");
+        assert!(!is_over_the_limit(&err), "claim_burn: {err}");
     }
 }

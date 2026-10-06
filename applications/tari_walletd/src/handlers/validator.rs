@@ -115,6 +115,9 @@ pub async fn handle_claim_validator_fees(
 ) -> Result<ClaimValidatorFeesResponse, anyhow::Error> {
     let sdk = context.wallet_sdk().clone();
     context.authorize(token, &[Permission::Validators(Crud::Update)])?;
+    if !req.dry_run {
+        context.enforce_max_fee_limit(req.max_fee)?;
+    }
 
     if req.shards.is_empty() {
         return Err(invalid_params("shards", Some("At least one shard must be specified")));

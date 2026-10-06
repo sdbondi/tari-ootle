@@ -115,6 +115,7 @@ pub async fn run_tari_ootle_walletd(
         wallet_sdk.clone(),
         burn_proof_dir,
         config.ootle_wallet_daemon.auto_claim_burns,
+        config.ootle_wallet_daemon.max_fee_limit,
     );
 
     // trigger account scanning if needed

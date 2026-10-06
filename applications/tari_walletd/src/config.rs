@@ -113,6 +113,12 @@ pub struct WalletDaemonConfig {
     /// explicitly (e.g. offline or multi-party signing).
     #[serde(default = "return_default_transaction_validity_epochs")]
     pub default_transaction_validity_epochs: u64,
+    /// The largest `max_fee`, in microtari, that this wallet submits a transaction with. A request
+    /// above it is refused before the transaction is built, whichever handler it comes through, and
+    /// an automatic burn claim never reveals more than it. Dry runs commit nothing, so they are
+    /// exempt. Set to `18446744073709551615` (u64::MAX) to disable.
+    #[serde(default = "return_default_max_fee_limit")]
+    pub max_fee_limit: u64,
 }
 
 impl WalletDaemonConfig {
@@ -140,6 +146,11 @@ impl WalletDaemonConfig {
             return Err(anyhow::anyhow!(
                 "default_transaction_validity_epochs must be at least 1: a zero window expires transactions in the \
                  epoch they are built in"
+            ));
+        }
+        if self.max_fee_limit == 0 {
+            return Err(anyhow::anyhow!(
+                "max_fee_limit must be at least 1: every transaction pays a fee, so a zero limit refuses them all"
             ));
         }
         if self.default_transaction_validity_epochs > IMPLAUSIBLE_TRANSACTION_VALIDITY_EPOCHS {
@@ -170,6 +181,12 @@ fn return_default_auto_claim_burns() -> bool {
 /// approval flow, short enough that an abandoned transaction stops being submittable quickly.
 fn return_default_transaction_validity_epochs() -> u64 {
     3
+}
+
+/// 100 TARI. Publishing a template at the engine's binary size limit is the costliest transaction on
+/// the shipped fee tables, at roughly 90 TARI, so the default admits every transaction those tables price.
+fn return_default_max_fee_limit() -> u64 {
+    100_000_000
 }
 
 /// Mirrors `ConsensusConstants::max_transaction_validity_epochs`. The wallet binary does not carry
@@ -239,6 +256,7 @@ impl Default for WalletDaemonConfig {
             override_keyring_password: None,
             auto_claim_burns: true,
             default_transaction_validity_epochs: return_default_transaction_validity_epochs(),
+            max_fee_limit: return_default_max_fee_limit(),
         }
     }
 }
@@ -404,6 +422,24 @@ mod tests {
             ..Default::default()
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn a_zero_max_fee_limit_is_refused() {
+        let config = WalletDaemonConfig {
+            max_fee_limit: 0,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn max_fee_limit_loads_from_config() {
+        let config =
+            load("[ootle_wallet_daemon]\nindexer_api_url = \"http://a.example/\"\nmax_fee_limit = 5000000").unwrap();
+        assert_eq!(config.max_fee_limit, 5_000_000);
+        let config = load("[ootle_wallet_daemon]\nindexer_api_url = \"http://a.example/\"").unwrap();
+        assert_eq!(config.max_fee_limit, return_default_max_fee_limit());
     }
 
     #[test]

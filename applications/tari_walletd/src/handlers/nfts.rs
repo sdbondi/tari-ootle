@@ -119,6 +119,7 @@ pub async fn handle_mint_faucet(
     // Minting writes the NFT, its resource and the account's vault, and pays for the receipt.
     // The default is set well clear of that; the unspent remainder is refunded.
     let fee = req.max_fee.unwrap_or(50_000);
+    context.enforce_max_fee_limit(fee)?;
     let transaction = context
         .transaction_builder()
         .await?
@@ -249,6 +250,9 @@ pub async fn handle_transfer(
     req: TransferNftRequest,
 ) -> Result<TransferNftResponse, anyhow::Error> {
     let granted = context.check_auth(token)?;
+    if !req.dry_run {
+        context.enforce_max_fee_limit(req.max_fee)?;
+    }
     let sdk = context.wallet_sdk();
 
     // fetch accounts and its inputs

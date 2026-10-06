@@ -88,6 +88,8 @@ pub struct AutoClaimBurnService {
     sdk: WalletSdk,
     transaction_service: TransactionServiceHandle,
     burn_proof_dir: PathBuf,
+    /// The wallet's `max_fee_limit`: the most any claim this service submits may reveal.
+    max_fee_limit: u64,
     /// Maps file name → pending claim state: the L1 epoch the burn must be past before claiming
     /// (resolved from the proof file) plus retry/deferral counters.
     pending_claims: HashMap<String, PendingClaim>,
@@ -100,6 +102,7 @@ impl AutoClaimBurnService {
         sdk: WalletSdk,
         transaction_service: TransactionServiceHandle,
         burn_proof_dir: PathBuf,
+        max_fee_limit: u64,
         notify: &Notify<WalletEvent>,
         shutdown_signal: ShutdownSignal,
     ) -> Self {
@@ -107,6 +110,7 @@ impl AutoClaimBurnService {
             sdk,
             transaction_service,
             burn_proof_dir,
+            max_fee_limit,
             pending_claims: HashMap::new(),
             wallet_events: notify.subscribe(),
             shutdown_signal,
@@ -527,7 +531,8 @@ impl AutoClaimBurnService {
 
         // Delegate all crypto work and submission to the shared handler function. The dry run's fee is
         // the indexer's figure, so the handler treats it as a ceiling and reveals no more than its own
-        // price for the claim.
+        // price for the claim. The wallet's `max_fee_limit` bounds that ceiling in turn.
+        let max_fee = required_fees.min(self.max_fee_limit);
         // Any error here is treated as permanent: by this point the file is readable and the account
         // is known, so failures indicate a bad proof (wrong key, ownership check failed, fee too high,
         // corrupt encrypted data). Retrying would produce the same result.
@@ -536,7 +541,7 @@ impl AutoClaimBurnService {
             &self.transaction_service,
             &account,
             proof_contents,
-            required_fees,
+            max_fee,
             max_epoch,
             false,
             Some(file_name.to_string()),
