@@ -19,6 +19,7 @@ use tari_ootle_common_types::{
     VersionedSubstateIdRef,
     displayable::Displayable,
     optional::Optional,
+    shard::Shard,
     substate_type::SubstateType,
 };
 use tari_ootle_storage::{
@@ -45,6 +46,9 @@ pub struct PendingSubstateStore<'store, TTx: StateStoreReadTransaction> {
     head: HashMap<SubstateId, usize>,
     /// Append only list of changes ordered oldest to newest
     changes: Vec<SubstateChange>,
+    /// Encoded bytes of the substates this block puts up and the ids of those it puts down, per shard.
+    /// Each shard's total is what the block adds to that shard's next state version.
+    shard_output_bytes: HashMap<Shard, usize>,
     new_locks: IndexMap<SubstateId, Vec<SubstateLock>>,
     parent_block: LeafBlock,
     /// Read once for every branch-scoped read at `parent_block`. `store` is borrowed shared for as long as this lives,
@@ -61,6 +65,7 @@ impl<'a, TTx: StateStoreReadTransaction> PendingSubstateStore<'a, TTx> {
             pending: HashMap::new(),
             head: HashMap::new(),
             changes: Vec::new(),
+            shard_output_bytes: HashMap::new(),
             new_locks: IndexMap::new(),
             parent_block,
             parent_chain,
@@ -265,6 +270,7 @@ impl<'a, TTx: StateStoreReadTransaction> WriteableSubstateStore for PendingSubst
             let id = VersionedSubstateId::new(id.clone(), *version);
             let shard = id.to_shard(self.num_preshards);
             debug!(target: LOG_TARGET, "🔽️ Down: {id} {shard}");
+            self.charge_shard_output_bytes(shard, tari_bor::encoded_len(id.substate_id()));
             self.put(SubstateChange::Down { id, shard })?;
         }
 
@@ -272,6 +278,7 @@ impl<'a, TTx: StateStoreReadTransaction> WriteableSubstateStore for PendingSubst
             let vid = VersionedSubstateIdRef::new(id, substate.version());
             let shard = vid.to_shard(self.num_preshards);
             debug!(target: LOG_TARGET, "🔼️ Up: {} v{} {}", id, substate.version(), shard);
+            self.charge_shard_output_bytes(shard, up_encoded_len(id, substate));
             self.put(SubstateChange::Up {
                 id: id.clone(),
                 shard,
@@ -878,6 +885,36 @@ impl<'store, TTx: StateStoreReadTransaction> PendingSubstateStore<'store, TTx> {
         &self.new_locks
     }
 
+    fn charge_shard_output_bytes(&mut self, shard: Shard, bytes: usize) {
+        let total = self.shard_output_bytes.entry(shard).or_default();
+        *total = total.saturating_add(bytes);
+    }
+
+    /// The most bytes this block writes to any one shard: substates put up and the ids of those put down.
+    pub fn max_shard_output_bytes(&self) -> usize {
+        self.shard_output_bytes.values().copied().max().unwrap_or(0)
+    }
+
+    /// Whether putting `diff` would take any shard past `max_bytes` written in this block.
+    pub fn diff_exceeds_shard_output_bytes(&self, diff: &SubstateDiff, max_bytes: usize) -> bool {
+        let downs = diff.down_iter().map(|(id, version)| {
+            let shard = VersionedSubstateIdRef::new(id, *version).to_shard(self.num_preshards);
+            (shard, tari_bor::encoded_len(id))
+        });
+        let ups = diff.up_iter().map(|(id, substate)| {
+            let shard = VersionedSubstateIdRef::new(id, substate.version()).to_shard(self.num_preshards);
+            (shard, up_encoded_len(id, substate))
+        });
+        let mut totals = HashMap::<Shard, usize>::new();
+        downs.chain(ups).any(|(shard, bytes)| {
+            let total = totals
+                .entry(shard)
+                .or_insert_with(|| self.shard_output_bytes.get(&shard).copied().unwrap_or(0));
+            *total = total.saturating_add(bytes);
+            *total > max_bytes
+        })
+    }
+
     pub fn changes(&self) -> &Vec<SubstateChange> {
         &self.changes
     }
@@ -1009,4 +1046,8 @@ impl LatestSubstateVersion {
     pub fn version(&self) -> SubstateVersion {
         self.version
     }
+}
+
+fn up_encoded_len(id: &SubstateId, substate: &Substate) -> usize {
+    tari_bor::encoded_len(id).saturating_add(tari_bor::encoded_len(substate))
 }

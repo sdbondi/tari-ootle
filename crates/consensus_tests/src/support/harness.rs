@@ -717,6 +717,9 @@ impl TestBuilder {
                     // lower these explicitly and opt out via `allow_wasm_budget_deferrals`.
                     max_block_execution_points: 4_500_000_000,
                     max_block_validation_execution_points: 5_000_000_000,
+                    max_block_shard_output_bytes: tari_ootle_common_types::MAX_BLOCK_SHARD_OUTPUT_BYTES,
+                    max_block_validation_shard_output_bytes:
+                        tari_ootle_common_types::MAX_BLOCK_VALIDATION_SHARD_OUTPUT_BYTES,
                     exhaust_burn_rate: ExhaustBurnRate::new(500),
                 },
                 state_tree_cleanup_interval: Duration::from_secs(1000),

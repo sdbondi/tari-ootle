@@ -56,3 +56,15 @@ impl From<u64> for StateVersion {
         Self(value)
     }
 }
+
+/// The most encoded substate bytes a leader puts up in one shard in a single block, and so the most
+/// one honest block adds to a shard's state version.
+pub const MAX_BLOCK_SHARD_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+
+/// The most encoded substate bytes a block may put up in one shard and still be voted for.
+///
+/// State sync streams a shard one state version at a time and buffers each version whole, so a
+/// consumer's per-version buffer must hold this with room for the metadata that accompanies
+/// each update. CONSENSUS RULE: must be uniform network-wide, and at least
+/// [`MAX_BLOCK_SHARD_OUTPUT_BYTES`] so honest blocks are never rejected.
+pub const MAX_BLOCK_VALIDATION_SHARD_OUTPUT_BYTES: usize = 96 * 1024 * 1024;

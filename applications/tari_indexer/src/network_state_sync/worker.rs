@@ -92,6 +92,11 @@ const CONSENSUS_EPOCH_PROBE_INTERVAL: Duration = Duration::from_secs(10);
 /// constant multiple of it: the buffered updates are held decoded, alongside what is derived from
 /// them.
 const MAX_BUFFERED_VERSION_BYTES: usize = 256 * 1024 * 1024;
+// A state version is one block's writes to the shard, which consensus bounds by
+// `MAX_BLOCK_VALIDATION_SHARD_OUTPUT_BYTES`. The stream carries each update with its metadata, so the
+// buffer leaves twice that.
+const _: () =
+    assert!(MAX_BUFFERED_VERSION_BYTES >= 2 * tari_ootle_common_types::MAX_BLOCK_VALIDATION_SHARD_OUTPUT_BYTES);
 
 #[derive(Clone)]
 pub struct NetworkWideStateSync {

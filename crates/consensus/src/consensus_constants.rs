@@ -23,7 +23,7 @@
 use std::time::Duration;
 
 use tari_engine_types::fees::ExhaustBurnRate;
-use tari_ootle_common_types::NumPreshards;
+use tari_ootle_common_types::{MAX_BLOCK_SHARD_OUTPUT_BYTES, MAX_BLOCK_VALIDATION_SHARD_OUTPUT_BYTES, NumPreshards};
 use tari_ootle_storage::consensus_models::LivenessThresholds;
 use tari_ootle_transaction::Network;
 
@@ -139,6 +139,15 @@ pub struct ConsensusConstants {
     /// honest proposals are never rejected.
     /// CONSENSUS RULE: must be uniform network-wide, otherwise nodes diverge on block validity.
     pub max_block_validation_execution_points: u64,
+    /// The most encoded substate bytes a leader puts up in any one shard in a block. A transaction whose
+    /// diff would take a shard past it is deferred to a later block. The proposing half of
+    /// `max_block_validation_shard_output_bytes`.
+    pub max_block_shard_output_bytes: usize,
+    /// The most encoded substate bytes a block may put up in any one shard to be voted for. A block's
+    /// writes to a shard form one state version, which state sync transfers and commits whole, so this is
+    /// what bounds the size of a version. CONSENSUS RULE: must be uniform network-wide, otherwise nodes
+    /// diverge on block validity.
+    pub max_block_validation_shard_output_bytes: usize,
     /// The share of collected fees that is burned rather than paid to leaders, in basis points, for a
     /// context that has no epoch to resolve against: a dry run, a fee estimate, a test harness. The
     /// user's price is the fee table alone; this only splits what was collected.
@@ -208,6 +217,8 @@ impl ConsensusConstants {
         // (`MAX_WASM_POINTS_PER_TRANSACTION` + `MAX_NATIVE_POINTS_PER_TRANSACTION`) + margin, so honest
         // proposals are never rejected.
         max_block_validation_execution_points: 7_250_000_000,
+        max_block_shard_output_bytes: MAX_BLOCK_SHARD_OUTPUT_BYTES,
+        max_block_validation_shard_output_bytes: MAX_BLOCK_VALIDATION_SHARD_OUTPUT_BYTES,
         exhaust_burn_rate: ExhaustBurnRate::new(500), // 5%
         max_transaction_validity_epochs: 2160,
     };
@@ -261,6 +272,8 @@ impl ConsensusConstants {
         // (`MAX_WASM_POINTS_PER_TRANSACTION` + `MAX_NATIVE_POINTS_PER_TRANSACTION`) + margin, so honest
         // proposals are never rejected.
         max_block_validation_execution_points: 7_250_000_000,
+        max_block_shard_output_bytes: MAX_BLOCK_SHARD_OUTPUT_BYTES,
+        max_block_validation_shard_output_bytes: MAX_BLOCK_VALIDATION_SHARD_OUTPUT_BYTES,
         exhaust_burn_rate: ExhaustBurnRate::new(500), // 5%
         max_transaction_validity_epochs: 2160,
     };
@@ -306,6 +319,8 @@ impl ConsensusConstants {
         // (`MAX_WASM_POINTS_PER_TRANSACTION` + `MAX_NATIVE_POINTS_PER_TRANSACTION`) + margin, so honest
         // proposals are never rejected.
         max_block_validation_execution_points: 7_250_000_000,
+        max_block_shard_output_bytes: MAX_BLOCK_SHARD_OUTPUT_BYTES,
+        max_block_validation_shard_output_bytes: MAX_BLOCK_VALIDATION_SHARD_OUTPUT_BYTES,
         exhaust_burn_rate: ExhaustBurnRate::new(500), // 5%
         max_transaction_validity_epochs: 2160,
     };
@@ -365,6 +380,8 @@ impl ConsensusConstants {
             // (`MAX_WASM_POINTS_PER_TRANSACTION` + `MAX_NATIVE_POINTS_PER_TRANSACTION`) + margin, so honest
             // proposals are never rejected.
             max_block_validation_execution_points: 7_250_000_000,
+            max_block_shard_output_bytes: MAX_BLOCK_SHARD_OUTPUT_BYTES,
+            max_block_validation_shard_output_bytes: MAX_BLOCK_VALIDATION_SHARD_OUTPUT_BYTES,
             exhaust_burn_rate: ExhaustBurnRate::new(500), // 5%
             max_transaction_validity_epochs: 2160,
         }
@@ -479,6 +496,25 @@ mod tests {
                     constants.max_block_execution_points +
                         MAX_WASM_POINTS_PER_TRANSACTION +
                         MAX_NATIVE_POINTS_PER_TRANSACTION
+            );
+            // A leader checks a transaction's diff against the budget before putting it, so it never overshoots.
+            assert!(constants.max_block_validation_shard_output_bytes >= constants.max_block_shard_output_bytes);
+        }
+    }
+
+    /// A leader defers a transaction whose diff would take a shard past the block budget. One whose diff alone
+    /// is over it could never be proposed, so the engine's per-transaction output cap must fit in an empty block.
+    #[test]
+    fn a_max_output_transaction_fits_in_a_block() {
+        for constants in [
+            ConsensusConstants::mainnet(),
+            ConsensusConstants::devnet(7),
+            ConsensusConstants::esmeralda(),
+            ConsensusConstants::testnet(),
+        ] {
+            assert!(
+                constants.max_block_shard_output_bytes >=
+                    tari_engine_types::limits::ENGINE_LIMITS.max_transaction_output_bytes
             );
         }
     }
