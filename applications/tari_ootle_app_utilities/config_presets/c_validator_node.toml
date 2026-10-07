@@ -21,6 +21,11 @@
 # JSON-RPC and web UI listener address (default = "127.0.0.1:18200")
 #json_rpc_listener_address = "127.0.0.1:18200"
 
+# Prometheus metrics (/_metrics) listener address. Metrics are served on a dedicated listener, separate from the
+# JSON-RPC, so they can be bound to a private interface. Only used when the validator node is compiled with the
+# `metrics` feature (enabled by default). (default = "127.0.0.1:18201")
+#metrics_listener_address = "127.0.0.1:18201"
+
 # Allow cross-origin browser requests to the JSON-RPC (default = false)
 #enable_permissive_cors = false
 

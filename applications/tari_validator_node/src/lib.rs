@@ -25,14 +25,10 @@ mod bootstrap;
 mod config;
 pub mod consensus;
 pub mod diagnostics;
-#[cfg(feature = "metrics")]
-mod epoch_metrics;
 mod event_subscription;
 mod file_l1_submitter;
 mod genesis_state;
 mod http_ui;
-#[cfg(feature = "metrics")]
-mod inbound_queue_metrics;
 mod json_rpc;
 mod memory_budget;
 #[cfg(feature = "metrics")]
@@ -40,8 +36,6 @@ mod metrics;
 mod migrations;
 pub mod node;
 mod p2p;
-#[cfg(feature = "metrics")]
-mod state_store_metrics;
 mod template_prewarm;
 
 use std::{fs, io, iter, process, time::Instant};
@@ -151,7 +145,7 @@ pub async fn run_validator_node(
     let info = services.networking.get_local_peer_info().await?;
     info!(target: LOG_TARGET, "🚀 Node started: {}", info);
 
-    // Run the JSON-RPC API
+    // Run JSON-RPC
     let mut jrpc_address = config.validator_node.json_rpc_listener_address;
     if let Some(jrpc_address) = jrpc_address.as_mut() {
         info!(target: LOG_TARGET, "🌐 Started JSON-RPC server on {}", jrpc_address);
@@ -161,8 +155,6 @@ pub async fn run_validator_node(
             config.validator_node.enable_permissive_cors,
             handlers,
             shutdown.to_signal(),
-            #[cfg(feature = "metrics")]
-            base_registry,
         )
         .await?;
         *jrpc_address = bound_addr;
@@ -171,6 +163,21 @@ pub async fn run_validator_node(
         // dropped before `run_validator_node` returns.
         services.handles.push(jrpc_handle);
     }
+
+    // Run metrics server
+    #[cfg(feature = "metrics")]
+    if let Some(metrics_addr) = config.validator_node.metrics_listener_address.as_ref() {
+        let handle = metrics::spawn_listener(*metrics_addr, shutdown.to_signal(), base_registry)
+            .await
+            .map_err(|e| {
+                ExitError::new(
+                    ExitCode::ConfigError,
+                    format!("Failed to start metrics server on {metrics_addr}: {e}"),
+                )
+            })?;
+        services.handles.push(handle);
+    }
+
     fs::write(config.common.base_path.join("pid"), process::id().to_string())
         .map_err(|e| ExitError::new(ExitCode::UnknownError, e))?;
     let node = ValidatorNode::new(services);
@@ -232,7 +239,7 @@ impl EpochManagerSpec for ValidatorNodeEpochManagerSpec {
     type EpochEventOracle = EpochOracle<GlobalDb<SqliteGlobalDbAdapter<PeerAddress>>>;
     #[cfg(feature = "metrics")]
     type EpochEventOracle =
-        crate::epoch_metrics::MeteredEpochOracle<EpochOracle<GlobalDb<SqliteGlobalDbAdapter<PeerAddress>>>>;
+        crate::metrics::MeteredEpochOracle<EpochOracle<GlobalDb<SqliteGlobalDbAdapter<PeerAddress>>>>;
 }
 
 #[cfg(test)]

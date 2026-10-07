@@ -105,6 +105,9 @@ pub struct ValidatorNodeConfig {
     pub rpc: RpcConfig,
     /// JSON-RPC address of the validator node application. The Web UI is served from the same address.
     pub json_rpc_listener_address: Option<SocketAddr>,
+    /// Listening address for the Prometheus metrics endpoint (`/_metrics`), served separately from the JSON-RPC.
+    /// Only used when the `metrics` feature is enabled (default = "127.0.0.1:18201"); `None` disables the listener.
+    pub metrics_listener_address: Option<SocketAddr>,
     /// Allow cross-origin browser requests to the JSON-RPC. Browsers on other origins, such as a Vite dev
     /// server or the swarm daemon UI, can then drive every JSON-RPC method, including signing layer-one
     /// transactions. Leave off unless the listener is only reachable by trusted pages.
@@ -317,6 +320,7 @@ impl Default for ValidatorNodeConfig {
             p2p: P2pConfig::default(),
             rpc: RpcConfig::default(),
             json_rpc_listener_address: Some("127.0.0.1:18200".parse().unwrap()),
+            metrics_listener_address: Some("127.0.0.1:18201".parse().unwrap()),
             enable_permissive_cors: false,
             templates: TemplateConfig::default(),
             // Burn your fees
