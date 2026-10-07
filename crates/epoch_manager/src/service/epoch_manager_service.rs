@@ -74,7 +74,7 @@ pub struct EpochManagerService<TSpec: EpochManagerSpec> {
     waiting_for_scanning_complete: Vec<oneshot::Sender<Result<(), EpochManagerError>>>,
 
     /// Shared with the [`EpochManagerHandle`] so handle clones see the same
-    /// cache. Cleared on every epoch advance — see `activate_epoch`.
+    /// cache. Cleared whenever committees are assigned — see `activate_epoch`.
     committee_cache: CommitteeCache<TSpec::Addr>,
 
     diagnostics: Arc<dyn DiagnosticSink>,
@@ -271,8 +271,10 @@ impl<TSpec: EpochManagerSpec> EpochManagerService<TSpec> {
                 // Same epoch re-activated. Permit a hash correction only if the epoch has not yet
                 // been locked in by a committed EndEpoch block. This lets the base-layer scanner
                 // self-heal during the pre-commit window if a reorg near the epoch boundary causes
-                // the initial hash to be wrong, without ever rewriting a hash that consensus has
-                // already committed against.
+                // the initial hash to be wrong, without ever rewriting a hash or committee that
+                // consensus has already committed against. A correction reassigns the epoch's
+                // committees too, since the rescan that produced it may have changed the validators
+                // registered for the epoch.
                 if self.inner.current_epoch_hash() == epoch_hash {
                     return Ok(());
                 }
@@ -301,7 +303,8 @@ impl<TSpec: EpochManagerSpec> EpochManagerService<TSpec> {
                     previous => self.inner.current_epoch_hash(),
                     corrected => epoch_hash
                 ));
-                self.inner.insert_current_epoch(epoch, epoch_hash)?;
+                self.inner.advance_to_epoch(epoch, epoch_hash)?;
+                self.committee_cache.clear().await;
                 Ok(())
             },
             Ordering::Greater => {
@@ -316,8 +319,8 @@ impl<TSpec: EpochManagerSpec> EpochManagerService<TSpec> {
                 // In the base layer case, the epoch_hash is the first block of the epoch
                 // persist the epoch data including the validator node set
                 self.inner.advance_to_epoch(epoch, epoch_hash)?;
-                // Committees are immutable within an epoch; bust the shared cache so subsequent
-                // handle reads pick up the freshly assigned committee rows for the new epoch.
+                // Bust the shared cache so subsequent handle reads pick up the freshly assigned
+                // committee rows for the new epoch.
                 self.committee_cache.clear().await;
                 Ok(())
             },
@@ -575,5 +578,176 @@ fn handle<T>(
     }
     if reply.send(result).is_err() {
         error!(target: LOG_TARGET, "Requester abandoned request");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU32;
+
+    use diesel::{Connection, SqliteConnection};
+    use tari_ootle_common_types::{NumPreshards, ShardGroup, diagnostics::NoopSink};
+    use tari_shutdown::Shutdown;
+
+    use super::*;
+
+    type TestGlobalDb = GlobalDb<SqliteGlobalDbAdapter<RistrettoPublicKeyBytes>>;
+
+    struct NoOracle;
+
+    impl EpochEventOracle for NoOracle {
+        async fn next_epoch_event(&mut self) -> Option<EpochEvent> {
+            None
+        }
+    }
+
+    struct TestSpec;
+
+    impl EpochManagerSpec for TestSpec {
+        type Addr = RistrettoPublicKeyBytes;
+        type EpochEventOracle = NoOracle;
+    }
+
+    fn public_key(byte: u8) -> RistrettoPublicKeyBytes {
+        RistrettoPublicKeyBytes::from_bytes(&[byte; 32]).unwrap()
+    }
+
+    fn register(global_db: &TestGlobalDb, byte: u8, start_epoch: Epoch) {
+        let mut tx = global_db.create_transaction().unwrap();
+        global_db
+            .validator_nodes(&mut tx)
+            .insert_validator_node(
+                public_key(byte),
+                public_key(byte),
+                SubstateAddress::from_array([byte; SubstateAddress::LENGTH]),
+                start_epoch,
+                public_key(byte),
+                VotePower::of(1),
+            )
+            .unwrap();
+        tx.commit().unwrap();
+    }
+
+    fn create_service(global_db: TestGlobalDb, shutdown: &Shutdown) -> EpochManagerService<TestSpec> {
+        let config = EpochManagerConfig {
+            base_layer_confirmations: 0,
+            committee_size: NonZeroU32::new(10).unwrap(),
+            validator_node_sidechain_id: None,
+            num_preshards: NumPreshards::P256,
+            fee_claim_public_key: RistrettoPublicKeyBytes::zero(),
+        };
+        let (_, rx_request) = mpsc::channel(1);
+        let (tx_events, _) = broadcast::channel(1);
+        EpochManagerService {
+            rx_request,
+            inner: EpochManager::new(
+                config,
+                global_db,
+                RistrettoPublicKeyBytes::zero(),
+                Arc::new(AtomicU64::new(0)),
+            ),
+            epoch_events: NoOracle,
+            tx_events,
+            is_initial_epoch_sync_complete: false,
+            has_epoch_changed: false,
+            waiting_for_scanning_complete: Vec::new(),
+            committee_cache: CommitteeCache::new(),
+            diagnostics: Arc::new(NoopSink),
+            shutdown: shutdown.to_signal(),
+        }
+    }
+
+    /// Reads the committee the way an [`EpochManagerHandle`] does, through the shared cache.
+    async fn cached_committee(
+        service: &EpochManagerService<TestSpec>,
+        epoch: Epoch,
+        shard_group: ShardGroup,
+    ) -> Vec<RistrettoPublicKeyBytes> {
+        let committee = service
+            .committee_cache
+            .get_or_try_init((epoch, shard_group), || async {
+                service
+                    .inner
+                    .get_committee_for_shard_group(epoch, shard_group, None)
+                    .map(Arc::new)
+            })
+            .await
+            .unwrap();
+        let mut keys = committee.public_keys().copied().collect::<Vec<_>>();
+        keys.sort();
+        keys
+    }
+
+    /// When the oracle corrects the hash of the current, unlocked epoch, the epoch's committees must be
+    /// reassigned from the validators registered for it at that point, as a node activating the epoch for the
+    /// first time with the corrected hash would assign them.
+    #[tokio::test]
+    async fn hash_correction_reassigns_the_current_epochs_committees() {
+        let shutdown = Shutdown::new();
+        let all_shards = ShardGroup::all_shards(NumPreshards::P256);
+        let global_db = GlobalDb::new(SqliteGlobalDbAdapter::new(
+            SqliteConnection::establish(":memory:").unwrap(),
+        ));
+        global_db.adapter().migrate().unwrap();
+        let mut service = create_service(global_db.clone(), &shutdown);
+
+        register(&global_db, 1, Epoch(5));
+        service
+            .activate_epoch(Epoch(5), FixedHash::from([1; 32]))
+            .await
+            .unwrap();
+        assert_eq!(cached_committee(&service, Epoch(5), all_shards).await, vec![
+            public_key(1)
+        ]);
+
+        register(&global_db, 2, Epoch(5));
+        service
+            .activate_epoch(Epoch(5), FixedHash::from([2; 32]))
+            .await
+            .unwrap();
+
+        assert_eq!(service.inner.current_epoch_hash(), FixedHash::from([2; 32]));
+        let committee_info = service.inner.get_committee_info(Epoch(5), all_shards).unwrap();
+        assert_eq!(committee_info.num_shard_group_members(), 2);
+        assert!(
+            service
+                .inner
+                .get_validator_node_by_public_key(Epoch(5), &public_key(2))
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(cached_committee(&service, Epoch(5), all_shards).await, vec![
+            public_key(1),
+            public_key(2)
+        ]);
+    }
+
+    /// A locked epoch's committees are never reassigned, even if the oracle later reports a different hash.
+    #[tokio::test]
+    async fn hash_correction_leaves_a_locked_epochs_committees() {
+        let shutdown = Shutdown::new();
+        let all_shards = ShardGroup::all_shards(NumPreshards::P256);
+        let global_db = GlobalDb::new(SqliteGlobalDbAdapter::new(
+            SqliteConnection::establish(":memory:").unwrap(),
+        ));
+        global_db.adapter().migrate().unwrap();
+        let mut service = create_service(global_db.clone(), &shutdown);
+
+        register(&global_db, 1, Epoch(5));
+        service
+            .activate_epoch(Epoch(5), FixedHash::from([1; 32]))
+            .await
+            .unwrap();
+        service.inner.lock_epoch(Epoch(5)).unwrap();
+
+        register(&global_db, 2, Epoch(5));
+        service
+            .activate_epoch(Epoch(5), FixedHash::from([2; 32]))
+            .await
+            .unwrap();
+
+        assert_eq!(service.inner.current_epoch_hash(), FixedHash::from([1; 32]));
+        let committee_info = service.inner.get_committee_info(Epoch(5), all_shards).unwrap();
+        assert_eq!(committee_info.num_shard_group_members(), 1);
     }
 }
