@@ -115,6 +115,7 @@ use crate::{
             HighPcCf,
             HighTcCf,
             HighestSeenBlockCf,
+            LastCommittedEpochEndCf,
             LastExecutedCf,
             LastProposedCf,
             LastSentNewViewCf,
@@ -591,6 +592,13 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         Ok(self.db().cf(LeafBlockCf)?.get_by_default_key("leaf_block_get_any")?)
     }
 
+    fn last_committed_epoch_end_get(&self) -> Result<LeafBlock, StorageError> {
+        Ok(self
+            .db()
+            .cf(LastCommittedEpochEndCf)?
+            .get_by_default_key("last_committed_epoch_end_get")?)
+    }
+
     fn highest_seen_block_get(&self, epoch: Epoch) -> Result<HighestSeenBlock, StorageError> {
         let last_seen_block = self
             .db()
@@ -645,19 +653,6 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
             });
         }
         Ok(high_tc)
-    }
-
-    fn is_block_in_end_of_epoch_chain(&self, block_id: &BlockId) -> Result<bool, StorageError> {
-        const OPERATION: &str = "is_block_in_end_of_epoch_chain";
-        let block_cf = self.db().cf(BlockCf)?;
-        let chain = self.get_pending_chain_ordered(block_id)?;
-        for block in chain {
-            let block = block_cf.get(&block, OPERATION)?;
-            if block.is_epoch_end() {
-                return Ok(true);
-            }
-        }
-        Ok(false)
     }
 
     fn foreign_proposals_get_any<'a, I: IntoIterator<Item = &'a BlockId>>(
