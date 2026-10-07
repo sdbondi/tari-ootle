@@ -126,7 +126,7 @@ version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
 dependencies = [
- "bitflags",
+ "bitflags 2.13.0",
  "cexpr",
  "clang-sys",
  "itertools 0.13.0",
@@ -139,6 +139,12 @@ dependencies = [
  "shlex 1.3.0",
  "syn 2.0.118",
 ]
+
+[[package]]
+name = "bitflags"
+version = "1.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "bitflags"
@@ -753,6 +759,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "defmt"
+version = "0.3.100"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0963443817029b2024136fc4dd07a5107eb8f977eaf18fcd1fdeb11306b64ad"
+dependencies = [
+ "defmt 1.1.1",
+]
+
+[[package]]
+name = "defmt"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2953bfe4f93bbd20cc71198842756f77d161884c99ebbabc41d80231ded88d1"
+dependencies = [
+ "bitflags 1.3.2",
+ "defmt-macros",
+]
+
+[[package]]
+name = "defmt-macros"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bad9c72e7ca2137e0dc3813245a0d282fd6daad32fd800af018306a9169b5fe8"
+dependencies = [
+ "defmt-parser",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+]
+
+[[package]]
+name = "defmt-parser"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10d60334b3b2e7c9d91ef8150abfb6fa4c1c39ebbcf4a81c2e346aad939fee3e"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "derive_more"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -903,10 +949,13 @@ checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
 
 [[package]]
 name = "faster-hex"
-version = "0.9.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2a2b11eda1d40935b26cf18f6833c526845ae8c41e58d09af6adeb6f0269183"
+checksum = "04839bdf9d8c10f66806fad16b852fc72aab80873aebc3cb69d85b4fa41543ed"
 dependencies = [
+ "autocfg",
+ "defmt 0.3.100",
+ "heapless",
  "serde",
 ]
 
@@ -1012,6 +1061,7 @@ checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
  "typenum",
  "version_check",
+ "zeroize",
 ]
 
 [[package]]
@@ -1071,15 +1121,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "gix-hash"
-version = "0.15.1"
+name = "gix-features"
+version = "0.42.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b5eccc17194ed0e67d49285e4853307e4147e95407f91c1c3e4a13ba9f4e4ce"
+checksum = "56f4399af6ec4fd9db84dd4cf9656c5c785ab492ab40a7c27ea92b4241923fed"
+dependencies = [
+ "gix-trace",
+ "libc",
+ "prodash",
+]
+
+[[package]]
+name = "gix-hash"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d4900562c662852a6b42e2ef03442eccebf24f047d8eab4f23bc12ef0d785d8"
 dependencies = [
  "faster-hex",
+ "gix-features",
  "serde",
+ "sha1-checked",
  "thiserror",
 ]
+
+[[package]]
+name = "gix-trace"
+version = "0.1.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be3eb81d9dc914335923e50d52829c551feefd6a72d176c4130c546b67a60814"
 
 [[package]]
 name = "glob"
@@ -1096,6 +1165,15 @@ dependencies = [
  "ff",
  "rand_core 0.10.1",
  "subtle",
+]
+
+[[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
 ]
 
 [[package]]
@@ -1117,6 +1195,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
  "foldhash",
+]
+
+[[package]]
+name = "heapless"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -1406,7 +1494,7 @@ checksum = "6f7edaa8ff7a14a1a9915d5ff85c65b24426d81edc0362635a687c70ce7c1ccc"
 dependencies = [
  "anyhow",
  "atomic-take",
- "bitflags",
+ "bitflags 2.13.0",
  "blake3",
  "bumpalo-herd",
  "bytesize",
@@ -1625,7 +1713,7 @@ version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fbeff6bd154a309b2ada5639b2661ca6ae4599b34e8487dc276d2cd637da2d76"
 dependencies = [
- "bitflags",
+ "bitflags 2.13.0",
  "itoa",
 ]
 
@@ -1670,7 +1758,7 @@ version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
 dependencies = [
- "bitflags",
+ "bitflags 2.13.0",
  "cfg-if",
  "cfg_aliases",
  "libc",
@@ -1682,7 +1770,7 @@ version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
 dependencies = [
- "bitflags",
+ "bitflags 2.13.0",
  "cfg-if",
  "cfg_aliases",
  "libc",
@@ -1769,7 +1857,7 @@ dependencies = [
 
 [[package]]
 name = "ootle_byte_type"
-version = "0.14.0"
+version = "0.16.0"
 dependencies = [
  "tari_crypto",
  "tari_template_lib_types",
@@ -1988,6 +2076,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prodash"
+version = "29.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f04bb108f648884c23b98a0e940ebc2c93c0c3b89f04dbaf7eb8256ce617d1bc"
+dependencies = [
+ "log",
+ "parking_lot",
+]
+
+[[package]]
 name = "prost"
 version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2157,7 +2255,7 @@ version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
- "bitflags",
+ "bitflags 2.13.0",
 ]
 
 [[package]]
@@ -2209,7 +2307,7 @@ version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "430988f137a23121407b362bf10b09df302ed5092ffeb9af90a549edcc849115"
 dependencies = [
- "bitflags",
+ "bitflags 2.13.0",
  "libc",
  "mach2 0.4.3",
  "windows-sys 0.61.2",
@@ -2281,7 +2379,7 @@ version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
 dependencies = [
- "bitflags",
+ "bitflags 2.13.0",
  "errno",
  "libc",
  "linux-raw-sys",
@@ -2401,6 +2499,27 @@ dependencies = [
  "ryu",
  "serde",
  "unsafe-libyaml",
+]
+
+[[package]]
+name = "sha1"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest 0.10.7",
+]
+
+[[package]]
+name = "sha1-checked"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89f599ac0c323ebb1c6082821a54962b839832b03984598375bff3975b804423"
+dependencies = [
+ "digest 0.10.7",
+ "sha1",
 ]
 
 [[package]]
@@ -2678,7 +2797,7 @@ dependencies = [
 
 [[package]]
 name = "tari_bor"
-version = "0.16.2"
+version = "0.16.3"
 dependencies = [
  "borsh",
  "indexmap",
@@ -2710,9 +2829,9 @@ dependencies = [
 
 [[package]]
 name = "tari_crypto"
-version = "0.23.4"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6ef628e3b35f65425c44323d38106b51bf4312e8ddaacd0a0178c5dd588653e"
+checksum = "f5de230997958642c770a71647b721fa6a6c13f13ec480338cc1022aeef42f04"
 dependencies = [
  "blake2",
  "borsh",
@@ -2732,7 +2851,7 @@ dependencies = [
 
 [[package]]
 name = "tari_engine"
-version = "0.43.0"
+version = "0.46.0"
 dependencies = [
  "blake2",
  "digest 0.10.7",
@@ -2762,7 +2881,7 @@ dependencies = [
 
 [[package]]
 name = "tari_engine_types"
-version = "0.43.0"
+version = "0.46.0"
 dependencies = [
  "blake2",
  "borsh",
@@ -2792,14 +2911,16 @@ dependencies = [
 
 [[package]]
 name = "tari_hashing"
-version = "6.0.1-pre.2"
+version = "6.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab7d3bb6fe15e8817ccdeb823069ace98121d68a539bbd9bd0a42a9b4943013a"
+checksum = "d5e9a42fc880e691973a04bff0ce6d57417860ec2570afdd292a81e808e659a0"
 dependencies = [
  "blake2",
  "borsh",
  "digest 0.10.7",
+ "generic-array",
  "tari_crypto",
+ "zeroize",
 ]
 
 [[package]]
@@ -2816,7 +2937,7 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_common_types"
-version = "0.43.0"
+version = "0.46.0"
 dependencies = [
  "blake2",
  "borsh",
@@ -2844,7 +2965,7 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_template_metadata"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "borsh",
  "cargo_toml",
@@ -2862,7 +2983,7 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_transaction"
-version = "0.43.0"
+version = "0.46.0"
 dependencies = [
  "borsh",
  "hex",
@@ -2896,7 +3017,7 @@ dependencies = [
 
 [[package]]
 name = "tari_template_builtin"
-version = "0.42.0"
+version = "0.43.0"
 dependencies = [
  "anyhow",
  "tari_template_lib_types",
@@ -2904,7 +3025,7 @@ dependencies = [
 
 [[package]]
 name = "tari_template_lib"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "borsh",
  "minicbor",
@@ -2917,7 +3038,7 @@ dependencies = [
 
 [[package]]
 name = "tari_template_lib_types"
-version = "0.33.0"
+version = "0.34.1"
 dependencies = [
  "bnum",
  "borsh",
@@ -2941,7 +3062,7 @@ dependencies = [
 
 [[package]]
 name = "tari_transaction_manifest"
-version = "0.43.0"
+version = "0.46.0"
 dependencies = [
  "proc-macro2",
  "syn 2.0.118",
@@ -3497,7 +3618,7 @@ version = "0.255.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8e329ef4b5d46e73b91d3ac6924417cad55a8cbbf869c199283383427c3320b"
 dependencies = [
- "bitflags",
+ "bitflags 2.13.0",
  "hashbrown 0.17.1",
  "indexmap",
 ]
@@ -3508,7 +3629,7 @@ version = "0.257.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d92fc335fb6d48f46bda1d8b26b69e28320c15ac3272208333833d6e217e2b4a"
 dependencies = [
- "bitflags",
+ "bitflags 2.13.0",
 ]
 
 [[package]]
@@ -3517,7 +3638,7 @@ version = "0.258.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9a61719f93a87b16d325921e251800c4833f8fab50fa21c7de73aed50086313"
 dependencies = [
- "bitflags",
+ "bitflags 2.13.0",
  "indexmap",
  "semver",
 ]

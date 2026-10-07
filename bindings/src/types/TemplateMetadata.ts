@@ -19,7 +19,7 @@ export type TemplateMetadata = {
   /**
    * The commit hash of the source code used to build this template, for reproducible build verification.
    */
-  commit_hash?: { Sha1: string } | null;
+  commit_hash?: { Sha1: Array<number> } | null;
   documentation?: string | null;
   homepage?: string | null;
   license?: string | null;
