@@ -14,6 +14,7 @@ use log::warn;
 use reqwest::{IntoUrl, StatusCode, Url};
 use tari_engine_types::{
     Utxo,
+    commit_result::ExecuteResult,
     substate::{Substate, SubstateId},
 };
 use tari_indexer_client::{
@@ -42,6 +43,7 @@ use tari_ootle_common_types::{
     optional::IsNotFoundError,
     response_status::{ResponseErrorStatus, TransactionStatusResponseError},
     shard::Shard,
+    substate_type::{SubstateTypeMismatch, check_diff_substate_types, check_substate_type},
 };
 use tari_ootle_transaction::{Transaction, TransactionEnvelope, TransactionId};
 use tari_ootle_wallet_sdk::{
@@ -281,6 +283,7 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
                 }),
             )
             .await?;
+        check_substate_type(substate_id, &result.substate)?;
         Ok(SubstateQueryResult {
             version: result.version,
             substate: result.substate,
@@ -311,6 +314,9 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
                     }),
                 )
                 .await?;
+            for (id, substate) in &resp.substates {
+                check_substate_type(id, substate.substate_value())?;
+            }
             substates.extend(resp.substates);
         }
 
@@ -357,6 +363,7 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
                 client.submit_transaction_dry_run(SubmitTransactionRequest { transaction }),
             )
             .await?;
+        check_execute_result_substate_types(&resp.result)?;
 
         Ok(TransactionQueryResult {
             transaction_id: resp.transaction_id,
@@ -385,6 +392,13 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
                 }),
             )
             .await?;
+        if let IndexerTransactionFinalizedResult::Finalized {
+            execution_result: Some(execution_result),
+            ..
+        } = &resp.result
+        {
+            check_execute_result_substate_types(execution_result)?;
+        }
 
         Ok(TransactionQueryResult {
             transaction_id,
@@ -582,6 +596,8 @@ pub enum IndexerRestApiNetworkInterfaceError {
     NoIndexerEndpoints,
     #[error("Indexer {endpoint} did not respond within {timeout:?}")]
     IndexerTimedOut { endpoint: Url, timeout: Duration },
+    #[error("Indexer returned an invalid substate: {0}")]
+    SubstateTypeMismatch(#[from] SubstateTypeMismatch),
 }
 
 impl IsNotFoundError for IndexerRestApiNetworkInterfaceError {
@@ -641,7 +657,8 @@ impl TransactionStatusResponseError for IndexerRestApiNetworkInterfaceError {
                 message: format!("Transaction encode error: {source}"),
             },
             IndexerRestApiNetworkInterfaceError::NoIndexerEndpoints |
-            IndexerRestApiNetworkInterfaceError::IndexerTimedOut { .. } => ResponseErrorStatus::InternalError {
+            IndexerRestApiNetworkInterfaceError::IndexerTimedOut { .. } |
+            IndexerRestApiNetworkInterfaceError::SubstateTypeMismatch(_) => ResponseErrorStatus::InternalError {
                 message: self.to_string(),
             },
         }
@@ -678,6 +695,13 @@ fn convert_indexer_result_to_wallet_result(result: IndexerTransactionFinalizedRe
     }
 }
 
+fn check_execute_result_substate_types(result: &ExecuteResult) -> Result<(), SubstateTypeMismatch> {
+    match result.finalize.result.any_accept() {
+        Some(diff) => check_diff_substate_types(diff),
+        None => Ok(()),
+    }
+}
+
 fn now() -> PrimitiveDateTime {
     let now = OffsetDateTime::now_utc();
     PrimitiveDateTime::new(now.date(), now.time())
@@ -685,6 +709,16 @@ fn now() -> PrimitiveDateTime {
 
 #[cfg(test)]
 mod tests {
+    use tari_consensus_types::Decision;
+    use tari_engine_types::{
+        commit_result::{FinalizeResult, TransactionResult},
+        fees::FeeReceipt,
+        resource_container::ResourceContainer,
+        substate::{SubstateDiff, SubstateValue},
+        vault::Vault,
+    };
+    use tari_indexer_client::types::{GetSubstateResponse, GetSubstatesResponse, GetTransactionResultResponse};
+    use tari_template_lib_types::{ComponentAddress, constants::TARI_TOKEN};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
@@ -804,7 +838,8 @@ mod tests {
     }
 
     /// Serves every request with `status` and `body`.
-    async fn spawn_status_server(status: &'static str, body: &'static str) -> Url {
+    async fn spawn_status_server(status: &'static str, body: impl Into<String>) -> Url {
+        let body = body.into();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
         tokio::spawn(async move {
@@ -913,6 +948,92 @@ mod tests {
         assert!(matches!(
             result,
             Err(IndexerRestApiNetworkInterfaceError::IndexerTimedOut { .. })
+        ));
+    }
+
+    fn component_id() -> SubstateId {
+        ComponentAddress::from_array([1; 32]).into()
+    }
+
+    fn vault_value() -> SubstateValue {
+        Vault::new(ResourceContainer::public_fungible(TARI_TOKEN, 100u64)).into()
+    }
+
+    async fn network_answering_with(body: String) -> IndexerRestApiNetworkInterface {
+        IndexerRestApiNetworkInterface::init(vec![spawn_status_server("200 OK", body).await]).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_substate_of_another_type_than_requested_is_refused() {
+        let body = serde_json::to_string(&GetSubstateResponse {
+            version: SubstateVersion::new(1),
+            substate: vault_value(),
+            verified: true,
+            proof: None,
+        })
+        .unwrap();
+        let network = network_answering_with(body).await;
+
+        let err = network.query_substate(&component_id(), None, false).await.unwrap_err();
+
+        assert!(matches!(
+            err,
+            IndexerRestApiNetworkInterfaceError::SubstateTypeMismatch(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn fetched_substates_with_a_mistyped_value_are_refused() {
+        let body = serde_json::to_string(&GetSubstatesResponse {
+            substates: HashMap::from([(component_id(), Substate::new(1, vault_value()))]),
+            proofs: HashMap::new(),
+        })
+        .unwrap();
+        let network = network_answering_with(body).await;
+
+        let err = network.get_substates(vec![component_id()]).await.unwrap_err();
+
+        assert!(matches!(
+            err,
+            IndexerRestApiNetworkInterfaceError::SubstateTypeMismatch(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_transaction_result_with_a_mistyped_substate_is_refused() {
+        let mut diff = SubstateDiff::new();
+        diff.up(component_id(), Substate::new(1, vault_value()));
+        let transaction_id = TransactionId::default();
+        let body = serde_json::to_string(&GetTransactionResultResponse {
+            result: IndexerTransactionFinalizedResult::Finalized {
+                final_decision: Decision::Commit,
+                execution_result: Some(Box::new(ExecuteResult {
+                    finalize: FinalizeResult::new(
+                        transaction_id.into_array().into(),
+                        vec![],
+                        vec![],
+                        TransactionResult::Accept(diff),
+                        FeeReceipt::default(),
+                    ),
+                    execution_time: Duration::from_secs(1),
+                    execute_epoch: None,
+                    wasm_execution_points: 0,
+                    native_execution_points: 0,
+                })),
+                execution_time: Duration::from_secs(1),
+                finalized_time: now(),
+                abort_details: None,
+            },
+            receipt: None,
+        })
+        .unwrap();
+        let network = network_answering_with(body).await;
+
+        let err = network.query_transaction_result(transaction_id).await.unwrap_err();
+
+        assert!(matches!(
+            err,
+            IndexerRestApiNetworkInterfaceError::SubstateTypeMismatch(_)
         ));
     }
 }

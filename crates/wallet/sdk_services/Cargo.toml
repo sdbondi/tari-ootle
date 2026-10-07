@@ -35,6 +35,8 @@ time = { workspace = true }
 tokio = { workspace = true, features = ["sync", "macros", "time"] }
 
 [dev-dependencies]
+tari_consensus_types = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util"] }
 
 [features]
