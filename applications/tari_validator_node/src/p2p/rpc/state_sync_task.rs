@@ -6,6 +6,7 @@ use std::num::NonZeroUsize;
 use log::*;
 use prost::Message;
 use tari_consensus::hotstuff::{HotstuffEvent, commit_proofs::generate_block_commit_proof};
+use tari_engine_types::published_template::MAX_TEMPLATE_BLOB_WIRE_BYTES;
 use tari_epoch_manager::{EpochManagerReader, service::EpochManagerHandle};
 use tari_ootle_common_types::{
     Epoch,
@@ -42,6 +43,20 @@ const LOG_TARGET: &str = "tari::ootle::rpc::sync_task";
 /// Once this many bytes of a shard's updates have streamed since its last proof, the next version this node can
 /// prove is proven even if it is not a proof point, which bounds what the caller downloads before it can verify.
 const MAX_BYTES_BETWEEN_VERSION_PROOFS: usize = 16 * 1024 * 1024;
+/// The most encoded update bytes a single `SubstateBatch` carries. The rest of the response payload limit is left for
+/// the batch's other fields and the response envelope.
+const MAX_BATCH_UPDATE_BYTES: usize = 4 * 1024 * 1024;
+/// The field number of `SubstateBatch.updates`, which frames each update in the encoded batch.
+const SUBSTATE_BATCH_UPDATES_TAG: u32 = 2;
+
+const _: () = assert!(
+    MAX_BATCH_UPDATE_BYTES + 1024 <= tari_rpc_framework::max_response_payload_size(),
+    "a full state sync batch must fit one RPC response"
+);
+const _: () = assert!(
+    MAX_TEMPLATE_BLOB_WIRE_BYTES + 1024 * 1024 <= MAX_BATCH_UPDATE_BYTES,
+    "the largest substate must fit a state sync batch on its own"
+);
 
 /// Where a shard's stream stands in proving the versions it streams.
 #[derive(Debug, Clone, Copy)]
@@ -668,22 +683,19 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
 
     /// Sends `transitions` in batches and returns the number of encoded bytes sent.
     async fn send_batches(&mut self, transitions: StateVersionTransitions) -> Result<usize, ()> {
-        let shard = transitions.shard;
-        let chunks = transitions.into_chunks(self.batch_size);
-        let num_chunks = chunks.len();
+        let batches = match into_batches(transitions, self.batch_size) {
+            Ok(batches) => batches,
+            Err(status) => {
+                error!(target: LOG_TARGET, "🌍 {}", status);
+                self.send(Err(status)).await?;
+                return Err(());
+            },
+        };
 
         let mut bytes = 0usize;
-        for (i, chunk) in chunks.into_iter().enumerate() {
-            let updates = chunk.updates.into_iter().map(Into::into).collect();
-
+        for batch in batches {
             let response = rpc::SyncStateResponse {
-                response: Some(rpc::sync_state_response::Response::Batch(rpc::SubstateBatch {
-                    state_version: chunk.state_version,
-                    updates,
-                    has_more: i < num_chunks - 1,
-                    epoch: Some(chunk.epoch.into()),
-                    shard: shard.as_u32(),
-                })),
+                response: Some(rpc::sync_state_response::Response::Batch(batch)),
             };
             bytes = bytes.saturating_add(response.encoded_len());
             self.send(Ok(response)).await?;
@@ -691,6 +703,56 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
 
         Ok(bytes)
     }
+}
+
+/// Splits one state version's transitions into the batches that stream it, all but the last marked `has_more`.
+///
+/// Each batch is one RPC response, so it is bounded by encoded size as well as by `max_updates`: a single block can
+/// commit far more substate bytes to a shard than one response carries. Fails if one update alone exceeds
+/// `MAX_BATCH_UPDATE_BYTES`, which no substate the engine commits does.
+fn into_batches(
+    transitions: StateVersionTransitions,
+    max_updates: NonZeroUsize,
+) -> Result<Vec<rpc::SubstateBatch>, RpcStatus> {
+    let StateVersionTransitions {
+        epoch,
+        shard,
+        state_version,
+        updates,
+    } = transitions;
+    let empty_batch = || rpc::SubstateBatch {
+        state_version,
+        updates: Vec::new(),
+        has_more: true,
+        epoch: Some(epoch.into()),
+        shard: shard.as_u32(),
+    };
+
+    let mut batches = Vec::new();
+    let mut batch = empty_batch();
+    let mut batch_bytes = 0usize;
+    for update in updates {
+        let substate_id = update.substate_id().clone();
+        let update = rpc::SubstateUpdate::from(update);
+        let update_bytes = prost::encoding::message::encoded_len(SUBSTATE_BATCH_UPDATES_TAG, &update);
+        if update_bytes > MAX_BATCH_UPDATE_BYTES {
+            return Err(RpcStatus::general(format!(
+                "Substate {substate_id} at state version {state_version} of {shard} encodes to {update_bytes} bytes, \
+                 more than the {MAX_BATCH_UPDATE_BYTES} a state sync batch carries"
+            )));
+        }
+        if batch.updates.len() >= max_updates.get() || batch_bytes + update_bytes > MAX_BATCH_UPDATE_BYTES {
+            batches.push(std::mem::replace(&mut batch, empty_batch()));
+            batch_bytes = 0;
+        }
+        batch.updates.push(update);
+        batch_bytes += update_bytes;
+    }
+    if !batch.updates.is_empty() {
+        batch.has_more = false;
+        batches.push(batch);
+    }
+    Ok(batches)
 }
 
 /// The wire form of `proof`, generating the commit proof of a block this node committed.
@@ -724,9 +786,160 @@ fn version_proof_message<TTx: StateStoreReadTransaction>(
 
 #[cfg(test)]
 mod tests {
-    use tari_ootle_common_types::VotePower;
+    use tari_engine_types::{
+        limits::ENGINE_LIMITS,
+        published_template::{PublishedTemplate, PublishedTemplateAddress},
+        substate::SubstateId,
+    };
+    use tari_ootle_common_types::{SubstateVersion, VotePower};
+    use tari_ootle_storage::consensus_models::{
+        SubstateCreate,
+        SubstateData,
+        SubstateDestroy,
+        SubstateUpdateProof,
+        SubstateValueOrHash,
+    };
+    use tari_rpc_framework::max_response_payload_size;
+    use tari_template_lib::types::{Hash32, crypto::RistrettoPublicKeyBytes};
+    use tari_validator_node_rpc::STATE_SYNC_MAX_BATCH_SIZE;
 
     use super::*;
+
+    fn max_updates() -> NonZeroUsize {
+        NonZeroUsize::new(STATE_SYNC_MAX_BATCH_SIZE).unwrap()
+    }
+
+    fn template_id(seed: u16) -> SubstateId {
+        let mut hash = [0u8; 32];
+        hash[..2].copy_from_slice(&seed.to_le_bytes());
+        SubstateId::Template(PublishedTemplateAddress::from(Hash32::from_array(hash)))
+    }
+
+    fn create_template(seed: u16, binary_len: usize) -> SubstateUpdateProof {
+        let template = PublishedTemplate {
+            template_name: "test".try_into().unwrap(),
+            author: RistrettoPublicKeyBytes::default(),
+            binary: vec![0xAB; binary_len].try_into().unwrap(),
+            at_epoch: 0,
+            metadata_hash: None,
+        };
+        SubstateUpdateProof::Create(Box::new(SubstateCreate {
+            substate: SubstateData {
+                substate_id: template_id(seed),
+                version: SubstateVersion::ZERO,
+                value: SubstateValueOrHash::Value(Box::new(template.into())),
+                template_metadata: None,
+            },
+        }))
+    }
+
+    fn destroy(seed: u16) -> SubstateUpdateProof {
+        SubstateUpdateProof::Destroy(SubstateDestroy {
+            substate_id: template_id(seed),
+            version: SubstateVersion::ZERO,
+        })
+    }
+
+    fn transitions(updates: Vec<SubstateUpdateProof>) -> StateVersionTransitions {
+        StateVersionTransitions {
+            epoch: Epoch(1),
+            shard: Shard::from_u32(1),
+            state_version: 7,
+            updates,
+        }
+    }
+
+    fn response_len(batch: &rpc::SubstateBatch) -> usize {
+        rpc::SyncStateResponse {
+            response: Some(rpc::sync_state_response::Response::Batch(batch.clone())),
+        }
+        .encoded_len()
+    }
+
+    fn substate_ids(batches: &[rpc::SubstateBatch]) -> Vec<SubstateId> {
+        batches
+            .iter()
+            .flat_map(|batch| &batch.updates)
+            .map(|update| match update.update.as_ref().unwrap() {
+                rpc::substate_update::Update::Create(create) => {
+                    SubstateId::from_bytes(&create.substate.as_ref().unwrap().substate_id).unwrap()
+                },
+                rpc::substate_update::Update::Destroy(destroy) => SubstateId::from_bytes(&destroy.substate_id).unwrap(),
+            })
+            .collect()
+    }
+
+    fn assert_has_more_on_all_but_last(batches: &[rpc::SubstateBatch]) {
+        let (last, rest) = batches.split_last().unwrap();
+        assert!(rest.iter().all(|batch| batch.has_more));
+        assert!(!last.has_more);
+    }
+
+    #[test]
+    fn every_batch_of_a_version_fits_one_rpc_response() {
+        // Fewer updates than the count limit, each of them a substate the engine admits, together far
+        // larger than one response can carry.
+        let updates = (0..16)
+            .map(|seed| create_template(seed, ENGINE_LIMITS.max_template_binary_size_bytes))
+            .collect::<Vec<_>>();
+        let expected_ids = updates.iter().map(|u| u.substate_id().clone()).collect::<Vec<_>>();
+
+        let batches = into_batches(transitions(updates), max_updates()).unwrap();
+
+        assert!(batches.len() > 1);
+        for batch in &batches {
+            let len = response_len(batch);
+            assert!(
+                len <= max_response_payload_size(),
+                "a batch of {} update(s) encodes to {len} bytes, more than the {} an RPC response carries",
+                batch.updates.len(),
+                max_response_payload_size()
+            );
+            assert_eq!(batch.state_version, 7);
+            assert_eq!(batch.shard, 1);
+        }
+        assert_has_more_on_all_but_last(&batches);
+        assert_eq!(substate_ids(&batches), expected_ids);
+    }
+
+    #[test]
+    fn small_updates_are_batched_by_count() {
+        let updates = (0..250).map(destroy).collect::<Vec<_>>();
+        let expected_ids = updates.iter().map(|u| u.substate_id().clone()).collect::<Vec<_>>();
+
+        let batches = into_batches(transitions(updates), max_updates()).unwrap();
+
+        let sizes = batches.iter().map(|batch| batch.updates.len()).collect::<Vec<_>>();
+        assert_eq!(sizes, vec![100, 100, 50]);
+        assert_has_more_on_all_but_last(&batches);
+        assert_eq!(substate_ids(&batches), expected_ids);
+    }
+
+    #[test]
+    fn the_largest_template_a_substate_can_carry_streams_in_one_batch() {
+        let updates = vec![
+            destroy(1),
+            create_template(2, MAX_TEMPLATE_BLOB_WIRE_BYTES),
+            create_template(3, MAX_TEMPLATE_BLOB_WIRE_BYTES),
+        ];
+
+        let batches = into_batches(transitions(updates), max_updates()).unwrap();
+
+        for batch in &batches {
+            assert!(response_len(batch) <= max_response_payload_size());
+        }
+        assert_has_more_on_all_but_last(&batches);
+        assert_eq!(substate_ids(&batches), vec![
+            template_id(1),
+            template_id(2),
+            template_id(3)
+        ]);
+    }
+
+    #[test]
+    fn a_version_with_no_updates_has_no_batches() {
+        assert!(into_batches(transitions(vec![]), max_updates()).unwrap().is_empty());
+    }
 
     fn committee_info(start: u32, end_inclusive: u32) -> CommitteeInfo {
         CommitteeInfo::new(
