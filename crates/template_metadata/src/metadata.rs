@@ -286,6 +286,47 @@ mod tests {
         assert_eq!(metadata, decoded);
     }
 
+    /// The commit hash is part of the hashed CBOR committed on-chain, so its encoding must not move
+    /// with the version of the hash library behind it.
+    #[test]
+    fn commit_hash_encoding_is_stable() {
+        let mut metadata = TemplateMetadata::new("pinned".to_string(), "1.0.0".to_string());
+        metadata.commit_hash = Some(gix_hash::ObjectId::from_hex(b"0123456789abcdefFEDCBA9876543210deadBEEF").unwrap());
+
+        assert_eq!(
+            metadata.hash().unwrap().to_hex(),
+            "1220eb5d1e71aab04f9f5ca0402324474f34e233f6e5bfb0a2d8dbef35e41d41ca27"
+        );
+        let decoded = TemplateMetadata::from_cbor(&metadata.to_cbor().unwrap()).unwrap();
+        assert_eq!(decoded.commit_hash, metadata.commit_hash);
+        assert_eq!(
+            decoded.commit_hash.unwrap().to_string(),
+            "0123456789abcdeffedcba9876543210deadbeef"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "json")]
+    fn commit_hash_json_shape_is_stable() {
+        let mut metadata = TemplateMetadata::new("pinned".to_string(), "1.0.0".to_string());
+        metadata.commit_hash = Some(gix_hash::ObjectId::from_hex(b"0123456789abcdefFEDCBA9876543210deadBEEF").unwrap());
+
+        let value = serde_json::to_value(&metadata).unwrap();
+        assert_eq!(
+            value["commit_hash"],
+            serde_json::json!({
+                "Sha1": [
+                    0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10, 0xde,
+                    0xad, 0xbe, 0xef
+                ]
+            })
+        );
+        assert_eq!(
+            TemplateMetadata::from_json(&metadata.to_json().unwrap()).unwrap(),
+            metadata
+        );
+    }
+
     #[test]
     fn hash_deterministic() {
         let metadata = TemplateMetadata::new("test".to_string(), "1.0.0".to_string());
