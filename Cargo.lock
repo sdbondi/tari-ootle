@@ -275,7 +275,6 @@ dependencies = [
  "digest 0.10.7",
  "fnv",
  "merlin",
- "rayon",
  "sha2 0.10.9",
 ]
 
@@ -308,7 +307,6 @@ dependencies = [
  "num-bigint",
  "num-integer",
  "num-traits",
- "rayon",
  "zeroize",
 ]
 
@@ -329,7 +327,6 @@ dependencies = [
  "num-bigint",
  "num-traits",
  "paste",
- "rayon",
  "zeroize",
 ]
 
@@ -369,7 +366,6 @@ dependencies = [
  "ark-relations",
  "ark-serialize",
  "ark-std",
- "rayon",
 ]
 
 [[package]]
@@ -385,7 +381,6 @@ dependencies = [
  "educe",
  "fnv",
  "hashbrown 0.15.5",
- "rayon",
 ]
 
 [[package]]
@@ -397,7 +392,6 @@ dependencies = [
  "ark-ff",
  "ark-std",
  "tracing",
- "tracing-subscriber 0.2.25",
 ]
 
 [[package]]
@@ -411,7 +405,6 @@ dependencies = [
  "arrayvec",
  "digest 0.10.7",
  "num-bigint",
- "rayon",
 ]
 
 [[package]]
@@ -445,7 +438,6 @@ checksum = "246a225cc6131e9ee4f24619af0f19d67761fff15d7ccc22e42b80846e69449a"
 dependencies = [
  "num-traits",
  "rand 0.8.6",
- "rayon",
 ]
 
 [[package]]
@@ -2005,7 +1997,7 @@ dependencies = [
  "tonic 0.12.3",
  "tracing",
  "tracing-core",
- "tracing-subscriber 0.3.22",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -6643,7 +6635,7 @@ dependencies = [
  "symbolic-demangle",
  "thread_local",
  "tracing",
- "tracing-subscriber 0.3.22",
+ "tracing-subscriber",
  "uuid",
  "wasm-encoder 0.255.0",
  "wasmparser 0.255.0",
@@ -12143,7 +12135,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-appender",
- "tracing-subscriber 0.3.22",
+ "tracing-subscriber",
  "url",
  "utoipa",
  "utoipa-swagger-ui",
@@ -14184,7 +14176,7 @@ dependencies = [
  "crossbeam-channel",
  "thiserror 2.0.18",
  "time",
- "tracing-subscriber 0.3.22",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -14216,15 +14208,6 @@ checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
 dependencies = [
  "log",
  "once_cell",
- "tracing-core",
-]
-
-[[package]]
-name = "tracing-subscriber"
-version = "0.2.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e0d2eaa99c3c2e41547cfa109e910a68ea03823cccad4a0525dcbc9b01e8c71"
-dependencies = [
  "tracing-core",
 ]
 
