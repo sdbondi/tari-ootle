@@ -81,7 +81,8 @@ impl LeaderSkipSet {
     /// [`LeaderStrategy::calculate_leader`] is a bijection over that many consecutive heights - a
     /// strategy that is not would need a different bound. It falls back to the round-robin leader
     /// when every candidate it visits is skipped, which cannot happen while fewer than a third of
-    /// the committee is faulty but keeps the function total.
+    /// the committee is faulty but keeps the function total. `view_height` may come from a peer
+    /// message, so the walk saturates at the top of the height range.
     pub fn effective_leader<'a, TAddr: PartialEq, TLeaderStrategy: LeaderStrategy<TAddr>>(
         &self,
         leader_strategy: &TLeaderStrategy,
@@ -94,7 +95,7 @@ impl LeaderSkipSet {
         }
 
         for offset in 0..committee.len() as u64 {
-            let candidate = leader_strategy.get_leader(committee, view_height + NodeHeight(offset));
+            let candidate = leader_strategy.get_leader(committee, view_height.saturating_add(NodeHeight(offset)));
             if !self.is_skipped(candidate.1) {
                 return candidate;
             }
@@ -211,5 +212,14 @@ mod tests {
         let set = skip_set(&[0, 1, 2, 3]);
         let (addr, _) = set.effective_leader(&RoundRobin, &committee, NodeHeight(2));
         assert_eq!(*addr, 2);
+    }
+
+    #[test]
+    fn the_walk_is_total_at_the_top_of_the_height_range() {
+        let committee = committee(4);
+        let raw = (u64::MAX % 4) as u8;
+        let set = skip_set(&[raw]);
+        let (addr, _) = set.effective_leader(&RoundRobin, &committee, NodeHeight::max());
+        assert_eq!(*addr, raw);
     }
 }
