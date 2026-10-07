@@ -1452,11 +1452,6 @@ impl<TStore: StateReader> WorkingState<TStore> {
         Ok(count)
     }
 
-    /// The storage footprint of the transaction receipt this state will finalize into.
-    ///
-    /// The receipt is persisted like any other substate but is only built once fees are settled, so
-    /// it cannot be measured alongside the substates in [`Self::mutated_substates`] — it is bounded
-    /// here instead. See [`TransactionReceipt::encoded_size_upper_bound`] for what the bound covers.
     /// Rejects a state that would persist more than
     /// [`limits::EngineLimits::max_transaction_output_bytes`]: its mutated substates and its receipt.
     pub fn enforce_output_size_limit(&mut self) -> Result<(), RuntimeError> {
@@ -1472,6 +1467,11 @@ impl<TStore: StateReader> WorkingState<TStore> {
         Ok(())
     }
 
+    /// The storage footprint of the transaction receipt this state will finalize into.
+    ///
+    /// The receipt is persisted like any other substate but is only built once fees are settled, so
+    /// it cannot be measured alongside the substates in [`Self::mutated_substates`] — it is bounded
+    /// here instead. See [`TransactionReceipt::encoded_size_upper_bound`] for what the bound covers.
     pub fn transaction_receipt_size(&mut self) -> Result<usize, RuntimeError> {
         let epoch = self.get_current_epoch()?;
         Ok(TransactionReceipt::encoded_size_upper_bound(

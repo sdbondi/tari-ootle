@@ -270,20 +270,21 @@ impl<'a, TTx: StateStoreReadTransaction> WriteableSubstateStore for PendingSubst
             let id = VersionedSubstateId::new(id.clone(), *version);
             let shard = id.to_shard(self.num_preshards);
             debug!(target: LOG_TARGET, "🔽️ Down: {id} {shard}");
-            self.charge_shard_output_bytes(shard, tari_bor::encoded_len(id.substate_id()));
+            let bytes = tari_bor::encoded_len(id.substate_id());
             self.put(SubstateChange::Down { id, shard })?;
+            self.charge_shard_output_bytes(shard, bytes);
         }
 
         for (id, substate) in diff.up_iter() {
             let vid = VersionedSubstateIdRef::new(id, substate.version());
             let shard = vid.to_shard(self.num_preshards);
             debug!(target: LOG_TARGET, "🔼️ Up: {} v{} {}", id, substate.version(), shard);
-            self.charge_shard_output_bytes(shard, up_encoded_len(id, substate));
             self.put(SubstateChange::Up {
                 id: id.clone(),
                 shard,
                 substate: Box::new(substate.clone()),
             })?;
+            self.charge_shard_output_bytes(shard, up_encoded_len(id, substate));
         }
 
         for withdraw in diff.validator_fee_withdrawals() {
