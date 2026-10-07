@@ -124,7 +124,7 @@ enum IndexerHealth {
     /// The indexer answered.
     Answered,
     /// The indexer could not be reached or cannot serve: a 502, 503 or 504, whether from the indexer (e.g. still
-    /// syncing) or a gateway in front of it.
+    /// syncing) or a gateway in front of it, or an answer that fails the client's checks.
     Unavailable,
     /// Nothing can be concluded, e.g. the indexer is rate limiting this wallet.
     Inconclusive,
@@ -218,6 +218,17 @@ impl IndexerRestApiNetworkInterface {
         client: &TrackedClient,
         request: impl Future<Output = Result<T, IndexerRestClientError>>,
     ) -> Result<T, IndexerRestApiNetworkInterfaceError> {
+        self.observe_checked(client, request, |_| Ok(())).await
+    }
+
+    /// As [`Self::observe`], and refuses an answer that fails `check`. A refused answer counts as the indexer being
+    /// unavailable, so an indexer that keeps sending invalid answers is failed over.
+    async fn observe_checked<T>(
+        &self,
+        client: &TrackedClient,
+        request: impl Future<Output = Result<T, IndexerRestClientError>>,
+        check: impl FnOnce(&T) -> Result<(), SubstateTypeMismatch>,
+    ) -> Result<T, IndexerRestApiNetworkInterfaceError> {
         let Ok(result) = tokio::time::timeout(self.request_timeout, request).await else {
             self.record_health(&client.endpoint, IndexerHealth::Unavailable);
             return Err(IndexerRestApiNetworkInterfaceError::IndexerTimedOut {
@@ -225,6 +236,10 @@ impl IndexerRestApiNetworkInterface {
                 timeout: self.request_timeout,
             });
         };
+        if let Err(err) = result.as_ref().map_or(Ok(()), check) {
+            self.record_health(&client.endpoint, IndexerHealth::Unavailable);
+            return Err(err.into());
+        }
         self.record_health(&client.endpoint, IndexerHealth::of(&result));
         Ok(result?)
     }
@@ -274,16 +289,16 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
     ) -> Result<SubstateQueryResult, Self::Error> {
         let client = self.tracked_client();
         let result = self
-            .observe(
+            .observe_checked(
                 &client,
                 client.get_substate(substate_id, GetSubstateRequest {
                     version,
                     local_search_only,
                     include_proof: false,
                 }),
+                |resp| check_substate_type(substate_id, &resp.substate),
             )
             .await?;
-        check_substate_type(substate_id, &result.substate)?;
         Ok(SubstateQueryResult {
             version: result.version,
             substate: result.substate,
@@ -305,18 +320,20 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
                 })
             })?;
             let resp = self
-                .observe(
+                .observe_checked(
                     &client,
                     client.fetch_substates(GetSubstatesRequest {
                         requests,
                         cached_only: false,
                         include_proofs: false,
                     }),
+                    |resp| {
+                        resp.substates
+                            .iter()
+                            .try_for_each(|(id, substate)| check_substate_type(id, substate.substate_value()))
+                    },
                 )
                 .await?;
-            for (id, substate) in &resp.substates {
-                check_substate_type(id, substate.substate_value())?;
-            }
             substates.extend(resp.substates);
         }
 
@@ -358,12 +375,12 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
         let transaction = TransactionEnvelope::encode(transaction)?;
         let client = self.tracked_client();
         let resp = self
-            .observe(
+            .observe_checked(
                 &client,
                 client.submit_transaction_dry_run(SubmitTransactionRequest { transaction }),
+                |resp| check_execute_result_substate_types(&resp.result),
             )
             .await?;
-        check_execute_result_substate_types(&resp.result)?;
 
         Ok(TransactionQueryResult {
             transaction_id: resp.transaction_id,
@@ -384,21 +401,21 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
     ) -> Result<TransactionQueryResult, Self::Error> {
         let client = self.tracked_client();
         let resp = self
-            .observe(
+            .observe_checked(
                 &client,
                 client.get_transaction_result(GetTransactionResultRequest {
                     transaction_id,
                     include_proof: false,
                 }),
+                |resp| match &resp.result {
+                    IndexerTransactionFinalizedResult::Finalized {
+                        execution_result: Some(execution_result),
+                        ..
+                    } => check_execute_result_substate_types(execution_result),
+                    _ => Ok(()),
+                },
             )
             .await?;
-        if let IndexerTransactionFinalizedResult::Finalized {
-            execution_result: Some(execution_result),
-            ..
-        } = &resp.result
-        {
-            check_execute_result_substate_types(execution_result)?;
-        }
 
         Ok(TransactionQueryResult {
             transaction_id,
@@ -710,6 +727,7 @@ fn now() -> PrimitiveDateTime {
 #[cfg(test)]
 mod tests {
     use tari_consensus_types::Decision;
+    use tari_crypto::ristretto::RistrettoSecretKey;
     use tari_engine_types::{
         commit_result::{FinalizeResult, TransactionResult},
         fees::FeeReceipt,
@@ -717,7 +735,12 @@ mod tests {
         substate::{SubstateDiff, SubstateValue},
         vault::Vault,
     };
-    use tari_indexer_client::types::{GetSubstateResponse, GetSubstatesResponse, GetTransactionResultResponse};
+    use tari_indexer_client::types::{
+        GetSubstateResponse,
+        GetSubstatesResponse,
+        GetTransactionResultResponse,
+        SubmitTransactionDryRunResponse,
+    };
     use tari_template_lib_types::{ComponentAddress, constants::TARI_TOKEN};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -999,27 +1022,75 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn a_transaction_result_with_a_mistyped_substate_is_refused() {
+    /// An accepted execution whose diff brings up `component_id()` with a vault value.
+    fn mistyped_execute_result(transaction_id: TransactionId) -> ExecuteResult {
         let mut diff = SubstateDiff::new();
         diff.up(component_id(), Substate::new(1, vault_value()));
+        ExecuteResult {
+            finalize: FinalizeResult::new(
+                transaction_id.into_array().into(),
+                vec![],
+                vec![],
+                TransactionResult::Accept(diff),
+                FeeReceipt::default(),
+            ),
+            execution_time: Duration::from_secs(1),
+            execute_epoch: None,
+            wasm_execution_points: 0,
+            native_execution_points: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_result_with_a_mistyped_substate_is_refused() {
+        let transaction = Transaction::builder_localnet(Epoch(100))
+            .with_dry_run(true)
+            .build_and_seal(&RistrettoSecretKey::from(1));
+        let transaction_id = transaction.calculate_id();
+        let body = serde_json::to_string(&SubmitTransactionDryRunResponse {
+            transaction_id,
+            result: mistyped_execute_result(transaction_id),
+        })
+        .unwrap();
+        let network = network_answering_with(body).await;
+
+        let err = network.submit_dry_run_transaction(transaction).await.unwrap_err();
+
+        assert!(matches!(
+            err,
+            IndexerRestApiNetworkInterfaceError::SubstateTypeMismatch(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_indexer_that_keeps_returning_mistyped_substates_is_failed_over() {
+        let body = serde_json::to_string(&GetSubstateResponse {
+            version: SubstateVersion::new(1),
+            substate: vault_value(),
+            verified: true,
+            proof: None,
+        })
+        .unwrap();
+        let invalid = spawn_status_server("200 OK", body).await;
+        let other = spawn_status_server("503 Service Unavailable", "{}").await;
+        let network = IndexerRestApiNetworkInterface::init(vec![invalid.clone()]).unwrap();
+        network.set_endpoints(vec![invalid.clone(), other.clone()]).unwrap();
+
+        for _ in 0..FAILOVER_THRESHOLD {
+            assert_eq!(network.get_endpoint(), invalid);
+            network.query_substate(&component_id(), None, false).await.unwrap_err();
+        }
+
+        assert_eq!(network.get_endpoint(), other);
+    }
+
+    #[tokio::test]
+    async fn a_transaction_result_with_a_mistyped_substate_is_refused() {
         let transaction_id = TransactionId::default();
         let body = serde_json::to_string(&GetTransactionResultResponse {
             result: IndexerTransactionFinalizedResult::Finalized {
                 final_decision: Decision::Commit,
-                execution_result: Some(Box::new(ExecuteResult {
-                    finalize: FinalizeResult::new(
-                        transaction_id.into_array().into(),
-                        vec![],
-                        vec![],
-                        TransactionResult::Accept(diff),
-                        FeeReceipt::default(),
-                    ),
-                    execution_time: Duration::from_secs(1),
-                    execute_epoch: None,
-                    wasm_execution_points: 0,
-                    native_execution_points: 0,
-                })),
+                execution_result: Some(Box::new(mistyped_execute_result(transaction_id))),
                 execution_time: Duration::from_secs(1),
                 finalized_time: now(),
                 abort_details: None,
