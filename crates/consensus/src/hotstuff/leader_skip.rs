@@ -81,8 +81,12 @@ impl LeaderSkipSet {
     /// [`LeaderStrategy::calculate_leader`] is a bijection over that many consecutive heights - a
     /// strategy that is not would need a different bound. It falls back to the round-robin leader
     /// when every candidate it visits is skipped, which cannot happen while fewer than a third of
-    /// the committee is faulty but keeps the function total. `view_height` may come from a peer
-    /// message, so the walk saturates at the top of the height range.
+    /// the committee is faulty but keeps the function total.
+    ///
+    /// `view_height` may come from a peer message, so the walk wraps past the top of the height
+    /// range to height zero. The heights it visits there are no longer consecutive, but under
+    /// round-robin they still cover all but at most one member, so the fallback stays unreachable
+    /// while fewer than a third of the committee is faulty.
     pub fn effective_leader<'a, TAddr: PartialEq, TLeaderStrategy: LeaderStrategy<TAddr>>(
         &self,
         leader_strategy: &TLeaderStrategy,
@@ -95,7 +99,7 @@ impl LeaderSkipSet {
         }
 
         for offset in 0..committee.len() as u64 {
-            let candidate = leader_strategy.get_leader(committee, view_height.saturating_add(NodeHeight(offset)));
+            let candidate = leader_strategy.get_leader(committee, view_height.wrapping_add(NodeHeight(offset)));
             if !self.is_skipped(candidate.1) {
                 return candidate;
             }
@@ -215,11 +219,17 @@ mod tests {
     }
 
     #[test]
-    fn the_walk_is_total_at_the_top_of_the_height_range() {
-        let committee = committee(4);
-        let raw = (u64::MAX % 4) as u8;
-        let set = skip_set(&[raw]);
-        let (addr, _) = set.effective_leader(&RoundRobin, &committee, NodeHeight::max());
-        assert_eq!(*addr, raw);
+    fn the_walk_wraps_past_the_top_of_the_height_range() {
+        // u64::MAX % 4 == 3
+        let four = committee(4);
+        let set = skip_set(&[3]);
+        let (addr, _) = set.effective_leader(&RoundRobin, &four, NodeHeight::max());
+        assert_eq!(*addr, 0);
+
+        // u64::MAX % 3 == 0, and height zero after the wrap lands on the same skipped member.
+        let three = committee(3);
+        let set = skip_set(&[0]);
+        let (addr, _) = set.effective_leader(&RoundRobin, &three, NodeHeight::max());
+        assert_eq!(*addr, 1);
     }
 }
