@@ -145,7 +145,7 @@ pub async fn run_validator_node(
     let info = services.networking.get_local_peer_info().await?;
     info!(target: LOG_TARGET, "🚀 Node started: {}", info);
 
-    // Run JSON-RPC 
+    // Run JSON-RPC
     let mut jrpc_address = config.validator_node.json_rpc_listener_address;
     if let Some(jrpc_address) = jrpc_address.as_mut() {
         info!(target: LOG_TARGET, "🌐 Started JSON-RPC server on {}", jrpc_address);
@@ -167,12 +167,14 @@ pub async fn run_validator_node(
     // Run metrics server
     #[cfg(feature = "metrics")]
     if let Some(metrics_addr) = config.validator_node.metrics_listener_address.as_ref() {
-        let handle = metrics::spawn_listener(
-            *metrics_addr,
-            shutdown.to_signal(),
-            base_registry,
-        )
-        .await?;
+        let handle = metrics::spawn_listener(*metrics_addr, shutdown.to_signal(), base_registry)
+            .await
+            .map_err(|e| {
+                ExitError::new(
+                    ExitCode::ConfigError,
+                    format!("Failed to start metrics server on {metrics_addr}: {e}"),
+                )
+            })?;
         services.handles.push(handle);
     }
 

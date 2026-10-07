@@ -47,6 +47,7 @@ pub struct Cli {
     /// Bind address for JSON-rpc server
     #[clap(long, alias = "json-rpc-address")]
     pub json_rpc_listener_address: Option<SocketAddr>,
+    /// Bind address for the Prometheus metrics server
     #[clap(long)]
     pub metrics_listener_address: Option<SocketAddr>,
     /// Allow cross-origin browser requests to the JSON-RPC
