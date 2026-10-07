@@ -272,7 +272,7 @@ impl<'a, TTx: StateStoreReadTransaction> WriteableSubstateStore for PendingSubst
             debug!(target: LOG_TARGET, "🔽️ Down: {id} {shard}");
             let bytes = tari_bor::encoded_len(id.substate_id());
             self.put(SubstateChange::Down { id, shard })?;
-            self.charge_shard_output_bytes(shard, bytes);
+            self.record_shard_output_bytes(shard, bytes);
         }
 
         for (id, substate) in diff.up_iter() {
@@ -284,7 +284,7 @@ impl<'a, TTx: StateStoreReadTransaction> WriteableSubstateStore for PendingSubst
                 shard,
                 substate: Box::new(substate.clone()),
             })?;
-            self.charge_shard_output_bytes(shard, up_encoded_len(id, substate));
+            self.record_shard_output_bytes(shard, up_encoded_len(id, substate));
         }
 
         for withdraw in diff.validator_fee_withdrawals() {
@@ -886,7 +886,7 @@ impl<'store, TTx: StateStoreReadTransaction> PendingSubstateStore<'store, TTx> {
         &self.new_locks
     }
 
-    fn charge_shard_output_bytes(&mut self, shard: Shard, bytes: usize) {
+    fn record_shard_output_bytes(&mut self, shard: Shard, bytes: usize) {
         let total = self.shard_output_bytes.entry(shard).or_default();
         *total = total.saturating_add(bytes);
     }
