@@ -392,7 +392,7 @@ impl ShardGroupRootTree {
         for (shard, shard_root, state_version) in shard_states {
             let leaf = ShardGroupLeaf::new(protocol_version, shard, &shard_root, state_version);
             if let Some(value) = leaf.value {
-                changes.push((leaf.key.clone(), Some((value, ()))));
+                changes.push((leaf.key, Some((value, ()))));
             }
             leaves.insert(shard, leaf);
         }
