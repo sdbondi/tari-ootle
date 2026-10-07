@@ -34,7 +34,26 @@ Unsetting the listener address disables the endpoint.
 | `libp2p_relay_events_total`                | counter   | `event`            | Relay server events (reservations, circuits).        |
 | `libp2p_dcutr_events_total`                | counter   | `event`            | Hole-punch successes and failures.                   |
 
-`libp2p_swarm_*` series (connections, dials, listeners) are registered but not yet recorded, and stay at zero.
+### Networking: libp2p swarm
+
+These series are exported but not yet recorded, so they read zero.
+
+| Metric                                            | Type      | Meaning                                     |
+| ------------------------------------------------- | --------- | ------------------------------------------- |
+| `libp2p_swarm_connections_incoming_total`         | counter   | Inbound connections received.               |
+| `libp2p_swarm_connections_incoming_error_total`   | counter   | Inbound connections that failed to upgrade. |
+| `libp2p_swarm_connections_established_total`      | counter   | Connections established.                    |
+| `libp2p_swarm_connections_establishment_duration` | histogram | Time to establish a connection.             |
+| `libp2p_swarm_connections_duration_seconds`       | histogram | Lifetime of closed connections.             |
+| `libp2p_swarm_new_listen_addr_total`              | counter   | New listen addresses.                       |
+| `libp2p_swarm_expired_listen_addr_total`          | counter   | Expired listen addresses.                   |
+| `libp2p_swarm_external_addr_candidates_total`     | counter   | External address candidates.                |
+| `libp2p_swarm_external_addr_confirmed_total`      | counter   | External addresses confirmed.               |
+| `libp2p_swarm_external_addr_expired_total`        | counter   | External addresses expired.                 |
+| `libp2p_swarm_listener_closed_total`              | counter   | Listeners closed.                           |
+| `libp2p_swarm_listener_error_total`               | counter   | Listener errors.                            |
+| `libp2p_swarm_dial_attempt_total`                 | counter   | Outbound dial attempts.                     |
+| `libp2p_swarm_outgoing_connection_error_total`    | counter   | Outbound connection failures.               |
 
 ### Networking: substreams and messaging
 
