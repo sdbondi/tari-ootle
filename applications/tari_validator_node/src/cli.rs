@@ -47,6 +47,8 @@ pub struct Cli {
     /// Bind address for JSON-rpc server
     #[clap(long, alias = "json-rpc-address")]
     pub json_rpc_listener_address: Option<SocketAddr>,
+    #[clap(long)]
+    pub metrics_listener_address: Option<SocketAddr>,
     /// Allow cross-origin browser requests to the JSON-RPC
     #[clap(long)]
     pub enable_permissive_cors: bool,
@@ -102,6 +104,14 @@ impl ConfigOverrideProvider for Cli {
                 json_rpc_address.to_string(),
             ));
         }
+
+        if let Some(ref address) = self.metrics_listener_address {
+            overrides.push((
+                "validator_node.metrics_listener_address".to_string(),
+                address.to_string(),
+            ));
+        }
+
         if self.enable_permissive_cors {
             overrides.push(("validator_node.enable_permissive_cors".to_string(), "true".to_string()));
         }

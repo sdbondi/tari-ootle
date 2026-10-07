@@ -10,7 +10,7 @@ use tari_ootle_template_provider::MemoryCacheTemplateProvider;
 use tari_rpc_state_sync::RpcStateSyncClientProtocol;
 
 #[cfg(feature = "metrics")]
-use crate::consensus::metrics::PrometheusConsensusMetrics;
+use crate::metrics::PrometheusConsensusMetrics;
 use crate::{
     consensus::{
         TariBlockTransactionExecutor,

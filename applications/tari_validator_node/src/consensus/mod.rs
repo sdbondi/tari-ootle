@@ -28,8 +28,6 @@ mod block_transaction_executor;
 mod block_transaction_validator;
 mod handle;
 mod leader_selection;
-#[cfg(feature = "metrics")]
-pub mod metrics;
 mod signer_service;
 pub mod spec;
 
