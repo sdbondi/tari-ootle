@@ -94,7 +94,14 @@ highlight = "all"
 workspace-default-features = "allow"
 external-default-features = "allow"
 allow = []
-deny = []
+# Version floors for transitive crates with a fix the advisories check does not enforce: an unsound
+# advisory is reported for direct dependencies only, so a lockfile that resolves back below the
+# patched release would otherwise pass.
+deny = [
+    # `StackSlot` implements `Send` and `Sync` regardless of its tag type. Reached through
+    # `libp2p-gossipsub` via `async-channel`.
+    { crate = "event-listener:>=5.1.0, <5.4.2", reason = "StackSlot is Send/Sync for any tag; fixed in 5.4.2" },
+]
 skip = []
 skip-tree = []
 
