@@ -48,6 +48,25 @@ pub async fn resolve_foreign_committee<TEpochManager: EpochManagerReader>(
     Ok(committee)
 }
 
+/// Checks the proposal against the committee of the shard group its header names, in the proposal's epoch.
+pub async fn authenticate_foreign_proposal<TConsensusSpec: ConsensusSpec>(
+    epoch_manager: &TConsensusSpec::EpochManager,
+    proposal: &ForeignProposal,
+    config: &HotstuffConfig,
+) -> Result<(), HotStuffError> {
+    let committee = resolve_foreign_committee(epoch_manager, proposal)
+        .await?
+        .ok_or_else(|| ProposalValidationError::InvalidShardGroup {
+            block_id: proposal.calculate_block_id(),
+            shard_group: proposal.shard_group_unchecked(),
+            details: format!(
+                "Foreign proposal header names a shard group with no committee in epoch {}",
+                proposal.epoch()
+            ),
+        })?;
+    check_foreign_proposal::<TConsensusSpec>(proposal, &committee, config)
+}
+
 pub fn check_foreign_proposal<TConsensusSpec: ConsensusSpec>(
     proposal: &ForeignProposal,
     foreign_committee: &Committee<TConsensusSpec::Addr>,

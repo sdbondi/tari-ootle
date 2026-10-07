@@ -16,7 +16,7 @@ use tari_consensus::{
     messages::{HotstuffMessage, ProposalMessage},
     resolve_foreign_committee,
 };
-use tari_consensus_types::Decision;
+use tari_consensus_types::{BlockId, Decision};
 use tari_engine_types::substate::{Substate, SubstateValue};
 use tari_ootle_common_types::{
     Epoch,
@@ -171,9 +171,12 @@ fn without_commit_signatures(proposal: &ForeignProposal) -> ForeignProposal {
     )
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_embedded_foreign_proposal_is_not_stored_without_its_committees_commit_proof() {
-    setup_logger();
+/// Starts committee 0 (`1`) with a transaction's input and committee 1 (`2`, `3`) with its output, and returns the
+/// first local proposal in committee 1 that embeds a foreign proposal, withheld from replica `3` along with every
+/// other route to that foreign proposal. `3` holds the transaction only if `replica_has_transaction`.
+async fn withheld_embedding_proposal(
+    replica_has_transaction: bool,
+) -> (Test, TestAddress, TestAddress, ProposalMessage) {
     let replica = TestAddress::new("3");
     let captured = Arc::new(Mutex::new(None::<(TestAddress, ProposalMessage)>));
     let mut test = Test::builder()
@@ -221,7 +224,14 @@ async fn an_embedded_foreign_proposal_is_not_stored_without_its_committees_commi
             .collect(),
         outputs,
     );
-    test.send_transaction_to_destination(TestVnDestination::All, tx).await;
+    if replica_has_transaction {
+        test.send_transaction_to_destination(TestVnDestination::All, tx).await;
+    } else {
+        for address in ["1", "2"] {
+            test.send_transaction_to_destination(TestVnDestination::Address(TestAddress::new(address)), tx.clone())
+                .await;
+        }
+    }
     test.start_epoch(Epoch(1)).await;
 
     let (leader, proposal) = timeout(Duration::from_secs(60), async {
@@ -234,6 +244,28 @@ async fn an_embedded_foreign_proposal_is_not_stored_without_its_committees_commi
     })
     .await
     .expect("committee 1 never proposed a block carrying a foreign proposal");
+
+    (test, replica, leader, proposal)
+}
+
+fn is_foreign_proposal_stored(test: &Test, address: &TestAddress, block_ids: &[BlockId]) -> bool {
+    test.get_validator(address)
+        .state_store()
+        .with_read_tx(|tx| {
+            block_ids
+                .iter()
+                .map(|id| ForeignProposalRecord::record_exists(tx, id))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .unwrap()
+        .into_iter()
+        .any(|stored| stored)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_embedded_foreign_proposal_is_not_stored_without_its_committees_commit_proof() {
+    setup_logger();
+    let (mut test, replica, leader, proposal) = withheld_embedding_proposal(true).await;
 
     let foreign_proposals = proposal
         .foreign_proposals
@@ -256,19 +288,51 @@ async fn an_embedded_foreign_proposal_is_not_stored_without_its_committees_commi
         .unwrap();
     sleep(Duration::from_secs(3)).await;
 
-    let stored = validator
-        .state_store()
-        .with_read_tx(|tx| {
-            block_ids
-                .iter()
-                .map(|id| ForeignProposalRecord::record_exists(tx, id))
-                .collect::<Result<Vec<_>, _>>()
-        })
+    let stored = is_foreign_proposal_stored(&test, &replica, &block_ids);
+    test.stop();
+    assert!(!stored, "replica stored an unauthenticated foreign proposal");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_block_with_an_unauthenticated_embedded_foreign_proposal_does_not_take_the_parked_slot() {
+    setup_logger();
+    // The replica lacks the transaction, so both copies of the block are parked while it fetches it
+    let (mut test, replica, leader, proposal) = withheld_embedding_proposal(false).await;
+
+    let block_ids = proposal
+        .foreign_proposals
+        .iter()
+        .map(|fp| fp.calculate_block_id())
+        .collect::<Vec<_>>();
+    let tampered = ProposalMessage {
+        block: proposal.block.clone(),
+        foreign_proposals: proposal
+            .foreign_proposals
+            .iter()
+            .map(without_commit_signatures)
+            .collect(),
+    };
+    let tx_inbound = test.get_validator(&replica).tx_inbound_message.clone();
+    tx_inbound
+        .send((leader.clone(), HotstuffMessage::new_proposal(tampered)))
+        .await
         .unwrap();
+    tx_inbound
+        .send((leader, HotstuffMessage::new_proposal(proposal)))
+        .await
+        .unwrap();
+
+    let stored = timeout(Duration::from_secs(15), async {
+        while !is_foreign_proposal_stored(&test, &replica, &block_ids) {
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .is_ok();
     test.stop();
     assert!(
-        stored.iter().all(|s| !s),
-        "replica stored an unauthenticated foreign proposal"
+        stored,
+        "the genuine block was not processed after an unauthenticated copy"
     );
 }
 

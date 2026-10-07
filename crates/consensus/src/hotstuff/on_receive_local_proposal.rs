@@ -59,7 +59,7 @@ use crate::{
     messages::{ForeignProposalNotificationMessage, HotstuffMessage, ProposalMessage, VoteMessage},
     tracing::TraceTimer,
     traits::{CertificateStore, ConsensusSpec, OutboundMessaging, ValidatorSignerService, hooks::ConsensusHooks},
-    validations::{check_foreign_proposal, check_proposed_by_leader, resolve_foreign_committee},
+    validations::{authenticate_foreign_proposal, check_proposed_by_leader},
 };
 
 const LOG_TARGET: &str = "tari::ootle::consensus::hotstuff::on_receive_local_proposal";
@@ -314,32 +314,18 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
                 continue;
             }
 
-            let committee = match resolve_foreign_committee(&self.epoch_manager, proposal).await {
-                Ok(Some(committee)) => committee,
-                Ok(None) => {
+            match authenticate_foreign_proposal::<TConsensusSpec>(&self.epoch_manager, proposal, &self.config).await {
+                Ok(()) => {},
+                Err(HotStuffError::ProposalValidationError(err)) => {
                     warn!(
                         target: LOG_TARGET,
-                        "⚠️❌ Embedded foreign proposal {} names a shard group with no committee in epoch {}",
+                        "⚠️❌ Embedded foreign proposal {} is not authenticated by its committee: {}",
                         proposal,
-                        proposal.epoch(),
+                        err,
                     );
                     return Ok(false);
                 },
-                Err(HotStuffError::ProposalValidationError(err)) => {
-                    warn!(target: LOG_TARGET, "⚠️❌ Embedded foreign proposal {} is invalid: {}", proposal, err);
-                    return Ok(false);
-                },
                 Err(err) => return Err(err),
-            };
-
-            if let Err(err) = check_foreign_proposal::<TConsensusSpec>(proposal, &committee, &self.config) {
-                warn!(
-                    target: LOG_TARGET,
-                    "⚠️❌ Embedded foreign proposal {} is not authenticated by its committee: {}",
-                    proposal,
-                    err,
-                );
-                return Ok(false);
             }
         }
         Ok(true)
