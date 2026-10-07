@@ -95,7 +95,7 @@ fn serialize_deserialize() {
 
     let proof = confidential::create_withdraw_proof(
         &[],
-        Amount::from(123u64),
+        Amount::from(369u64),
         Some(&output_statement),
         Amount::from(123u64),
         Some(&change_statement),

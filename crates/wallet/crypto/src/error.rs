@@ -3,6 +3,7 @@
 
 use chacha20poly1305::aead;
 use tari_crypto::errors::RangeProofError;
+use tari_template_lib_types::Amount;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StealthProofError {
@@ -38,6 +39,8 @@ pub enum WalletCryptoError {
     CommitmentMismatchDecryptedData,
     #[error("Invalid argument {name}: {details}")]
     InvalidArgument { name: &'static str, details: String },
+    #[error("Withdraw does not balance: inputs total {inputs} but outputs total {outputs}")]
+    UnbalancedWithdraw { inputs: Amount, outputs: Amount },
     #[error("AEAD error: {0}")]
     AeadError(aead::Error),
     #[error("BUG: Invariant violated: {details}")]

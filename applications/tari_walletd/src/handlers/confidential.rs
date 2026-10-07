@@ -138,10 +138,10 @@ pub async fn handle_create_transfer_proof(
         )
     })?;
 
-    let change_amount = total_input_value.checked_sub(req.confidential_amount).ok_or_else(|| {
+    let change_amount = total_input_value.checked_sub(amount_to_transfer).ok_or_else(|| {
         invalid_request(format!(
             "Insufficient funds to send {}. Total input value = {}",
-            req.confidential_amount, total_input_value
+            amount_to_transfer, total_input_value
         ))
     })?;
     let change_amount_u64 = change_amount.to_u64_checked().ok_or_else(|| {
