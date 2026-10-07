@@ -51,11 +51,6 @@ It reaches the graph because `integration_tests` runs those binaries to stand up
 `tari_p2p` does with it is verify detached signatures on release hash files against maintainer
 public keys, which performs no private-key operation and so offers no timing oracle. Revisit if
 `rsa` publishes a fix or the L1 drops `pgp`.""" },
-    { id = "RUSTSEC-2025-0055", reason = """
-ANSI escape sequences in logged user input, in tracing-subscriber 0.2. Reachable only through
-dev-dependencies — `ark-groth16`'s dev-deps pull `ark-relations`, which still depends on the 0.2
-line — so `cargo tree -i tracing-subscriber@0.2.25 -e normal` is empty and nothing that ships links
-it. Fixed in 0.3.20; the way out is arkworks moving off 0.2.""" },
 ]
 
 [licenses]
