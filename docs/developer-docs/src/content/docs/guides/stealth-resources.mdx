@@ -347,6 +347,10 @@ A **partition** is every input and output of the transfer sharing the invoking i
 keyed by root equality, so distinct UTXOs committing the same tree form one partition with one shared allowance. Bind a
 per-UTXO identity (e.g. a vault nonce) into the leaf's arguments when they must be separate covenants.
 
+`OutputTo` is a minimum-payment obligation: value beyond `min_value` is unconstrained. N inputs under the same
+`OutputTo(R, m)` in one transfer share a single qualifying output, so together they pay `m` once, not `N × m`. Bind a
+per-UTXO identity into the leaf, as for partitions, when each must pay separately.
+
 `BalancePreserved` is proven by a `CovenantBalanceClaim` &mdash; a sub-balance proof carried in the statement's
 `covenant_claims`, one per covenant-gated partition. The confidential balance is never revealed.
 

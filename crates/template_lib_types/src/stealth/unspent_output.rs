@@ -303,7 +303,7 @@ impl BuiltinPredicate {
 
 /// A native, consensus-fixed covenant committed as an [`AtomicCondition::Covenant`] leaf (TIP-0006). Where a
 /// [`BuiltinPredicate`] gates an input on a local fact, a covenant constrains the *spending transaction* — which
-/// outputs the spent value may flow to, and that the value is conserved — so it propagates conditions forward. Each
+/// outputs must exist, or that the partition's value is conserved — so it propagates conditions forward. Each
 /// variant introspects the transfer's outputs natively, with canonical semantics in trusted core code. The set is a
 /// curated standard library of common value-routing constraints; anything bespoke is a [`TemplateFunction`] instead.
 #[derive(Debug, Clone, Encode, Decode, CborLen, PartialEq, Eq)]
