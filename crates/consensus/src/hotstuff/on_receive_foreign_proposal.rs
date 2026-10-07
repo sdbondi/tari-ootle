@@ -14,14 +14,7 @@ use tari_ootle_common_types::{Epoch, NodeAddressable, ShardGroup, committee::Com
 use tari_ootle_storage::{
     StateStore,
     StateStoreReadTransaction,
-    consensus_models::{
-        Block,
-        CommandOrHash,
-        CommandsCommitProof,
-        ForeignProposal,
-        ForeignProposalRecord,
-        ForeignProposalStatus,
-    },
+    consensus_models::{Block, CommandOrHash, CommandsCommitProof, ForeignProposal, ForeignProposalRecord},
 };
 
 use crate::{
@@ -91,7 +84,7 @@ where TConsensusSpec: ConsensusSpec
         local_committee_info: &CommitteeInfo,
     ) -> Result<(), HotStuffError> {
         let _timer = TraceTimer::debug(LOG_TARGET, "OnReceiveForeignProposal");
-        let mut proposal = ForeignProposalRecord::from(message);
+        let proposal = ForeignProposalRecord::from(message);
 
         let block_id = *proposal.block_id();
         if self.store.with_read_tx(|tx| proposal.exists(tx))? {
@@ -105,19 +98,19 @@ where TConsensusSpec: ConsensusSpec
             return Ok(());
         }
 
-        self.store.with_write_tx(|tx| {
-            if let Err(err) = self.validate_and_save(tx, &proposal, local_committee_info) {
-                error!(target: LOG_TARGET, "❌ Error validating and saving foreign proposal: {}", err);
-                // Should not cause consensus to crash and should commit the Invalid proposal status
-                proposal.save(tx)?;
-                proposal.update_status(tx, ForeignProposalStatus::Invalid, None)?;
-                // TODO: reattempt from different node? and then abort on persistent failure
-                // If we miss a foreign proposal, we want to implement the ability to request it - so we could just rely
-                // on that functionality without doing anything extra here
+        // The block id is derived from the header alone, so a copy with an invalid pledge shares it with the valid
+        // copy. A rejected copy is therefore not recorded, and any outstanding request for the block stays open to be
+        // retried with another committee member.
+        let result = self
+            .store
+            .with_write_tx(|tx| self.validate_and_save(tx, &proposal, local_committee_info));
+        if let Err(err) = result {
+            if let Some(err) = err.validation_error() {
+                warn!(target: LOG_TARGET, "⚠️❌ Ignoring invalid foreign proposal {}: {}", block_id, err);
                 return Ok(());
             }
-            Ok::<_, HotStuffError>(())
-        })?;
+            return Err(err);
+        }
 
         self.pending_requests.remove(&block_id);
 

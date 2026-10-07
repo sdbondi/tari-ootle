@@ -956,6 +956,7 @@ where TConsensusSpec: ConsensusSpec
                             .merge_evidence(evidence);
                     },
                 }
+                substate_store.bind_pledged_input_values(local_committee_info.shard_group(), pool_tx.evidence_mut())?;
 
                 info!(
                     target: LOG_TARGET,
@@ -1046,6 +1047,7 @@ where TConsensusSpec: ConsensusSpec
             local_committee_info.num_committees(),
             &execution,
         );
+        substate_store.bind_pledged_input_values(local_committee_info.shard_group(), tx_rec.evidence_mut())?;
         executed_transactions.insert(*tx_rec.id(), execution);
         // If we locally decided to ABORT, we are still saying that we think all prepared and, after execution decide to
         // ABORT. When we enter the acceptance phase, we will propose SomeAccept for this case.

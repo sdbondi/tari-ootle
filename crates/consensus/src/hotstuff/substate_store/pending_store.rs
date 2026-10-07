@@ -10,6 +10,7 @@ use tari_engine_types::substate::{Substate, SubstateDiff, SubstateId, SubstateVa
 use tari_ootle_common_types::{
     LockIntent,
     NumPreshards,
+    ShardGroup,
     SubstateAddress,
     SubstateLockType,
     SubstateRequirement,
@@ -25,7 +26,7 @@ use tari_ootle_storage::{
     PendingChain,
     StateStoreReadTransaction,
     StorageError,
-    consensus_models::{BlockDiff, LockConflict, SubstateChange, SubstateLock, SubstateRecord},
+    consensus_models::{BlockDiff, Evidence, LockConflict, SubstateChange, SubstateLock, SubstateRecord},
 };
 use tari_ootle_transaction::TransactionId;
 
@@ -367,6 +368,20 @@ impl<'store, TTx: StateStoreReadTransaction> PendingSubstateStore<'store, TTx> {
         }
 
         Ok(substates)
+    }
+
+    /// Binds every input `shard_group` pledges in `evidence` to the value this store holds for it at the pledged
+    /// version. A foreign shard group accepts a pledged value only if it matches the bound hash, so this must be called
+    /// before `evidence` is sequenced in a command.
+    pub fn bind_pledged_input_values(
+        &self,
+        shard_group: ShardGroup,
+        evidence: &mut Evidence,
+    ) -> Result<(), SubstateStoreError> {
+        let Some(evidence) = evidence.get_mut(&shard_group) else {
+            return Ok(());
+        };
+        evidence.bind_input_values(|id, version| self.get(VersionedSubstateIdRef::new(id, version)))
     }
 
     fn get_head_change(&self, id: &SubstateId) -> Option<&SubstateChange> {

@@ -25,15 +25,7 @@ use tari_ootle_common_types::{
 use tari_ootle_storage::{
     StateStore,
     StateStoreReadTransaction,
-    consensus_models::{
-        Block,
-        BookkeepingModel,
-        ForeignProposalRecord,
-        ForeignProposalStatus,
-        NoVoteReason,
-        TransactionPool,
-        ValidBlock,
-    },
+    consensus_models::{Block, BookkeepingModel, ForeignProposalRecord, NoVoteReason, TransactionPool, ValidBlock},
 };
 use tari_sidechain::{ProposalVoteMessage, QuorumDecision};
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
@@ -222,7 +214,7 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
             // self.update_foreign_proposal_transactions(tx, valid_block.block())?;
 
             for foreign_proposal in foreign_proposals {
-                let mut foreign_proposal = ForeignProposalRecord::new(foreign_proposal);
+                let foreign_proposal = ForeignProposalRecord::new(foreign_proposal);
                 if foreign_proposal.exists(&**tx)? {
                     // This is expected behaviour, we may receive the same foreign proposal multiple times
                     debug!(
@@ -241,13 +233,8 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
                 ) {
                     if let Some(err) = err.validation_error() {
                         warn!(target: LOG_TARGET, "⚠️❌ Validation failed for foreign proposal: {}", err);
-                        // if a node sent us an invalid foreign proposal, we immediately reject the block
-                        foreign_proposal.save(tx)?;
-                        foreign_proposal.update_status(
-                            tx,
-                            ForeignProposalStatus::Invalid,
-                            Some(valid_block.block().id()),
-                        )?;
+                        // If a node sent us an invalid foreign proposal, we immediately reject the block. The foreign
+                        // proposal is not recorded: a valid copy of it shares its block id.
                         return Ok(false);
                     }
                     error!(target: LOG_TARGET, "Error processing foreign proposal: {}", err);

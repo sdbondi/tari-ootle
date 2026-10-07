@@ -66,7 +66,7 @@ use crate::{
     non_fungible::NonFungibleContainer,
     published_template::{PublishedTemplate, PublishedTemplateAddress},
     resource::Resource,
-    substate_hasher::SubstateHashMessage,
+    substate_hasher::{SubstateHashMessage, SubstateValueHashMessage},
     transaction_receipt::TransactionReceipt,
     utxo::Utxo,
     vault::Vault,
@@ -117,6 +117,10 @@ impl Substate {
         hash_substate(network, self.substate_value(), self.version, epoch)
     }
 
+    pub fn to_pledge_hash(&self) -> Hash32 {
+        hash_pledged_substate(self.substate_value(), self.version)
+    }
+
     pub fn previous_version(&self) -> Option<SubstateVersion> {
         self.version.previous()
     }
@@ -134,6 +138,17 @@ pub fn hash_substate(network: Network, substate: &SubstateValue, version: Substa
         .result()
         .into_array()
         .into()
+}
+
+/// Hashes the value a shard group pledges for an input at `version`. A shard group's evidence commits to this hash for
+/// every input it pledges, so that a foreign shard group can check a pledged value against what the pledging quorum
+/// signed. Unlike [`hash_substate`], the preimage does not depend on the epoch the substate was created in, which a
+/// pledge does not carry.
+pub fn hash_pledged_substate(substate: &SubstateValue, version: SubstateVersion) -> Hash32 {
+    hasher32(EngineHashDomainLabel::SubstatePledge)
+        .chain(&SubstateValueHashMessage::from(substate))
+        .chain(&version)
+        .result()
 }
 
 // BorshDeserialize is implemented for this struct because we de/encode keys in the database using this format

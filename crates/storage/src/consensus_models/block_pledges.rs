@@ -53,8 +53,11 @@ impl BlockPledge {
     pub fn get_all_pledges_for_evidence(&self, evidence: &ShardGroupEvidence) -> Option<SubstatePledges> {
         let mut pledges = SubstatePledges::with_capacity(evidence.inputs().len());
         for (substate_id, ev) in evidence.all_pledged_inputs_iter() {
-            // If any are missing return None
-            let substate = self.pledges.get(substate_id)?;
+            // If any are missing or are not the value the evidence commits to, return None
+            let substate = self
+                .pledges
+                .get(substate_id)
+                .filter(|substate| ev.is_pledged_value(substate))?;
             pledges.push(SubstatePledge::Input {
                 substate_id: VersionedSubstateId::new(substate_id.clone(), substate.version()),
                 is_write: ev.is_write,
@@ -68,11 +71,11 @@ impl BlockPledge {
         if let Some((id, ev)) = evidence.all_pledged_inputs_iter().find(|(substate_id, ev)| {
             self.pledges
                 .get(substate_id)
-                .is_none_or(|value| value.version() != ev.version)
+                .is_none_or(|value| !ev.is_pledged_value(value))
         }) {
             warn!(
                 target: LOG_TARGET,
-                "Substate not included for {} pledge: {} v{}",
+                "Substate for {} pledge {} v{} is missing or is not the value the evidence commits to",
                 ev.as_lock_type(),
                 id,
                 ev.version,
@@ -87,7 +90,7 @@ impl BlockPledge {
         evidence.all_pledged_inputs_iter().any(|(substate_id, ev)| {
             self.pledges
                 .get(substate_id)
-                .is_some_and(|value| value.version() == ev.version)
+                .is_some_and(|value| ev.is_pledged_value(value))
         })
     }
 
@@ -320,11 +323,53 @@ mod tests {
         evidence.insert(id2.substate_id().clone(), id2.version(), SubstateLockType::Write);
         // Outputs are not applicable and are ignored
         evidence.insert(id3.substate_id().clone(), id3.version(), SubstateLockType::Output);
+        bind_to(&mut evidence, pledge);
 
         assert!(pledge.has_all_input_substate_values_for(&evidence));
 
         evidence.insert(id3.substate_id().clone(), id3.version(), SubstateLockType::Write);
         assert!(!pledge.has_all_input_substate_values_for(&evidence));
+    }
+
+    /// Binds every pledged input in `evidence` to the value `pledge` holds for it
+    fn bind_to(evidence: &mut ShardGroupEvidence, pledge: &BlockPledge) {
+        evidence
+            .bind_input_values(|id, _| pledge.pledges.get(id).cloned().ok_or(()))
+            .unwrap();
+    }
+
+    #[test]
+    fn it_rejects_a_pledged_value_other_than_the_one_the_evidence_commits_to() {
+        let id = create_substate_id(1);
+        let mut honest = BlockPledge::new();
+        honest.add_substate_pledge(id.substate_id().clone(), id.version(), substate_value(1));
+        let mut substituted = BlockPledge::new();
+        substituted.add_substate_pledge(id.substate_id().clone(), id.version(), substate_value(2));
+
+        let mut evidence = ShardGroupEvidence::default();
+        evidence.insert(id.substate_id().clone(), id.version(), SubstateLockType::Write);
+        bind_to(&mut evidence, &honest);
+
+        assert!(honest.has_all_input_substate_values_for(&evidence));
+        assert!(honest.has_some_input_substate_values_for(&evidence));
+        assert_eq!(honest.get_all_pledges_for_evidence(&evidence).unwrap().len(), 1);
+
+        assert!(!substituted.has_all_input_substate_values_for(&evidence));
+        assert!(!substituted.has_some_input_substate_values_for(&evidence));
+        assert!(substituted.get_all_pledges_for_evidence(&evidence).is_none());
+    }
+
+    #[test]
+    fn it_rejects_a_pledged_value_the_evidence_does_not_commit_to() {
+        let id = create_substate_id(1);
+        let mut pledge = BlockPledge::new();
+        pledge.add_substate_pledge(id.substate_id().clone(), id.version(), substate_value(1));
+
+        let mut evidence = ShardGroupEvidence::default();
+        evidence.insert(id.substate_id().clone(), id.version(), SubstateLockType::Read);
+
+        assert!(!pledge.has_all_input_substate_values_for(&evidence));
+        assert!(pledge.get_all_pledges_for_evidence(&evidence).is_none());
     }
 
     #[test]

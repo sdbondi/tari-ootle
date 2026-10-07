@@ -942,6 +942,7 @@ where TConsensusSpec: ConsensusSpec
                         // tx_rec epoch will be locked by foreign proposal(s) when we get it
                     },
                 }
+                substate_store.bind_pledged_input_values(local_committee_info.shard_group(), tx_rec.evidence_mut())?;
             },
         }
 
@@ -1143,6 +1144,7 @@ where TConsensusSpec: ConsensusSpec
                 local_committee_info.num_committees(),
                 &execution,
             );
+            substate_store.bind_pledged_input_values(local_committee_info.shard_group(), tx_rec.evidence_mut())?;
 
             if execution.decision().is_commit() {
                 // Lock all local outputs

@@ -9,7 +9,10 @@ use log::*;
 use minicbor::{CborLen, Decode, Encode};
 use serde::{Deserialize, Serialize};
 use tari_consensus_types::PcId;
-use tari_engine_types::{SubstateVersion, substate::SubstateId};
+use tari_engine_types::{
+    SubstateVersion,
+    substate::{Substate, SubstateId},
+};
 use tari_ootle_common_types::{
     LockIntent,
     NumPreshards,
@@ -22,6 +25,7 @@ use tari_ootle_common_types::{
     borsh::indexmap as indexmap_borsh,
     displayable::Displayable,
 };
+use tari_template_lib_types::Hash32;
 
 use crate::consensus_models::{RequireLockIntentRef, SubstatePledge};
 
@@ -320,8 +324,14 @@ impl Evidence {
                     match other_evidence {
                         Some(e) => match e_mut {
                             Some(e_mut) => {
+                                if e_mut.version != e.version {
+                                    e_mut.value_hash = None;
+                                }
                                 e_mut.is_write = e.is_write;
                                 e_mut.version = e.version;
+                                if e.value_hash.is_some() {
+                                    e_mut.value_hash = e.value_hash;
+                                }
                             },
                             None => {
                                 *e_mut = Some(e);
@@ -469,11 +479,20 @@ impl ShardGroupEvidence {
         lock_type: SubstateLockType,
     ) -> &mut Self {
         if lock_type.is_input() {
+            // The value at a given version never changes, so a hash already bound to this version still applies
+            let value_hash = self
+                .inputs
+                .get(&substate_id)
+                .copied()
+                .flatten()
+                .filter(|lock| lock.version == version_to_lock)
+                .and_then(|lock| lock.value_hash);
             self.inputs.insert_sorted(
                 substate_id,
                 Some(EvidenceInputLockData {
                     is_write: lock_type.is_write(),
                     version: version_to_lock,
+                    value_hash,
                 }),
             );
         } else {
@@ -510,6 +529,22 @@ impl ShardGroupEvidence {
 
     pub fn all_pledged_inputs_iter(&self) -> impl Iterator<Item = (&SubstateId, &EvidenceInputLockData)> {
         self.inputs.iter().filter_map(|(id, ev)| Some((id, ev.as_ref()?)))
+    }
+
+    /// Sets the value hash of every pledged input that does not have one to the hash of the substate `get_substate`
+    /// returns for the input's id and pledged version.
+    pub fn bind_input_values<F, E>(&mut self, mut get_substate: F) -> Result<(), E>
+    where F: FnMut(&SubstateId, SubstateVersion) -> Result<Substate, E> {
+        for (substate_id, lock) in &mut self.inputs {
+            let Some(lock) = lock else {
+                continue;
+            };
+            if lock.value_hash.is_none() {
+                let substate = get_substate(substate_id, lock.version)?;
+                lock.value_hash = Some(substate.to_pledge_hash());
+            }
+        }
+        Ok(())
     }
 
     pub fn input_lock_intents(&self) -> impl Iterator<Item = RequireLockIntentRef<'_>> + '_ {
@@ -639,16 +674,40 @@ impl Display for ShardGroupEvidence {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, Encode, Decode, CborLen)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Encode, Decode, CborLen)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct EvidenceInputLockData {
     #[n(0)]
     pub is_write: bool,
     #[n(1)]
     pub version: SubstateVersion,
+    /// The [`hash_pledged_substate`](tari_engine_types::substate::hash_pledged_substate) of the value the shard group
+    /// holds for this input at `version`. Every input a shard group pledges carries one, and a foreign shard group
+    /// accepts a pledged value only if it matches.
+    #[serde(default)]
+    #[n(2)]
+    pub value_hash: Option<Hash32>,
+}
+
+/// `value_hash` is appended only when present, so a lock without one has the same command-hash preimage as the
+/// `(is_write, version)` lock data committed in existing blocks.
+impl BorshSerialize for EvidenceInputLockData {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        BorshSerialize::serialize(&self.is_write, writer)?;
+        BorshSerialize::serialize(&self.version, writer)?;
+        if let Some(value_hash) = &self.value_hash {
+            BorshSerialize::serialize(value_hash, writer)?;
+        }
+        Ok(())
+    }
 }
 
 impl EvidenceInputLockData {
+    /// Returns true if `substate` is the value this lock commits to.
+    pub fn is_pledged_value(&self, substate: &Substate) -> bool {
+        substate.version() == self.version && self.value_hash.is_some_and(|hash| hash == substate.to_pledge_hash())
+    }
+
     pub fn as_lock_type(&self) -> SubstateLockType {
         if self.is_write {
             SubstateLockType::Write
@@ -755,6 +814,71 @@ mod tests {
             assert_eq!(evidence.exhaust_burn_portion(19, sg2), Some(6));
             assert_eq!(evidence.exhaust_burn_portion(19, sg3), Some(6));
         }
+    }
+
+    mod input_lock_data_encoding {
+        use super::*;
+
+        #[derive(BorshSerialize, Encode)]
+        struct UnboundLockData {
+            #[n(0)]
+            is_write: bool,
+            #[n(1)]
+            version: SubstateVersion,
+        }
+
+        const UNBOUND: UnboundLockData = UnboundLockData {
+            is_write: true,
+            version: SubstateVersion::ZERO,
+        };
+
+        #[test]
+        fn a_lock_without_a_value_hash_has_the_preimage_of_an_unbound_lock() {
+            let lock = EvidenceInputLockData {
+                is_write: true,
+                version: SubstateVersion::ZERO,
+                value_hash: None,
+            };
+            assert_eq!(borsh::to_vec(&lock).unwrap(), borsh::to_vec(&UNBOUND).unwrap());
+
+            let bound = EvidenceInputLockData {
+                value_hash: Some(Hash32::from_array([1; 32])),
+                ..lock
+            };
+            assert_ne!(borsh::to_vec(&bound).unwrap(), borsh::to_vec(&UNBOUND).unwrap());
+        }
+
+        #[test]
+        fn an_unbound_lock_decodes_without_a_value_hash() {
+            let encoded = tari_bor::encode(&UNBOUND).unwrap();
+            let decoded: EvidenceInputLockData = tari_bor::decode_exact(&encoded).unwrap();
+            assert_eq!(decoded.value_hash, None);
+            assert!(decoded.is_write);
+        }
+    }
+
+    #[test]
+    fn it_keeps_a_value_hash_only_while_the_version_is_unchanged() {
+        let id = seed_substate_id(1);
+        let mut evidence = ShardGroupEvidence::default();
+        evidence.insert(id.clone(), SubstateVersion::ZERO, SubstateLockType::Write);
+        evidence
+            .bind_input_values(|_, version| Ok::<_, ()>(Substate::new(version, test_value())))
+            .unwrap();
+        let bound = evidence.inputs()[&id].unwrap().value_hash;
+        assert!(bound.is_some());
+
+        evidence.insert(id.clone(), SubstateVersion::ZERO, SubstateLockType::Read);
+        assert_eq!(evidence.inputs()[&id].unwrap().value_hash, bound);
+
+        evidence.insert(id.clone(), SubstateVersion::from(1u64), SubstateLockType::Write);
+        assert_eq!(evidence.inputs()[&id].unwrap().value_hash, None);
+    }
+
+    fn test_value() -> tari_engine_types::substate::SubstateValue {
+        tari_engine_types::substate::SubstateValue::ClaimedOutputTombstone(
+            tari_engine_types::confidential::ClaimedOutputTombstone { value: 1 },
+        )
     }
 
     #[test]
