@@ -149,6 +149,44 @@ fn underpaid_compute_is_capped_at_what_the_payment_funds() {
     );
 }
 
+/// Nested cross-template calls draw on the same payment-funded allowance as the frame that made
+/// them. Each of the two frames here fits the payment on its own but not together, so the second
+/// to finish must trap: the fee intent commits and every point that ran is paid for.
+#[test]
+fn nested_calls_share_the_payment_funded_allowance() {
+    let Harness {
+        mut test,
+        bench,
+        account,
+        owner,
+        key,
+        per_round,
+    } = setup();
+
+    let rounds = ABOVE_GRACE_POINTS / per_round;
+    // What `paying_more_raises_the_compute_allowance` proves funds one frame of this size.
+    let fee_payment = ABOVE_GRACE_POINTS + 10_000_000;
+    let tx = Transaction::builder_localnet(Epoch(1))
+        .pay_fee_from_component(account, fee_payment)
+        .call_function(bench, "nested_div_u64", args![bench, 1u32, rounds])
+        .build_and_seal(&key);
+
+    let result = test.try_execute(tx, vec![owner]).unwrap();
+    assert_insufficient_fees(result.expect_failure());
+    assert!(
+        result.finalize.is_fee_only(),
+        "expected the fee intent to commit and the rest to be rejected (AcceptFeeRejectRest), got {:?}",
+        result.finalize.result,
+    );
+    let fee_receipt = &result.finalize.fee_receipt;
+    assert_eq!(fee_receipt.total_fees_paid(), fee_payment);
+    assert_eq!(
+        fee_receipt.unpaid_debt(),
+        0,
+        "nested frames must not run compute the payment does not fund",
+    );
+}
+
 /// The credit is scoped to the fee intent. A call sized within the grace — and which therefore
 /// succeeds inside a fee intent, per `fee_intent_may_spend_compute_within_grace_before_paying` —
 /// still traps when it runs in the main instructions of a transaction whose payment does not fund

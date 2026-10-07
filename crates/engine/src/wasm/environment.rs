@@ -24,9 +24,13 @@ use std::fmt::{Debug, Formatter};
 
 use tari_engine_types::limits;
 use tari_template_abi::{EngineOp, WASM_PTR_SIZE};
+use tari_wasmer_middlewares::metering::{MeteringPoints, get_remaining_points, set_remaining_points};
 use wasmer::{AsStoreMut, AsStoreRef, Instance, Memory, MemoryAccessError, MemoryView, TypedFunction, WasmPtr};
 
-use crate::wasm::{WasmExecutionError, mem_writer::MemWriter};
+use crate::{
+    runtime::ComputeAllowance,
+    wasm::{WasmExecutionError, mem_writer::MemWriter},
+};
 
 pub(crate) type WasmAllocFn = TypedFunction<u32, WasmPtr<u8>>;
 pub(crate) type WasmFreeFn = TypedFunction<WasmPtr<u8>, ()>;
@@ -57,8 +61,32 @@ pub struct WasmEnv<T> {
 /// end-of-invocation accounting.
 pub(super) struct InvocationMeter {
     instance: Instance,
+    /// What the meter would read had the invocation consumed nothing, so that `start_points` less
+    /// the meter's reading is the invocation's own consumption. Lowering the meter lowers this by
+    /// the same amount.
     start_points: u64,
     synced: u64,
+    binding_allowance: Option<ComputeAllowance>,
+}
+
+impl InvocationMeter {
+    fn consumed<S: AsStoreMut>(&self, store: &mut S) -> u64 {
+        match get_remaining_points(store, &self.instance) {
+            MeteringPoints::Remaining(n) => self.start_points.saturating_sub(n),
+            MeteringPoints::Exhausted => self.start_points,
+        }
+    }
+}
+
+/// How a metered invocation ended, as [`WasmEnv::end_metered_invocation`] reports it.
+pub(super) struct MeteredInvocation {
+    /// Points the invocation's own code consumed and has not yet recorded on the transaction's
+    /// running total. Nested calls it made are metered and recorded by theirs.
+    pub unsynced: u64,
+    /// Whether the invocation ran its meter out.
+    pub exhausted: bool,
+    /// Set when the authorized compute, not a hard cap, last bounded the meter.
+    pub binding_allowance: Option<ComputeAllowance>,
 }
 
 impl<T> WasmEnv<T> {
@@ -158,40 +186,77 @@ impl<T> WasmEnv<T> {
         self.refused_engine_call.take()
     }
 
-    /// Begins metering an invocation that starts with `start_points` on the Wasmer meter. One
+    /// Begins metering an invocation that starts with `start_points` on the Wasmer meter, bounded by
+    /// `binding_allowance` when the authorized compute rather than a hard cap sized it. One
     /// invocation is in flight per process instance at a time (cross-template calls run in their
     /// own process, with their own meter).
-    pub(super) fn begin_metered_invocation(&mut self, instance: Instance, start_points: u64) {
+    pub(super) fn begin_metered_invocation(
+        &mut self,
+        instance: Instance,
+        start_points: u64,
+        binding_allowance: Option<ComputeAllowance>,
+    ) {
         self.invocation_meter = Some(InvocationMeter {
             instance,
             start_points,
             synced: 0,
+            binding_allowance,
         });
     }
 
-    /// Ends the in-flight invocation, returning the points already synced to the transaction
-    /// total, so the caller records only the unsynced tail.
-    pub(super) fn end_metered_invocation(&mut self) -> u64 {
-        self.invocation_meter.take().map(|m| m.synced).unwrap_or(0)
+    /// Ends the in-flight invocation and reports how it ended, including the tail of its
+    /// consumption not already synced to the transaction total.
+    pub(super) fn end_metered_invocation<S: AsStoreMut>(&mut self, store: &mut S) -> MeteredInvocation {
+        let Some(meter) = self.invocation_meter.take() else {
+            return MeteredInvocation {
+                unsynced: 0,
+                exhausted: false,
+                binding_allowance: None,
+            };
+        };
+        MeteredInvocation {
+            unsynced: meter.consumed(store).saturating_sub(meter.synced),
+            exhausted: matches!(get_remaining_points(store, &meter.instance), MeteringPoints::Exhausted),
+            binding_allowance: meter.binding_allowance,
+        }
     }
 
     /// Reads the in-flight invocation's consumed-but-unsynced points from the Wasmer meter and
     /// marks them synced. Returns `None` when no invocation is in flight (host calls made outside
     /// a WASM invocation) or nothing new was consumed.
     pub(super) fn take_unsynced_in_flight_points<S: AsStoreMut>(&mut self, store: &mut S) -> Option<u64> {
-        use tari_wasmer_middlewares::metering::{MeteringPoints, get_remaining_points};
-
         let meter = self.invocation_meter.as_mut()?;
-        let consumed = match get_remaining_points(store, &meter.instance) {
-            MeteringPoints::Remaining(n) => meter.start_points.saturating_sub(n),
-            MeteringPoints::Exhausted => meter.start_points,
-        };
+        let consumed = meter.consumed(store);
         let delta = consumed.saturating_sub(meter.synced);
         if delta == 0 {
             return None;
         }
         meter.synced = consumed;
         Some(delta)
+    }
+
+    /// Lowers the in-flight invocation's meter to at most `limit` remaining points, `limit` being
+    /// what the transaction may still spend and `binding_allowance` what bounds it. The points taken
+    /// off the meter were never run, so they come off `start_points` too and the invocation's
+    /// consumption is unchanged. A meter already at or below `limit` is left as it is.
+    pub(super) fn clamp_in_flight_meter<S: AsStoreMut>(
+        &mut self,
+        store: &mut S,
+        limit: u64,
+        binding_allowance: Option<ComputeAllowance>,
+    ) {
+        let Some(meter) = self.invocation_meter.as_mut() else {
+            return;
+        };
+        let MeteringPoints::Remaining(remaining) = get_remaining_points(store, &meter.instance) else {
+            return;
+        };
+        if remaining <= limit {
+            return;
+        }
+        set_remaining_points(store, &meter.instance, limit);
+        meter.start_points = meter.start_points.saturating_sub(remaining - limit);
+        meter.binding_allowance = binding_allowance;
     }
 
     pub(super) fn set_last_panic(&mut self, message: String) {
