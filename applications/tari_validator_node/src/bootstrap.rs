@@ -109,13 +109,14 @@ use tokio::{
 };
 
 #[cfg(feature = "metrics")]
-use crate::consensus::metrics::PrometheusConsensusMetrics;
-#[cfg(feature = "metrics")]
-use crate::epoch_metrics::{EpochManagerCollector, MeteredEpochOracle, PrometheusEpochOracleMetrics};
-#[cfg(feature = "metrics")]
-use crate::inbound_queue_metrics::InboundQueueCollector;
-#[cfg(feature = "metrics")]
-use crate::state_store_metrics::StateStoreMemoryCollector;
+use crate::metrics::{
+    EpochManagerCollector,
+    InboundQueueCollector,
+    MeteredEpochOracle,
+    PrometheusConsensusMetrics,
+    PrometheusEpochOracleMetrics,
+    StateStoreMemoryCollector,
+};
 use crate::{
     ApplicationConfig,
     ValidatorNodeEpochManagerSpec,

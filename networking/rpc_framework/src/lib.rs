@@ -52,7 +52,7 @@ const fn max_response_size() -> usize {
 }
 
 /// The maximum size for a single RPC response excluding overhead
-const fn max_response_payload_size() -> usize {
+pub const fn max_response_payload_size() -> usize {
     // RpcResponse overhead is:
     // - 4 varint protobuf fields, each field ID is 1 byte
     // - 3 u32 fields, VarInt(u32::MAX) is 5 bytes

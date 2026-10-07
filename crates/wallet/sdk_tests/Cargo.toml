@@ -24,6 +24,7 @@ tari_ootle_wallet_crypto = { workspace = true, features = ["serde"] }
 tari_ootle_transaction = { workspace = true }
 tari_template_lib = { workspace = true }
 tari_template_abi = { workspace = true }
+tari_template_builtin = { workspace = true }
 tari_ootle_address = { workspace = true, features = ["serde"] }
 tari_indexer_client = { workspace = true, default-features = false }
 

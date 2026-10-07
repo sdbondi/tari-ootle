@@ -12,6 +12,7 @@ use tari_ootle_common_types::{
     VersionedSubstateIdRef,
     optional::{IsNotFoundError, Optional},
     response_status::{ResponseErrorStatus, TransactionStatusResponseError},
+    substate_type::check_diff_substate_types,
 };
 use tari_ootle_transaction::{Transaction, TransactionId};
 use tari_template_lib::types::{ComponentAddress, constants::TARI_TOKEN};
@@ -217,6 +218,7 @@ where
         Ok(transactions)
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn check_and_store_finalized_transaction(
         &self,
         transaction_id: TransactionId,
@@ -264,6 +266,11 @@ where
                 finalized_time,
                 ..
             } => {
+                if let Some(diff) = execution_result.as_ref().and_then(|e| e.finalize.result.any_accept()) {
+                    check_diff_substate_types(diff)
+                        .map_err(|e| TransactionApiError::InvalidTransactionQueryResponse { details: e.to_string() })?;
+                }
+
                 let new_status = if final_decision.is_commit() {
                     match execution_result.as_ref() {
                         Some(execution_result) => {
@@ -398,7 +405,11 @@ where
         let (components, mut other_substates) = diff.up_iter().partition::<Vec<_>, _>(|(addr, _)| addr.is_component());
 
         for (component_addr, substate) in components {
-            let component = substate.substate_value().component().unwrap();
+            let component = substate.substate_value().component().ok_or_else(|| {
+                TransactionApiError::InvalidTransactionQueryResponse {
+                    details: format!("Substate {component_addr} in the transaction diff is not a component"),
+                }
+            })?;
             let indexed =
                 IndexedWellKnownTypes::from_value(component.state()).map_err(TransactionApiError::IndexedValueError)?;
 
@@ -439,12 +450,15 @@ where
                         } else {
                             // A vault created by this transaction is not in the wallet's vault table yet,
                             // but it is referenced by this component, so record the parent linkage.
+                            let vault = child.substate_value().vault().ok_or_else(|| {
+                                TransactionApiError::InvalidTransactionQueryResponse {
+                                    details: format!("Substate {owned_id} in the transaction diff is not a vault"),
+                                }
+                            })?;
                             tx.substates_upsert_child(
                                 &parent,
                                 VersionedSubstateIdRef::new(&owned_id, child.version()),
-                                [(*child.substate_value().vault().unwrap().resource_address()).into()]
-                                    .into_iter()
-                                    .collect(),
+                                [(*vault.resource_address()).into()].into_iter().collect(),
                             )?;
                         }
                         continue;

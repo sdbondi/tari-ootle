@@ -52,18 +52,11 @@ pub async fn spawn_json_rpc(
     enable_permissive_cors: bool,
     handlers: JsonRpcHandlers,
     mut shutdown_signal: ShutdownSignal,
-    #[cfg(feature = "metrics")] registry: prometheus_client::registry::Registry,
 ) -> Result<(SocketAddr, JoinHandle<Result<(), anyhow::Error>>), anyhow::Error> {
     let router = Router::new()
         .route("/", get(http_ui::handler).post(handler))
         .route("/json_rpc", post(handler))
-        .route("/health", get(health_check));
-    #[cfg(feature = "metrics")]
-    let router = router.route(
-        "/_metrics",
-        axum::routing::get(super::metrics::MetricsHandler::new(registry)),
-    );
-    let router = router
+        .route("/health", get(health_check))
         .fallback(http_ui::handler)
         .layer(Extension(Arc::new(handlers)))
         .layer(if enable_permissive_cors {

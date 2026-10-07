@@ -11,7 +11,11 @@ use tari_engine_types::{
     substate::{Substate, SubstateDiff, SubstateId, SubstateValue},
     vault::Vault,
 };
-use tari_ootle_common_types::{SubstateVersion, optional::Optional};
+use tari_ootle_common_types::{
+    SubstateVersion,
+    optional::Optional,
+    substate_type::{SubstateType, check_diff_substate_types},
+};
 use tari_ootle_transaction::TransactionId;
 use tari_ootle_wallet_sdk::{
     WalletSdk,
@@ -102,7 +106,11 @@ where TSpec: WalletSdkSpec
             is_updated = true;
         }
 
-        let indexed_value = IndexedWellKnownTypes::from_value(account_value.component().unwrap().state())?;
+        let found = SubstateType::from(&account_value);
+        let account_component = account_value.component().ok_or_else(|| {
+            AccountMonitorError::UnexpectedSubstate(format!("Network returned a {found} for account {account_address}"))
+        })?;
+        let indexed_value = IndexedWellKnownTypes::from_value(account_component.state())?;
         substate_api.save_root(
             account_substate_id.as_versioned_ref(),
             indexed_value.referenced_substates(),
@@ -554,6 +562,7 @@ where TSpec: WalletSdkSpec
         diff: &SubstateDiff,
         new_account_data: Option<NewAccountData>,
     ) -> Result<(), AccountMonitorError> {
+        check_diff_substate_types(diff).map_err(|e| AccountMonitorError::UnexpectedSubstate(e.to_string()))?;
         let substate_api = self.wallet_sdk.substate_api();
         let accounts_api = self.wallet_sdk.accounts_api();
 
@@ -596,35 +605,26 @@ where TSpec: WalletSdkSpec
             .collect::<HashMap<_, _>>();
 
         let stealth_outputs_api = self.wallet_sdk.stealth_outputs_api();
-        let utxos = diff.up_iter().filter(|(id, _)| id.is_utxo()).map(|(id, s)| {
-            let utxo = s
-                .substate_value()
-                .as_utxo()
-                .unwrap_or_else(|| panic!("Expected {} to be a UTXO.", id));
-            (id.as_utxo_address().expect("is_utxo checked"), utxo)
-        });
+        let utxos = diff
+            .up_iter()
+            .filter_map(|(id, s)| Some((id.as_utxo_address()?, s.substate_value().as_utxo()?)));
 
         let touched_stealth_balances = stealth_outputs_api.verify_and_update_outputs(utxos)?;
 
-        let accounts =
-            diff.up_iter()
-                .filter(|(_, s)| is_account(s))
-                .filter_map(|(a, s)| {
-                    match IndexedWellKnownTypes::from_value(s.substate_value().component().unwrap().state()) {
-                        Ok(value) => Some((
-                            a.as_component_address().expect("BUG: substate id is a component"),
-                            value,
-                            s.version(),
-                        )),
-                        Err(e) => {
-                            error!(
-                                target: LOG_TARGET,
-                                "🏦 Failed to parse account substate {} in tx {}: {}", a, tx_id, e
-                            );
-                            None
-                        },
-                    }
-                });
+        let accounts = diff.up_iter().filter(|(_, s)| is_account(s)).filter_map(|(a, s)| {
+            let address = a.as_component_address()?;
+            let component = s.substate_value().component()?;
+            match IndexedWellKnownTypes::from_value(component.state()) {
+                Ok(value) => Some((address, value, s.version())),
+                Err(e) => {
+                    error!(
+                        target: LOG_TARGET,
+                        "🏦 Failed to parse account substate {} in tx {}: {}", a, tx_id, e
+                    );
+                    None
+                },
+            }
+        });
 
         let mut updated_accounts = HashSet::new();
         // Find and process all new/existing vaults
@@ -658,13 +658,8 @@ where TSpec: WalletSdkSpec
                         .filter_map(|nft_id| {
                             diff.up_iter()
                                 .find(|(id, _)| id.as_non_fungible_address().map(|a| a.id()) == Some(nft_id))
-                                .map(|(_, s)| {
-                                    let nft = s
-                                        .substate_value()
-                                        .non_fungible()
-                                        .unwrap_or_else(|| panic!("Expected {} to be a non-fungible token.", nft_id));
-                                    (nft_id.clone(), nft.clone())
-                                })
+                                .and_then(|(_, s)| s.substate_value().non_fungible())
+                                .map(|nft| (nft_id.clone(), nft.clone()))
                         })
                         .collect();
 
@@ -706,12 +701,10 @@ where TSpec: WalletSdkSpec
                 debug!(target: LOG_TARGET, "🏦 Vault {} has no parent component.", vault_addr);
                 continue;
             };
-            let account_addr = account_addr.as_component_address().unwrap_or_else(|| {
-                panic!(
-                    "BUG: Vault {} has a parent address that is not a component.",
-                    vault_addr
-                )
-            });
+            let Some(account_addr) = account_addr.as_component_address() else {
+                error!(target: LOG_TARGET, "🏦 Vault {} has parent {} that is not a component.", vault_addr, account_addr);
+                continue;
+            };
 
             // Check if this vault is associated with an account
             if !accounts_api.exists_by_address(&account_addr)? {
@@ -739,13 +732,8 @@ where TSpec: WalletSdkSpec
                 .filter_map(|nft_id| {
                     diff.up_iter()
                         .find(|(id, _)| id.as_non_fungible_address().map(|a| a.id()) == Some(nft_id))
-                        .map(|(_, s)| {
-                            let nft = s
-                                .substate_value()
-                                .non_fungible()
-                                .unwrap_or_else(|| panic!("Expected {} to be a non-fungible token.", nft_id));
-                            (nft_id.clone(), nft.clone())
-                        })
+                        .and_then(|(_, s)| s.substate_value().non_fungible())
+                        .map(|nft| (nft_id.clone(), nft.clone()))
                 })
                 .collect();
 

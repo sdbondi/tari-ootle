@@ -234,6 +234,8 @@ async fn spawn_validator_node_process(spawn: ValidatorSpawn) -> ValidatorNodePro
             config.validator_node.p2p.enable_mdns = false;
             config.validator_node.json_rpc_listener_address =
                 Some(format!("127.0.0.1:{}", json_rpc_port).parse().unwrap());
+            // OS-assigned port to avoid contention between concurrently running validators
+            config.validator_node.metrics_listener_address = Some("127.0.0.1:0".parse().unwrap());
             config.validator_node.p2p.listener_port = port;
             config.validator_node.fee_claim_public_key = fee_claim_public_key;
             config.validator_node.localnet_consensus_constants_file = localnet_consensus_constants_file;

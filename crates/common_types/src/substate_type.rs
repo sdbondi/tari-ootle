@@ -4,7 +4,7 @@
 use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
-use tari_engine_types::substate::{Substate, SubstateId, SubstateValue};
+use tari_engine_types::substate::{Substate, SubstateDiff, SubstateId, SubstateValue};
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -98,5 +98,72 @@ impl From<&Substate> for SubstateType {
 impl Display for SubstateType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self)
+    }
+}
+
+/// A substate value paired with an id that addresses a different type of substate.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Substate {id} is a {expected} but its value is a {found}")]
+pub struct SubstateTypeMismatch {
+    pub id: SubstateId,
+    pub expected: SubstateType,
+    pub found: SubstateType,
+}
+
+/// Checks that `value` is the type of substate that `id` addresses.
+pub fn check_substate_type(id: &SubstateId, value: &SubstateValue) -> Result<(), SubstateTypeMismatch> {
+    let found = SubstateType::from(value);
+    if found.matches(id) {
+        return Ok(());
+    }
+    Err(SubstateTypeMismatch {
+        id: id.clone(),
+        expected: SubstateType::from(id),
+        found,
+    })
+}
+
+/// Checks that every substate `diff` brings up has a value of the type its id addresses.
+pub fn check_diff_substate_types(diff: &SubstateDiff) -> Result<(), SubstateTypeMismatch> {
+    diff.up_iter()
+        .try_for_each(|(id, substate)| check_substate_type(id, substate.substate_value()))
+}
+
+#[cfg(test)]
+mod tests {
+    use tari_engine_types::{resource_container::ResourceContainer, vault::Vault};
+    use tari_template_lib_types::{ComponentAddress, VaultId, constants::TARI_TOKEN};
+
+    use super::*;
+
+    fn vault_id() -> SubstateId {
+        VaultId::from_hex(&"02".repeat(32)).unwrap().into()
+    }
+
+    fn vault() -> SubstateValue {
+        Vault::new(ResourceContainer::public_fungible(TARI_TOKEN, 1u64)).into()
+    }
+
+    #[test]
+    fn a_value_of_the_addressed_type_passes() {
+        check_substate_type(&vault_id(), &vault()).unwrap();
+    }
+
+    #[test]
+    fn a_value_of_another_type_is_a_mismatch() {
+        let id = SubstateId::from(ComponentAddress::from_array([1; 32]));
+        let err = check_substate_type(&id, &vault()).unwrap_err();
+        assert!(matches!(err.expected, SubstateType::Component));
+        assert!(matches!(err.found, SubstateType::Vault));
+    }
+
+    #[test]
+    fn a_diff_with_one_mistyped_up_substate_is_a_mismatch() {
+        let mut diff = SubstateDiff::new();
+        diff.up(vault_id(), Substate::new(1, vault()));
+        check_diff_substate_types(&diff).unwrap();
+
+        diff.up(ComponentAddress::from_array([1; 32]).into(), Substate::new(1, vault()));
+        check_diff_substate_types(&diff).unwrap_err();
     }
 }

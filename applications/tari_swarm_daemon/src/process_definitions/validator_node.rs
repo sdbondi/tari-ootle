@@ -27,6 +27,7 @@ impl ProcessDefinition for ValidatorNode {
         // The web UI is served from the JSON-RPC port. Some other components expect a "web" port.
         context.port_allocator_mut().set_port("web", jrpc_port);
         let p2p_port = context.get_free_port("p2p").await?;
+        let metrics_port = context.get_free_port("metrics").await?;
         let listen_ip = context.listen_ip();
 
         let json_rpc_address = format!("{listen_ip}:{jrpc_port}");
@@ -71,6 +72,7 @@ impl ProcessDefinition for ValidatorNode {
             ))
             .arg(format!("-pvalidator_node.p2p.listener_port={p2p_port}"))
             .arg(format!("-pvalidator_node.json_rpc_listener_address={json_rpc_address}"))
+            .arg(format!("-pvalidator_node.metrics_listener_address={listen_ip}:{metrics_port}"))
             .arg(format!(
                 "-pvalidator_node.localnet_consensus_constants_file={}",
                 context.consensus_constants_file().display()

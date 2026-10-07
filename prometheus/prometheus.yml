@@ -6,7 +6,7 @@ scrape_configs:
     scrape_interval: 5s
     metrics_path: "/_metrics"
     static_configs:
-      # Configure prometheus to scrape http://localhost:{my_json_rpc_port}/_metrics. By default the VN's JSON-RPC server listens on port 18200.
+      # Configure prometheus to scrape http://localhost:{my_metrics_port}/_metrics. By default the VN's metrics server listens on port 18201.
       - targets: [ 'host.docker.internal:12005' ]
 
       #- job_name: 'node'

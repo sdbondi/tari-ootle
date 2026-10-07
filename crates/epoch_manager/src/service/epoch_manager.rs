@@ -199,20 +199,6 @@ where TSpec: EpochManagerSpec
         Ok(())
     }
 
-    pub fn insert_current_epoch(&mut self, epoch: Epoch, epoch_hash: FixedHash) -> Result<(), EpochManagerError> {
-        let mut tx = self.global_db.create_transaction()?;
-
-        self.global_db.epochs(&mut tx).insert_epoch(epoch, epoch_hash)?;
-        let mut metadata = self.global_db.metadata(&mut tx);
-        metadata.set_metadata(MetadataKey::EpochManagerCurrentEpoch.as_key_bytes(), &epoch)?;
-        metadata.set_metadata(MetadataKey::EpochManagerLastEpochHash.as_key_bytes(), &epoch_hash)?;
-
-        tx.commit()?;
-        self.set_current_epoch(epoch);
-        self.current_epoch_hash = epoch_hash;
-        Ok(())
-    }
-
     pub fn current_epoch_hash(&self) -> FixedHash {
         self.current_epoch_hash
     }

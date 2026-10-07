@@ -240,3 +240,31 @@ fn max_substate_size_limit_applies_to_mutations() {
     let reason = test.execute_expect_failure(deposit_nfts(account, &account_key, DEPOSIT_BATCHES), vec![owner_proof]);
     assert_reject_reason(reason, "exceeds the maximum allowed size");
 }
+
+/// A transaction of `count` components, each holding 64 KiB of data.
+fn create_components(template: TemplateAddress, key: &RistrettoSecretKey, count: usize) -> Transaction {
+    let mut builder = Transaction::builder_localnet(Epoch(1));
+    for _ in 0..count {
+        builder = builder.call_function(template, "new", args!(Bytes::from(vec![7u8; 64 * 1024])));
+    }
+    builder.build_and_seal(key)
+}
+
+#[test]
+fn max_transaction_output_bytes_limit() {
+    let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
+    let template = test.get_template_address(TEMPLATE_NAME);
+    let per_component = 64 * 1024;
+    let fitting = limits::ENGINE_LIMITS.max_transaction_output_bytes / per_component - 4;
+
+    test.execute_expect_success(create_components(template, test.secret_key(), fitting), vec![]);
+
+    let reason = test.execute_expect_failure(create_components(template, test.secret_key(), fitting + 8), vec![]);
+    assert_reject_reason(
+        reason,
+        format!(
+            "exceeding the maximum of {} bytes per transaction",
+            limits::ENGINE_LIMITS.max_transaction_output_bytes
+        ),
+    );
+}

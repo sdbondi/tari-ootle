@@ -632,6 +632,7 @@ impl LimitError {
     pub fn failure_code(&self) -> ExecutionFailureCode {
         match self {
             Self::SubstateSizeExceeded { .. } |
+            Self::TransactionOutputSizeExceeded { .. } |
             Self::LogSizeExceeded { .. } |
             Self::MaxLogsExceeded |
             Self::MaxEventsExceeded |
@@ -746,6 +747,8 @@ pub enum ArgumentValidationError {
 pub enum LimitError {
     #[error("Substate {id} of {size} bytes exceeds the maximum allowed size of {} bytes", limits::ENGINE_LIMITS.max_substate_size)]
     SubstateSizeExceeded { id: SubstateId, size: usize },
+    #[error("Transaction writes {size} bytes of state, exceeding the maximum of {} bytes per transaction", limits::ENGINE_LIMITS.max_transaction_output_bytes)]
+    TransactionOutputSizeExceeded { size: usize },
     #[error("Log entry of {size} bytes exceeds maximum size of {} bytes", limits::ENGINE_LIMITS.max_log_size_bytes)]
     LogSizeExceeded { size: usize },
     #[error("Exceeded maximum number of logs per transaction: {}", limits::ENGINE_LIMITS.max_logs)]
