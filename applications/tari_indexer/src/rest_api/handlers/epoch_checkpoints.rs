@@ -12,7 +12,9 @@ use tari_ootle_common_types::Epoch;
 use crate::rest_api::{context::HandlerContext, error::ErrorResponse, handlers::HandlerResult};
 
 const DEFAULT_LIMIT: u32 = 20;
-const MAX_LIMIT: u32 = 100;
+/// Each checkpoint carries its commit proof and the shard tree summary, tens of KB in JSON, so the
+/// page size bounds the response size.
+const MAX_LIMIT: u32 = 20;
 
 #[utoipa::path(
     get,
@@ -20,7 +22,7 @@ const MAX_LIMIT: u32 = 100;
     description = "List epoch checkpoints from storage",
     params(
         ("from_epoch" = Option<u64>, Query, description = "Epoch to start listing from (inclusive). Defaults to 0"),
-        ("limit" = Option<u32>, Query, description = "Maximum number of checkpoints to return (default: 20, max: 100)"),
+        ("limit" = Option<u32>, Query, description = "Maximum number of checkpoints to return (default: 20, max: 20)"),
     ),
     responses(
         (status = 200, description = "List of epoch checkpoints", body = ListEpochCheckpointsResponse),

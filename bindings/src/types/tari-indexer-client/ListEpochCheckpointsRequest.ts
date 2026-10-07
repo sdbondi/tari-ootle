@@ -7,7 +7,7 @@ export type ListEpochCheckpointsRequest = {
    */
   from_epoch: Epoch | null;
   /**
-   * Maximum number of checkpoints to return (default: 20, max: 100).
+   * Maximum number of checkpoints to return (default: 20, max: 20).
    */
   limit: number | null;
 };
