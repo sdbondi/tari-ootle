@@ -58,6 +58,53 @@ fn per_transaction_budget_caps_total_across_calls() {
     );
 }
 
+/// Nested cross-template calls draw on the same transaction-wide budget as the frame that made
+/// them. Each frame here does ~30% of the budget after the frame it called has returned, so five
+/// frames need ~150% of it: the transaction must run out of gas and must not have run more than
+/// the budget allows.
+#[test]
+fn per_transaction_budget_caps_total_across_nested_calls() {
+    const DEPTH: u32 = 4;
+
+    let mut test = TemplateTest::new(CRATE_PATH, [METERING_BENCH]);
+    let addr = test.get_template_address("MeteringBench");
+    let (account, owner, key) = test.create_funded_account();
+
+    test.enable_fees();
+
+    let call = |depth: u32, rounds: u64| {
+        Transaction::builder_localnet(Epoch(1))
+            .pay_fee_from_component(account, 900_000_000u64)
+            .call_function(addr, "nested_div_u64", args![addr, depth, rounds])
+            .build_and_seal(&key)
+    };
+
+    let mut points = |rounds: u64| -> u64 {
+        test.execute_expect_success(call(0, rounds), vec![owner.clone()])
+            .wasm_execution_points
+    };
+    let per_round = (points(20_000) - points(10_000)) / 10_000;
+    let rounds = MAX_WASM_POINTS_PER_TRANSACTION * 30 / 100 / per_round;
+
+    // Two frames together stay under the budget.
+    test.execute_expect_success(call(1, rounds), vec![owner.clone()]);
+
+    let result = test.try_execute(call(DEPTH, rounds), vec![owner.clone()]).unwrap();
+    let reason = result.expect_failure();
+    assert!(
+        matches!(reason, RejectReason::ExecutionFailure {
+            code: ExecutionFailureCode::LimitExceeded,
+            ..
+        }),
+        "expected an out-of-gas execution failure, got {reason:?}",
+    );
+    assert!(
+        result.wasm_execution_points <= MAX_WASM_POINTS_PER_TRANSACTION,
+        "nested calls ran {} points, over the {MAX_WASM_POINTS_PER_TRANSACTION} point budget",
+        result.wasm_execution_points,
+    );
+}
+
 /// Every instruction that calls a template runs on a new instance or on one reset to its fresh
 /// state, before the first metered operator runs, and pays an instantiation for it on every call.
 #[test]

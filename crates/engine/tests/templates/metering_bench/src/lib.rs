@@ -87,6 +87,18 @@ mod metering_bench {
         pub fn bench_rem_u64(rounds: u64) -> u64 {
             grind(rounds, |acc, d| acc.wrapping_rem(d))
         }
+        /// `bench_div_u64` run in each of `depth + 1` nested frames. It calls itself through
+        /// `this` (this template's address) `depth` times first and grinds on the way back out,
+        /// so every frame does its work after the frames it called have finished theirs.
+        pub fn nested_div_u64(this: TemplateAddress, depth: u32, rounds: u64) -> u64 {
+            let inner: u64 = if depth == 0 {
+                0
+            } else {
+                TemplateManager::get(this).call("nested_div_u64", args![this, depth - 1, rounds])
+            };
+            inner ^ grind(rounds, |acc, d| acc.wrapping_div(d))
+        }
+
         pub fn bench_div_s64(rounds: u64) -> u64 {
             // d is provably in 1..=0xFFFF (positive, never 0 or -1), so this lowers to a bare
             // i64.div_s with no overflow/zero guards.

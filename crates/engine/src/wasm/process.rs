@@ -52,7 +52,7 @@ use tari_template_lib::{
     },
     types::engine_args::IntrinsicInvokeArg,
 };
-use tari_wasmer_middlewares::metering::{MeteringPoints, get_remaining_points, set_remaining_points};
+use tari_wasmer_middlewares::metering::set_remaining_points;
 use wasmer::{AsStoreMut, AsStoreRef, Function, FunctionEnv, FunctionEnvMut, Instance, Store, WasmPtr, imports};
 
 use crate::{
@@ -61,7 +61,7 @@ use crate::{
     wasm::{
         InstanceResetError,
         LoadedWasmTemplate,
-        environment::{AllocPtr, WasmEnv},
+        environment::{AllocPtr, MeteredInvocation, WasmEnv},
         error::WasmExecutionError,
         mem_writer::MemWriter,
         module::MainFunction,
@@ -202,45 +202,46 @@ impl WasmProcess {
     ///
     /// Each invocation starts from the per-call ceiling, `MAX_WASM_POINTS_PER_CALL`. It is taken
     /// from the constant because an instance serves several calls in a transaction, and its meter
-    /// holds whatever the previous call left. Lowering it to what remains of the
-    /// transaction-wide budget stops a transaction from exceeding
-    /// `MAX_WASM_POINTS_PER_TRANSACTION` by spreading work across many instructions or nested
-    /// cross-template calls, each of which would otherwise get a fresh per-call budget. When the
-    /// budget is already spent the allowance is zero and the call traps out-of-gas on its first
-    /// metered op.
-    ///
-    /// It is capped again by the compute the transaction is authorized to run: the fee intent's
-    /// flat credit, or past the checkpoint what the fees paid can cover. That bounds the compute an
-    /// under-paying transaction can extract — it traps out-of-gas once it exhausts the allowance
-    /// rather than running up to the per-transaction hard cap. The allowance is shared with native
-    /// verification (which pre-charges its point cost), so it is reduced by the combined
-    /// consumption; the hard cap bounds WASM work only.
+    /// holds whatever the previous call left. It is lowered to what the transaction may still
+    /// spend ([`transaction_headroom`]), and lowered again after every engine call the invocation
+    /// makes ([`Self::clamp_in_flight_meter`]).
     fn metering_allowance(&self, store: &mut Store) -> Result<MeteringAllowance, WasmExecutionError> {
         let per_call_cap = limits::MAX_WASM_POINTS_PER_CALL;
-        let interface = self.env(store).state()?.interface();
-        let consumed = interface.wasm_points_consumed();
-        let native_consumed = interface.native_points_consumed();
-        let budget_remaining = limits::MAX_WASM_POINTS_PER_TRANSACTION.saturating_sub(consumed);
-        let allowance_remaining = interface.compute_allowance().map(|allowance| {
-            let remaining = allowance
-                .points
-                .saturating_sub(consumed.saturating_add(native_consumed));
-            (allowance, remaining)
-        });
+        let headroom = transaction_headroom(self.env(store).state()?);
 
         Ok(MeteringAllowance {
-            consumed,
-            points_before: match allowance_remaining {
-                Some((_, remaining)) => per_call_cap.min(budget_remaining).min(remaining),
-                None => per_call_cap.min(budget_remaining),
-            },
-            // Kept when the allowance — rather than the per-transaction hard cap — is what bounds
-            // this call, so an out-of-gas trap is reported against whatever authorized it rather
-            // than as a hit cap.
-            binding_allowance: allowance_remaining
-                .filter(|(_, remaining)| *remaining < budget_remaining && *remaining <= per_call_cap)
-                .map(|(allowance, _)| allowance),
+            points_before: per_call_cap.min(headroom.points),
+            binding_allowance: headroom.binding_allowance.filter(|_| headroom.points <= per_call_cap),
         })
+    }
+
+    /// Records the in-flight invocation's consumption since the last sync on the transaction total.
+    fn sync_in_flight_points(
+        env: &mut WasmEnv<Runtime>,
+        store: &mut impl AsStoreMut,
+    ) -> Result<(), WasmExecutionError> {
+        if let Some(delta) = env.take_unsynced_in_flight_points(store) {
+            env.state()?.interface().record_wasm_execution(delta)?;
+        }
+        Ok(())
+    }
+
+    /// Lowers the in-flight invocation's meter to what the transaction may still spend.
+    ///
+    /// The meter is sized when the invocation starts, and the engine calls it makes can spend the
+    /// transaction's budget under it: a nested cross-template call runs on a meter of its own, and
+    /// native verification pre-charges the allowance. Lowering the meter after each of them keeps
+    /// every frame of the call stack on one budget, so the transaction stays within
+    /// `MAX_WASM_POINTS_PER_TRANSACTION` and within the compute it is authorized to run however
+    /// deeply it nests.
+    fn clamp_in_flight_meter(env: &mut FunctionEnvMut<WasmEnv<Runtime>>) -> Result<(), WasmExecutionError> {
+        let (env_mut, mut store) = env.data_and_store_mut();
+        // Servicing the call may have run this instance's `tari_alloc`, which the headroom must
+        // already account for.
+        Self::sync_in_flight_points(env_mut, &mut store)?;
+        let headroom = transaction_headroom(env_mut.state()?);
+        env_mut.clamp_in_flight_meter(&mut store, headroom.points, headroom.binding_allowance);
+        Ok(())
     }
 
     /// Runs one invocation on the meter [`Self::invoke`] has installed, and reports how it
@@ -361,14 +362,9 @@ impl WasmProcess {
             // verification pre-charges, nested cross-template call budgets) see it. Without this, a
             // call could spend its whole metering allowance and still pass mid-call checks that
             // read the stale end-of-invocation total.
-            if let Some(delta) = env_mut.take_unsynced_in_flight_points(&mut store) {
-                let recorded = env_mut
-                    .state()
-                    .and_then(|state| Ok(state.interface().record_wasm_execution(delta)?));
-                if let Err(err) = recorded {
-                    env_mut.set_last_engine_error(err);
-                    return WasmPtr::null();
-                }
+            if let Err(err) = Self::sync_in_flight_points(env_mut, &mut store) {
+                env_mut.set_last_engine_error(err);
+                return WasmPtr::null();
             }
         }
 
@@ -463,6 +459,11 @@ impl WasmProcess {
                 })
             },
         };
+
+        // Applies whether or not the call succeeded: a template may ignore a failed call and keep
+        // running, and the work a failed nested call did is spent all the same.
+        let clamped = Self::clamp_in_flight_meter(&mut env);
+        let result = result.and_then(|ptr| clamped.map(|()| ptr));
 
         result.unwrap_or_else(|err| {
             // The recorded error is what reaches the transaction, as its reject reason. This line is
@@ -605,7 +606,6 @@ impl WasmProcess {
         abi_metrics::record_call_info_size_pass(call_info_size, span.finish());
 
         let MeteringAllowance {
-            consumed,
             points_before,
             binding_allowance,
         } = self.metering_allowance(store)?;
@@ -614,25 +614,26 @@ impl WasmProcess {
         // visible to budget/allowance checks made mid-call (native verification pre-charges,
         // nested cross-template call budgets), not only after the call returns.
         self.env_mut(store)
-            .begin_metered_invocation(self.instance.clone(), points_before);
+            .begin_metered_invocation(self.instance.clone(), points_before, binding_allowance);
 
         let outcome = self.run_metered(store, &func, func_ident, args, call_info_size);
 
-        let remaining_after_call = get_remaining_points(store, &self.instance);
-        let exhausted = matches!(remaining_after_call, MeteringPoints::Exhausted);
-        let points_consumed = match remaining_after_call {
-            MeteringPoints::Remaining(n) => points_before.saturating_sub(n),
-            // Out-of-gas trap: the meter says zero remaining. Charge for the entire pre-call
-            // budget — the host will report a runtime error and the partial work was already done.
-            MeteringPoints::Exhausted => points_before,
+        // An out-of-gas trap leaves the meter at zero, and the invocation is charged its entire
+        // budget: the host reports a runtime error and the partial work was already done.
+        let MeteredInvocation {
+            unsynced,
+            exhausted,
+            binding_allowance,
+            ..
+        } = {
+            let mut fn_env = self.env_and_store(store);
+            let (env, mut store) = fn_env.data_and_store_mut();
+            env.end_metered_invocation(&mut store)
         };
-        // Record only the tail not already synced to the transaction total by mid-call host calls.
-        let already_synced = self.env_mut(store).end_metered_invocation();
         // Charging happens before we return the result so fees are recorded even on failure paths.
-        self.env(store)
-            .state()?
-            .interface()
-            .record_wasm_execution(points_consumed.saturating_sub(already_synced))?;
+        let interface = self.env(store).state()?.interface();
+        interface.record_wasm_execution(unsynced)?;
+        let total_consumed = interface.wasm_points_consumed();
 
         // An engine error recorded during the invocation fails the call on both paths.
         // `tari_engine_entrypoint` can only answer a failed call with a null pointer, and a
@@ -653,7 +654,7 @@ impl WasmProcess {
             // reported against whatever authorized the compute all the same.
             Err(err) => {
                 if exhausted {
-                    return Err(compute_exceeded_error(binding_allowance, consumed, points_consumed));
+                    return Err(compute_exceeded_error(binding_allowance, total_consumed));
                 }
                 return Err(err);
             },
@@ -680,7 +681,7 @@ impl WasmProcess {
                     });
                 }
                 if exhausted {
-                    return Err(compute_exceeded_error(binding_allowance, consumed, points_consumed));
+                    return Err(compute_exceeded_error(binding_allowance, total_consumed));
                 }
                 error!(target: LOG_TARGET, "Error calling function: {}", err);
                 Err(err.into())
@@ -694,12 +695,9 @@ impl WasmProcess {
 /// With a binding allowance the call outran the compute someone authorized, which is an underpayment.
 /// Without one a hard cap bound it, which is a limit: no fee raises it, so it must not be reported as
 /// something the caller can pay their way out of.
-fn compute_exceeded_error(
-    binding_allowance: Option<ComputeAllowance>,
-    consumed: u64,
-    points_consumed: u64,
-) -> WasmExecutionError {
-    let consumed_points = consumed.saturating_add(points_consumed);
+///
+/// `consumed_points` is the transaction's WASM total, nested calls included.
+fn compute_exceeded_error(binding_allowance: Option<ComputeAllowance>, consumed_points: u64) -> WasmExecutionError {
     let Some(allowance) = binding_allowance else {
         return WasmExecutionError::MaxComputeExceeded { consumed_points };
     };
@@ -726,12 +724,50 @@ enum InvocationOutcome {
 
 /// What one invocation may spend on the Wasmer meter, and what bounds it.
 struct MeteringAllowance {
-    /// WASM points the transaction has consumed before this invocation.
-    consumed: u64,
     /// Points to set on the meter for this invocation.
     points_before: u64,
-    /// Set when the authorized compute, not the per-transaction hard cap, is the binding limit.
+    /// Set when the authorized compute, not a hard cap, is the binding limit.
     binding_allowance: Option<ComputeAllowance>,
+}
+
+/// What the transaction may still spend on WASM, and what bounds it.
+struct TransactionHeadroom {
+    points: u64,
+    /// Set when the authorized compute, not `MAX_WASM_POINTS_PER_TRANSACTION`, is the binding
+    /// limit, so an out-of-gas trap is reported against whatever authorized it rather than as a
+    /// hit cap.
+    binding_allowance: Option<ComputeAllowance>,
+}
+
+/// Works out what the transaction may still spend on WASM: what remains of
+/// `MAX_WASM_POINTS_PER_TRANSACTION`, capped by what remains of the compute the transaction is
+/// authorized to run — the fee intent's flat credit, or past the checkpoint what the fees paid can
+/// cover. The cap bounds the compute an under-paying transaction can extract: it traps out-of-gas
+/// once it exhausts the allowance rather than running up to the hard cap. The allowance is shared
+/// with native verification (which pre-charges its point cost), so it is reduced by the combined
+/// consumption; the hard cap bounds WASM work only. Once either is spent the headroom is zero, and
+/// the next metered op traps out-of-gas.
+fn transaction_headroom(runtime: &Runtime) -> TransactionHeadroom {
+    let interface = runtime.interface();
+    let consumed = interface.wasm_points_consumed();
+    let budget_remaining = limits::MAX_WASM_POINTS_PER_TRANSACTION.saturating_sub(consumed);
+    let allowance_remaining = interface.compute_allowance().map(|allowance| {
+        let remaining = allowance
+            .points
+            .saturating_sub(consumed.saturating_add(interface.native_points_consumed()));
+        (allowance, remaining)
+    });
+
+    match allowance_remaining {
+        Some((allowance, remaining)) if remaining < budget_remaining => TransactionHeadroom {
+            points: remaining,
+            binding_allowance: Some(allowance),
+        },
+        _ => TransactionHeadroom {
+            points: budget_remaining,
+            binding_allowance: None,
+        },
+    }
 }
 
 /// Reports an engine call `tari_engine_entrypoint` refused. It can only signal a refusal by
