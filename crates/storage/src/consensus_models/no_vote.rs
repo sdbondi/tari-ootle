@@ -107,6 +107,8 @@ pub enum NoVoteReason {
     BlockWeightExceeded { total_weight: u64, max_weight: u64 },
     #[error("Block wasm execution points {total_points} exceed the maximum {max_points}")]
     BlockExecutionPointsExceeded { total_points: u64, max_points: u64 },
+    #[error("Block puts up {total_bytes} bytes of substates in one shard, exceeding the maximum {max_bytes}")]
+    BlockShardOutputBytesExceeded { total_bytes: usize, max_bytes: usize },
     #[error("Transaction {transaction_id} has substate lock conflicts and must be deferred to a later block")]
     DeferrableLockConflict { transaction_id: TransactionId },
     /// Locking succeeded but the transaction's state diff does not apply over the pending store. An honest proposer
@@ -165,6 +167,7 @@ impl NoVoteReason {
             Self::InvalidEvidence { .. } => "InvalidEvidence",
             Self::BlockWeightExceeded { .. } => "BlockWeightExceeded",
             Self::BlockExecutionPointsExceeded { .. } => "BlockExecutionPointsExceeded",
+            Self::BlockShardOutputBytesExceeded { .. } => "BlockShardOutputBytesExceeded",
             Self::DeferrableLockConflict { .. } => "DeferrableLockConflict",
             Self::ConflictingTransactionProposed { .. } => "ConflictingTransactionProposed",
         }

@@ -449,6 +449,13 @@ impl<TStore: StateReader> StateTracker<TStore> {
         failure: Option<RejectReason>,
     ) -> Result<FinalizedState<TStore>, RuntimeError> {
         let total_fees_required = self.read_with(|state| state.fee_state().total_charges());
+        let failure = match failure {
+            Some(reason) => Some(reason),
+            None => self
+                .write_with(|state| state.enforce_output_size_limit())
+                .err()
+                .map(|err| err.to_reject_reason(None)),
+        };
         let failure = failure.or_else(|| {
             self.read_with(|state| {
                 let fee_state = state.fee_state();

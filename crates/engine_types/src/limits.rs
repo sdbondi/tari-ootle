@@ -364,6 +364,15 @@ impl NativeExecutionPoints {
 pub struct EngineLimits {
     pub max_substate_outputs: usize,
     pub max_substate_size: usize,
+    /// Maximum encoded bytes one transaction may persist: every substate it writes, published
+    /// templates included, plus its transaction receipt.
+    ///
+    /// `max_substate_outputs × max_substate_size` is about a gigabyte, and the substates of one entity
+    /// share a shard. This bounds what one transaction adds to a shard's state version well inside the
+    /// consensus per-shard block budget, which a lone transaction must fit. It must leave room for the
+    /// largest legitimate transaction: a max-size template publish alongside a max-size substate and
+    /// a full receipt.
+    pub max_transaction_output_bytes: usize,
     pub max_call_size: usize,
     pub max_internal_call_size: usize,
     pub max_logs: usize,
@@ -396,9 +405,10 @@ pub struct EngineLimits {
 
 pub const ENGINE_LIMITS: EngineLimits = EngineLimits {
     max_substate_outputs: 1000,
-    max_substate_size: 1024 * 1024,      // 1 MiB
-    max_call_size: 128 * 1024,           // 128 KiB
-    max_internal_call_size: 1024 * 1024, // 1 MiB
+    max_substate_size: 1024 * 1024,                // 1 MiB
+    max_transaction_output_bytes: 4 * 1024 * 1024, // 4 MiB
+    max_call_size: 128 * 1024,                     // 128 KiB
+    max_internal_call_size: 1024 * 1024,           // 1 MiB
     max_logs: 256,
     max_log_size_bytes: 32 * 1024, // 32 KiB
     max_debug_messages: 256,

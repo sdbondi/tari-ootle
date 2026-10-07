@@ -875,6 +875,17 @@ where TConsensusSpec: ConsensusSpec
                             ))
                         })?;
 
+                        if substate_store.diff_exceeds_shard_output_bytes(
+                            diff,
+                            self.config.consensus_constants.max_block_shard_output_bytes,
+                        ) {
+                            info!(
+                                target: LOG_TARGET,
+                                "📦 PROPOSE: shard output budget reached, deferring LocalOnly transaction {} to a later block",
+                                pool_tx.id(),
+                            );
+                            return Ok(None);
+                        }
                         if let Err(err) = substate_store.put_diff(diff) {
                             // A lock failure or DOWN input is an expected conflict under contention - skip the
                             // transaction this round. Any other store error is fatal and must be propagated.
@@ -1081,6 +1092,17 @@ where TConsensusSpec: ConsensusSpec
             ))
         })?;
         let filtered_diff = filter_diff_for_committee(local_committee_info, diff);
+        if substate_store.diff_exceeds_shard_output_bytes(
+            &filtered_diff,
+            self.config.consensus_constants.max_block_shard_output_bytes,
+        ) {
+            info!(
+                target: LOG_TARGET,
+                "📦 PROPOSE: shard output budget reached, deferring AllAccept transaction {} to a later block",
+                tx_rec.id(),
+            );
+            return Ok(None);
+        }
         if let Err(err) = substate_store.put_diff(&filtered_diff) {
             // A lock failure or DOWN input is an expected conflict under contention - skip the transaction this
             // round. Any other store error is fatal and must be propagated.

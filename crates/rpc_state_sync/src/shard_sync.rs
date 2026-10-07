@@ -50,6 +50,11 @@ const LOG_TARGET: &str = "tari::ootle::rpc_state_sync::shard_sync";
 /// version is buffered whole and committed at once, so this bounds the memory a peer can hold to a
 /// constant multiple of it: the buffered updates are held decoded, each with its tree change.
 const MAX_BUFFERED_VERSION_BYTES: usize = 256 * 1024 * 1024;
+// A state version is one block's writes to the shard, which consensus bounds by
+// `MAX_BLOCK_VALIDATION_SHARD_OUTPUT_BYTES`. The stream carries each update with its metadata, so the
+// buffer leaves twice that.
+const _: () =
+    assert!(MAX_BUFFERED_VERSION_BYTES >= 2 * tari_ootle_common_types::MAX_BLOCK_VALIDATION_SHARD_OUTPUT_BYTES);
 
 /// Rewinds every shard that a sync committed unverified versions of, so that everything the node reads or builds
 /// on afterwards is verified state.

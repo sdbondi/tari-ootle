@@ -485,6 +485,21 @@ where TConsensusSpec: ConsensusSpec
             }
         }
 
+        // CONSENSUS RULE: a block's writes to a shard form that shard's next state version, which state sync
+        // transfers and commits whole, so a block may not put up more than
+        // `max_block_validation_shard_output_bytes` in any one shard.
+        let max_shard_output_bytes = self.config.consensus_constants.max_block_validation_shard_output_bytes;
+        let shard_output_bytes = substate_store.max_shard_output_bytes();
+        if shard_output_bytes > max_shard_output_bytes {
+            let reason = NoVoteReason::BlockShardOutputBytesExceeded {
+                total_bytes: shard_output_bytes,
+                max_bytes: max_shard_output_bytes,
+            };
+            warn!(target: LOG_TARGET, "❌ NO VOTE: {reason}");
+            proposed_block_change_set.set_no_vote(reason);
+            return Ok(());
+        }
+
         if total_leader_fee != block.total_leader_fee() {
             warn!(
                 target: LOG_TARGET,
