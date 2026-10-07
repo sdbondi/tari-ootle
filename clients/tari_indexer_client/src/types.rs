@@ -1132,7 +1132,7 @@ pub struct ListEpochCheckpointsRequest {
     /// The epoch to start listing from (inclusive). Defaults to 0.
     #[cfg_attr(feature = "utoipa", schema(value_type = Option<u64>))]
     pub from_epoch: Option<Epoch>,
-    /// Maximum number of checkpoints to return (default: 20, max: 100).
+    /// Maximum number of checkpoints to return (default: 20, max: 20).
     pub limit: Option<u32>,
 }
 

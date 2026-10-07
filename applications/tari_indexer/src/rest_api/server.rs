@@ -29,6 +29,7 @@ use crate::{
             IpRateLimiter,
             RateLimitConfig,
             SseConnectionLimiter,
+            SseConnectionMetrics,
             SseLimitConfig,
             TrustedProxyHeaders,
             rate_limit_middleware,
@@ -86,7 +87,6 @@ impl Server {
         Self
     }
 
-    #[expect(clippy::too_many_lines)]
     pub async fn spawn(
         self,
         preferred_addr: SocketAddr,
@@ -102,60 +102,113 @@ impl Server {
         #[cfg(feature = "metrics")]
         let sse_metrics = api_metrics.sse.clone();
         #[cfg(not(feature = "metrics"))]
-        let sse_metrics = crate::rest_api::rate_limit::SseConnectionMetrics::default();
+        let sse_metrics = SseConnectionMetrics::default();
 
-        // Per-IP rate limiters for specific endpoint groups.
-        let trusted_headers = TrustedProxyHeaders {
-            forwarded_for: rate_limits.trust_proxy_headers,
-            cf_connecting_ip: rate_limits.trust_cf_connecting_ip,
-        };
-        let tx_submit_limiter = RateLimitConfig {
-            enabled: rate_limits.enabled,
-            limiter: IpRateLimiter::new(rate_limits.transactions_submit_rate),
-            trusted_headers,
-            abandoned_request_cost: 0.0,
-        };
-        let tx_dry_run_limiter = RateLimitConfig {
-            enabled: rate_limits.enabled,
-            limiter: IpRateLimiter::new(rate_limits.transactions_dry_run_submit_rate),
-            trusted_headers,
-            abandoned_request_cost: handlers::transactions::DRY_RUN_MAX_COST,
-        };
-        let transactions_fetch_limiter = RateLimitConfig {
-            enabled: rate_limits.enabled,
-            limiter: IpRateLimiter::new(rate_limits.transactions_rate),
-            trusted_headers,
-            abandoned_request_cost: 0.0,
-        };
-        let substates_fetch_limiter = RateLimitConfig {
-            enabled: rate_limits.enabled,
-            limiter: IpRateLimiter::new(rate_limits.substates_rate),
-            trusted_headers,
-            abandoned_request_cost: 0.0,
-        };
-        let utxos_fetch_limiter = RateLimitConfig {
-            enabled: rate_limits.enabled,
-            limiter: IpRateLimiter::new(rate_limits.utxos_fetch_rate),
-            trusted_headers,
-            abandoned_request_cost: 0.0,
-        };
-        let non_fungibles_limiter = RateLimitConfig {
-            enabled: rate_limits.enabled,
-            limiter: IpRateLimiter::new(rate_limits.non_fungibles_rate),
-            trusted_headers,
-            abandoned_request_cost: 0.0,
-        };
-        // The streaming routes share one per-IP limiter but are counted separately, so each
-        // takes its own config carrying that route's gauge handle.
-        let sse_connections = SseConnectionLimiter::new(rate_limits.sse_max_connections_per_ip);
-        let sse_limiter = |endpoint: &'static str| SseLimitConfig {
-            enabled: rate_limits.enabled,
-            limiter: sse_connections.clone(),
-            trusted_headers,
-            active_connections: sse_metrics.endpoint(endpoint),
-        };
+        let router = api_routes(rate_limits, &sse_metrics)
+            .layer(CorsLayer::permissive())
+            .layer(RequestBodyLimitLayer::new(REQUEST_BODY_LIMIT))
+            .merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", ApiDoc::openapi()))
+            .layer(Extension(context))
+            .layer(TraceLayer::new_for_http());
 
-        let router = Router::new()
+        // Note: `/_metrics` is deliberately not served here — it runs on its own listener bound to
+        // `metrics_listen_address` (see `metrics::spawn_metrics_server`), so internal operational
+        // metrics are not exposed on the public REST API.
+        #[cfg(feature = "metrics")]
+        let router = router.layer(axum::middleware::from_fn_with_state(
+            api_metrics.requests,
+            metrics::layer,
+        ));
+
+        let listener = try_bind_with_fallback(preferred_addr).await?;
+
+        // spawn server
+        let listen_addr = listener.local_addr()?;
+        info!(target: LOG_TARGET, "🌐 Indexer REST API server listening on {listen_addr}");
+        tokio::spawn(async move {
+            // `into_make_service_with_connect_info` populates `ConnectInfo<SocketAddr>`
+            // for each connection, which the per-IP rate limiter middleware uses to
+            // identify the remote peer when no proxy headers are present.
+            if let Err(error) = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
+                .with_graceful_shutdown(shutdown)
+                .await
+            {
+                error!(target: LOG_TARGET, "Wallet query HTTP server error: {error}");
+            }
+        });
+
+        Ok(listen_addr)
+    }
+}
+
+/// The API routes and their per-IP limits. Every layer that needs the running node is added by
+/// [`Server::spawn`].
+#[expect(clippy::too_many_lines)]
+fn api_routes(rate_limits: &IndexerRateLimitsConfig, sse_metrics: &SseConnectionMetrics) -> Router {
+    // Per-IP rate limiters for specific endpoint groups.
+    let trusted_headers = TrustedProxyHeaders {
+        forwarded_for: rate_limits.trust_proxy_headers,
+        cf_connecting_ip: rate_limits.trust_cf_connecting_ip,
+    };
+    let tx_submit_limiter = RateLimitConfig {
+        enabled: rate_limits.enabled,
+        limiter: IpRateLimiter::new(rate_limits.transactions_submit_rate),
+        trusted_headers,
+        abandoned_request_cost: 0.0,
+    };
+    let tx_dry_run_limiter = RateLimitConfig {
+        enabled: rate_limits.enabled,
+        limiter: IpRateLimiter::new(rate_limits.transactions_dry_run_submit_rate),
+        trusted_headers,
+        abandoned_request_cost: handlers::transactions::DRY_RUN_MAX_COST,
+    };
+    let transactions_fetch_limiter = RateLimitConfig {
+        enabled: rate_limits.enabled,
+        limiter: IpRateLimiter::new(rate_limits.transactions_rate),
+        trusted_headers,
+        abandoned_request_cost: 0.0,
+    };
+    let substates_fetch_limiter = RateLimitConfig {
+        enabled: rate_limits.enabled,
+        limiter: IpRateLimiter::new(rate_limits.substates_rate),
+        trusted_headers,
+        abandoned_request_cost: 0.0,
+    };
+    let utxos_fetch_limiter = RateLimitConfig {
+        enabled: rate_limits.enabled,
+        limiter: IpRateLimiter::new(rate_limits.utxos_fetch_rate),
+        trusted_headers,
+        abandoned_request_cost: 0.0,
+    };
+    let non_fungibles_limiter = RateLimitConfig {
+        enabled: rate_limits.enabled,
+        limiter: IpRateLimiter::new(rate_limits.non_fungibles_rate),
+        trusted_headers,
+        abandoned_request_cost: 0.0,
+    };
+    let epoch_checkpoints_limiter = RateLimitConfig {
+        enabled: rate_limits.enabled,
+        limiter: IpRateLimiter::new(rate_limits.epoch_checkpoints_rate),
+        trusted_headers,
+        abandoned_request_cost: 0.0,
+    };
+    let reads_limiter = RateLimitConfig {
+        enabled: rate_limits.enabled,
+        limiter: IpRateLimiter::new(rate_limits.reads_rate),
+        trusted_headers,
+        abandoned_request_cost: 0.0,
+    };
+    // The streaming routes share one per-IP limiter but are counted separately, so each
+    // takes its own config carrying that route's gauge handle.
+    let sse_connections = SseConnectionLimiter::new(rate_limits.sse_max_connections_per_ip);
+    let sse_limiter = |endpoint: &'static str| SseLimitConfig {
+        enabled: rate_limits.enabled,
+        limiter: sse_connections.clone(),
+        trusted_headers,
+        active_connections: sse_metrics.endpoint(endpoint),
+    };
+
+    Router::new()
             // ----------------------------------------------------------------
             // Unrestricted endpoints (health / ready / identity)
             // ----------------------------------------------------------------
@@ -169,7 +222,9 @@ impl Server {
             .route("/network/economics", get(handlers::network::get_economics))
             .route("/network/stats", get(handlers::network::get_network_sync_stats))
             .route("/network/connections", get(handlers::network::get_connections))
-            .route("/validators", get(handlers::validators::list_validators))
+            // GET /validators – per-IP rate limit (rate_limits.reads_rate)
+            .route("/validators", get(handlers::validators::list_validators)
+                .route_layer(middleware::from_fn_with_state(reads_limiter.clone(), rate_limit_middleware)))
             // ----------------------------------------------------------------
             // /substates/* – per-IP rate limit (rate_limits.substates_rate)
             // ----------------------------------------------------------------
@@ -216,6 +271,7 @@ impl Server {
                 .route("/events/stream", get(handlers::transaction_events::sse_transaction_events)
                     .route_layer(middleware::from_fn_with_state(sse_limiter("/transactions/events/stream"), sse_limit_middleware)))
             )
+            // /templates/* – per-IP rate limit (rate_limits.reads_rate)
             .nest("/templates", Router::new()
                 .route("/watched", get(handlers::watched::list_watched_templates))
                 .route("/catalogue", get(handlers::templates::list_template_catalogue))
@@ -227,6 +283,7 @@ impl Server {
                     "/{template_address}",
                     get(handlers::templates::get_template_definition),
                 )
+                .route_layer(middleware::from_fn_with_state(reads_limiter.clone(), rate_limit_middleware))
             )
             // GET /non-fungibles – per-IP rate limit (rate_limits.non_fungibles_rate)
             .route("/non-fungibles", get(handlers::nfts::get_non_fungibles)
@@ -252,53 +309,83 @@ impl Server {
                         get(handlers::transaction_receipts::get_transaction_receipt)
                            .route_layer(middleware::from_fn_with_state(transactions_fetch_limiter, rate_limit_middleware)))
             )
+            // /resources/* – per-IP rate limit (rate_limits.reads_rate)
             .nest("/resources", Router::new()
                 // Convenience Shortcut
                 .route("/xtr" , get(handlers::resources::get_tari))
                 .route("/tari" , get(handlers::resources::get_tari))
-                .route("/{resource_address}" , get(handlers::resources::get_resource)))
-            // SSE /events – per-IP concurrent connection limit
+                .route("/{resource_address}" , get(handlers::resources::get_resource))
+                .route_layer(middleware::from_fn_with_state(reads_limiter, rate_limit_middleware)))
+            // /epoch-checkpoints/* – per-IP rate limit (rate_limits.epoch_checkpoints_rate)
             .nest("/epoch-checkpoints", Router::new()
                 .route("/", get(handlers::epoch_checkpoints::list_epoch_checkpoints))
                 .route("/latest", get(handlers::epoch_checkpoints::get_latest_epoch_checkpoint))
+                .route_layer(middleware::from_fn_with_state(epoch_checkpoints_limiter, rate_limit_middleware))
             )
+            // SSE /events – per-IP concurrent connection limit
             .route("/events", get(handlers::indexer_events::sse_events)
                 .route_layer(middleware::from_fn_with_state(sse_limiter("/events"), sse_limit_middleware)))
             // Wraps the API routes so that a handler which sets no policy still denies caching. Applied
             // before the Swagger UI is merged in, whose static assets are fine to cache normally.
             .layer(middleware::from_fn(default_no_store))
-            .layer(CorsLayer::permissive())
-            .layer(RequestBodyLimitLayer::new(REQUEST_BODY_LIMIT))
-            .merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", ApiDoc::openapi()))
-            .layer(Extension(context))
-            .layer(TraceLayer::new_for_http());
+}
 
-        // Note: `/_metrics` is deliberately not served here — it runs on its own listener bound to
-        // `metrics_listen_address` (see `metrics::spawn_metrics_server`), so internal operational
-        // metrics are not exposed on the public REST API.
+#[cfg(test)]
+mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    fn sse_metrics() -> SseConnectionMetrics {
         #[cfg(feature = "metrics")]
-        let router = router.layer(axum::middleware::from_fn_with_state(
-            api_metrics.requests,
-            metrics::layer,
-        ));
+        return SseConnectionMetrics::register(&mut prometheus_client::registry::Registry::default());
+        #[cfg(not(feature = "metrics"))]
+        SseConnectionMetrics::default()
+    }
 
-        let listener = try_bind_with_fallback(preferred_addr).await?;
+    async fn status_of(addr: SocketAddr, path: &str) -> u16 {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf);
+        let status_line = response.lines().next().unwrap();
+        status_line.split_whitespace().nth(1).unwrap().parse().unwrap()
+    }
 
-        // spawn server
-        let listen_addr = listener.local_addr()?;
-        info!(target: LOG_TARGET, "🌐 Indexer REST API server listening on {listen_addr}");
+    /// The handlers fail without a `HandlerContext`, which does not matter here: the limit is
+    /// enforced before the handler runs, so only a 429 shows the route is limited.
+    #[tokio::test]
+    async fn public_read_routes_are_rate_limited() {
+        const ATTEMPTS: usize = 1_000;
+
+        let router = api_routes(&IndexerRateLimitsConfig::default(), &sse_metrics());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            // `into_make_service_with_connect_info` populates `ConnectInfo<SocketAddr>`
-            // for each connection, which the per-IP rate limiter middleware uses to
-            // identify the remote peer when no proxy headers are present.
-            if let Err(error) = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
-                .with_graceful_shutdown(shutdown)
+            axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
                 .await
-            {
-                error!(target: LOG_TARGET, "Wallet query HTTP server error: {error}");
-            }
+                .unwrap();
         });
 
-        Ok(listen_addr)
+        for path in [
+            "/epoch-checkpoints?limit=100",
+            "/epoch-checkpoints/latest",
+            "/resources/tari",
+            "/templates/catalogue",
+            "/validators",
+        ] {
+            let mut limited = false;
+            for _ in 0..ATTEMPTS {
+                if status_of(addr, path).await == 429 {
+                    limited = true;
+                    break;
+                }
+            }
+            assert!(limited, "{path} served {ATTEMPTS} requests from one IP without a 429");
+        }
     }
 }
