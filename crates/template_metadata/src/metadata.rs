@@ -45,7 +45,7 @@ pub struct TemplateMetadata {
     #[n(7)]
     #[cbor(with = "option_oid")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "{ Sha1: string } | null"))]
+    #[cfg_attr(feature = "ts", ts(type = "{ Sha1: Array<number> } | null"))]
     pub commit_hash: Option<gix_hash::ObjectId>,
     #[n(8)]
     #[cbor(with = "option_url")]
