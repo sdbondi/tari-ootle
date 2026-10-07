@@ -76,8 +76,8 @@ impl CertificateStore for ProposalCertificate {
                 Ok(high_pc)
             },
             Some(_) | None => {
-                // The certificate id, the block id and protocol V0 vote signatures all omit the height and epoch, so
-                // the stored block is the only authority for them.
+                // The certificate id and the block id omit the height and epoch, so the stored block is the authority
+                // for them.
                 if !self.justifies_zero_block() {
                     let block = Block::get(&**tx, &self.calculate_block_id())?;
                     if block.height() != self.height() || block.epoch() != self.epoch() {

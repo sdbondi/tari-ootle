@@ -5,9 +5,9 @@
 //! the block it certifies.
 //!
 //! A certificate's id and block id are derived from the block's header hash and parent, so neither covers the
-//! height or epoch the certificate claims, and under protocol V0 neither do the vote signatures. The stored block
-//! is the only authority for those two fields, and `CertificateStore::update_highest` checks the certificate
-//! against it before writing HighPc, the leaf block or the certificate record.
+//! height or epoch the certificate claims. The stored block is the authority for those two fields, and
+//! `CertificateStore::update_highest` checks the certificate against it before writing HighPc, the leaf block or
+//! the certificate record.
 
 use tari_common_types::types::FixedHash;
 use tari_consensus::traits::CertificateStore;
@@ -36,8 +36,8 @@ fn create_store() -> (TestStore, tempfile::TempDir) {
 
 fn genesis_block() -> Block {
     Block::genesis(
-        Network::Esmeralda,
-        ProtocolVersion::V0,
+        Network::LocalNet,
+        ProtocolVersion::V2,
         TEST_EPOCH,
         FixedHash::zero(),
         ShardGroup::new(0, 127),
@@ -119,7 +119,7 @@ fn certificate_claiming_another_epoch_is_not_installed() {
     let genesis = genesis_block();
     let genuine = store_with_genesis(&store, &genesis);
 
-    let relabelled = certificate_for(&genesis, NodeHeight(1_000_000), OTHER_EPOCH);
+    let relabelled = certificate_for(&genesis, genesis.height(), OTHER_EPOCH);
     store
         .with_write_tx(|tx| relabelled.update_highest(tx))
         .expect_err("a certificate whose epoch differs from its block's must not become the high certificate");

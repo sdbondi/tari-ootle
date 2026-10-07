@@ -28,14 +28,6 @@ use crate::{
 
 const LOG_TARGET: &str = "tari::ootle::consensus::hotstuff::on_receive_new_view";
 
-/// How the certificate a NEWVIEW reports compares with the high certificate we hold.
-enum ReportedCertificate {
-    NotAhead,
-    Ahead,
-    /// The certificate names a block we hold, but claims a height or epoch that block does not have.
-    Mislabelled(LeafBlock),
-}
-
 pub struct OnReceiveNewViewHandler<TConsensusSpec: ConsensusSpec> {
     config: HotstuffConfig,
     local_validator_addr: TConsensusSpec::Addr,
@@ -140,17 +132,17 @@ where TConsensusSpec: ConsensusSpec
         // vote goes into binds its leader to a certificate at least that high. One level with or behind ours is
         // worth no write - every sender of a view reports the same certificate in the common case - but its
         // timeout vote still counts towards the quorum that ends the view, so the message carries on either way.
-        let reported = self.store.with_read_tx(|tx| {
+        let is_ahead_of_ours = self.store.with_read_tx(|tx| {
             let local_high_pc = HighPc::get(tx, epoch_state.epoch())?;
-            // A report level with ours leaves nothing to catch up to: `update_highest` only installs a certificate
-            // whose block we hold, so the certificate we hold at that height always has its block. A different
-            // certificate at the same height is equivocation, and the branch it names is one the lock rule keeps
-            // from committing rather than one to sync onto.
+            // A report level with ours leaves nothing to catch up to: `update_highest` sets the leaf block, which
+            // fails when the block is missing, so the certificate we hold at that height always has its block. A
+            // different certificate at the same height is equivocation, and the branch it names is one the lock
+            // rule keeps from committing rather than one to sync onto.
             if local_high_pc.block_height >= high_pc.height() {
-                return Ok(ReportedCertificate::NotAhead);
+                return Ok(false);
             }
 
-            let Some(block) = Block::get(tx, &high_pc.calculate_block_id()).optional()? else {
+            if !Block::record_exists(tx, &high_pc.calculate_block_id())? {
                 // Sync if we do not have the block for this valid QC
                 let local_height = LeafBlock::get(tx, epoch_state.epoch())
                     .optional()?
@@ -162,34 +154,13 @@ where TConsensusSpec: ConsensusSpec
                     qc_epoch: high_pc.epoch(),
                     qc_height: high_pc.height(),
                 });
-            };
-
-            // Protocol V0 signatures do not cover the certificate's height or epoch, so the block we hold decides
-            // them. A mismatch drops the whole message, timeout vote included.
-            if block.height() != high_pc.height() || block.epoch() != high_pc.epoch() {
-                return Ok(ReportedCertificate::Mislabelled(block.as_leaf()));
             }
 
-            Ok(ReportedCertificate::Ahead)
+            Ok(true)
         })?;
 
-        match reported {
-            ReportedCertificate::NotAhead => {},
-            ReportedCertificate::Ahead => {
-                self.store.with_write_tx(|tx| high_pc.update_highest(tx))?;
-            },
-            ReportedCertificate::Mislabelled(leaf) => {
-                warn!(
-                    target: LOG_TARGET,
-                    "❌ NEWVIEW from {from} carries a certificate claiming height {} in epoch {} for block {} which is at height {} in epoch {}",
-                    high_pc.height(),
-                    high_pc.epoch(),
-                    leaf.block_id(),
-                    leaf.height(),
-                    leaf.epoch(),
-                );
-                return Ok(());
-            },
+        if is_ahead_of_ours {
+            self.store.with_write_tx(|tx| high_pc.update_highest(tx))?;
         }
 
         if let Some(vote) = last_vote {
