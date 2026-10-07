@@ -1,0 +1,218 @@
+---
+title: Metrics
+description: Prometheus metrics exported by the validator node and the indexer, grouped by subsystem, for operators building dashboards and alerts.
+---
+
+The validator node and the indexer export Prometheus metrics in OpenMetrics text format. Counters carry a `_total`
+suffix. Every series is labelled with `app` and the node's `public_key`.
+
+## Common
+
+### Scraping
+
+| App            | Endpoint                                                             | Config key                                 | `app` label     |
+| -------------- | -------------------------------------------------------------------- | ------------------------------------------ | --------------- |
+| Validator node | `GET /_metrics` on the JSON-RPC listener (default `127.0.0.1:18200`) | `validator_node.json_rpc_listener_address` | `ValidatorNode` |
+| Indexer        | `GET /_metrics` on a dedicated listener (default `127.0.0.1:18302`)  | `indexer.metrics_listen_address`           | `OotleIndexer`  |
+
+Unsetting the listener address disables the endpoint.
+
+### Networking: libp2p
+
+| Metric                                     | Type      | Labels             | Meaning                                              |
+| ------------------------------------------ | --------- | ------------------ | ---------------------------------------------------- |
+| `libp2p_ping_rtt_seconds`                  | histogram |                    | Ping round-trip time to peers.                       |
+| `libp2p_ping_failure_total`                | counter   | `reason`           | Ping failures by kind.                               |
+| `libp2p_identify_errors_total`             | counter   |                    | Identify protocol errors.                            |
+| `libp2p_identify_pushed_total`             | counter   |                    | Identify pushes sent.                                |
+| `libp2p_identify_received_total`           | counter   |                    | Identify infos received.                             |
+| `libp2p_identify_sent_total`               | counter   |                    | Identify infos sent.                                 |
+| `libp2p_identify_remote_protocols`         | gauge     | `protocol`         | Identified peers supporting each protocol.           |
+| `libp2p_identify_remote_listen_addresses`  | gauge     | `listen_address`   | Peers advertising each listen-address stack.         |
+| `libp2p_identify_local_observed_addresses` | gauge     | `observed_address` | Peers reporting each observed address for this node. |
+| `libp2p_gossipsub_messages_total`          | counter   |                    | Gossipsub messages received.                         |
+| `libp2p_relay_events_total`                | counter   | `event`            | Relay server events (reservations, circuits).        |
+| `libp2p_dcutr_events_total`                | counter   | `event`            | Hole-punch successes and failures.                   |
+
+`libp2p_swarm_*` series (connections, dials, listeners) are registered but not yet recorded, and stay at zero.
+
+### Networking: substreams and messaging
+
+| Metric                                                    | Type    | Meaning                                                    |
+| --------------------------------------------------------- | ------- | ---------------------------------------------------------- |
+| `libp2p_ext_substream_num_open_substreams`                | gauge   | Substreams opened; never decremented, so it is cumulative. |
+| `libp2p_ext_substream_inbound_open_count_total`           | counter | Inbound substreams opened.                                 |
+| `libp2p_ext_substream_inbound_failure_count_total`        | counter | Inbound substream failures.                                |
+| `libp2p_ext_substream_outbound_failure_count_total`       | counter | Outbound substream failures.                               |
+| `libp2p_ext_substream_error_count_total`                  | counter | Inbound plus outbound substream failures.                  |
+| `libp2p_ext_messaging_received_message_count_total`       | counter | Direct messages received.                                  |
+| `libp2p_ext_messaging_num_messages_sent_total`            | counter | Direct messages sent.                                      |
+| `libp2p_ext_messaging_inbound_failure_count_total`        | counter | Inbound messaging stream failures.                         |
+| `libp2p_ext_messaging_outbound_failure_count_total`       | counter | Outbound messaging stream failures.                        |
+| `libp2p_ext_messaging_inbound_stream_opened_count_total`  | counter | Inbound messaging streams opened.                          |
+| `libp2p_ext_messaging_outbound_stream_opened_count_total` | counter | Outbound messaging streams opened.                         |
+| `libp2p_ext_messaging_num_open_substreams`                | gauge   | Messaging streams currently open.                          |
+| `libp2p_ext_messaging_error_count_total`                  | counter | Messaging errors.                                          |
+
+### Networking: rendezvous
+
+| Metric                                                    | Type    | Meaning                                            |
+| --------------------------------------------------------- | ------- | -------------------------------------------------- |
+| `libp2p_ext_rendezvous_client_registered_total`           | counter | Successful registrations with a rendezvous server. |
+| `libp2p_ext_rendezvous_client_register_failed_total`      | counter | Failed registrations with a rendezvous server.     |
+| `libp2p_ext_rendezvous_client_discovered_total`           | counter | Discover responses received.                       |
+| `libp2p_ext_rendezvous_client_discovered_peers_total`     | counter | Peers discovered via rendezvous.                   |
+| `libp2p_ext_rendezvous_client_discover_failed_total`      | counter | Failed discover requests.                          |
+| `libp2p_ext_rendezvous_client_expired_total`              | counter | Discovered peers whose registration expired.       |
+| `libp2p_ext_rendezvous_server_peer_registered_total`      | counter | Peers that registered with this node.              |
+| `libp2p_ext_rendezvous_server_peer_not_registered_total`  | counter | Registrations this node declined.                  |
+| `libp2p_ext_rendezvous_server_peer_unregistered_total`    | counter | Peers that unregistered from this node.            |
+| `libp2p_ext_rendezvous_server_registration_expired_total` | counter | Registrations held by this node that expired.      |
+| `libp2p_ext_rendezvous_server_discover_served_total`      | counter | Discover requests served.                          |
+| `libp2p_ext_rendezvous_server_discover_not_served_total`  | counter | Discover requests this node could not serve.       |
+
+## Validator node
+
+### Consensus
+
+| Metric                                                 | Type    | Meaning                                                             |
+| ------------------------------------------------------ | ------- | ------------------------------------------------------------------- |
+| `tari_consensus_blocks_committed_total`                | counter | Blocks committed locally.                                           |
+| `tari_consensus_commit_height`                         | gauge   | Height of the last committed block.                                 |
+| `tari_consensus_current_epoch`                         | gauge   | Epoch of the last committed block.                                  |
+| `tari_consensus_num_commands`                          | gauge   | Commands in committed blocks; only increases.                       |
+| `tari_consensus_published_templates_count_total`       | counter | Templates published by committed transactions.                      |
+| `tari_consensus_messages_received_total`               | counter | HotStuff messages received.                                         |
+| `tari_consensus_errors_total`                          | counter | Consensus errors.                                                   |
+| `tari_consensus_pacemaker_height`                      | gauge   | Current pacemaker height; stalls when the chain is not progressing. |
+| `tari_consensus_leader_failures_total`                 | counter | Leader timeouts.                                                    |
+| `tari_consensus_block_validation_failed_total`         | counter | Proposed blocks that failed validation.                             |
+| `tari_consensus_needs_sync_total`                      | counter | Reserved; not yet recorded.                                         |
+| `tari_consensus_vote_equivocations_total`              | counter | Committee members caught signing conflicting votes for one view.    |
+| `tari_consensus_transaction_ready_for_consensus_total` | counter | Transactions that became ready for consensus.                       |
+| `tari_consensus_transaction_finalized_committed_total` | counter | Transactions finalized with a COMMIT decision.                      |
+| `tari_consensus_transaction_finalized_aborted_total`   | counter | Transactions finalized with an ABORT decision.                      |
+
+### Epochs and L1
+
+| Metric                                                 | Type    | Meaning                                        |
+| ------------------------------------------------------ | ------- | ---------------------------------------------- |
+| `tari_epoch_manager_current_epoch`                     | gauge   | The epoch manager's current epoch.             |
+| `tari_epoch_oracle_last_event_epoch`                   | gauge   | Epoch of the most recent L1 scanner event.     |
+| `tari_epoch_oracle_errors_total`                       | counter | L1 epoch scanner errors.                       |
+| `tari_epoch_oracle_epoch_changed_total`                | counter | Epoch changes observed on L1.                  |
+| `tari_epoch_oracle_active_validator_set_changed_total` | counter | Active validator set changes.                  |
+| `tari_epoch_oracle_new_validator_registered_total`     | counter | Validator registrations observed.              |
+| `tari_epoch_oracle_new_validator_exit_total`           | counter | Validator exits observed.                      |
+| `tari_epoch_oracle_done_for_now_total`                 | counter | Scanner passes that caught up with the L1 tip. |
+
+### Mempool
+
+| Metric                                            | Type    | Meaning                                      |
+| ------------------------------------------------- | ------- | -------------------------------------------- |
+| `tari_mempool_transactions_received_total`        | counter | Transactions received by the mempool.        |
+| `tari_mempool_transaction_validation_error_total` | counter | Transactions rejected by mempool validation. |
+
+### Inbound queues
+
+Label `queue` is `transaction_gossip`, `consensus_gossip` or `consensus_messaging`.
+
+| Metric                                 | Type    | Meaning                                      |
+| -------------------------------------- | ------- | -------------------------------------------- |
+| `inbound_queue_queued_bytes`           | gauge   | Bytes waiting in the queue.                  |
+| `inbound_queue_max_queued_bytes`       | gauge   | The queue's configured byte budget.          |
+| `inbound_queue_queued_messages`        | gauge   | Messages waiting in the queue.               |
+| `inbound_queue_dropped_messages_total` | counter | Messages dropped because the queue was full. |
+| `inbound_queue_dropped_bytes_total`    | counter | Bytes dropped because the queue was full.    |
+
+### State store
+
+| Metric                                 | Type  | Meaning                                                   |
+| -------------------------------------- | ----- | --------------------------------------------------------- |
+| `state_store_memory_capacity_bytes`    | gauge | RocksDB block cache capacity, including memtable charges. |
+| `state_store_memtable_capacity_bytes`  | gauge | Memtable budget across column families before flushing.   |
+| `state_store_memtable_bytes`           | gauge | Bytes held by live memtables.                             |
+| `state_store_block_cache_bytes`        | gauge | Bytes charged to the block cache.                         |
+| `state_store_block_cache_pinned_bytes` | gauge | Block cache bytes that cannot be evicted.                 |
+
+### Template prewarm
+
+| Metric                                         | Type      | Meaning                                                   |
+| ---------------------------------------------- | --------- | --------------------------------------------------------- |
+| `tari_template_prewarm_enqueued_total`         | counter   | Templates queued for background compilation.              |
+| `tari_template_prewarm_dropped_total`          | counter   | Prewarm requests dropped because the queue was full.      |
+| `tari_template_prewarm_loaded_total`           | counter   | Templates made resident, compiled or from the disk cache. |
+| `tari_template_prewarm_already_resident_total` | counter   | Requests for a template that was already resident.        |
+| `tari_template_prewarm_not_found_total`        | counter   | Requests for a template this node does not hold.          |
+| `tari_template_prewarm_failed_total`           | counter   | Templates this node holds but could not load.             |
+| `tari_template_prewarm_queue_depth`            | gauge     | Templates queued, including the one in progress.          |
+| `tari_template_prewarm_load_seconds`           | histogram | Time to make one template resident.                       |
+
+## Indexer
+
+### REST API
+
+Present when `indexer.api_listen_address` is set.
+
+| Metric                              | Type      | Labels     | Meaning                                   |
+| ----------------------------------- | --------- | ---------- | ----------------------------------------- |
+| `api_http_requests_total_total`     | counter   |            | HTTP requests received.                   |
+| `api_http_response_time_seconds`    | histogram |            | Request handling latency.                 |
+| `api_http_requests_pending`         | gauge     |            | Requests in flight.                       |
+| `api_http_response_body_size_bytes` | histogram |            | Response body size, when known.           |
+| `api_sse_connections_active`        | gauge     | `endpoint` | Open server-sent event streams per route. |
+
+### Substate cache
+
+| Metric                                | Type    | Meaning                                                                   |
+| ------------------------------------- | ------- | ------------------------------------------------------------------------- |
+| `substate_scanner_cache_hits_total`   | counter | Substate lookups served from the cache.                                   |
+| `substate_scanner_cache_misses_total` | counter | Lookups that missed the cache and went to the network.                    |
+| `substate_cache_invalidations_total`  | counter | Entries retired by state sync or finalized transactions.                  |
+| `substate_cache_evictions_total`      | counter | Entries evicted to stay within `substate_cache_max_entries`.              |
+| `substate_cache_refused_stale_total`  | counter | Cache reads refused because the shard was not recently confirmed in sync. |
+
+### Transaction gossip
+
+Present when `indexer.index_gossiped_transactions` is enabled.
+
+| Metric                                            | Type    | Meaning                                                   |
+| ------------------------------------------------- | ------- | --------------------------------------------------------- |
+| `transaction_gossip_messages_received_total`      | counter | Gossip messages taken off the queue.                      |
+| `transaction_gossip_messages_accepted_total`      | counter | Messages validated and propagated.                        |
+| `transaction_gossip_messages_rejected_total`      | counter | Messages withheld and penalised against the sending peer. |
+| `transaction_gossip_messages_ignored_total`       | counter | Messages withheld without penalty.                        |
+| `transaction_gossip_transactions_stored_total`    | counter | Gossiped transactions newly stored.                       |
+| `transaction_gossip_transactions_dropped_total`   | counter | Validated transactions lost to a failed batch write.      |
+| `transaction_gossip_queue_queued_bytes`           | gauge   | Bytes waiting in the gossip queue.                        |
+| `transaction_gossip_queue_max_queued_bytes`       | gauge   | The gossip queue's byte budget.                           |
+| `transaction_gossip_queue_queued_messages`        | gauge   | Messages waiting in the gossip queue.                     |
+| `transaction_gossip_queue_dropped_messages_total` | counter | Messages dropped because the queue was full.              |
+| `transaction_gossip_queue_dropped_bytes_total`    | counter | Bytes dropped because the queue was full.                 |
+
+### Network economics
+
+Cumulative network totals in microtari, updated by network state sync.
+
+| Metric                                       | Type  | Meaning                                                 |
+| -------------------------------------------- | ----- | ------------------------------------------------------- |
+| `network_exhaust_burned_microtari`           | gauge | Exhaust burned since genesis, from checkpoint headers.  |
+| `network_claimed_microtari`                  | gauge | XTR claimed from L1 burns.                              |
+| `network_fee_volume_microtari`               | gauge | Fees paid, summed over stored receipts.                 |
+| `network_receipt_exhaust_burned_microtari`   | gauge | Exhaust burned, summed over stored receipts.            |
+| `network_transaction_receipt_count`          | gauge | Transaction receipts stored.                            |
+| `network_validator_claimable_fees_microtari` | gauge | Leader fees in validator fee pools, not yet claimed.    |
+| `network_exhaust_rate_bps`                   | gauge | Exhaust burn rate in basis points at the current epoch. |
+
+### SQLite storage
+
+| Metric                             | Type      | Meaning                                                      |
+| ---------------------------------- | --------- | ------------------------------------------------------------ |
+| `sqlite_connection_wait_seconds`   | histogram | Wait for a pooled connection.                                |
+| `sqlite_write_lock_wait_seconds`   | histogram | Wait for the write lock.                                     |
+| `sqlite_write_lock_hold_seconds`   | histogram | Time the write lock was held.                                |
+| `sqlite_write_lock_busy_total`     | counter   | Writes that gave up waiting for the lock (`SQLITE_BUSY`).    |
+| `sqlite_db_bytes`                  | gauge     | Database file size, sampled every 30s.                       |
+| `sqlite_wal_bytes`                 | gauge     | WAL file size; a high-water mark, as SQLite reuses the file. |
+| `sqlite_wal_uncheckpointed_frames` | gauge     | WAL frames a passive checkpoint could not copy back.         |
+| `sqlite_freelist_bytes`            | gauge     | Bytes of free pages in the database file.                    |
