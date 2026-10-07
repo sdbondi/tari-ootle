@@ -273,11 +273,11 @@ mod tests {
             (Shard::global(), SPARSE_MERKLE_PLACEHOLDER_HASH, 0),
             (other_shard, TreeHash::new([7; 32]), 1),
         ];
-        let other_group_root = compute_shard_group_root(ProtocolVersion::V1, other_group_states).unwrap();
+        let other_group_root = compute_shard_group_root(ProtocolVersion::V2, other_group_states).unwrap();
         // The substate's shard has no leaf in the other group's root, so the proof that its key is
         // absent - the proof an empty shard gets - verifies against that root.
         let with_own_shard_empty = ShardGroupRootTree::build(
-            ProtocolVersion::V1,
+            ProtocolVersion::V2,
             other_group_states
                 .into_iter()
                 .chain([(own_shard, SPARSE_MERKLE_PLACEHOLDER_HASH, 0)]),
@@ -294,7 +294,7 @@ mod tests {
             .unwrap();
         let proof = SubstateValueProof::new(SPARSE_MERKLE_PLACEHOLDER_HASH, 0, shard_root_proof, leaf_proof);
         proof
-            .verify_exclusion(ProtocolVersion::V1, &other_group_root, NUM_PRESHARDS, &versioned_id)
+            .verify_exclusion(ProtocolVersion::V2, &other_group_root, NUM_PRESHARDS, &versioned_id)
             .unwrap();
         let proof_bytes = tari_bor::serde_codec::to_vec(&proof).unwrap();
 

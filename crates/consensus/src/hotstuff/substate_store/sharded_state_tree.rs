@@ -247,6 +247,7 @@ mod tests {
         ])]));
 
         let result = tree.put_substate_tree_changes(
+            ProtocolVersion::V2,
             ShardGroup::all_shards(NumPreshards::P256),
             IndexMap::from([(shard, vec![])]),
         );
