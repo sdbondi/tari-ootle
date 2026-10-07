@@ -17,6 +17,8 @@ mod extends_justify;
 #[cfg(test)]
 mod foreign_proposal_committee;
 #[cfg(test)]
+mod high_pc_block_binding;
+#[cfg(test)]
 mod last_voted_persistence;
 #[cfg(test)]
 mod leader_failure;

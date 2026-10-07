@@ -10,7 +10,7 @@ use tari_ootle_storage::{
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
     StorageError,
-    consensus_models::BookkeepingModel,
+    consensus_models::{Block, BookkeepingModel},
 };
 
 const LOG_TARGET: &str = "tari::ootle::consensus::quorum_certificate";
@@ -76,6 +76,25 @@ impl CertificateStore for ProposalCertificate {
                 Ok(high_pc)
             },
             Some(_) | None => {
+                // The certificate id, the block id and protocol V0 vote signatures all omit the height and epoch, so
+                // the stored block is the only authority for them.
+                if !self.justifies_zero_block() {
+                    let block = Block::get(&**tx, &self.calculate_block_id())?;
+                    if block.height() != self.height() || block.epoch() != self.epoch() {
+                        return Err(StorageError::DataInconsistency {
+                            details: format!(
+                                "Certificate {} claims height {} in epoch {} for block {} at height {} in epoch {}",
+                                self.calculate_id(),
+                                self.height(),
+                                self.epoch(),
+                                block.id(),
+                                block.height(),
+                                block.epoch(),
+                            ),
+                        });
+                    }
+                }
+
                 let high_pc = self.as_high_pc();
                 info!(
                     target: LOG_TARGET,
@@ -86,7 +105,6 @@ impl CertificateStore for ProposalCertificate {
                 );
 
                 self.save(tx)?;
-                // This will fail if the block doesnt exist
                 self.as_leaf_block().set(tx)?;
                 high_pc.set(tx)?;
                 Ok(high_pc)
