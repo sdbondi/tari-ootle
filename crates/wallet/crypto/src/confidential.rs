@@ -29,6 +29,15 @@ pub fn create_withdraw_proof(
     change_statement: Option<&OutputWitness>,
     change_revealed_amount: Amount,
 ) -> Result<ConfidentialWithdrawProof, WalletCryptoError> {
+    check_withdraw_balance(
+        inputs,
+        input_revealed_amount,
+        output_statement,
+        output_revealed_amount,
+        change_statement,
+        change_revealed_amount,
+    )?;
+
     let output_proof = create_output_statement(
         output_statement,
         output_revealed_amount,
@@ -68,6 +77,42 @@ pub fn create_withdraw_proof(
         },
         balance_proof,
     })
+}
+
+/// The balance proof signs with the blinding factors alone, so it only verifies when the committed values on each
+/// side are equal. An unbalanced withdraw yields a proof the engine is guaranteed to reject.
+fn check_withdraw_balance(
+    inputs: &[MaskAndValue],
+    input_revealed_amount: Amount,
+    output_statement: Option<&OutputWitness>,
+    output_revealed_amount: Amount,
+    change_statement: Option<&OutputWitness>,
+    change_revealed_amount: Amount,
+) -> Result<(), WalletCryptoError> {
+    let overflow = || WalletCryptoError::InvalidArgument {
+        name: "amounts",
+        details: "withdraw amounts overflow".to_string(),
+    };
+    let total_in = inputs
+        .iter()
+        .map(|input| Amount::from(input.value))
+        .try_fold(input_revealed_amount, |acc, v| acc.checked_add(v))
+        .ok_or_else(overflow)?;
+    let total_out = output_statement
+        .into_iter()
+        .chain(change_statement)
+        .map(|stmt| Amount::from(stmt.amount))
+        .chain([output_revealed_amount, change_revealed_amount])
+        .try_fold(Amount::zero(), |acc, v| acc.checked_add(v))
+        .ok_or_else(overflow)?;
+
+    if total_in != total_out {
+        return Err(WalletCryptoError::UnbalancedWithdraw {
+            inputs: total_in,
+            outputs: total_out,
+        });
+    }
+    Ok(())
 }
 
 pub fn create_output_statement(
