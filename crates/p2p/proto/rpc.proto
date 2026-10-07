@@ -307,8 +307,8 @@ message StateVersionProof {
 }
 
 // A batch of substate updates at a single state version of a single shard. A state version whose
-// updates exceed the stream batch size is split into multiple batches, all but the last carrying
-// has_more = true.
+// updates exceed the batch's update count or encoded size limit is split into multiple batches, all
+// but the last carrying has_more = true.
 message SubstateBatch {
   uint64 state_version = 1;
   repeated SubstateUpdate updates = 2;
