@@ -3,15 +3,20 @@
 
 use std::{
     fmt::{Debug, Display},
-    net::TcpListener,
+    net::{Ipv4Addr, TcpListener},
+    ops::ControlFlow,
     time::Duration,
 };
 
+use libp2p::{Multiaddr, multiaddr::Protocol};
 use tari_engine_types::substate::SubstateId;
 use tari_ootle_common_types::SubstateRequirement;
-use tokio::{io::AsyncWriteExt, task::JoinHandle};
+use tokio::{io::AsyncWriteExt, net::TcpStream, task::JoinHandle};
 
-use crate::TariWorld;
+use crate::{TariWorld, wait::wait_until};
+
+/// How long a spawned process has to start listening on its port.
+pub const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(40);
 
 pub fn get_os_assigned_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -21,42 +26,43 @@ pub fn get_os_assigned_port() -> u16 {
 pub fn get_os_assigned_ports() -> (u16, u16) {
     (get_os_assigned_port(), get_os_assigned_port())
 }
+
+/// The libp2p address of a process listening on `port` on the loopback interface.
+pub fn local_tcp_multiaddr(port: u16) -> Multiaddr {
+    Multiaddr::empty()
+        .with(Protocol::Ip4(Ipv4Addr::LOCALHOST))
+        .with(Protocol::Tcp(port))
+}
+
+/// Waits for the process `name` to accept connections on `port`, returning `false` if `has_exited` reports that it
+/// stopped first.
+async fn wait_for_local_listener(name: &str, port: u16, has_exited: impl Fn() -> bool) -> bool {
+    let result = wait_until(PROCESS_START_TIMEOUT, async || {
+        if has_exited() {
+            return ControlFlow::Break(false);
+        }
+        match TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await {
+            Ok(mut stream) => {
+                stream.shutdown().await.unwrap();
+                ControlFlow::Break(true)
+            },
+            Err(err) => ControlFlow::Continue(err.to_string()),
+        }
+    })
+    .await;
+    result.unwrap_or_else(|err| panic!("{name} did not start listening on port {port}: {err}"))
+}
+
 pub async fn wait_listener_on_local_port_os_thread<T, E: Debug>(
     name: &'static str,
     handle: std::thread::JoinHandle<Result<T, E>>,
     port: u16,
 ) -> std::thread::JoinHandle<Result<T, E>> {
-    let mut i = 0;
-    loop {
-        match tokio::net::TcpSocket::new_v4()
-            .unwrap()
-            .connect(([127u8, 0, 0, 1], port).into())
-            .await
-        {
-            Ok(mut sock) => {
-                sock.shutdown().await.unwrap();
-                break;
-            },
-            Err(e) => {
-                if handle.is_finished() {
-                    handle
-                        .join()
-                        .expect("Node exited panicked")
-                        .expect("Node exited unexpectedly");
-                    panic!("{name} exited cleanly unexpectedly");
-                }
-                // cucumber_log!("Waiting for base node to start listening on port {}. {}", port, e);
-                if i >= 40 {
-                    // cucumber_log!("Node failed to start listening on port {} within 10s", port);
-                    panic!(
-                        "{name} failed to start listening on port {} within 20s (err: {})",
-                        port, e
-                    );
-                }
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                i += 1;
-            },
+    if !wait_for_local_listener(name, port, || handle.is_finished()).await {
+        if let Err(err) = handle.join().unwrap_or_else(|_| panic!("{name} panicked")) {
+            panic!("{name} exited with error: {err:?}");
         }
+        panic!("{name} exited cleanly unexpectedly");
     }
     handle
 }
@@ -66,45 +72,20 @@ pub async fn wait_listener_on_local_port<T, E: Debug>(
     handle: JoinHandle<Result<T, E>>,
     port: u16,
 ) -> JoinHandle<Result<T, E>> {
-    let mut i = 0;
-    loop {
-        match tokio::net::TcpSocket::new_v4()
-            .unwrap()
-            .connect(([127u8, 0, 0, 1], port).into())
-            .await
-        {
-            Ok(mut sock) => {
-                sock.shutdown().await.unwrap();
-                break;
-            },
+    if !wait_for_local_listener(name, port, || handle.is_finished()).await {
+        match handle.await {
+            Ok(Ok(_)) => panic!("{name} exited cleanly unexpectedly"),
+            Ok(Err(e)) => panic!("{name} exited with error: {:?}", e),
             Err(e) => {
-                if handle.is_finished() {
-                    match handle.await {
-                        Ok(Ok(_)) => panic!("{name} exited cleanly unexpectedly"),
-                        Ok(Err(e)) => panic!("{name} exited with error: {:?}", e),
-                        Err(e) => {
-                            let panic = e.into_panic();
-                            panic!(
-                                "{name} panicked {:?}",
-                                panic
-                                    .downcast_ref::<&str>()
-                                    .copied()
-                                    .or_else(|| panic.downcast_ref::<String>().map(|s| s.as_str()))
-                                    .unwrap()
-                            );
-                        },
-                    }
-                }
-                // cucumber_log!("Waiting for base node to start listening on port {}. {}", port, e);
-                if i >= 40 {
-                    // cucumber_log!("{name} failed to start listening on port {} within 10s", port);
-                    panic!(
-                        "{name} failed to start listening on port {} within 20s (err: {})",
-                        port, e
-                    );
-                }
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                i += 1;
+                let panic = e.into_panic();
+                panic!(
+                    "{name} panicked {:?}",
+                    panic
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| panic.downcast_ref::<String>().map(|s| s.as_str()))
+                        .unwrap()
+                );
             },
         }
     }

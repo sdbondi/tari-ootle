@@ -21,13 +21,14 @@
 //   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 mod steps;
-use std::{fs, future, io, panic, str::FromStr, time::Duration};
+use std::{fs, future, io, panic, time::Duration};
 
 use anyhow::bail;
 use cucumber::{ScenarioType, World, WriterExt, gherkin::Step, given, then, when, writer, writer::Verbosity};
 use integration_tests::{
     TariWorld,
     cucumber_log,
+    helpers::local_tcp_multiaddr,
     logging::{create_log_config_file, get_base_dir},
     miner::{mine_blocks, register_miner_process},
     validator_node_client,
@@ -35,12 +36,9 @@ use integration_tests::{
     wallet_daemon::spawn_wallet_daemon,
     wallet_daemon_client,
 };
-use libp2p::{
-    Multiaddr,
-    futures::{
-        future::{Either, select},
-        pin_mut,
-    },
+use libp2p::futures::{
+    future::{Either, select},
+    pin_mut,
 };
 use regex::Regex;
 use tari_common::initialize_logging;
@@ -156,9 +154,6 @@ async fn call_template_constructor_via_wallet_daemon(
         None,
     )
     .await;
-
-    // give it some time between transactions
-    // tokio::time::sleep(Duration::from_secs(4)).await;
 }
 
 #[when(
@@ -224,9 +219,6 @@ async fn call_template_constructor(
 ) {
     let args = args.split(',').map(|a| a.trim().to_string()).collect();
     validator_node_client::create_component(world, outputs_name, template_name, vn_name, function_call, args).await;
-
-    // give it some time between transactions
-    // tokio::time::sleep(Duration::from_secs(4)).await;
 }
 
 #[when(expr = r#"I call function "{word}" on template "{word}" on {word} named "{word}""#)]
@@ -238,9 +230,6 @@ async fn call_template_constructor_with_no_args(
     outputs_name: String,
 ) {
     validator_node_client::create_component(world, outputs_name, template_name, vn_name, function_call, vec![]).await;
-
-    // give it some time between transactions
-    // tokio::time::sleep(Duration::from_secs(4)).await;
 }
 
 #[when(expr = r#"I create a component {word} of template "{word}" on {word} using "{word}""#)]
@@ -252,9 +241,6 @@ async fn call_template_constructor_without_args(
     function_call: String,
 ) {
     validator_node_client::create_component(world, component_name, template_name, vn_name, function_call, vec![]).await;
-
-    // give it some time between transactions
-    // tokio::time::sleep(Duration::from_secs(4)).await;
 }
 
 #[when(expr = r#"I invoke on {word} on component {word} the method call "{word}" named "{word}""#)]
@@ -269,9 +255,6 @@ async fn call_component_method(
         .await
         .unwrap();
     assert_eq!(resp.dry_run_result.unwrap().decision, QuorumDecision::Accept);
-
-    // give it some time between transactions
-    // tokio::time::sleep(Duration::from_secs(4)).await;
 }
 
 #[when(expr = r#"I invoke on {word} on component {word} the method call "{word}" concurrently {int} times"#)]
@@ -355,9 +338,6 @@ async fn call_component_method_and_check_result(
         // TODO: handle other possible return types
         _ => todo!(),
     };
-
-    // give it some time between transactions
-    // tokio::time::sleep(Duration::from_secs(4)).await;
 }
 
 #[when(
@@ -545,9 +525,6 @@ async fn call_component_method_on_all_vns_and_check_result(
             _ => todo!(),
         };
     }
-
-    // give it some time between transactions
-    // tokio::time::sleep(Duration::from_secs(4)).await;
 }
 
 #[when(regex = r#"^I submit a transaction manifest via wallet daemon (\w+) with inputs "([^"]+)" named "(\w+)"$"#)]
@@ -629,12 +606,7 @@ async fn given_all_validator_connects_to_other_vns(world: &mut TariWorld) {
     let details = world
         .validator_nodes
         .values()
-        .map(|vn| {
-            (
-                vn.public_key,
-                Multiaddr::from_str(&format!("/ip4/127.0.0.1/tcp/{}", vn.p2p_port)).unwrap(),
-            )
-        })
+        .map(|vn| (vn.public_key, local_tcp_multiaddr(vn.p2p_port)))
         .collect::<Vec<_>>();
 
     for vn in world.validator_nodes.values() {
@@ -661,7 +633,6 @@ async fn given_all_validator_connects_to_other_vns(world: &mut TariWorld) {
 #[when(expr = "I wait {int} seconds")]
 #[then(expr = "I wait {int} seconds")]
 async fn wait_seconds(_world: &mut TariWorld, seconds: u64) {
-    // cucumber_log!("NOT Waiting {} seconds", seconds);
     tokio::time::sleep(Duration::from_secs(seconds)).await;
 }
 
@@ -672,10 +643,7 @@ fn print_world(world: &mut TariWorld) {
 
 #[when(expr = "I save the {word} database of {word}")]
 async fn when_i_save_the_database(world: &mut TariWorld, database_name: String, validator_name: String) {
-    let validator = world
-        .validator_nodes
-        .get(&validator_name)
-        .expect("validator node not found");
+    let validator = world.get_validator_node(&validator_name);
     validator
         .save_database(
             database_name,

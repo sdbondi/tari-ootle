@@ -22,10 +22,11 @@
 
 use std::{
     collections::HashMap,
-    fmt::{Debug, Formatter},
+    fmt::{Debug, Display, Formatter},
     fs,
+    ops::ControlFlow,
     path::PathBuf,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use base_node::BaseNodeProcess;
@@ -70,6 +71,7 @@ pub mod template;
 pub mod util;
 pub mod validator_node;
 pub mod validator_node_client;
+pub mod wait;
 pub mod wallet;
 pub mod wallet_daemon;
 pub mod wallet_daemon_client;
@@ -192,33 +194,56 @@ impl TariWorld {
     pub fn get_miner(&self, name: &str) -> &MinerProcess {
         self.miners
             .get(name)
-            .unwrap_or_else(|| panic!("Miner {} not found", name))
+            .unwrap_or_else(|| not_found("Miner", name, self.miners.keys()))
     }
 
     pub fn get_wallet(&self, name: &str) -> &WalletProcess {
         self.wallets
             .get(name)
-            .unwrap_or_else(|| panic!("Wallet {} not found", name))
+            .unwrap_or_else(|| not_found("Wallet", name, self.wallets.keys()))
     }
 
     pub fn get_wallet_daemon(&self, name: &str) -> &TariWalletDaemonProcess {
         self.wallet_daemons
             .get(name)
-            .unwrap_or_else(|| panic!("Wallet daemon {} not found", name))
+            .unwrap_or_else(|| not_found("Wallet daemon", name, self.wallet_daemons.keys()))
     }
 
     pub fn get_validator_node(&self, name: &str) -> &ValidatorNodeProcess {
         self.validator_nodes
             .get(name)
             .or_else(|| self.vn_seeds.get(name))
-            .unwrap_or_else(|| panic!("Validator node {} not found", name))
+            .unwrap_or_else(|| self.validator_node_not_found(name))
     }
 
     pub fn get_validator_node_mut(&mut self, name: &str) -> &mut ValidatorNodeProcess {
+        if !self.validator_nodes.contains_key(name) && !self.vn_seeds.contains_key(name) {
+            self.validator_node_not_found(name);
+        }
         self.validator_nodes
             .get_mut(name)
             .or_else(|| self.vn_seeds.get_mut(name))
-            .unwrap_or_else(|| panic!("Validator node {} not found", name))
+            .expect("presence checked above")
+    }
+
+    fn validator_node_not_found(&self, name: &str) -> ! {
+        not_found(
+            "Validator node",
+            name,
+            self.validator_nodes.keys().chain(self.vn_seeds.keys()),
+        )
+    }
+
+    pub fn get_template(&self, name: &str) -> &RegisteredTemplate {
+        self.templates
+            .get(name)
+            .unwrap_or_else(|| not_found("Template", name, self.templates.keys()))
+    }
+
+    pub fn get_substate_id(&self, name: &str) -> &SubstateId {
+        self.substate_ids
+            .get(name)
+            .unwrap_or_else(|| not_found("Substate id", name, self.substate_ids.keys()))
     }
 
     pub fn all_running_validators_iter(&self) -> impl Iterator<Item = &ValidatorNodeProcess> + Clone {
@@ -231,7 +256,7 @@ impl TariWorld {
     pub fn get_indexer(&self, name: &str) -> &IndexerProcess {
         self.indexers
             .get(name)
-            .unwrap_or_else(|| panic!("Indexer {} not found", name))
+            .unwrap_or_else(|| not_found("Indexer", name, self.indexers.keys()))
     }
 
     pub fn get_output<T: AsRef<str>>(&self, output_name: &str, discriminator: T) -> &SubstateRequirement {
@@ -261,7 +286,7 @@ impl TariWorld {
     pub fn get_base_node(&self, name: &str) -> &BaseNodeProcess {
         self.base_nodes
             .get(name)
-            .unwrap_or_else(|| panic!("Base node {} not found", name))
+            .unwrap_or_else(|| not_found("Base node", name, self.base_nodes.keys()))
     }
 
     pub fn after(&mut self, _scenario: &Scenario) {
@@ -300,34 +325,21 @@ impl TariWorld {
     }
 
     pub async fn wait_until_base_nodes_have_transaction_in_mempool(&self, min_tx_count: usize, timeout: Duration) {
-        let timer = Instant::now();
-        'outer: loop {
+        let result = wait::wait_until(timeout, async || {
             for bn in self.base_nodes.values() {
                 let mut client = bn.create_client();
                 let tx_count = client.get_mempool_transaction_count().await.unwrap();
-
                 if tx_count < min_tx_count {
-                    // cucumber_log!(
-                    //     "Waiting for {} to have {} transaction(s) in mempool (currently has {})",
-                    //     bn.name, min_tx_count, tx_count
-                    // );
-                    if timer.elapsed() > timeout {
-                        cucumber_log!(
-                            "Timed out waiting for base node {} to have {} transactions in mempool",
-                            bn.name,
-                            min_tx_count
-                        );
-                        panic!(
-                            "Timed out waiting for base node {} to have {} transactions in mempool",
-                            bn.name, min_tx_count
-                        );
-                    }
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    continue 'outer;
+                    return ControlFlow::Continue(format!("base node {} has {tx_count}", bn.name));
                 }
             }
-
-            break;
+            ControlFlow::Break(())
+        })
+        .await;
+        if let Err(err) = result {
+            let message = format!("Base nodes did not have {min_tx_count} transaction(s) in mempool: {err}");
+            cucumber_log!("{message}");
+            panic!("{message}");
         }
     }
 
@@ -438,5 +450,37 @@ impl Debug for TariWorld {
             .field("wallet_accounts", &self.wallet_accounts.keys())
             .field("wallet_daemons", &self.wallet_daemons.keys())
             .finish()
+    }
+}
+
+/// Panics for a name a step looked up but the scenario never created, listing the names it did create so a typo
+/// in a feature file is visible in the failure.
+pub fn not_found<K: Display>(kind: &str, name: &str, available: impl IntoIterator<Item = K>) -> ! {
+    panic!("{}", not_found_message(kind, name, available))
+}
+
+fn not_found_message<K: Display>(kind: &str, name: &str, available: impl IntoIterator<Item = K>) -> String {
+    let available = available.into_iter().map(|k| k.to_string()).collect::<Vec<_>>();
+    if available.is_empty() {
+        format!("{kind} '{name}' not found: the scenario has none")
+    } else {
+        format!("{kind} '{name}' not found. Available: {}", available.join(", "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn it_lists_available_names_when_a_lookup_misses() {
+        assert_eq!(
+            not_found_message("Validator node", "VN3", ["VN1", "VN2"]),
+            "Validator node 'VN3' not found. Available: VN1, VN2"
+        );
+        assert_eq!(
+            not_found_message("Indexer", "IDX", Vec::<String>::new()),
+            "Indexer 'IDX' not found: the scenario has none"
+        );
     }
 }

@@ -234,10 +234,7 @@ async fn when_i_burn_funds_with_wallet_daemon(
     let public_key = account.account.owner_public_key();
     integration_tests::cucumber_log!("Burning funds using claim key {}", public_key);
 
-    let wallet = world
-        .wallets
-        .get(&wallet_name)
-        .unwrap_or_else(|| panic!("Wallet {} not found", wallet_name));
+    let wallet = world.get_wallet(&wallet_name);
 
     let amount = (amount * T).as_u64();
     let mut client = wallet.create_client().await;
@@ -651,10 +648,7 @@ async fn when_stealth_transfer_via_wallet_daemon(
 #[when(expr = "I set the default account for {word} to {word}")]
 async fn when_i_set_the_default_account(world: &mut TariWorld, step: &Step, wallet_name: String, account_name: String) {
     cucumber_log!("==== Step: {}", step.value);
-    let wallet = world
-        .wallet_daemons
-        .get(&wallet_name)
-        .unwrap_or_else(|| panic!("No wallet daemon named {}", wallet_name));
+    let wallet = world.get_wallet_daemon(&wallet_name);
     let mut client = wallet.get_authed_client().await;
     client
         .accounts_set_default(ComponentAddressOrName::Name(account_name))

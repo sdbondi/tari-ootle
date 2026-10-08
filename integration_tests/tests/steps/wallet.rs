@@ -1,11 +1,11 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::time::Duration;
+use std::{ops::ControlFlow, time::Duration};
 
 use anyhow::anyhow;
 use cucumber::{gherkin::Step, given, when};
-use integration_tests::{claim_proof::CucumberClaimProof, cucumber_log};
+use integration_tests::{claim_proof::CucumberClaimProof, cucumber_log, not_found, wait::wait_until};
 use minotari_app_grpc::{
     tari_rpc,
     tari_rpc::{GetBalanceRequest, ValidateRequest},
@@ -23,7 +23,6 @@ use tari_transaction_components::{
     tari_amount::T,
     transaction_components::{MemoField, memo_field::TxType},
 };
-use tokio::time::sleep;
 
 use crate::{TariWorld, spawn_minotari_wallet};
 
@@ -78,10 +77,7 @@ async fn burn_and_store_proof(
     proof_name: String,
     claim_public_key: Vec<u8>,
 ) {
-    let wallet = world
-        .wallets
-        .get(wallet_name)
-        .unwrap_or_else(|| panic!("Wallet {} not found", wallet_name));
+    let wallet = world.get_wallet(wallet_name);
 
     let burn_amount = amount * T;
     let mut wallet_client = wallet.create_client().await;
@@ -126,24 +122,21 @@ async fn when_i_wait_for_proof_to_confirm_on_wallet(
     wallet_name: String,
 ) -> anyhow::Result<()> {
     cucumber_log!("==== Step: {}", step.value);
-    let proof = world.claim_proofs.get(&proof_name).unwrap_or_else(|| {
-        panic!("Claim proof {} not found", proof_name);
-    });
+    let proof = world
+        .claim_proofs
+        .get(&proof_name)
+        .unwrap_or_else(|| not_found("Claim proof", &proof_name, world.claim_proofs.keys()));
 
     let CucumberClaimProof::Pending { commitment, .. } = proof else {
         // Already confirmed
         return Ok(());
     };
 
-    let wallet = world
-        .wallets
-        .get(&wallet_name)
-        .unwrap_or_else(|| panic!("Wallet {} not found", wallet_name));
+    let wallet = world.get_wallet(&wallet_name);
 
     let mut client = wallet.create_client().await;
 
-    let mut attempts = 0;
-    let proof_resp = loop {
+    let proof_resp = wait_until(Duration::from_secs(60), async || {
         let resp = client
             .get_burn_claim_proof(tari_rpc::GetBurnClaimProofRequest {
                 commitment: commitment.as_bytes().to_vec(),
@@ -155,19 +148,13 @@ async fn when_i_wait_for_proof_to_confirm_on_wallet(
         cucumber_log!("Received burn claim proof response: {:?}", resp);
 
         if resp.burn_output_proof.is_some() && resp.mined_in_epoch.is_some() {
-            break resp;
+            return ControlFlow::Break(resp);
         }
-        if attempts >= 20 {
-            return Err(anyhow!(
-                "Burn output proof not available after waiting for {} attempts",
-                attempts
-            ));
-        }
-        attempts += 1;
-
         cucumber_log!("Burn output proof not available yet, waiting...");
-        sleep(Duration::from_secs(3)).await;
-    };
+        ControlFlow::Continue("burn output proof not available")
+    })
+    .await
+    .map_err(|err| anyhow!("Burn output proof for {proof_name}: {err}"))?;
     let claim_proof = proof_resp
         .claim_proof
         .ok_or_else(|| anyhow!("No claim proof in response"))?;
@@ -219,21 +206,16 @@ async fn when_i_wait_for_proof_to_confirm_on_wallet(
 #[when(expr = "wallet {word} has at least {int} {word}")]
 pub async fn check_balance(world: &mut TariWorld, step: &Step, wallet_name: String, balance: u64, units: String) {
     cucumber_log!("==== Step: {}", step.value);
-    const MAX_WAIT_TIME_SECS: u64 = 100;
-    let wallet = world
-        .wallets
-        .get(&wallet_name)
-        .unwrap_or_else(|| panic!("Wallet {} not found", wallet_name));
+    let wallet = world.get_wallet(&wallet_name);
 
     let mut client = wallet.create_client().await;
-    let mut iterations = 0;
     let balance = match units.as_str() {
         "T" => balance * 1_000_000,
         "uT" => balance,
         _ => panic!("Unknown unit {}", units),
     };
 
-    loop {
+    wait_until(Duration::from_secs(100), async || {
         let _result = client.validate_all_transactions(ValidateRequest {}).await.unwrap();
         let resp = client
             .get_balance(GetBalanceRequest { payment_id: None })
@@ -241,23 +223,20 @@ pub async fn check_balance(world: &mut TariWorld, step: &Step, wallet_name: Stri
             .unwrap()
             .into_inner();
         if resp.available_balance >= balance {
-            break;
+            return ControlFlow::Break(());
         }
+        let status = format!(
+            "balance: {} uT, pending: {} uT",
+            resp.available_balance, resp.pending_incoming_balance
+        );
         cucumber_log!(
-            "Waiting for wallet {} to have at least {} uT (balance: {} uT, pending: {} uT)",
+            "Waiting for wallet {} to have at least {} uT ({})",
             wallet_name,
             balance,
-            resp.available_balance,
-            resp.pending_incoming_balance
+            status
         );
-        sleep(Duration::from_secs(2)).await;
-
-        if iterations == MAX_WAIT_TIME_SECS.div_ceil(2) {
-            panic!(
-                "Wallet {} did not have at least {} uT after {} seconds  (balance: {} uT, pending: {} uT)",
-                wallet_name, balance, MAX_WAIT_TIME_SECS, resp.available_balance, resp.pending_incoming_balance
-            );
-        }
-        iterations += 1;
-    }
+        ControlFlow::Continue(status)
+    })
+    .await
+    .unwrap_or_else(|err| panic!("Wallet {wallet_name} did not have at least {balance} uT: {err}"));
 }

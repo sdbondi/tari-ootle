@@ -42,11 +42,7 @@ pub async fn create_component(
     function_call: String,
     args: Vec<String>,
 ) {
-    let template_address = world
-        .templates
-        .get(&template_name)
-        .unwrap_or_else(|| panic!("Template not found with name {}", template_name))
-        .address;
+    let template_address = world.get_template(&template_name).address;
 
     // Parse arguments from strings
     let parsed_args: Result<Vec<_>, _> = args.iter().map(|a| parse_arg(a)).collect();

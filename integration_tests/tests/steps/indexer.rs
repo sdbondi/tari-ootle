@@ -3,16 +3,20 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    ops::ControlFlow,
     str::FromStr,
+    time::Duration,
 };
 
 use cucumber::{gherkin::Step, given, then, when};
 use integration_tests::{
     TariWorld,
     cucumber_log,
-    indexer::{IndexerProcess, spawn_indexer},
+    helpers::local_tcp_multiaddr,
+    indexer::spawn_indexer,
+    not_found,
+    wait::{TimedOut, wait_until},
 };
-use libp2p::Multiaddr;
 use tari_ootle_common_types::{
     Epoch,
     StateVersion,
@@ -28,15 +32,10 @@ async fn given_validator_connects_to_other_vns(world: &mut TariWorld, name: Stri
     let details = world
         .all_running_validators_iter()
         .filter(|vn| vn.name != name)
-        .map(|vn| {
-            (
-                vn.public_key,
-                Multiaddr::from_str(&format!("/ip4/127.0.0.1/tcp/{}", vn.p2p_port)).unwrap(),
-            )
-        });
+        .map(|vn| (vn.public_key, local_tcp_multiaddr(vn.p2p_port)));
 
     for (pk, addr) in details {
-        indexer.add_peer(pk, vec![addr.clone()]).await;
+        indexer.add_peer(pk, vec![addr]).await;
     }
 }
 
@@ -52,47 +51,53 @@ async fn given_validator_connects_to_other_vns(world: &mut TariWorld, name: Stri
 async fn network_has_shard_groups(world: &mut TariWorld, step: &Step, num_shard_groups: usize, name: String) {
     cucumber_log!("=== Step:{}", step.value);
     let client = world.get_indexer(&name).get_indexer_client();
-    let mut remaining = 20;
-    loop {
+    let result = wait_until(Duration::from_secs(60), async || {
         let state = client
             .get_network_sync_state()
             .await
             .expect("Failed to get network sync state");
-        let shard_groups = &state.network_desc.shard_groups;
+        let has_empty_group = state
+            .network_desc
+            .shard_groups
+            .iter()
+            .any(|(_, num_members)| *num_members == 0);
+        if state.network_desc.shard_groups.len() == num_shard_groups && !has_empty_group {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(state.network_desc)
+        }
+    })
+    .await;
+
+    let Err(TimedOut { last: network_desc, .. }) = result else {
+        return;
+    };
+    let shard_groups = &network_desc.shard_groups;
+    if shard_groups.len() == num_shard_groups {
         let empty = shard_groups
             .iter()
             .filter(|(_, num_members)| *num_members == 0)
             .map(|(shard_group, _)| shard_group.to_string())
             .collect::<Vec<_>>();
-        if shard_groups.len() == num_shard_groups && empty.is_empty() {
-            return;
-        }
-
-        if remaining == 0 {
-            if shard_groups.len() == num_shard_groups {
-                panic!(
-                    "Indexer {} sees the expected {} shard group(s) at epoch {}, but no validator is assigned to {}. \
-                     Every validator shard key landed in the other part of the shard space, so nothing can answer for \
-                     this one. Shard groups: {:?}",
-                    name,
-                    num_shard_groups,
-                    state.network_desc.epoch,
-                    empty.join(", "),
-                    shard_groups
-                );
-            }
-            panic!(
-                "Indexer {} sees {} shard group(s) at epoch {}, expected {}: {:?}",
-                name,
-                shard_groups.len(),
-                state.network_desc.epoch,
-                num_shard_groups,
-                shard_groups
-            );
-        }
-        remaining -= 1;
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        panic!(
+            "Indexer {} sees the expected {} shard group(s) at epoch {}, but no validator is assigned to {}. Every \
+             validator shard key landed in the other part of the shard space, so nothing can answer for this one. \
+             Shard groups: {:?}",
+            name,
+            num_shard_groups,
+            network_desc.epoch,
+            empty.join(", "),
+            shard_groups
+        );
     }
+    panic!(
+        "Indexer {} sees {} shard group(s) at epoch {}, expected {}: {:?}",
+        name,
+        shard_groups.len(),
+        network_desc.epoch,
+        num_shard_groups,
+        shard_groups
+    );
 }
 
 #[then(expr = "indexer {word} has scanned to at least height {int}")]
@@ -148,7 +153,7 @@ async fn start_indexer_connected_to_a_base_node(world: &mut TariWorld, indexer_n
 
 #[then(expr = "{word} indexer GraphQL request works")]
 async fn works_indexer_graphql(world: &mut TariWorld, indexer_name: String) {
-    let indexer = world.indexers.get(&indexer_name).unwrap();
+    let indexer = world.get_indexer(&indexer_name);
     let mut graphql_client = indexer.get_graphql_indexer_client().await;
     let query = r#"{ getEvents { substateId, templateAddress, txHash, topic, payload } }"#.to_string();
     let res = graphql_client
@@ -165,12 +170,11 @@ async fn indexer_scans_network_events(
     account_name: String,
     topics_str: String,
 ) {
-    let indexer: &mut IndexerProcess = world.indexers.get_mut(&indexer_name).unwrap_or_else(|| {
-        panic!("Indexer {} not found", indexer_name);
-    });
-    let account = world.wallet_accounts.get(&account_name).unwrap_or_else(|| {
-        panic!("No wallet account found with name {}", account_name);
-    });
+    let indexer = world.get_indexer(&indexer_name);
+    let account = world
+        .wallet_accounts
+        .get(&account_name)
+        .unwrap_or_else(|| not_found("Wallet account", &account_name, world.wallet_accounts.keys()));
     let account_addr = account.component_address().to_string();
     let expected_topics = topics_str.split(',').map(|s| s.to_string()).collect::<Vec<_>>();
 
@@ -180,14 +184,13 @@ async fn indexer_scans_network_events(
         account_addr
     );
 
-    let mut remaining_attempts = 10;
-    loop {
-        let res = graphql_client
+    wait_until(Duration::from_secs(10), async || {
+        let mut res = graphql_client
             .send_request::<HashMap<String, Vec<tari_indexer::graphql::model::events::Event>>>(&query, None, None)
             .await
             .expect("Failed to obtain getEvents query result");
 
-        let events = res.get("getEvents").unwrap();
+        let events = res.remove("getEvents").unwrap();
         let topics_for_component = events.iter().map(|e| e.topic.as_str()).collect::<HashSet<_>>();
 
         let is_all_topics_found = expected_topics
@@ -195,33 +198,28 @@ async fn indexer_scans_network_events(
             .all(|t| topics_for_component.contains(t.as_str()));
 
         if is_all_topics_found {
-            return;
-        }
-
-        remaining_attempts -= 1;
-        if remaining_attempts == 0 {
-            panic!(
-                "Timed out waiting for events. Events emitted for {} were {}. Expected topics: {:?} (ALL events: {:?})",
-                account_addr,
-                topics_for_component.display(),
-                expected_topics,
-                events
-            );
+            return ControlFlow::Break(());
         }
 
         cucumber_log!(
-            "Waiting for events for {} ({} attempts remaining, found: {})",
+            "Waiting for events for {} (found: {})",
             account_addr,
-            remaining_attempts,
             topics_for_component.display()
         );
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    }
+        ControlFlow::Continue(events)
+    })
+    .await
+    .unwrap_or_else(|err| {
+        panic!(
+            "Events emitted for {} do not include all expected topics {:?}: {err}",
+            account_addr, expected_topics
+        )
+    });
 }
 
 #[when(expr = "indexer {word} scans the network for events of resource {word}")]
 async fn indexer_scans_network_events_for_resource(world: &mut TariWorld, indexer_name: String, resource_path: String) {
-    let indexer: &mut IndexerProcess = world.indexers.get_mut(&indexer_name).unwrap();
+    let indexer = world.get_indexer(&indexer_name);
 
     // extract the resource address from the outputs
     let (input_group, index) = resource_path.split_once('/').unwrap_or_else(|| {
@@ -265,40 +263,33 @@ async fn assert_indexer_substate_version(
     version: SubstateVersion,
     output_ref: String,
 ) {
-    let indexer = world.indexers.get(&indexer_name).unwrap();
+    let indexer = world.get_indexer(&indexer_name);
     assert!(!indexer.handle.is_finished(), "Indexer {} is not running", indexer_name);
 
-    let mut remaining_attempts = 30usize;
-    loop {
+    let substate = wait_until(Duration::from_secs(30), async || {
         match indexer.get_substate(world, output_ref.clone(), version).await {
-            Ok(substate) => {
-                cucumber_log!(
-                    "indexer.get_substate result: {}",
-                    serde_json::to_string_pretty(&substate).unwrap()
-                );
-                assert_eq!(substate.version, version);
-                return;
-            },
+            Ok(substate) => ControlFlow::Break(substate),
             Err(e) => {
-                if remaining_attempts == 0 {
-                    panic!(
-                        "Indexer {} did not return version {} for substate {} in time. Last error: {}",
-                        indexer_name, version, output_ref, e
-                    );
-                }
-                remaining_attempts -= 1;
                 cucumber_log!(
-                    "Waiting for indexer {} to sync substate {} (version {}), {} attempts remaining. Error: {}",
+                    "Waiting for indexer {} to sync substate {} (version {}). Error: {}",
                     indexer_name,
                     output_ref,
                     version,
-                    remaining_attempts,
                     e
                 );
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                ControlFlow::Continue(e.to_string())
             },
         }
-    }
+    })
+    .await
+    .unwrap_or_else(|err| {
+        panic!("Indexer {indexer_name} did not return version {version} for substate {output_ref}: {err}")
+    });
+    cucumber_log!(
+        "indexer.get_substate result: {}",
+        serde_json::to_string_pretty(&substate).unwrap()
+    );
+    assert_eq!(substate.version, version);
 }
 
 #[then(expr = "the indexer {word} returns {int} non fungibles for resource {word}")]
@@ -308,7 +299,7 @@ async fn assert_indexer_non_fungible_list(
     count: usize,
     output_ref: String,
 ) {
-    let indexer = world.indexers.get(&indexer_name).unwrap();
+    let indexer = world.get_indexer(&indexer_name);
     assert!(!indexer.handle.is_finished(), "Indexer {} is not running", indexer_name);
     let nfts = indexer.get_non_fungibles(world, output_ref, 0, count as u64).await;
     cucumber_log!("indexer.get_non_fungibles result: {:?}", nfts);
@@ -326,23 +317,16 @@ async fn assert_indexer_catalogue_count(world: &mut TariWorld, indexer_name: Str
     let indexer = world.get_indexer(&indexer_name);
     assert!(!indexer.handle.is_finished(), "Indexer {} is not running", indexer_name);
 
-    let mut remaining = 30;
-    loop {
+    wait_until(Duration::from_secs(30), async || {
         let resp = indexer.list_template_catalogue(None, Some(100), None).await;
         if resp.entries.len() >= min_count {
-            return;
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(format!("{} entries", resp.entries.len()))
         }
-        if remaining == 0 {
-            panic!(
-                "Indexer {} catalogue has {} entries, expected at least {}",
-                indexer_name,
-                resp.entries.len(),
-                min_count
-            );
-        }
-        remaining -= 1;
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    }
+    })
+    .await
+    .unwrap_or_else(|err| panic!("Indexer {indexer_name} catalogue does not have at least {min_count} entries: {err}"));
 }
 
 #[then(expr = "the indexer {word} catalogue contains template {word}")]
@@ -351,44 +335,35 @@ async fn assert_indexer_catalogue_contains_template(
     indexer_name: String,
     template_name: String,
 ) {
-    let template = world
-        .templates
-        .get(&template_name)
-        .unwrap_or_else(|| panic!("Template {} not registered in world", template_name));
-    let template_address = template.address;
+    let template_address = world.get_template(&template_name).address;
 
     let indexer = world.get_indexer(&indexer_name);
     assert!(!indexer.handle.is_finished(), "Indexer {} is not running", indexer_name);
 
-    let mut remaining = 30;
-    loop {
-        let client = indexer.get_indexer_client();
+    let client = indexer.get_indexer_client();
+    let entry = wait_until(Duration::from_secs(30), async || {
         match client.get_template_catalogue_entry(template_address).await {
-            Ok(entry) => {
-                assert_eq!(
-                    entry.template_address, template_address,
-                    "Template address mismatch in catalogue entry"
-                );
-                assert!(
-                    !entry.template_name.is_empty(),
-                    "template_name should not be empty for {} (address: {})",
-                    template_name,
-                    template_address
-                );
-                return;
-            },
-            Err(_) => {
-                if remaining == 0 {
-                    panic!(
-                        "Indexer {} catalogue does not contain template {} (address: {})",
-                        indexer_name, template_name, template_address
-                    );
-                }
-                remaining -= 1;
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            },
+            Ok(entry) => ControlFlow::Break(entry),
+            Err(err) => ControlFlow::Continue(err.to_string()),
         }
-    }
+    })
+    .await
+    .unwrap_or_else(|err| {
+        panic!(
+            "Indexer {indexer_name} catalogue does not contain template {template_name} (address: \
+             {template_address}): {err}"
+        )
+    });
+    assert_eq!(
+        entry.template_address, template_address,
+        "Template address mismatch in catalogue entry"
+    );
+    assert!(
+        !entry.template_name.is_empty(),
+        "template_name should not be empty for {} (address: {})",
+        template_name,
+        template_address
+    );
 }
 
 #[then(expr = "the indexer {word} catalogue name filter {word} returns {int} result(s)")]
@@ -502,16 +477,7 @@ async fn i_wait_for_the_indexer_to_sync_with_the_network(world: &mut TariWorld, 
     let indexer = world.get_indexer(&indexer_name);
     assert!(!indexer.handle.is_finished(), "Indexer {} is not running", indexer_name);
     let client = indexer.get_indexer_client();
-    let mut remaining_attempts = 120;
-    loop {
-        if remaining_attempts == 0 {
-            panic!(
-                "Indexer {} did not sync with the network in time. Current epoch: {}",
-                indexer_name, prev_epoch
-            );
-        }
-
-        remaining_attempts -= 1;
+    wait_until(Duration::from_secs(120), async || {
         let state = client.get_network_sync_state().await.unwrap();
         if let Some(ref progress) = state.sync_progress {
             // The indexer is synced once it has scanned every shard up to the version the network has
@@ -541,18 +507,24 @@ async fn i_wait_for_the_indexer_to_sync_with_the_network(world: &mut TariWorld, 
                     network_version,
                     scanned_version.display()
                 );
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                continue;
+                return ControlFlow::Continue(format!(
+                    "shard {shard} at version {} of {network_version}",
+                    scanned_version.display()
+                ));
             }
 
-            break;
+            ControlFlow::Break(())
         } else {
             integration_tests::cucumber_log!(
                 "Waiting for indexer {} to sync. Current epoch: {}, no sync progress yet",
                 indexer_name,
                 prev_epoch
             );
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            ControlFlow::Continue("no sync progress yet".to_string())
         }
-    }
+    })
+    .await
+    .unwrap_or_else(|err| {
+        panic!("Indexer {indexer_name} did not sync with the network. Current epoch: {prev_epoch}: {err}")
+    });
 }

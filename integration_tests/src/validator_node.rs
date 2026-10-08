@@ -23,7 +23,9 @@
 use std::{
     fs,
     fs::File,
+    ops::ControlFlow,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use multiaddr::Multiaddr;
@@ -52,6 +54,7 @@ use crate::{
     cucumber_log,
     helpers::{check_join_handle, get_os_assigned_ports, wait_listener_on_local_port},
     logging::get_base_dir_for_scenario,
+    wait::wait_until,
 };
 
 #[derive(Debug)]
@@ -102,21 +105,16 @@ impl ValidatorNodeProcess {
 
     pub async fn wait_for_consensus_to_start(&self) {
         let mut client = self.create_client();
-        let mut attempts = 60;
-        loop {
+        wait_until(Duration::from_secs(60), async || {
             let resp = client.get_consensus_status().await.unwrap();
             if resp.state == "Running" {
-                return;
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(format!("state: {}, epoch: {}", resp.state, resp.epoch))
             }
-            attempts -= 1;
-            if attempts == 0 {
-                panic!(
-                    "Validator node {} did not start consensus in time: status: {}, epoch: {}",
-                    self.name, resp.state, resp.epoch
-                );
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
+        })
+        .await
+        .unwrap_or_else(|err| panic!("Validator node {} did not start consensus: {err}", self.name));
     }
 }
 
@@ -126,7 +124,7 @@ pub async fn spawn_validator_node(
     base_node_name: String,
     claim_account_name: Option<&str>,
 ) -> ValidatorNodeProcess {
-    let base_node_grpc_port = world.base_nodes.get(&base_node_name).unwrap().grpc_port;
+    let base_node_grpc_port = world.get_base_node(&base_node_name).grpc_port;
     let fee_claim_public_key = claim_account_name
         .map(|n| {
             let account = world.wallet_accounts.get(n).unwrap_or_else(|| {
