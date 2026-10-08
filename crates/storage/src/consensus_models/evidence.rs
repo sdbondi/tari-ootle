@@ -47,6 +47,16 @@ impl Evidence {
         }
     }
 
+    /// The pledged value hash of every input, in the order the borsh encoding writes the inputs. One entry per input,
+    /// `None` included, so the encoding of the evidence fixes which input each hash belongs to.
+    pub fn pledged_value_hashes(&self) -> Vec<Option<Hash32>> {
+        self.evidence
+            .values()
+            .flat_map(|e| e.inputs.values())
+            .map(|lock| lock.and_then(|lock| lock.pledged_value_hash))
+            .collect()
+    }
+
     pub fn from_inputs_and_outputs<'a, I, O>(
         num_preshards: NumPreshards,
         num_committees: u32,
@@ -650,6 +660,11 @@ pub struct EvidenceInputLockData {
     pub version: SubstateVersion,
     /// Hash of the value the input was locked on. The evidence is part of the command that the shard group's commit
     /// proof covers, so this is what authenticates the value when it is pledged to another shard group.
+    ///
+    /// The command hash covers it from [`ProtocolVersion::V2`](tari_engine_types::ProtocolVersion::V2) only, through
+    /// [`Evidence::pledged_value_hashes`], so that blocks from earlier versions keep the preimage they were signed
+    /// with.
+    #[borsh(skip)]
     #[n(2)]
     pub pledged_value_hash: Option<Hash32>,
 }

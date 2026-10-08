@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use log::*;
 use tari_epoch_manager::EpochManagerReader;
-use tari_ootle_common_types::{VotePower, committee::Committee, optional::Optional};
+use tari_ootle_common_types::{ProtocolVersion, VotePower, committee::Committee, optional::Optional};
 use tari_ootle_storage::consensus_models::{CommandsCommitProof, ForeignProposal};
 use tari_ootle_transaction::Network;
 
@@ -73,6 +73,7 @@ pub fn check_foreign_proposal<TConsensusSpec: ConsensusSpec>(
     config: &HotstuffConfig,
 ) -> Result<(), HotStuffError> {
     check_network(proposal, config.network)?;
+    check_protocol_version(proposal, config.network)?;
     check_proposer_in_committee(proposal, foreign_committee)?;
     check_header(proposal)?;
     check_commit_proof::<TConsensusSpec>(proposal.commit_proof(), foreign_committee)?;
@@ -109,6 +110,29 @@ pub(super) fn check_network(proposal: &ForeignProposal, network: Network) -> Res
                 .map(|n| n.to_string())
                 .unwrap_or_else(|_| format!("<unknown> byte: {}", proposal.network_byte())),
             expected_network: network.to_string(),
+            block_id: proposal.calculate_block_id(),
+        });
+    }
+    Ok(())
+}
+
+/// A foreign block is held to the same activation schedule as a local one. Its version decides whether its pledges
+/// must match the value hashes in its evidence, so a block that claims an earlier version than its epoch runs under
+/// is rejected rather than checked under the weaker rule.
+fn check_protocol_version(proposal: &ForeignProposal, network: Network) -> Result<(), ProposalValidationError> {
+    let block_version = proposal
+        .protocol_version()
+        .map_err(|e| ProposalValidationError::ForeignProposalInvalid {
+            block_id: proposal.calculate_block_id(),
+            shard_group: proposal.shard_group_unchecked(),
+            details: e.into(),
+        })?;
+    let expected_version = ProtocolVersion::at(network, proposal.epoch());
+    if block_version != expected_version {
+        return Err(ProposalValidationError::InvalidProtocolVersion {
+            expected_version,
+            block_version,
+            epoch: proposal.epoch(),
             block_id: proposal.calculate_block_id(),
         });
     }

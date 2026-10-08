@@ -490,7 +490,11 @@ impl Block {
     }
 
     pub fn compute_command_inclusion_proof(&self, command_index: usize) -> Result<SparseMerkleProofExt, BlockError> {
-        let hashes = self.commands.iter().map(|cmd| TreeHash::from(cmd.hash().into_array()));
+        let protocol_version = self.header.protocol_version();
+        let hashes = self
+            .commands
+            .iter()
+            .map(|cmd| TreeHash::from(cmd.hash(protocol_version).into_array()));
         let hash =
             hashes
                 .clone()

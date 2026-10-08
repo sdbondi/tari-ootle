@@ -507,6 +507,14 @@ pub(super) fn validate_evidence_and_pledges_match(
                 details: anyhow!("Invalid shard group bounds")
             }
         })?;
+    let protocol_version =
+        proposal
+            .protocol_version()
+            .map_err(|e| ProposalValidationError::ForeignProposalInvalid {
+                block_id: proposal.calculate_block_id(),
+                shard_group: foreign_shard_group,
+                details: e.into(),
+            })?;
     // TODO: any error will** result in transactions that never resolve.
     // ** unless the foreign shard sends it again with the correct evidence and pledges
     // Possible ways to handle this:
@@ -567,7 +575,7 @@ pub(super) fn validate_evidence_and_pledges_match(
 
         if !proposal
             .block_pledge()
-            .has_all_input_substate_values_for(shard_group_evidence)
+            .has_all_input_substate_values_for(protocol_version, shard_group_evidence)
         {
             warn!(
                 target: LOG_TARGET,
@@ -617,7 +625,7 @@ fn generate_transaction_commands_commit_proof_for_shard_group<TTx: StateStoreRea
         if is_involved_local_prepare_with_inputs || is_involved_local_accept {
             CommandOrHash::Command(cmd.clone())
         } else {
-            CommandOrHash::Hash(cmd.hash())
+            CommandOrHash::Hash(cmd.hash(committed_block.header().protocol_version()))
         }
     });
 

@@ -10,7 +10,7 @@ use borsh::BorshSerialize;
 use serde::{Deserialize, Serialize};
 use tari_common_types::types::FixedHash;
 use tari_consensus_types::{BlockId, Decision};
-use tari_ootle_common_types::{ShardGroup, hashing::command_hasher};
+use tari_ootle_common_types::{ProtocolVersion, ShardGroup, hashing::command_hasher};
 use tari_ootle_transaction::TransactionId;
 
 use super::{ForeignProposalAtom, LeaderFee, TransactionRecord};
@@ -272,8 +272,23 @@ impl Command {
         }
     }
 
-    pub fn hash(&self) -> FixedHash {
-        command_hasher().chain(self).finalize().into()
+    /// The command's leaf in the command merkle root of a block proposed under `protocol_version`.
+    ///
+    /// From [`ProtocolVersion::V2`] the preimage of a command that carries evidence also commits to the pledged value
+    /// hash of every input. The borsh encoding of the command fixes the number and order of the inputs, so the list
+    /// that follows it is unambiguous.
+    pub fn hash(&self, protocol_version: ProtocolVersion) -> FixedHash {
+        let hasher = command_hasher().chain(self);
+        match protocol_version {
+            ProtocolVersion::V0 | ProtocolVersion::V1 => hasher.finalize().into(),
+            ProtocolVersion::V2 => match self {
+                Command::LocalPrepare(atom) |
+                Command::LocalAccept(atom) |
+                Command::AllAccept(atom) |
+                Command::SomeAccept(atom) => hasher.chain(&atom.evidence.pledged_value_hashes()).finalize().into(),
+                Command::LocalOnly(_) | Command::ForeignProposal(_) | Command::EndEpoch(_) => hasher.finalize().into(),
+            },
+        }
     }
 
     pub fn local_only(&self) -> Option<&LocalOnlyAtom> {
@@ -642,9 +657,75 @@ mod borsh_discriminant_tests {
     fn an_end_epoch_command_hashes_identically_on_both_sides() {
         let next_epoch_hash = FixedHash::zero();
 
-        assert_eq!(
-            Command::EndEpoch(EndEpochAtom::new(next_epoch_hash)).hash(),
-            tari_sidechain::Command::EndEpoch(tari_sidechain::EndEpochAtom::new(next_epoch_hash)).hash(),
+        for protocol_version in [ProtocolVersion::V0, ProtocolVersion::V1, ProtocolVersion::V2] {
+            assert_eq!(
+                Command::EndEpoch(EndEpochAtom::new(next_epoch_hash)).hash(protocol_version),
+                tari_sidechain::Command::EndEpoch(tari_sidechain::EndEpochAtom::new(next_epoch_hash)).hash(),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod pledged_value_hash_tests {
+    use tari_engine_types::{SubstateVersion, substate::SubstateId};
+    use tari_ootle_common_types::SubstateLockType;
+    use tari_template_lib_types::{ComponentAddress, Hash32, ObjectKey};
+
+    use super::*;
+    use crate::consensus_models::EvidenceInputLockData;
+
+    fn local_prepare(pledged_value_hash: Option<Hash32>) -> Command {
+        let mut evidence = Evidence::empty();
+        evidence.add_shard_group(ShardGroup::new(0, 31)).insert(
+            SubstateId::Component(ComponentAddress::from_array([1; ObjectKey::LENGTH])),
+            SubstateVersion::ZERO,
+            SubstateLockType::Write,
+            pledged_value_hash,
         );
+        Command::LocalPrepare(MultiShardAtom {
+            id: TransactionId::default(),
+            decision: Decision::Commit,
+            evidence,
+            transaction_fee: 0,
+            leader_fee: None,
+        })
+    }
+
+    /// Blocks proposed before V2 were signed over this layout, so it must not change.
+    #[test]
+    fn an_input_lock_encodes_as_its_write_flag_and_version() {
+        let lock = EvidenceInputLockData {
+            is_write: true,
+            version: SubstateVersion::new(7),
+            pledged_value_hash: Some(Hash32::from_array([9; 32])),
+        };
+        assert_eq!(
+            borsh::to_vec(&lock).unwrap(),
+            borsh::to_vec(&(true, SubstateVersion::new(7))).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_command_hash_before_v2_does_not_cover_the_pledged_value_hash() {
+        for protocol_version in [ProtocolVersion::V0, ProtocolVersion::V1] {
+            assert_eq!(
+                local_prepare(None).hash(protocol_version),
+                local_prepare(Some(Hash32::from_array([1; 32]))).hash(protocol_version),
+            );
+        }
+    }
+
+    #[test]
+    fn a_v2_command_hash_covers_the_pledged_value_hash() {
+        let hashes = [
+            local_prepare(None).hash(ProtocolVersion::V2),
+            local_prepare(Some(Hash32::from_array([1; 32]))).hash(ProtocolVersion::V2),
+            local_prepare(Some(Hash32::from_array([2; 32]))).hash(ProtocolVersion::V2),
+        ];
+        assert_ne!(hashes[0], hashes[1]);
+        assert_ne!(hashes[0], hashes[2]);
+        assert_ne!(hashes[1], hashes[2]);
+        assert_ne!(hashes[0], local_prepare(None).hash(ProtocolVersion::V1));
     }
 }

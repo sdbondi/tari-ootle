@@ -197,7 +197,7 @@ impl BlockHeader {
         accumulated_data: ShardGroupAccumulatedData,
         extra_data: ExtraData,
     ) -> Result<Self, BlockError> {
-        let command_merkle_root = Self::compute_command_merkle_root(commands)?;
+        let command_merkle_root = Self::compute_command_merkle_root(protocol_version, commands)?;
         let transaction_merkle_root = Self::compute_transaction_merkle_root(protocol_version, commands)?;
         let mut header = BlockHeader {
             id: BlockId::zero(),
@@ -318,7 +318,7 @@ impl BlockHeader {
             shard_group,
             proposed_by,
             state_merkle_root: parent_state_merkle_root,
-            command_merkle_root: BlockHeader::compute_command_merkle_root(&BTreeSet::new())
+            command_merkle_root: BlockHeader::compute_command_merkle_root(protocol_version, &BTreeSet::new())
                 .expect("compute_command_merkle_root is infallible for empty commands"),
             total_leader_fee: 0,
             signature: None,
@@ -610,8 +610,13 @@ impl BlockHeader {
         &self.extra_data
     }
 
-    pub fn compute_command_merkle_root(commands: &BTreeSet<Command>) -> Result<FixedHash, BlockError> {
-        let hashes = commands.iter().map(|cmd| TreeHash::from(cmd.hash().into_array()));
+    pub fn compute_command_merkle_root(
+        protocol_version: ProtocolVersion,
+        commands: &BTreeSet<Command>,
+    ) -> Result<FixedHash, BlockError> {
+        let hashes = commands
+            .iter()
+            .map(|cmd| TreeHash::from(cmd.hash(protocol_version).into_array()));
         let hash = compute_merkle_root_for_hashes(hashes).map_err(BlockError::StateTreeError)?;
         Ok(FixedHash::from(hash.into_array()))
     }
