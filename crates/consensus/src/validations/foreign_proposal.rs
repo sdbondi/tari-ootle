@@ -6,7 +6,10 @@ use std::sync::Arc;
 use log::*;
 use tari_epoch_manager::EpochManagerReader;
 use tari_ootle_common_types::{ProtocolVersion, VotePower, committee::Committee, optional::Optional};
-use tari_ootle_storage::consensus_models::{CommandsCommitProof, ForeignProposal};
+use tari_ootle_storage::{
+    StateStoreReadTransaction,
+    consensus_models::{CommandsCommitProof, ForeignProposal, ForeignProposalRecord},
+};
 use tari_ootle_transaction::Network;
 
 use crate::{
@@ -46,6 +49,22 @@ pub async fn resolve_foreign_committee<TEpochManager: EpochManagerReader>(
         );
     }
     Ok(committee)
+}
+
+/// Returns true if a foreign proposal with this proposal's commit proof is stored. Every stored foreign proposal was
+/// authenticated before it was saved, and authentication reads only the commit proof, so this proposal authenticates
+/// too.
+///
+/// The whole commit proof is compared because stored foreign proposals are pruned by epoch: a copy that shares only
+/// the block id may be saved once its stored twin is pruned, so it must be authenticated on its own.
+pub fn is_authenticated_commit_proof_stored<TTx: StateStoreReadTransaction>(
+    tx: &TTx,
+    proposal: &ForeignProposal,
+) -> Result<bool, HotStuffError> {
+    let stored = ForeignProposalRecord::get_any(tx, [&proposal.calculate_block_id()])?;
+    Ok(stored
+        .iter()
+        .any(|record| record.proposal().commit_proof() == proposal.commit_proof()))
 }
 
 /// Checks the proposal against the committee of the shard group its header names, in the proposal's epoch.
