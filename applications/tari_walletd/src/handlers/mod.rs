@@ -18,6 +18,8 @@ pub mod stealth_utxos;
 pub mod substates;
 pub mod swap_pools;
 pub mod templates;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod transaction;
 pub mod transaction_requests;
 pub mod validator;

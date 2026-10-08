@@ -377,46 +377,22 @@ fn to_info(model: SigningRequestModel) -> SigningRequestInfo {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
-    use axum_extra::headers::Authorization;
     use tari_ootle_address::Network;
     use tari_ootle_common_types::Epoch;
     use tari_ootle_transaction::{Transaction, UnsignedTransaction};
-    use tari_ootle_wallet_sdk::{
-        WalletSdkConfig,
-        cipher_seed::CipherSeedRestore,
-        models::{EpochBirthday, KeyBranch, KeyId, SigningRequestStatus},
-    };
-    use tari_ootle_wallet_sdk_services::{
-        account_monitor::AccountMonitor,
-        indexer_rest_api::IndexerRestApiNetworkInterface,
-        notify::Notify,
-        transaction_service::TransactionService,
-        utxo_scanner::StealthUtxoScannerWorker,
-    };
-    use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
-    use tari_ootle_walletd_client::permissions::Permissions;
-    use tari_shutdown::Shutdown;
+    use tari_ootle_wallet_sdk::models::{KeyBranch, KeyId, SigningRequestStatus};
     use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
-    use tari_utilities::SafePassword;
 
     use super::*;
-    use crate::{
-        WalletSdk,
-        config::{WalletDaemonAuth, WalletDaemonConfig},
-        handlers::auth::{api_keys, create_authenticator},
-    };
-
-    const API_KEY: &str = "tw_signing_request_test_key";
+    use crate::handlers::test_support::TestDaemon;
 
     struct SigningTest {
+        daemon: TestDaemon,
         context: HandlerContext,
         /// An interactive session holding `admin`.
         session: Bearer,
         /// An API key holding every signing-request permission.
         api_key: Bearer,
-        _temp: tempfile::TempDir,
     }
 
     fn signer_key() -> KeyId {
@@ -431,78 +407,14 @@ mod tests {
         UnsignedTransaction::new(Network::LocalNet.as_byte(), Epoch(100))
     }
 
-    /// A handler context on LocalNet whose indexer is a closed port, so any
-    /// handler path that reaches the network fails fast.
     async fn setup() -> SigningTest {
-        let temp = tempfile::tempdir().unwrap();
-        let store = SqliteWalletStore::try_open(temp.path().join("wallet.sqlite")).unwrap();
-        store.run_migrations().unwrap();
-        let mut sdk = WalletSdk::initialize_with_local_key_store(
-            store.clone(),
-            IndexerRestApiNetworkInterface::new("http://127.0.0.1:1"),
-            WalletSdkConfig {
-                network: Network::LocalNet,
-                override_keyring_password: Some(SafePassword::from_str("test wallet password").unwrap()),
-            },
-            EpochBirthday::far_future(),
-        )
-        .unwrap();
-        sdk.initialize_cipher_seed(CipherSeedRestore::CreateNewIfRequired)
-            .unwrap();
-
-        store
-            .with_write_tx(|tx| {
-                tx.api_key_insert(
-                    "governance-signer",
-                    &api_keys::hash_api_key(API_KEY),
-                    "signing_requests:create,signing_requests:approve",
-                    None,
-                )
-            })
-            .unwrap();
-
-        let notify = Notify::new(10);
-        let shutdown = Shutdown::new();
-        let (transaction_service, transaction_service_handle) =
-            TransactionService::new(notify.clone(), sdk.clone(), shutdown.to_signal());
-        let (utxo_worker, utxo_scanner_handle) = StealthUtxoScannerWorker::new(sdk.clone(), notify.clone()).spawn();
-        let (account_monitor, account_monitor_handle) =
-            AccountMonitor::new(notify.clone(), sdk.clone(), utxo_scanner_handle, shutdown.to_signal());
-        let mut config = WalletDaemonConfig::default();
-        config.network = Network::LocalNet;
-        config.authentication = WalletDaemonAuth::None;
-        let context = HandlerContext::new(
-            sdk,
-            notify,
-            transaction_service_handle,
-            account_monitor_handle,
-            config.clone(),
-            create_authenticator(&config, store).unwrap(),
-            SafePassword::from_str("test jwt secret").unwrap(),
-            shutdown.to_signal(),
-        );
-
-        // These handlers need only the context, so the background workers shut down now.
-        shutdown.trigger();
-        drop(account_monitor);
-        drop(transaction_service);
-        utxo_worker.abort();
-        drop(utxo_worker.await);
-
-        let claims = context
-            .jwt_api()
-            .generate_auth_claims(Permissions::from_str("admin").unwrap())
-            .unwrap();
-        let session = Authorization::<Bearer>::bearer(&context.jwt_api().grant(&claims).unwrap())
-            .unwrap()
-            .0;
-        let api_key = Authorization::<Bearer>::bearer(API_KEY).unwrap().0;
-
+        let daemon = TestDaemon::start().await;
+        let api_key = daemon.api_key("governance-signer", "signing_requests:create,signing_requests:approve");
         SigningTest {
-            context,
-            session,
+            context: daemon.context.clone(),
+            session: daemon.session.clone(),
             api_key,
-            _temp: temp,
+            daemon,
         }
     }
 
@@ -615,15 +527,7 @@ mod tests {
         let test = setup().await;
         let request_id = insert_request(&test);
 
-        let mut claims = test
-            .context
-            .jwt_api()
-            .generate_auth_claims(Permissions::from_str("admin").unwrap())
-            .unwrap();
-        claims.delegated = true;
-        let delegated = Authorization::<Bearer>::bearer(&test.context.jwt_api().grant(&claims).unwrap())
-            .unwrap()
-            .0;
+        let delegated = test.daemon.delegated_session("admin");
 
         let err = handle_approve(&test.context, Some(&delegated), SigningRequestDecisionRequest {
             request_id,
@@ -644,15 +548,7 @@ mod tests {
         let requester =
             |bearer: &Bearer| requester_of(test.context.authorize_with_identity(Some(bearer), &required).unwrap());
 
-        let mut claims = test
-            .context
-            .jwt_api()
-            .generate_auth_claims(Permissions::from_str("admin").unwrap())
-            .unwrap();
-        claims.delegated = true;
-        let delegated = Authorization::<Bearer>::bearer(&test.context.jwt_api().grant(&claims).unwrap())
-            .unwrap()
-            .0;
+        let delegated = test.daemon.delegated_session("admin");
 
         assert_eq!(requester(&delegated), SigningRequester::ConnectedApp);
         assert_eq!(requester(&test.session), SigningRequester::WalletSession);
