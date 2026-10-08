@@ -40,6 +40,9 @@ use tari_ootle_wallet_sdk::{
         NonFungibleToken,
         OutputStatus,
         ResourceModel,
+        SigningRequestId,
+        SigningRequestModel,
+        SigningRequestStatus,
         StealthBalance,
         StealthOutputInfo,
         StealthOutputModel,
@@ -71,7 +74,7 @@ use crate::{
     models::{AuthoredTemplate, WebauthnRegistrationPasskey},
     schema::accounts,
     serialization::{deserialize_hex_try_from, deserialize_json, serialize_hex},
-    writer::transaction_request_from_row,
+    writer::{signing_request_from_row, transaction_request_from_row},
 };
 
 const LOG_TARGET: &str = "tari::ootle::wallet_sdk::storage_sqlite::reader";
@@ -1461,6 +1464,53 @@ impl WalletStoreReader for ReadTransaction<'_> {
             .into_iter()
             .map(|row| transaction_request_from_row(OPERATION, row))
             .collect()
+    }
+
+    fn signing_request_get(&mut self, id: SigningRequestId) -> Result<SigningRequestModel, WalletStorageError> {
+        const OPERATION: &str = "signing_request_get";
+        use crate::schema::signing_requests;
+
+        let row = signing_requests::table
+            .filter(signing_requests::id.eq(id))
+            .first::<models::SigningRequest>(self.connection())
+            .optional()
+            .map_err(|e| WalletStorageError::general(OPERATION, e))?
+            .ok_or_else(|| WalletStorageError::NotFound {
+                operation: OPERATION,
+                entity: "signing_requests".to_string(),
+                key: id.to_string(),
+            })?;
+
+        signing_request_from_row(OPERATION, row)
+    }
+
+    fn signing_requests_list(&mut self) -> Result<Vec<SigningRequestModel>, WalletStorageError> {
+        const OPERATION: &str = "signing_requests_list";
+        use crate::schema::signing_requests;
+
+        signing_requests::table
+            .order_by(signing_requests::id.desc())
+            .get_results::<models::SigningRequest>(self.connection())
+            .map_err(|e| WalletStorageError::general(OPERATION, e))?
+            .into_iter()
+            .map(|row| signing_request_from_row(OPERATION, row))
+            .collect()
+    }
+
+    fn signing_requests_count_pending(&mut self) -> Result<u64, WalletStorageError> {
+        const OPERATION: &str = "signing_requests_count_pending";
+        use crate::schema::signing_requests;
+
+        let now = time::OffsetDateTime::now_utc();
+        let now = time::PrimitiveDateTime::new(now.date(), now.time());
+        let count = signing_requests::table
+            .filter(signing_requests::status.eq(SigningRequestStatus::Pending.as_key_str()))
+            .filter(signing_requests::expires_at.ge(now))
+            .count()
+            .get_result::<i64>(self.connection())
+            .map_err(|e| WalletStorageError::general(OPERATION, e))?;
+
+        Ok(count.try_into().unwrap_or(0))
     }
 
     fn locks_get_by_transaction_id(
