@@ -387,6 +387,7 @@ impl WalletDaemonClient {
         self.send_request("transaction_requests.list", request.borrow()).await
     }
 
+    /// Approves a pending transaction request. Requires an interactive user session: the daemon refuses an API key.
     pub async fn approve_transaction_request<T: Borrow<TransactionRequestDecisionRequest>>(
         &mut self,
         request: T,

@@ -3,10 +3,10 @@
 
 //! Create / approve / submit for transaction requests (issue #2343).
 //!
-//! A limited-permission tool creates a request; a principal holding
-//! `transaction_requests:approve` authorises it; submit seals it. The three are
-//! separately permissioned, so a tool granted only `:create` cannot approve the
-//! requests it creates.
+//! A limited-permission tool creates a request; an interactive user session
+//! holding `transaction_requests:approve` authorises it; submit seals it. The
+//! three are separately permissioned, and approval refuses API keys outright,
+//! so a tool cannot approve the requests it creates.
 //!
 //! The transaction is **frozen at creation**: stored verbatim (the caller
 //! supplies complete inputs and any out-of-band signatures). The approver views
@@ -189,9 +189,10 @@ pub async fn handle_approve(
     token: Option<&Bearer>,
     req: TransactionRequestDecisionRequest,
 ) -> Result<TransactionRequestDecisionResponse, anyhow::Error> {
-    // Deliberately NOT `authorize_user_only`: approve is grantable to a tool.
-    // The control is who holds the scope, not what kind of credential they are.
-    context.authorize(token, &[Permission::TransactionRequests(TxRequestAction::Approve)])?;
+    // Approving authorises the value transfer the request describes, so it is
+    // a human decision: it takes an interactive user session, and no API key
+    // can approve whatever it was granted.
+    context.authorize_user_only(token, &[Permission::TransactionRequests(TxRequestAction::Approve)])?;
 
     let model = transition(
         context,
@@ -408,4 +409,74 @@ fn value_summary(
         change_total,
         amount_leaving: inputs_total.saturating_sub(change_total),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use tari_ootle_address::Network;
+    use tari_ootle_common_types::Epoch;
+    use tari_ootle_transaction::UnsignedTransaction;
+    use tari_ootle_wallet_sdk::models::{KeyBranch, KeyId};
+
+    use super::*;
+    use crate::handlers::test_support::TestDaemon;
+
+    fn insert_request(daemon: &TestDaemon) -> TransactionRequestId {
+        daemon
+            .context
+            .wallet_sdk()
+            .store()
+            .with_write_tx(|tx| {
+                tx.transaction_request_insert(
+                    &UnsignedTransaction::new(Network::LocalNet.as_byte(), Epoch(100)),
+                    KeyId::derived(KeyBranch::Account, 0),
+                    &[],
+                    &[],
+                    &[],
+                    Some("htlc-swap-tool"),
+                    Duration::from_secs(600),
+                )
+            })
+            .unwrap()
+            .id
+    }
+
+    fn status_of(daemon: &TestDaemon, request_id: TransactionRequestId) -> TransactionRequestStatus {
+        daemon
+            .context
+            .wallet_sdk()
+            .store()
+            .with_read_tx(|tx| tx.transaction_request_get(request_id))
+            .unwrap()
+            .status
+    }
+
+    #[tokio::test]
+    async fn only_the_wallets_own_session_can_approve() {
+        let daemon = TestDaemon::start().await;
+        let request_id = insert_request(&daemon);
+        let approve = |bearer| {
+            handle_approve(&daemon.context, Some(bearer), TransactionRequestDecisionRequest {
+                request_id,
+            })
+        };
+
+        // A key minted before `transaction_requests:approve` stopped being grantable.
+        let api_key = daemon.api_key("htlc-swap-tool", "transaction_requests:approve");
+        let err = approve(&api_key).await.unwrap_err();
+        assert!(err.to_string().contains("interactive user session"), "{err}");
+
+        let admin_key = daemon.api_key("admin-tool", "admin");
+        approve(&admin_key).await.unwrap_err();
+
+        // What an API key holding `webrtc` gets back from `webrtc.start`.
+        let delegated = daemon.delegated_session("admin");
+        let err = approve(&delegated).await.unwrap_err();
+        assert!(err.to_string().contains("interactive user session"), "{err}");
+
+        assert_eq!(status_of(&daemon, request_id), TransactionRequestStatus::Pending);
+
+        approve(&daemon.session).await.unwrap();
+        assert_eq!(status_of(&daemon, request_id), TransactionRequestStatus::Approved);
+    }
 }

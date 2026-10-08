@@ -45,7 +45,7 @@ use tari_ootle_wallet_sdk::{
     },
 };
 use tari_ootle_walletd_client::{
-    permissions::{Permission, Permissions},
+    permissions::{Permission, Permissions, TxRequestAction},
     types::{
         AuthCreateApiKeyRequest,
         AuthCreateApiKeyResponse,
@@ -138,6 +138,20 @@ where
     tx.commit()
 }
 
+/// Refuses a grant that only an interactive user session can exercise, since an API key carrying it could never use
+/// it. `Admin` covers these endpoints by implication and is grantable, because the endpoints themselves refuse API
+/// keys.
+fn reject_user_only_grants(permissions: &Permissions) -> Result<(), anyhow::Error> {
+    let approve = Permission::TransactionRequests(TxRequestAction::Approve);
+    if permissions.has_permission(&approve) {
+        return Err(anyhow!(
+            "{approve} cannot be granted to an API key: approving a transaction request requires an interactive user \
+             session"
+        ));
+    }
+    Ok(())
+}
+
 pub fn parse_permissions(s: &str) -> Result<Permissions, anyhow::Error> {
     Permissions::from_str(s).map_err(|e| anyhow!("invalid permission string '{s}': {e}"))
 }
@@ -167,6 +181,7 @@ pub async fn handle_create_api_key(
             "API key must grant at least one permission; refusing to issue an unusable key"
         ));
     }
+    reject_user_only_grants(&permissions)?;
     // Granting Admin to an API key is allowed (the issuer already has it)
     // but is dangerous, so we require explicit acknowledgement so a UI
     // checkbox can be the gate rather than the JSON-RPC payload alone.
@@ -380,6 +395,24 @@ mod tests {
         ]
         .into();
         assert_eq!(format_permissions(&a), format_permissions(&b));
+    }
+
+    #[test]
+    fn approving_transaction_requests_cannot_be_granted_to_an_api_key() {
+        let approve: Permissions = vec![
+            Permission::TransactionRequests(TxRequestAction::Create),
+            Permission::TransactionRequests(TxRequestAction::Approve),
+        ]
+        .into();
+        assert!(reject_user_only_grants(&approve).is_err());
+
+        let create_and_read: Permissions = vec![
+            Permission::TransactionRequests(TxRequestAction::Create),
+            Permission::TransactionRequests(TxRequestAction::Read),
+        ]
+        .into();
+        assert!(reject_user_only_grants(&create_and_read).is_ok());
+        assert!(reject_user_only_grants(&vec![Permission::Admin].into()).is_ok());
     }
 }
 

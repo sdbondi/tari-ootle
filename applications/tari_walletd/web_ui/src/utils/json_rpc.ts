@@ -220,8 +220,8 @@ export const authRevokeApiKey = (request: AuthRevokeApiKeyRequest): Promise<Auth
   client().then((c) => c.authRevokeApiKey(request));
 
 // Transaction requests (issue #2343). `create` and `approve` are separately
-// permissioned: the requesting tool cannot approve its own request unless it
-// has also been granted `transaction_requests:approve`.
+// permissioned, and `approve` takes an interactive user session: a requesting
+// tool holding an API key cannot approve its own request.
 export const transactionRequestsList = (
   request: TransactionRequestListRequest,
 ): Promise<TransactionRequestListResponse> => client().then((c) => c.transactionRequestsList(request));

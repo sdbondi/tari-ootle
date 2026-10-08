@@ -178,11 +178,6 @@ const PERMISSION_OPTIONS: Array<{ value: string; label: string; description: str
     description: "Read deployed contract templates.",
   },
   {
-    value: "transaction_requests:approve",
-    label: "transaction_requests:approve",
-    description: "Approve or reject pending transaction requests.",
-  },
-  {
     value: "transaction_requests:create",
     label: "transaction_requests:create",
     description: "Create transaction requests and submit them once approved.",

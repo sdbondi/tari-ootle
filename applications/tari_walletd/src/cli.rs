@@ -51,6 +51,9 @@ pub struct Cli {
     pub listen_on: Option<SocketAddr>,
     #[clap(long, env = "SIGNALING_SERVER_ADDRESS")]
     pub signaling_server_address: Option<SocketAddr>,
+    /// Allow apps to connect to the wallet over WebRTC (`webrtc.start`).
+    #[clap(long, env = "ENABLE_WEBRTC")]
+    pub enable_webrtc: bool,
     #[clap(long = "indexer-api-url", short = 'i', alias = "indexer-url", value_delimiter = ',')]
     /// Indexer API URL override. Repeat it, or separate URLs with commas, to configure several indexers.
     pub indexer_api_urls: Vec<Url>,
@@ -128,6 +131,12 @@ impl ConfigOverrideProvider for Cli {
             overrides.push((
                 format!("{}.ootle_wallet_daemon.authentication", network),
                 auth.to_string(),
+            ));
+        }
+        if self.enable_webrtc {
+            overrides.push((
+                format!("{}.ootle_wallet_daemon.enable_webrtc", network),
+                "true".to_string(),
             ));
         }
         if let Some(port) = self.enable_vite_dev_port {
