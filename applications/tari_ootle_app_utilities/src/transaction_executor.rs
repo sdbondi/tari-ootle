@@ -76,6 +76,7 @@ impl ExecutionOutput {
                         lock_flag,
                         requested_specific_version,
                     )
+                    .with_pledged_value(substate.substate_value())
                 })
                 .collect()
         } else {

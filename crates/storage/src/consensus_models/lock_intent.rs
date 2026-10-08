@@ -5,14 +5,19 @@ use std::{borrow::Borrow, fmt, hash::Hash};
 
 use minicbor::{CborLen, Decode, Encode};
 use serde::{Deserialize, Serialize};
-use tari_engine_types::{SubstateVersion, substate::SubstateId};
+use tari_engine_types::{
+    SubstateVersion,
+    substate::{SubstateId, SubstateValue},
+};
 use tari_ootle_common_types::{
     LockIntent,
     SubstateAddress,
     SubstateLockType,
     SubstateRequirement,
     VersionedSubstateId,
+    hashing::hash_pledged_substate_value,
 };
+use tari_template_lib_types::Hash32;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, CborLen, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -23,6 +28,9 @@ pub struct VersionedSubstateIdLockIntent {
     lock_type: SubstateLockType,
     #[n(2)]
     require_version: bool,
+    #[serde(default)]
+    #[n(3)]
+    pledged_value_hash: Option<Hash32>,
 }
 
 impl VersionedSubstateIdLockIntent {
@@ -31,7 +39,15 @@ impl VersionedSubstateIdLockIntent {
             versioned_substate_id,
             lock_type: lock,
             require_version,
+            pledged_value_hash: None,
         }
+    }
+
+    /// Commits this input lock to the value it was taken on. Every input lock that evidence is built from must carry
+    /// its value, because another shard group only accepts a pledge whose value matches the committed hash.
+    pub fn with_pledged_value(mut self, value: &SubstateValue) -> Self {
+        self.pledged_value_hash = Some(hash_pledged_substate_value(value));
+        self
     }
 
     pub fn from_requirement(substate_requirement: SubstateRequirement, lock: SubstateLockType) -> Self {
@@ -124,6 +140,10 @@ impl LockIntent for VersionedSubstateIdLockIntent {
             None
         }
     }
+
+    fn pledged_value_hash(&self) -> Option<Hash32> {
+        self.pledged_value_hash
+    }
 }
 
 impl LockIntent for &VersionedSubstateIdLockIntent {
@@ -145,6 +165,10 @@ impl LockIntent for &VersionedSubstateIdLockIntent {
         } else {
             None
         }
+    }
+
+    fn pledged_value_hash(&self) -> Option<Hash32> {
+        self.pledged_value_hash
     }
 }
 
@@ -214,6 +238,7 @@ pub struct SubstateRequirementLockIntent {
     substate_requirement: SubstateRequirement,
     version_to_lock: SubstateVersion,
     lock_type: SubstateLockType,
+    pledged_value_hash: Option<Hash32>,
 }
 
 impl SubstateRequirementLockIntent {
@@ -226,7 +251,14 @@ impl SubstateRequirementLockIntent {
             substate_requirement: substate_requirement.into(),
             version_to_lock,
             lock_type: lock,
+            pledged_value_hash: None,
         }
+    }
+
+    /// See [`VersionedSubstateIdLockIntent::with_pledged_value`].
+    pub fn with_pledged_value(mut self, value: &SubstateValue) -> Self {
+        self.pledged_value_hash = Some(hash_pledged_substate_value(value));
+        self
     }
 
     pub fn read<T: Into<SubstateRequirement>>(substate_id: T, version_to_lock: SubstateVersion) -> Self {
@@ -266,11 +298,12 @@ impl SubstateRequirementLockIntent {
     }
 
     pub fn to_versioned_lock_intent(&self) -> VersionedSubstateIdLockIntent {
-        VersionedSubstateIdLockIntent::new(
-            VersionedSubstateId::new(self.substate_id().clone(), self.version_to_lock),
-            self.lock_type,
-            self.substate_requirement.version().is_some(),
-        )
+        VersionedSubstateIdLockIntent {
+            versioned_substate_id: VersionedSubstateId::new(self.substate_id().clone(), self.version_to_lock),
+            lock_type: self.lock_type,
+            require_version: self.substate_requirement.version().is_some(),
+            pledged_value_hash: self.pledged_value_hash,
+        }
     }
 }
 
@@ -290,6 +323,10 @@ impl LockIntent for &SubstateRequirementLockIntent {
     fn requested_version(&self) -> Option<SubstateVersion> {
         self.substate_requirement.version()
     }
+
+    fn pledged_value_hash(&self) -> Option<Hash32> {
+        self.pledged_value_hash
+    }
 }
 
 impl LockIntent for SubstateRequirementLockIntent {
@@ -308,12 +345,21 @@ impl LockIntent for SubstateRequirementLockIntent {
     fn requested_version(&self) -> Option<SubstateVersion> {
         self.substate_requirement.version()
     }
+
+    fn pledged_value_hash(&self) -> Option<Hash32> {
+        self.pledged_value_hash
+    }
 }
 
 impl From<VersionedSubstateIdLockIntent> for SubstateRequirementLockIntent {
     fn from(intent: VersionedSubstateIdLockIntent) -> Self {
         let version = intent.versioned_substate_id.version();
-        Self::new(intent.to_substate_requirement(), version, intent.lock_type)
+        Self {
+            substate_requirement: intent.to_substate_requirement(),
+            version_to_lock: version,
+            lock_type: intent.lock_type,
+            pledged_value_hash: intent.pledged_value_hash,
+        }
     }
 }
 

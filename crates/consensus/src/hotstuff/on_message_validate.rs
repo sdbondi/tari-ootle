@@ -16,7 +16,7 @@ use tari_ootle_storage::{
     StateStore,
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
-    consensus_models::{Block, ForeignParkedProposal, ForeignProposal, TransactionRecord},
+    consensus_models::{Block, ForeignParkedProposal, ForeignProposal, ForeignProposalRecord, TransactionRecord},
 };
 use tari_ootle_transaction::{Transaction, TransactionId};
 use tokio::sync::broadcast;
@@ -29,6 +29,7 @@ use crate::{
         ProposalValidationError,
         epoch_state::EpochState,
         error::HotStuffError,
+        on_receive_foreign_proposal::validate_evidence_and_pledges_match,
         on_receive_new_transaction::OnReceiveNewTransaction,
     },
     messages::{
@@ -103,6 +104,7 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
                     return Ok(MessageValidationResult::Discard);
                 }
                 self.process_local_proposal(current_height, from, epoch_state, *msg, new_transactions)
+                    .await
             },
             HotstuffMessage::CatchUpSyncResponse(msg) => {
                 if !epoch_state.local_committee().contains(&from) {
@@ -114,6 +116,7 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
                     return Ok(MessageValidationResult::Discard);
                 }
                 self.process_catch_up_response(from, epoch_state, *msg, new_transactions)
+                    .await
             },
             HotstuffMessage::ForeignProposal(proposal) => {
                 self.process_foreign_proposal(epoch_state, from, proposal).await
@@ -299,7 +302,7 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
         req_id
     }
 
-    fn process_local_proposal(
+    async fn process_local_proposal(
         &mut self,
         current_height: NodeHeight,
         from: TConsensusSpec::Addr,
@@ -334,14 +337,21 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
             });
         }
 
-        self.handle_missing_transactions_local_block(from, epoch_state, proposal, new_transactions)
+        self.handle_missing_transactions_local_block(
+            from,
+            epoch_state,
+            proposal,
+            new_transactions,
+            HotstuffMessage::new_proposal,
+        )
+        .await
     }
 
     /// Validate a block delivered via catch-up sync. This is an ordered block import, so — unlike
     /// [`Self::process_local_proposal`] — it is intentionally NOT gated on the current view height:
     /// a node whose view has advanced beyond its stored blocks must still ingest the gap. Stateless
     /// validation and missing-transaction parking are identical to the live-proposal path.
-    fn process_catch_up_response(
+    async fn process_catch_up_response(
         &mut self,
         from: TConsensusSpec::Addr,
         epoch_state: &EpochState<TConsensusSpec::Addr>,
@@ -363,29 +373,14 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
             });
         }
 
-        let missing_tx_ids = self.store.with_write_tx(|tx| {
-            self.resequence_unpooled_transactions(tx, epoch_state, &proposal, new_transactions)?;
-            self.check_for_missing_transactions(tx, epoch_state.local_committee_info(), &proposal)
-        })?;
-
-        if missing_tx_ids.is_empty() {
-            return Ok(MessageValidationResult::Ready {
-                from,
-                message: HotstuffMessage::new_catch_up_sync_response(proposal),
-            });
-        }
-
-        self.publish_event(HotstuffEvent::ProposedBlockParked {
-            block: proposal.block.as_leaf(),
-            num_missing_txs: missing_tx_ids.len(),
-            num_awaiting_txs: 0,
-        });
-
-        Ok(MessageValidationResult::ParkedProposal {
-            block_id: *proposal.block.id(),
-            epoch: proposal.block.epoch(),
-            missing_txs: missing_tx_ids,
-        })
+        self.handle_missing_transactions_local_block(
+            from,
+            epoch_state,
+            proposal,
+            new_transactions,
+            HotstuffMessage::new_catch_up_sync_response,
+        )
+        .await
     }
 
     pub fn update_parked_blocks<'a, I: IntoIterator<Item = &'a TransactionId> + ExactSizeIterator>(
@@ -454,22 +449,44 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
         validations::check_foreign_proposal::<TConsensusSpec>(proposal, committee, &self.config)
     }
 
-    fn handle_missing_transactions_local_block(
+    /// Parks the block if it is waiting on transactions this node does not hold, otherwise passes it on as the
+    /// message `to_message` builds.
+    async fn handle_missing_transactions_local_block(
         &mut self,
         from: TConsensusSpec::Addr,
         epoch_state: &EpochState<TConsensusSpec::Addr>,
         proposal: ProposalMessage,
         new_transactions: &OnReceiveNewTransaction<TConsensusSpec>,
+        to_message: fn(ProposalMessage) -> HotstuffMessage,
     ) -> Result<MessageValidationResult<TConsensusSpec::Addr>, HotStuffError> {
-        let missing_tx_ids = self.store.with_write_tx(|tx| {
+        let has_missing_transactions = self.store.with_write_tx(|tx| {
             self.resequence_unpooled_transactions(tx, epoch_state, &proposal, new_transactions)?;
+            let missing = self.get_missing_transactions(&**tx, epoch_state.local_committee_info(), &proposal)?;
+            Ok::<_, HotStuffError>(!missing.is_empty())
+        })?;
+
+        if !has_missing_transactions {
+            return Ok(MessageValidationResult::Ready {
+                from,
+                message: to_message(proposal),
+            });
+        }
+
+        if !self
+            .are_embedded_foreign_proposals_parkable(epoch_state, &proposal)
+            .await?
+        {
+            return Ok(MessageValidationResult::Discard);
+        }
+
+        let missing_tx_ids = self.store.with_write_tx(|tx| {
             self.check_for_missing_transactions(tx, epoch_state.local_committee_info(), &proposal)
         })?;
 
         if missing_tx_ids.is_empty() {
             return Ok(MessageValidationResult::Ready {
                 from,
-                message: HotstuffMessage::new_proposal(proposal),
+                message: to_message(proposal),
             });
         }
 
@@ -518,9 +535,9 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
         new_transactions.resequence_known_transactions(tx, epoch_state.epoch(), ids, epoch_state.local_committee_info())
     }
 
-    fn check_for_missing_transactions(
+    fn get_missing_transactions<TTx: StateStoreReadTransaction>(
         &self,
-        tx: &mut <TConsensusSpec::StateStore as StateStore>::WriteTransaction<'_>,
+        tx: &TTx,
         local_committee_info: &CommitteeInfo,
         proposal: &ProposalMessage,
     ) -> Result<HashSet<TransactionId>, HotStuffError> {
@@ -531,13 +548,70 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
             );
             return Ok(HashSet::new());
         }
-        let mut missing_tx_ids = TransactionRecord::get_missing(&**tx, proposal.block.all_transaction_ids())?;
+        let mut missing_tx_ids = TransactionRecord::get_missing(tx, proposal.block.all_transaction_ids())?;
         // Also park block if it has missing transactions from foreign proposals
         for proposal in &proposal.foreign_proposals {
             let foreign_missing =
-                self.get_missing_transactions_for_foreign_proposal(&**tx, local_committee_info, proposal)?;
+                self.get_missing_transactions_for_foreign_proposal(tx, local_committee_info, proposal)?;
             missing_tx_ids.extend(foreign_missing);
         }
+        Ok(missing_tx_ids)
+    }
+
+    /// The first parked copy of a block holds its slot until it is unparked, so a block is only parked if every
+    /// embedded foreign proposal not already stored is authenticated by its committee and pledges the values its
+    /// evidence commits to. A copy that fails is turned away, leaving the slot for the genuine block.
+    async fn are_embedded_foreign_proposals_parkable(
+        &self,
+        epoch_state: &EpochState<TConsensusSpec::Addr>,
+        proposal: &ProposalMessage,
+    ) -> Result<bool, HotStuffError> {
+        for foreign_proposal in &proposal.foreign_proposals {
+            let block_id = foreign_proposal.calculate_block_id();
+            if self
+                .store
+                .with_read_tx(|tx| ForeignProposalRecord::record_exists(tx, &block_id))?
+            {
+                continue;
+            }
+
+            let rejection = match validations::authenticate_foreign_proposal::<TConsensusSpec>(
+                &self.epoch_manager,
+                foreign_proposal,
+                &self.config,
+            )
+            .await
+            {
+                Ok(()) => validate_evidence_and_pledges_match(
+                    foreign_proposal,
+                    epoch_state.local_committee_info().shard_group(),
+                )
+                .err()
+                .filter(|err| matches!(err, ProposalValidationError::ForeignPledgesNotCommitted { .. })),
+                Err(HotStuffError::ProposalValidationError(err)) => Some(err),
+                Err(err) => return Err(err),
+            };
+            if let Some(err) = rejection {
+                warn!(
+                    target: LOG_TARGET,
+                    "⚠️ Not parking block {}: embedded foreign proposal {} failed validation: {}",
+                    proposal.block,
+                    foreign_proposal,
+                    err,
+                );
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn check_for_missing_transactions(
+        &self,
+        tx: &mut <TConsensusSpec::StateStore as StateStore>::WriteTransaction<'_>,
+        local_committee_info: &CommitteeInfo,
+        proposal: &ProposalMessage,
+    ) -> Result<HashSet<TransactionId>, HotStuffError> {
+        let missing_tx_ids = self.get_missing_transactions(&**tx, local_committee_info, proposal)?;
 
         if missing_tx_ids.is_empty() {
             debug!(
@@ -645,6 +719,15 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
                 target: LOG_TARGET,
                 "⏳ Foreign Block {} has {} missing transactions", msg.proposal, missing_tx_ids.len(),
             );
+
+            // The first parked copy of a block holds its slot until unparked, so a copy whose pledges its evidence does
+            // not commit to is turned away here, leaving the slot for the genuine proposal.
+            if let Err(err @ ProposalValidationError::ForeignPledgesNotCommitted { .. }) =
+                validate_evidence_and_pledges_match(&msg.proposal, epoch_state.local_committee_info().shard_group())
+            {
+                warn!(target: LOG_TARGET, "⚠️ Discarding foreign proposal from {from}: {err}");
+                return Ok(MessageValidationResult::Discard);
+            }
 
             let parked_block = ForeignParkedProposal::from(msg);
             if parked_block.save(tx)? {

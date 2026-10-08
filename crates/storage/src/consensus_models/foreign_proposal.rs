@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tari_common_types::types::FixedHash;
 use tari_consensus_types::{BlockId, LeafBlock};
 use tari_crypto::tari_utilities::ByteArray;
-use tari_engine_types::fees::ExhaustBurnRate;
+use tari_engine_types::{ProtocolVersion, UnknownProtocolVersionError, fees::ExhaustBurnRate};
 use tari_ootle_common_types::{Epoch, NodeHeight, ShardGroup, committee::CommitteeInfo};
 use tari_ootle_transaction::TransactionId;
 use tari_sidechain::QuorumCertificate;
@@ -404,6 +404,12 @@ impl ForeignProposal {
 
     pub fn epoch(&self) -> Epoch {
         Epoch(self.commit_proof.sidechain_block_commit_proof().header.epoch)
+    }
+
+    /// The protocol version the foreign block was produced under, which selects how its command hashes are formed and
+    /// how its pledges are authenticated.
+    pub fn protocol_version(&self) -> Result<ProtocolVersion, UnknownProtocolVersionError> {
+        self.commit_proof.protocol_version()
     }
 
     pub fn height(&self) -> NodeHeight {

@@ -12,14 +12,16 @@ use tari_engine_types::{
 };
 use tari_ootle_common_types::{
     LockIntent,
+    ProtocolVersion,
     SubstateAddress,
     SubstateLockType,
     SubstateRequirementRef,
     ToSubstateAddress,
     VersionedSubstateId,
+    hashing::hash_pledged_substate_value,
 };
 
-use crate::consensus_models::ShardGroupEvidence;
+use crate::consensus_models::{EvidenceInputLockData, ShardGroupEvidence};
 
 const LOG_TARGET: &str = "tari::ootle::storage::consensus_models::block_pledges";
 
@@ -50,11 +52,16 @@ impl BlockPledge {
         self.pledges.contains_key(id)
     }
 
-    pub fn get_all_pledges_for_evidence(&self, evidence: &ShardGroupEvidence) -> Option<SubstatePledges> {
+    /// Returns the pledged value for every input in the evidence, or `None` if any is missing or is not the value the
+    /// evidence commits to. `protocol_version` is that of the block that committed the evidence.
+    pub fn get_all_pledges_for_evidence(
+        &self,
+        protocol_version: ProtocolVersion,
+        evidence: &ShardGroupEvidence,
+    ) -> Option<SubstatePledges> {
         let mut pledges = SubstatePledges::with_capacity(evidence.inputs().len());
         for (substate_id, ev) in evidence.all_pledged_inputs_iter() {
-            // If any are missing return None
-            let substate = self.pledges.get(substate_id)?;
+            let substate = self.get_committed_pledge(protocol_version, substate_id, ev)?;
             pledges.push(SubstatePledge::Input {
                 substate_id: VersionedSubstateId::new(substate_id.clone(), substate.version()),
                 is_write: ev.is_write,
@@ -64,15 +71,19 @@ impl BlockPledge {
         Some(pledges)
     }
 
-    pub fn has_all_input_substate_values_for(&self, evidence: &ShardGroupEvidence) -> bool {
-        if let Some((id, ev)) = evidence.all_pledged_inputs_iter().find(|(substate_id, ev)| {
-            self.pledges
-                .get(substate_id)
-                .is_none_or(|value| value.version() != ev.version)
-        }) {
+    /// `protocol_version` is that of the block that committed the evidence.
+    pub fn has_all_input_substate_values_for(
+        &self,
+        protocol_version: ProtocolVersion,
+        evidence: &ShardGroupEvidence,
+    ) -> bool {
+        if let Some((id, ev)) = evidence
+            .all_pledged_inputs_iter()
+            .find(|(substate_id, ev)| self.get_committed_pledge(protocol_version, substate_id, ev).is_none())
+        {
             warn!(
                 target: LOG_TARGET,
-                "Substate not included for {} pledge: {} v{}",
+                "Substate missing or not the committed value for {} pledge: {} v{}",
                 ev.as_lock_type(),
                 id,
                 ev.version,
@@ -83,12 +94,36 @@ impl BlockPledge {
         true
     }
 
-    pub fn has_some_input_substate_values_for(&self, evidence: &ShardGroupEvidence) -> bool {
-        evidence.all_pledged_inputs_iter().any(|(substate_id, ev)| {
-            self.pledges
-                .get(substate_id)
-                .is_some_and(|value| value.version() == ev.version)
-        })
+    /// The pledge for `substate_id` if it is the version and value that the evidence commits to. The pledge values
+    /// travel outside the commit proof, so the evidence's value hash is the only thing that authenticates them.
+    ///
+    /// Before [`ProtocolVersion::V2`] the command hash does not cover the value hash, so a pledge is matched on its
+    /// version alone.
+    fn get_committed_pledge(
+        &self,
+        protocol_version: ProtocolVersion,
+        substate_id: &SubstateId,
+        ev: &EvidenceInputLockData,
+    ) -> Option<&Substate> {
+        let substate = self.pledges.get(substate_id)?;
+        if substate.version() != ev.version {
+            return None;
+        }
+        match protocol_version {
+            ProtocolVersion::V0 | ProtocolVersion::V1 => return Some(substate),
+            ProtocolVersion::V2 => {},
+        }
+        let committed_hash = ev.pledged_value_hash?;
+        if hash_pledged_substate_value(substate.substate_value()) != committed_hash {
+            debug!(
+                target: LOG_TARGET,
+                "Pledged value for {} v{} does not match the value hash in the evidence",
+                substate_id,
+                ev.version,
+            );
+            return None;
+        }
+        Some(substate)
     }
 
     pub(crate) fn add_substate_pledge(
@@ -278,6 +313,7 @@ mod tests {
     use tari_template_lib_types::{SubstateOwnerRule, access_rules::ComponentAccessRules};
 
     use super::*;
+    use crate::consensus_models::VersionedSubstateIdLockIntent;
 
     fn create_substate_id(seed: u8) -> VersionedSubstateId {
         VersionedSubstateId::new(
@@ -307,7 +343,7 @@ mod tests {
 
         let substate2 = substate_value(2);
         let id2 = create_substate_id(2);
-        let pledge = pledge.add_substate_pledge(id2.substate_id().clone(), id2.version(), substate2);
+        let pledge = pledge.add_substate_pledge(id2.substate_id().clone(), id2.version(), substate2.clone());
 
         let id3 = create_substate_id(3);
 
@@ -316,15 +352,98 @@ mod tests {
         assert!(pledge.contains(id2.substate_id()));
 
         let mut evidence = ShardGroupEvidence::default();
-        evidence.insert(id1.substate_id().clone(), id1.version(), SubstateLockType::Write);
-        evidence.insert(id2.substate_id().clone(), id2.version(), SubstateLockType::Write);
+        evidence.insert(
+            id1.substate_id().clone(),
+            id1.version(),
+            SubstateLockType::Write,
+            Some(hash_pledged_substate_value(&substate1)),
+        );
+        evidence.insert(
+            id2.substate_id().clone(),
+            id2.version(),
+            SubstateLockType::Write,
+            Some(hash_pledged_substate_value(&substate2)),
+        );
         // Outputs are not applicable and are ignored
-        evidence.insert(id3.substate_id().clone(), id3.version(), SubstateLockType::Output);
+        evidence.insert(id3.substate_id().clone(), id3.version(), SubstateLockType::Output, None);
 
-        assert!(pledge.has_all_input_substate_values_for(&evidence));
+        assert!(pledge.has_all_input_substate_values_for(ProtocolVersion::V2, &evidence));
 
-        evidence.insert(id3.substate_id().clone(), id3.version(), SubstateLockType::Write);
-        assert!(!pledge.has_all_input_substate_values_for(&evidence));
+        evidence.insert(
+            id3.substate_id().clone(),
+            id3.version(),
+            SubstateLockType::Write,
+            Some(hash_pledged_substate_value(&substate_value(3))),
+        );
+        assert!(!pledge.has_all_input_substate_values_for(ProtocolVersion::V2, &evidence));
+    }
+
+    #[test]
+    fn a_pledge_is_only_accepted_with_the_value_the_evidence_commits_to() {
+        let id = create_substate_id(1);
+        let locked_value = substate_value(1);
+        let mut evidence = ShardGroupEvidence::default();
+        evidence.insert_from_lock_intent(
+            VersionedSubstateIdLockIntent::write(id.clone(), true).with_pledged_value(&locked_value),
+        );
+
+        let mut honest = BlockPledge::new();
+        honest.add_substate_pledge(id.substate_id().clone(), id.version(), locked_value.clone());
+        assert!(honest.has_all_input_substate_values_for(ProtocolVersion::V2, &evidence));
+        let pledges = honest
+            .get_all_pledges_for_evidence(ProtocolVersion::V2, &evidence)
+            .unwrap();
+        let (_, value) = pledges.into_iter().next().unwrap().into_input().unwrap();
+        assert_eq!(
+            hash_pledged_substate_value(&value),
+            hash_pledged_substate_value(&locked_value)
+        );
+
+        // Same substate and version, different value
+        let mut substituted = BlockPledge::new();
+        substituted.add_substate_pledge(id.substate_id().clone(), id.version(), substate_value(2));
+        assert!(!substituted.has_all_input_substate_values_for(ProtocolVersion::V2, &evidence));
+        assert!(
+            substituted
+                .get_all_pledges_for_evidence(ProtocolVersion::V2, &evidence)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_pledge_is_matched_on_version_alone_before_v2() {
+        let id = create_substate_id(1);
+        let mut evidence = ShardGroupEvidence::default();
+        evidence.insert(id.substate_id().clone(), id.version(), SubstateLockType::Write, None);
+
+        let mut pledge = BlockPledge::new();
+        pledge.add_substate_pledge(id.substate_id().clone(), id.version(), substate_value(2));
+        for protocol_version in [ProtocolVersion::V0, ProtocolVersion::V1] {
+            assert!(pledge.has_all_input_substate_values_for(protocol_version, &evidence));
+            assert!(
+                pledge
+                    .get_all_pledges_for_evidence(protocol_version, &evidence)
+                    .is_some()
+            );
+        }
+        assert!(!pledge.has_all_input_substate_values_for(ProtocolVersion::V2, &evidence));
+    }
+
+    #[test]
+    fn a_pledge_is_not_accepted_for_evidence_without_a_value_hash() {
+        let id = create_substate_id(1);
+        let value = substate_value(1);
+        let mut evidence = ShardGroupEvidence::default();
+        evidence.insert(id.substate_id().clone(), id.version(), SubstateLockType::Write, None);
+
+        let mut pledge = BlockPledge::new();
+        pledge.add_substate_pledge(id.substate_id().clone(), id.version(), value);
+        assert!(!pledge.has_all_input_substate_values_for(ProtocolVersion::V2, &evidence));
+        assert!(
+            pledge
+                .get_all_pledges_for_evidence(ProtocolVersion::V2, &evidence)
+                .is_none()
+        );
     }
 
     #[test]

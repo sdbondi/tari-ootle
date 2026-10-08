@@ -16,6 +16,7 @@ use tari_ootle_common_types::{
     LockIntent,
     SubstateRequirement,
     SubstateVersion,
+    VersionedSubstateIdRef,
     committee::CommitteeInfo,
     optional::{IsNotFoundError, Optional},
 };
@@ -41,7 +42,7 @@ use crate::{
         substate_store::{LockStatus, PendingSubstateStore, SubstateStoreError},
     },
     tracing::TraceTimer,
-    traits::{BlockTransactionExecutor, BlockTransactionExecutorError},
+    traits::{BlockTransactionExecutor, BlockTransactionExecutorError, ReadableSubstateStore},
 };
 
 const LOG_TARGET: &str = "tari::ootle::consensus::hotstuff::block_transaction_executor";
@@ -557,12 +558,16 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         // used and must lock on what the transaction declared.
         let requested_locks = local_versions
             .iter()
-            .map(|(decl, version)| declared_lock_intent(decl, *version));
+            .map(|(decl, version)| {
+                let substate = store.get(VersionedSubstateIdRef::new(decl.substate_id(), *version))?;
+                Ok(declared_lock_intent(decl, *version).with_pledged_value(substate.substate_value()))
+            })
+            .collect::<Result<Vec<_>, SubstateStoreError>>()?;
 
         let mut evidence = Evidence::from_lock_intents(
             local_committee_info.num_preshards(),
             local_committee_info.num_committees(),
-            requested_locks.clone(),
+            &requested_locks,
         );
         // Add unpledged foreign input evidence
         for input in non_local_inputs {
@@ -574,7 +579,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         }
 
         // Pledge the local inputs
-        let lock_status = store.try_lock_all(transaction_id, requested_locks, false)?;
+        let lock_status = store.try_lock_all(transaction_id, &requested_locks, false)?;
         info!(
             target: LOG_TARGET,
             "👨‍🔧 PREPARE: Multishard transaction {transaction_id} requires additional input pledges. Partial evidence: {evidence}",

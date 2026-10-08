@@ -22,6 +22,7 @@ use tari_ootle_common_types::{
     borsh::indexmap as indexmap_borsh,
     displayable::Displayable,
 };
+use tari_template_lib_types::Hash32;
 
 use crate::consensus_models::{RequireLockIntentRef, SubstatePledge};
 
@@ -44,6 +45,16 @@ impl Evidence {
         Self {
             evidence: IndexMap::new(),
         }
+    }
+
+    /// The pledged value hash of every input, in the order the borsh encoding writes the inputs. One entry per input,
+    /// `None` included, so the encoding of the evidence fixes which input each hash belongs to.
+    pub fn pledged_value_hashes(&self) -> Vec<Option<Hash32>> {
+        self.evidence
+            .values()
+            .flat_map(|e| e.inputs.values())
+            .map(|lock| lock.and_then(|lock| lock.pledged_value_hash))
+            .collect()
     }
 
     pub fn from_inputs_and_outputs<'a, I, O>(
@@ -318,14 +329,8 @@ impl Evidence {
             for (substate_id, other_evidence) in evidence.inputs.iter().map(|(id, lock)| (id.clone(), *lock)) {
                 if let Some(e_mut) = inputs_mut.get_mut(&substate_id) {
                     match other_evidence {
-                        Some(e) => match e_mut {
-                            Some(e_mut) => {
-                                e_mut.is_write = e.is_write;
-                                e_mut.version = e.version;
-                            },
-                            None => {
-                                *e_mut = Some(e);
-                            },
+                        Some(e) => {
+                            *e_mut = Some(e);
                         },
                         None => continue,
                     }
@@ -459,7 +464,12 @@ pub struct ShardGroupEvidence {
 
 impl ShardGroupEvidence {
     pub fn insert_from_lock_intent<T: LockIntent>(&mut self, lock: T) -> &mut Self {
-        self.insert(lock.substate_id().clone(), lock.version_to_lock(), lock.lock_type())
+        self.insert(
+            lock.substate_id().clone(),
+            lock.version_to_lock(),
+            lock.lock_type(),
+            lock.pledged_value_hash(),
+        )
     }
 
     pub fn insert(
@@ -467,6 +477,7 @@ impl ShardGroupEvidence {
         substate_id: SubstateId,
         version_to_lock: SubstateVersion,
         lock_type: SubstateLockType,
+        pledged_value_hash: Option<Hash32>,
     ) -> &mut Self {
         if lock_type.is_input() {
             self.inputs.insert_sorted(
@@ -474,6 +485,7 @@ impl ShardGroupEvidence {
                 Some(EvidenceInputLockData {
                     is_write: lock_type.is_write(),
                     version: version_to_lock,
+                    pledged_value_hash,
                 }),
             );
         } else {
@@ -646,6 +658,15 @@ pub struct EvidenceInputLockData {
     pub is_write: bool,
     #[n(1)]
     pub version: SubstateVersion,
+    /// Hash of the value the input was locked on. The evidence is part of the command that the shard group's commit
+    /// proof covers, so this is what authenticates the value when it is pledged to another shard group.
+    ///
+    /// The command hash covers it from [`ProtocolVersion::V2`](tari_engine_types::ProtocolVersion::V2) only, through
+    /// [`Evidence::pledged_value_hashes`], so that blocks from earlier versions keep the preimage they were signed
+    /// with.
+    #[borsh(skip)]
+    #[n(2)]
+    pub pledged_value_hash: Option<Hash32>,
 }
 
 impl EvidenceInputLockData {

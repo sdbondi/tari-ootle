@@ -28,6 +28,7 @@ use tari_ootle_storage::{
     consensus_models::{
         Block,
         BookkeepingModel,
+        ForeignProposal,
         ForeignProposalRecord,
         ForeignProposalStatus,
         NoVoteReason,
@@ -58,7 +59,7 @@ use crate::{
     messages::{ForeignProposalNotificationMessage, HotstuffMessage, ProposalMessage, VoteMessage},
     tracing::TraceTimer,
     traits::{CertificateStore, ConsensusSpec, OutboundMessaging, ValidatorSignerService, hooks::ConsensusHooks},
-    validations::check_proposed_by_leader,
+    validations::{authenticate_foreign_proposal, check_proposed_by_leader},
 };
 
 const LOG_TARGET: &str = "tari::ootle::consensus::hotstuff::on_receive_local_proposal";
@@ -205,6 +206,12 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
             return Ok(None);
         };
 
+        if !self.are_foreign_proposals_authentic(&foreign_proposals).await? {
+            // An unauthenticated proposal says nothing about its block id, so nothing is recorded against it, leaving
+            // the block id free for the genuine proposal
+            return Ok(None);
+        }
+
         // First validate and save the attached foreign proposals
         let is_all_foreign_proposals_valid = self.store.with_write_tx(|tx| {
             // TODO: Implement guaranteed finality in the face of a non-cooperating remote shard group.
@@ -238,6 +245,14 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
                     &foreign_proposal,
                     epoch_state.local_committee_info(),
                 ) {
+                    if let Some(err @ ProposalValidationError::ForeignPledgesNotCommitted { .. }) =
+                        err.validation_error()
+                    {
+                        // The pledges travel beside the commit proof, so the block id is left unmarked for the genuine
+                        // proposal to arrive
+                        warn!(target: LOG_TARGET, "⚠️❌ Rejecting block {}: {}", valid_block, err);
+                        return Ok(false);
+                    }
                     if let Some(err) = err.validation_error() {
                         warn!(target: LOG_TARGET, "⚠️❌ Validation failed for foreign proposal: {}", err);
                         // if a node sent us an invalid foreign proposal, we immediately reject the block
@@ -281,6 +296,39 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
                 self.hooks.on_block_validation_failed(&err);
             }
         })
+    }
+
+    /// Foreign proposals embedded in a local proposal are relayed by the local leader rather than fetched from the
+    /// foreign committee, so each one not already stored must carry that committee's commit proof before any of it
+    /// is saved.
+    async fn are_foreign_proposals_authentic(
+        &self,
+        foreign_proposals: &[ForeignProposal],
+    ) -> Result<bool, HotStuffError> {
+        for proposal in foreign_proposals {
+            let block_id = proposal.calculate_block_id();
+            if self
+                .store
+                .with_read_tx(|tx| ForeignProposalRecord::record_exists(tx, &block_id))?
+            {
+                continue;
+            }
+
+            match authenticate_foreign_proposal::<TConsensusSpec>(&self.epoch_manager, proposal, &self.config).await {
+                Ok(()) => {},
+                Err(HotStuffError::ProposalValidationError(err)) => {
+                    warn!(
+                        target: LOG_TARGET,
+                        "⚠️❌ Embedded foreign proposal {} is not authenticated by its committee: {}",
+                        proposal,
+                        err,
+                    );
+                    return Ok(false);
+                },
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(true)
     }
 
     async fn process_valid_block(

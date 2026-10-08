@@ -7,6 +7,7 @@ use tari_crypto::tari_utilities::ByteArray;
 use tari_engine_types::commit_result::RejectReason;
 use tari_ootle_common_types::{
     NumPreshards,
+    ProtocolVersion,
     ShardGroup,
     SubstateAddress,
     committee::CommitteeInfo,
@@ -79,6 +80,14 @@ pub fn process_foreign_block<TTx: StateStoreReadTransaction>(
         shard_group: foreign_shard_group,
     };
 
+    let foreign_protocol_version =
+        proposal
+            .protocol_version()
+            .map_err(|e| ProposalValidationError::ForeignProposalInvalid {
+                block_id: foreign_block_id,
+                shard_group: foreign_shard_group,
+                details: e.into(),
+            })?;
     let block_pledge = proposal.block_pledge();
     let mut command_count = 0usize;
 
@@ -289,6 +298,7 @@ pub fn process_foreign_block<TTx: StateStoreReadTransaction>(
                     &tx_rec,
                     foreign_proposal_as_leaf,
                     atom,
+                    foreign_protocol_version,
                     block_pledge,
                     foreign_shard_group,
                     local_committee_info.shard_group(),
@@ -479,6 +489,7 @@ pub fn process_foreign_block<TTx: StateStoreReadTransaction>(
                     &tx_rec,
                     foreign_proposal_as_leaf,
                     atom,
+                    foreign_protocol_version,
                     block_pledge,
                     foreign_shard_group,
                     local_committee_info.shard_group(),
@@ -599,6 +610,7 @@ fn add_pledges(
     transaction: &TransactionPoolRecord,
     foreign_block: LeafBlock,
     atom: &MultiShardAtom,
+    foreign_protocol_version: ProtocolVersion,
     block_pledge: &BlockPledge,
     foreign_shard_group: ShardGroup,
     local_shard_group: ShardGroup,
@@ -642,7 +654,9 @@ fn add_pledges(
             let output_pledges = foreign_sg_evidence.output_pledge_iter().collect();
             proposed_block_change_set.add_foreign_pledges(transaction.id(), foreign_shard_group, output_pledges);
 
-            let Some(pledges) = block_pledge.get_all_pledges_for_evidence(foreign_sg_evidence) else {
+            let Some(pledges) =
+                block_pledge.get_all_pledges_for_evidence(foreign_protocol_version, foreign_sg_evidence)
+            else {
                 if transaction.evidence().is_committee_output_only(foreign_shard_group) {
                     debug!(
                         target: LOG_TARGET,
