@@ -90,6 +90,10 @@ tokio = { workspace = true, features = [
 tonic = { workspace = true }
 regex = "1.11.0"
 
+[dev-dependencies]
+# test-util drives the clock, so the wait tests do not sleep in real time
+tokio = { workspace = true, features = ["test-util"] }
+
 [[test]]
 name = "cucumber" # this should be the same as the filename of your test target
 harness = false   # allows Cucumber to print output instead of libtest

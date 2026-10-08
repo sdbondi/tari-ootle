@@ -20,7 +20,7 @@
 //   WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use std::{path::PathBuf, str::FromStr, sync::Arc};
+use std::{ops::ControlFlow, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 use minotari_node::{BaseNodeConfig, GrpcMethod, run_base_node};
 use tari_base_node_client::{BaseNodeClient, grpc::GrpcBaseNodeClient};
@@ -36,6 +36,7 @@ use crate::{
     TariWorld,
     helpers::{get_os_assigned_port, get_os_assigned_ports, wait_listener_on_local_port},
     logging::get_base_dir_for_scenario,
+    wait::wait_until,
 };
 
 #[derive(Debug)]
@@ -158,25 +159,19 @@ pub async fn spawn_base_node(world: &mut TariWorld, bn_name: String) {
 
     // Wait for gRPC service to be fully ready (not just the readiness server)
     let mut grpc_client = get_base_node_client(grpc_port);
-    let mut grpc_remaining = 30;
-    loop {
+    wait_until(Duration::from_secs(30), async || {
         match grpc_client.get_tip_info().await {
-            Ok(_) => break,
+            Ok(_) => ControlFlow::Break(()),
             Err(e) => {
                 if handle.is_finished() {
                     panic!("Base node {} exited while waiting for gRPC readiness", bn_name);
                 }
-                grpc_remaining -= 1;
-                if grpc_remaining == 0 {
-                    panic!(
-                        "Base node {} gRPC service did not become ready within 30s: {}",
-                        bn_name, e
-                    );
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                ControlFlow::Continue(e.to_string())
             },
         }
-    }
+    })
+    .await
+    .unwrap_or_else(|err| panic!("Base node {bn_name} gRPC service did not become ready: {err}"));
 
     // make the new base node able to be referenced by other processes
     let node_process = BaseNodeProcess {

@@ -22,6 +22,7 @@
 
 use std::{
     env,
+    ops::ControlFlow,
     path::{Path, PathBuf},
     str::FromStr,
     thread,
@@ -55,6 +56,7 @@ use crate::{
     cucumber_log,
     helpers::{get_os_assigned_ports, wait_listener_on_local_port_os_thread},
     logging::get_base_dir_for_scenario,
+    wait::wait_until,
 };
 
 #[derive(Debug)]
@@ -71,28 +73,20 @@ impl WalletProcess {
     pub async fn create_client(&self) -> WalletGrpcClient {
         let wallet_addr = format!("http://127.0.0.1:{}", self.grpc_port);
         let endpoint = Endpoint::from_str(&wallet_addr).unwrap();
-        let mut attempts = 0;
-        let channel = loop {
+        let channel = wait_until(Duration::from_secs(12), async || {
             if self.handle.is_finished() {
                 panic!("Wallet thread has ended");
             }
             match endpoint.connect().await {
-                Ok(channel) => break channel,
+                Ok(channel) => ControlFlow::Break(channel),
                 Err(e) => {
-                    cucumber_log!(
-                        "Attempt: {}/10 Could not connect to wallet GRPC address {}: {}",
-                        attempts,
-                        wallet_addr,
-                        e
-                    );
-                    if attempts > 10 {
-                        panic!("Failed to connect to wallet GRPC address {}", wallet_addr);
-                    }
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    attempts += 1;
+                    cucumber_log!("Could not connect to wallet GRPC address {}: {}", wallet_addr, e);
+                    ControlFlow::Continue(e.to_string())
                 },
             }
-        };
+        })
+        .await
+        .unwrap_or_else(|err| panic!("Failed to connect to wallet GRPC address {wallet_addr}: {err}"));
         WalletClient::with_interceptor(
             channel,
             ClientAuthenticationInterceptor::create(&GrpcAuthentication::default()).unwrap(),
@@ -119,7 +113,7 @@ pub async fn spawn_minotari_wallet(world: &mut TariWorld, wallet_name: String, b
     // each spawned wallet will use different ports
     let (port, grpc_port) = get_os_assigned_ports();
 
-    let base_node_http_port = world.base_nodes.get(&base_node_name).unwrap().http_port;
+    let base_node_http_port = world.get_base_node(&base_node_name).http_port;
     let temp_dir = get_base_dir_for_scenario(
         "console_wallet",
         world.current_scenario_name.as_ref().unwrap(),
@@ -203,24 +197,6 @@ pub async fn spawn_minotari_wallet(world: &mut TariWorld, wallet_name: String, b
         .await
         .unwrap()
         .into_inner();
-
-    // cucumber_log!("Wallet {} comms address: {}", wallet_name, identity.public_address);
-
-    // TODO: Clean up
-    // let mut status = wallet_client.get_network_status(Empty {}).await.unwrap().into_inner();
-    // let mut counter = 0;
-    // while status.status != ConnectivityStatus::Online as i32 {
-    //     cucumber_log!(
-    //         "Waiting for wallet to connect to base node {} on port {} (status: {:?})",
-    //         base_node_name, base_node_port, status
-    //     );
-    //     tokio::time::sleep(Duration::from_secs(1)).await;
-    //     counter += 1;
-    //     if counter > 20 {
-    //         panic!("Wallet failed to connect to base node");
-    //     }
-    //     status = wallet_client.get_network_status(Empty {}).await.unwrap().into_inner();
-    // }
 
     crate::cucumber_log!("Minotari wallet {} started", wallet_name);
     world.wallets.insert(wallet_name, wallet_process);

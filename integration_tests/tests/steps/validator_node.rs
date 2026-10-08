@@ -1,10 +1,7 @@
 //  Copyright 2022 The Tari Project
 //  SPDX-License-Identifier: BSD-3-Clause
 
-use std::{
-    str::FromStr,
-    time::{Duration, Instant},
-};
+use std::{ops::ControlFlow, time::Duration};
 
 use cucumber::{gherkin::Step, given, then, when};
 use integration_tests::{
@@ -12,11 +9,12 @@ use integration_tests::{
     base_node::get_base_node_client,
     claim_proof::CucumberClaimProof,
     cucumber_log,
+    helpers::local_tcp_multiaddr,
     template,
     template::RegisteredTemplate,
     validator_node::{ValidatorNodeProcess, spawn_validator_node},
+    wait::wait_until,
 };
-use libp2p::Multiaddr;
 use minotari_app_grpc::tari_rpc::{RegisterValidatorNodeRequest, Signature};
 use tari_base_node_client::{BaseNodeClient, grpc::GrpcBaseNodeClient};
 use tari_crypto::tari_utilities::ByteArray;
@@ -31,6 +29,9 @@ use tari_validator_node_client::types::{
     ListBlocksRequest,
 };
 use tonic::codegen::tokio_stream::StreamExt;
+
+/// How long a published template has to become available from validator nodes.
+const TEMPLATE_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(120);
 
 async fn spawn_seed_node(
     world: &mut TariWorld,
@@ -93,16 +94,10 @@ async fn given_validator_connects_to_other_vns(world: &mut TariWorld, step: &Ste
     let details = world
         .all_running_validators_iter()
         .filter(|vn| vn.name != name)
-        .map(|vn| {
-            (
-                vn.public_key,
-                Multiaddr::from_str(&format!("/ip4/127.0.0.1/tcp/{}", vn.p2p_port)).unwrap(),
-            )
-        })
+        .map(|vn| (vn.public_key, local_tcp_multiaddr(vn.p2p_port)))
         .collect::<Vec<_>>();
 
-    let vn = world.validator_nodes.get_mut(&name).unwrap();
-    let mut cli = vn.create_client();
+    let mut cli = world.get_validator_node(&name).create_client();
     for (pk, addr) in details {
         if let Err(err) = cli
             .add_peer(AddPeerRequest {
@@ -249,88 +244,55 @@ pub async fn assert_vn_is_registered(world: &mut TariWorld, step: &Step, vn_name
     // The VN scanner lags behind the tip by base_layer_confirmations blocks,
     // so the scanned height will never reach the actual tip height.
     let lagged_height = height.saturating_sub(world.consensus_constants.base_layer_confirmations);
-    let mut count = 0;
-    loop {
-        // wait for the validator to pick up the registration
+    wait_until(Duration::from_secs(40), async || {
         let stats = client.get_epoch_manager_stats().await.unwrap();
         if stats.current_block_height >= lagged_height || stats.committee_info.is_some() {
-            break;
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(format!("block height {}", stats.current_block_height))
         }
-        if count > 40 {
-            panic!(
-                "Timed out waiting for validator node to pick up registration (current block height: {}, target \
-                 lagged height: {})",
-                stats.current_block_height, lagged_height
-            );
-        }
-        count += 1;
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
+    })
+    .await
+    .unwrap_or_else(|err| {
+        panic!("Validator node {vn_name} did not pick up its registration at lagged height {lagged_height}: {err}")
+    });
 }
 
 #[then(expr = "the template \"{word}\" is listed as registered by the validator node {word}")]
 async fn assert_template_is_registered(world: &mut TariWorld, step: &Step, template_name: String, vn_name: String) {
     cucumber_log!("==== Step: {}", step.value);
-    // give it some time for the template tx to be picked up by the VNs
-    // tokio::time::sleep(Duration::from_secs(4)).await;
+    let template_address = world.get_template(&template_name).address;
 
-    // retrieve the template address
-    let template_address = world.templates.get(&template_name).unwrap().address;
-
-    // try to get the template from the VN
-    let timer = Instant::now();
     let vn = world.get_validator_node(&vn_name);
     let mut client = vn.get_client();
-    loop {
-        let req = GetTemplateRequest { template_address };
-        let resp = client.get_template(req).await.ok();
-
-        if resp.is_none() {
-            if timer.elapsed() > Duration::from_secs(120) {
-                panic!("Timed out waiting for template to be registered by all VNs");
-            }
-
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            continue;
+    let resp = wait_until(TEMPLATE_REGISTRATION_TIMEOUT, async || {
+        match client.get_template(GetTemplateRequest { template_address }).await {
+            Ok(resp) => ControlFlow::Break(resp),
+            Err(err) => ControlFlow::Continue(err.to_string()),
         }
-
-        // check that the template is indeed in the response
-        assert_eq!(resp.unwrap().metadata.address, template_address);
-        break;
-    }
+    })
+    .await
+    .unwrap_or_else(|err| panic!("Template {template_name} was not registered by validator node {vn_name}: {err}"));
+    assert_eq!(resp.metadata.address, template_address);
 }
 
 #[then(expr = "the template \"{word}\" is listed as registered by all validator nodes")]
 async fn assert_template_is_registered_by_all(world: &mut TariWorld, step: &Step, template_name: String) {
     cucumber_log!("==== Step: {}", step.value);
-    // give it some time for the template tx to be picked up by the VNs
-    // tokio::time::sleep(Duration::from_secs(4)).await;
+    let template_address = world.get_template(&template_name).address;
 
-    // retrieve the template address
-    let template_address = world.templates.get(&template_name).unwrap().address;
-
-    // try to get the template for each VN
-    let timer = Instant::now();
-    'outer: loop {
+    wait_until(TEMPLATE_REGISTRATION_TIMEOUT, async || {
         for vn_ps in world.all_running_validators_iter() {
             let mut client = vn_ps.get_client();
-            let req = GetTemplateRequest { template_address };
-            let resp = client.get_template(req).await.ok();
-
-            if resp.is_none() {
-                if timer.elapsed() > Duration::from_secs(120) {
-                    panic!("Timed out waiting for template to be registered by all VNs");
-                }
-
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                continue 'outer;
+            match client.get_template(GetTemplateRequest { template_address }).await {
+                Ok(resp) => assert_eq!(resp.metadata.address, template_address),
+                Err(err) => return ControlFlow::Continue(format!("{}: {err}", vn_ps.name)),
             }
-            let resp = resp.unwrap();
-            // check that the template is indeed in the response
-            assert_eq!(resp.metadata.address, template_address);
         }
-        break;
-    }
+        ControlFlow::Break(())
+    })
+    .await
+    .unwrap_or_else(|err| panic!("Template {template_name} was not registered by all validator nodes: {err}"));
 }
 
 #[then(expr = "validator node {word} has state at {word} within {int} seconds")]
@@ -342,16 +304,12 @@ async fn then_validator_node_has_state_at(
     timeout_secs: u64,
 ) {
     cucumber_log!("==== Step: {}", step.value);
-    let state_address = world
-        .substate_ids
-        .get(&state_address_name)
-        .unwrap_or_else(|| panic!("Address {} not found", state_address_name));
+    let state_address = world.get_substate_id(&state_address_name);
     integration_tests::cucumber_log!("Waiting for state at address {}", state_address);
     let vn = world.get_validator_node(&vn_name);
     let mut client = vn.create_client();
     let substate_address = SubstateAddress::from_substate_id(state_address, SubstateVersion::ZERO);
-    let mut attempts = 0;
-    loop {
+    wait_until(Duration::from_secs(timeout_secs), async || {
         match client
             .get_state(GetStateRequest {
                 address: substate_address,
@@ -360,29 +318,21 @@ async fn then_validator_node_has_state_at(
             .optional()
             .unwrap()
         {
-            Some(_) => return,
-            None => {
-                attempts += 1;
-                if attempts == timeout_secs {
-                    panic!("State at address {} not found", state_address);
-                }
-            },
+            Some(_) => ControlFlow::Break(()),
+            None => ControlFlow::Continue("not found"),
         }
-
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
+    })
+    .await
+    .unwrap_or_else(|err| panic!("State at address {state_address} on validator node {vn_name}: {err}"));
 }
 
 #[then(expr = "I wait for {word} to have at least {int} blocks for the current epoch")]
 async fn vn_has_blocks_for_current_epoch(world: &mut TariWorld, step: &Step, vn_name: String, num_blocks: u64) {
     cucumber_log!("==== Step: {}", step.value);
-    const TIMEOUT_SECS: u64 = 60;
-
     let vn = world.get_validator_node(&vn_name);
     let mut client = vn.create_client();
-    let mut last_status = None;
 
-    for _ in 0..TIMEOUT_SECS {
+    let result = wait_until(Duration::from_secs(60), async || {
         let status = match client.get_consensus_status().await {
             Ok(status) => status,
             Err(err) => {
@@ -395,79 +345,73 @@ async fn vn_has_blocks_for_current_epoch(world: &mut TariWorld, step: &Step, vn_
                 panic!("Failed to get consensus status for validator node {vn_name}: {err}");
             },
         };
-        last_status = Some(format!(
+        if status.state == "Running" && status.height.as_u64() >= num_blocks {
+            return ControlFlow::Break(());
+        }
+        ControlFlow::Continue(format!(
             "epoch={}, state={}, height={}",
             status.epoch, status.state, status.height
-        ));
+        ))
+    })
+    .await;
 
-        if status.state != "Running" {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            continue;
-        }
-
-        if status.height.as_u64() >= num_blocks {
-            return;
-        }
-
-        tokio::time::sleep(Duration::from_secs(1)).await;
+    if let Err(err) = result {
+        let message =
+            format!("Validator node {vn_name} did not reach at least {num_blocks} blocks for the current epoch: {err}");
+        integration_tests::cucumber_log!("{}", message);
+        panic!("{}", message);
     }
-
-    let last_status = last_status.unwrap_or_else(|| "no consensus status was observed".to_string());
-    let message = format!(
-        "Validator node {} did not reach at least {} blocks for the current epoch within {}s. Last status: {}",
-        vn_name, num_blocks, TIMEOUT_SECS, last_status
-    );
-    integration_tests::cucumber_log!("{}", message);
-    panic!("{}", message);
 }
 
 #[then(expr = "{word} is on epoch {int} within {int} seconds")]
-async fn vn_has_scanned_to_epoch(world: &mut TariWorld, step: &Step, vn_name: String, epoch: u64, seconds: usize) {
+async fn vn_has_scanned_to_epoch(world: &mut TariWorld, step: &Step, vn_name: String, epoch: u64, seconds: u64) {
     cucumber_log!("==== Step: {}", step.value);
     let epoch = Epoch(epoch);
     let vn = world.get_validator_node(&vn_name);
     let mut client = vn.create_client();
-    for _ in 0..seconds {
+    wait_until(Duration::from_secs(seconds), async || {
         let stats = client.get_epoch_manager_stats().await.expect("Failed to get stats");
         if stats.current_epoch == epoch {
-            return;
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(stats.current_epoch)
         }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    }
-
-    let stats = client.get_epoch_manager_stats().await.expect("Failed to get stats");
-    assert_eq!(stats.current_epoch, epoch);
+    })
+    .await
+    .unwrap_or_else(|err| panic!("Validator node {vn_name} is not on epoch {epoch}: {err}"));
 }
 
 #[when(expr = "{word} is past the epoch burn proof {word} was mined in")]
 #[then(expr = "{word} is past the epoch burn proof {word} was mined in")]
 async fn vn_is_past_burn_proof_epoch(world: &mut TariWorld, step: &Step, vn_name: String, proof_name: String) {
     cucumber_log!("==== Step: {}", step.value);
-    const TIMEOUT_SECS: usize = 60;
     let Some(CucumberClaimProof::Confirmed { complete_proof, .. }) = world.claim_proofs.get(&proof_name) else {
         panic!("Burn proof {proof_name} is not a confirmed proof");
     };
     let mined_in_epoch = Epoch(complete_proof.mined_in_epoch);
     let vn = world.get_validator_node(&vn_name);
     let mut client = vn.create_client();
-    let mut current_epoch = Epoch(0);
-    for _ in 0..TIMEOUT_SECS {
+    wait_until(Duration::from_secs(60), async || {
         // A claim executes in the consensus epoch, which trails the epoch manager's until the epoch's last block
         // commits
-        current_epoch = client
+        let current_epoch = client
             .get_consensus_status()
             .await
             .expect("Failed to get consensus status")
             .epoch;
         if current_epoch > mined_in_epoch {
-            return;
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(current_epoch)
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
-    panic!(
-        "Validator {vn_name} consensus is in epoch {current_epoch}, not past epoch {mined_in_epoch} that burn proof \
-         {proof_name} was mined in, after {TIMEOUT_SECS}s"
-    );
+    })
+    .await
+    .unwrap_or_else(|err| {
+        panic!(
+            "Validator {vn_name} consensus is not past epoch {mined_in_epoch} that burn proof {proof_name} was mined \
+             in: {err}"
+        )
+    });
 }
 
 #[then(expr = "{word} has scanned to at least height {int}")]
@@ -527,7 +471,7 @@ async fn when_i_wait_for_validator_leaf_block_at_least(
     let mut client = vn.create_client();
 
     // Allow enough time for force_beat to trigger (block_time=10s + delta + latency)
-    for _ in 0..120 {
+    let result = wait_until(Duration::from_secs(120), async || {
         let epoch_stats = client.get_epoch_manager_stats().await.unwrap();
         let resp = client
             .list_blocks_paginated(GetBlocksRequest {
@@ -556,29 +500,21 @@ async fn when_i_wait_for_validator_leaf_block_at_least(
                 cucumber_log!("VN {name} is in {}. Waiting for epoch {epoch}", block.epoch())
             }
             if block.epoch().as_u64() == epoch && block.height().as_u64() >= height {
-                return;
+                return ControlFlow::Break(());
             }
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
+        ControlFlow::Continue(block_height)
+    })
+    .await;
 
-    let consensus_status = client.get_consensus_status().await.unwrap();
-    let block_height = client
-        .list_blocks_paginated(GetBlocksRequest {
-            limit: 1,
-            offset: 0,
-            ordering_index: Some(2),
-            ordering: Some(Ordering::Descending),
-            filter_index: Some(1),
-            filter: Some(epoch.to_string()),
-        })
-        .await
-        .map(|r| r.blocks.first().map(|b| b.height().as_u64()).unwrap_or(0))
-        .unwrap_or(0);
-    panic!(
-        "Validator {} leaf block height {} is less than {} at epoch {} (consensus: epoch={}, height={}, state={})",
-        name, block_height, height, epoch, consensus_status.epoch, consensus_status.height, consensus_status.state,
-    );
+    if let Err(err) = result {
+        let consensus_status = client.get_consensus_status().await.unwrap();
+        panic!(
+            "Validator {} leaf block height is less than {} at epoch {} (consensus: epoch={}, height={}, state={}): \
+             {err}",
+            name, height, epoch, consensus_status.epoch, consensus_status.height, consensus_status.state,
+        );
+    }
 }
 
 #[when(expr = "Block height on VN {word} is at least {int}")]
@@ -586,8 +522,8 @@ async fn when_block_height(world: &mut TariWorld, step: &Step, vn_name: String, 
     cucumber_log!("==== Step: {}", step.value);
     let vn = world.get_validator_node(&vn_name);
     let mut client = vn.create_client();
-    for _ in 0..20 {
-        if client
+    wait_until(Duration::from_secs(100), async || {
+        let tip_height = client
             .list_blocks(ListBlocksRequest {
                 from_id: None,
                 limit: 1,
@@ -596,14 +532,15 @@ async fn when_block_height(world: &mut TariWorld, step: &Step, vn_name: String, 
             .unwrap()
             .blocks[0]
             .height()
-            .as_u64() >=
-            height
-        {
-            return;
+            .as_u64();
+        if tip_height >= height {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(tip_height)
         }
-        tokio::time::sleep(Duration::from_secs(5)).await;
-    }
-    panic!("Block height on VN {vn_name} is less than {height}");
+    })
+    .await
+    .unwrap_or_else(|err| panic!("Block height on VN {vn_name} is less than {height}: {err}"));
 }
 
 /// Waits for a lagging validator to reach the view its committee had reached when this step started.
@@ -641,8 +578,7 @@ async fn then_validator_catches_up_to(
         mark.height,
     );
 
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    loop {
+    wait_until(Duration::from_secs(timeout_secs), async || {
         let status = lagging_client
             .get_consensus_status()
             .await
@@ -650,7 +586,8 @@ async fn then_validator_catches_up_to(
 
         assert!(
             status.epoch <= mark.epoch,
-            "{lagging_name} is in {} but {reference_name} was in {} when the step started: the network changed epoch,              so this scenario no longer exercises within-epoch catch-up",
+            "{lagging_name} is in {} but {reference_name} was in {} when the step started: the network changed epoch, \
+             so this scenario no longer exercises within-epoch catch-up",
             status.epoch,
             mark.epoch,
         );
@@ -662,18 +599,17 @@ async fn then_validator_catches_up_to(
                 status.height,
                 started_at.height
             );
-            return;
+            return ControlFlow::Break(());
         }
-
-        if Instant::now() >= deadline {
-            panic!(
-                "{lagging_name} did not catch up to {}/{} within {}s: it is at {}/{} (state={}), having started at {}",
-                mark.epoch, mark.height, timeout_secs, status.epoch, status.height, status.state, started_at.height,
-            );
-        }
-
-        tokio::time::sleep(Duration::from_secs(2)).await;
-    }
+        ControlFlow::Continue(format!("{}/{} (state={})", status.epoch, status.height, status.state))
+    })
+    .await
+    .unwrap_or_else(|err| {
+        panic!(
+            "{lagging_name} did not catch up to {}/{} having started at {}: {err}",
+            mark.epoch, mark.height, started_at.height,
+        )
+    });
 }
 
 #[then(expr = "the validator node {word} has started epoch {int}")]
@@ -681,7 +617,7 @@ async fn then_validator_node_switches_epoch(world: &mut TariWorld, step: &Step, 
     cucumber_log!("==== Step: {}", step.value);
     let vn = world.get_validator_node(&vn_name);
     let mut client = vn.create_client();
-    for _ in 0..200 {
+    wait_until(Duration::from_secs(1600), async || {
         let list_block = client
             .list_blocks_paginated(GetBlocksRequest {
                 limit: 10,
@@ -699,12 +635,13 @@ async fn then_validator_node_switches_epoch(world: &mut TariWorld, step: &Step, 
             "Epoch is greater than expected"
         );
         if blocks.iter().any(|b| b.epoch().as_u64() == epoch) {
-            return;
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
         }
-
-        tokio::time::sleep(Duration::from_secs(8)).await;
-    }
-    panic!("Validator node {vn_name} did not switch to epoch {epoch}");
+    })
+    .await
+    .unwrap_or_else(|err| panic!("Validator node {vn_name} did not switch to epoch {epoch}: {err}"));
 }
 
 #[when(expr = "all validator nodes have started epoch {int}")]
@@ -715,8 +652,7 @@ pub async fn all_validators_have_started_epoch(world: &mut TariWorld, step: &Ste
         panic!("No running validator nodes found while waiting for epoch {epoch}");
     }
 
-    let timeout_at = Instant::now() + Duration::from_secs(60);
-    loop {
+    let result = wait_until(Duration::from_secs(60), async || {
         let mut statuses = Vec::with_capacity(validators.len());
         let mut pending = Vec::new();
 
@@ -745,19 +681,18 @@ pub async fn all_validators_have_started_epoch(world: &mut TariWorld, step: &Ste
                 epoch,
                 statuses.join("; ")
             );
-            return;
+            return ControlFlow::Break(());
         }
+        ControlFlow::Continue(format!(
+            "pending: {}; statuses: {}",
+            pending.join(", "),
+            statuses.join("; ")
+        ))
+    })
+    .await;
 
-        if Instant::now() >= timeout_at {
-            panic!(
-                "Validator nodes did not all start epoch {} within 60 seconds. Pending: {}. Last statuses: {}",
-                epoch,
-                pending.join(", "),
-                statuses.join("; ")
-            );
-        }
-
-        tokio::time::sleep(Duration::from_secs(1)).await;
+    if let Err(err) = result {
+        panic!("Validator nodes did not all start epoch {epoch}: {err}");
     }
 }
 
@@ -768,20 +703,16 @@ async fn validator_not_member_of_network(world: &mut TariWorld, step: &Step, val
     let vn = world.get_validator_node(&validator);
     let mut client = bn.create_client();
 
-    let timeout_at = Instant::now() + Duration::from_secs(30);
-    loop {
+    wait_until(Duration::from_secs(30), async || {
         let tip = client.get_tip_info().await.unwrap();
         let mut vns = client.get_validator_nodes(tip.height_of_longest_chain).await.unwrap();
         let has_vn = vns.any(|v| v.unwrap().public_key == vn.public_key).await;
-        if !has_vn {
-            return;
+        if has_vn {
+            ControlFlow::Continue(format!("still a member at height {}", tip.height_of_longest_chain))
+        } else {
+            ControlFlow::Break(())
         }
-        if Instant::now() >= timeout_at {
-            panic!(
-                "Validator {} is still a member of the network (height {}) but expected it not to be",
-                validator, tip.height_of_longest_chain
-            );
-        }
-        tokio::time::sleep(Duration::from_secs(2)).await;
-    }
+    })
+    .await
+    .unwrap_or_else(|err| panic!("Validator {validator} is still a member of the network: {err}"));
 }

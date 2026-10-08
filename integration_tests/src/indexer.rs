@@ -158,7 +158,7 @@ pub async fn spawn_indexer(world: &mut TariWorld, indexer_name: String, base_nod
     // each spawned indexer will use different ports
     let (port, api_port) = get_os_assigned_ports();
     let (graphql_port, web_ui_port) = get_os_assigned_ports();
-    let base_node_grpc_port = world.base_nodes.get(&base_node_name).unwrap().grpc_port;
+    let base_node_grpc_port = world.get_base_node(&base_node_name).grpc_port;
     let name = indexer_name.clone();
 
     let base_dir = get_base_dir_for_scenario("indexer", world.current_scenario_name.as_ref().unwrap(), &indexer_name);
