@@ -16,7 +16,7 @@ use tari_ootle_common_types::{
     optional::Optional,
     response_status::ResponseErrorStatus,
 };
-use tari_ootle_transaction::{Transaction, UnsignedTransaction, args};
+use tari_ootle_transaction::{Transaction, TransactionSignature, UnsignedTransaction, args};
 use tari_ootle_wallet_sdk::{
     apis::transaction::TransactionApiError,
     models::{KeyId, OutputStatus, StealthUtxoSpendKeyId, TransactionContext, WalletEvent, WalletLockId},
@@ -152,6 +152,7 @@ async fn submit_inner(
     req.transaction
         .validate_blob_references()
         .map_err(|e| invalid_params("transaction.blobs", Some(e.to_string())))?;
+    reject_detect_inputs_with_signatures(req.detect_inputs, &req.signatures)?;
     let detected_inputs = if req.detect_inputs {
         // If we are not overriding inputs, we will use inputs that we know about in the local substate id db
         let substates = req.transaction.to_referenced_substates()?;
@@ -237,6 +238,24 @@ async fn submit_inner(
         .map_err(map_transaction_submission_error)?;
 
     Ok(TransactionSubmitResponse { transaction_id })
+}
+
+/// Signatures collected out of band are made over the transaction body as submitted, and detecting inputs adds to
+/// that body, so a request cannot ask for both.
+fn reject_detect_inputs_with_signatures(
+    detect_inputs: bool,
+    signatures: &[TransactionSignature],
+) -> Result<(), anyhow::Error> {
+    if detect_inputs && !signatures.is_empty() {
+        return Err(invalid_params(
+            "detect_inputs",
+            Some(
+                "detect_inputs changes the transaction body after the provided signatures were made. Detect inputs \
+                 before collecting signatures (transactions.detect_inputs) and submit with detect_inputs=false",
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The stealth spend keys needed to spend everything the given locks hold.
@@ -404,6 +423,7 @@ async fn submit_dry_run_inner(
     req.transaction
         .validate_blob_references()
         .map_err(|e| invalid_params("transaction.blobs", Some(e.to_string())))?;
+    reject_detect_inputs_with_signatures(req.detect_inputs, &req.signatures)?;
 
     let detected_inputs = if req.detect_inputs {
         // If we are not overriding inputs, we will use inputs that we know about in the local substate id db
@@ -897,7 +917,10 @@ fn resolve_metadata_hash(
 #[cfg(test)]
 mod tests {
     use tari_ootle_common_types::{SubstateVersion, engine_types::substate::SubstateId};
-    use tari_template_lib_types::ComponentAddress;
+    use tari_template_lib_types::{
+        ComponentAddress,
+        crypto::{RistrettoPublicKeyBytes, SchnorrSignatureBytes},
+    };
 
     use super::*;
 
@@ -941,6 +964,17 @@ mod tests {
         );
 
         assert!(decl.is_write());
+    }
+
+    #[test]
+    fn detecting_inputs_is_refused_when_signatures_are_provided() {
+        let signature = TransactionSignature::new(RistrettoPublicKeyBytes::zero(), SchnorrSignatureBytes::zero());
+
+        let signatures = vec![signature];
+
+        assert!(reject_detect_inputs_with_signatures(true, &signatures).is_err());
+        assert!(reject_detect_inputs_with_signatures(false, &signatures).is_ok());
+        assert!(reject_detect_inputs_with_signatures(true, &[]).is_ok());
     }
 
     #[test]

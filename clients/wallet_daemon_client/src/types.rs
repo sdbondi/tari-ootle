@@ -422,7 +422,8 @@ pub struct TransactionSubmitRequest {
     pub seal_signer: KeyId,
     pub other_signers: Vec<KeyId>,
     /// Signatures collected out of band, attached before walletd adds its own
-    /// and seals.
+    /// and seals. They must be made over `transaction` as given, so a request
+    /// carrying any is refused when `detect_inputs` is set.
     #[serde(default)]
     pub signatures: Vec<TransactionSignature>,
     /// Attempt to infer inputs and their dependencies from instructions. If false, the provided transaction must
