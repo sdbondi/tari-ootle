@@ -52,6 +52,7 @@ export default function ConfirmationStep({
   poolRate,
 }: ConfirmationStepProps) {
   const currency = { symbol: token_symbol, decimals: divisibility };
+  const isMissingSwapAmount = !!transferFormState.swapPoolAddress && !transferFormState.swapInputAmount;
 
   return (
     <Stack spacing={3} sx={{ py: 2 }}>
@@ -160,7 +161,7 @@ export default function ConfirmationStep({
         <Button variant="outlined" onClick={onBack}>
           Back
         </Button>
-        <Button variant="contained" onClick={onConfirm} disabled={disabled}>
+        <Button variant="contained" onClick={onConfirm} disabled={disabled || isMissingSwapAmount}>
           Confirm and Send
         </Button>
       </Stack>

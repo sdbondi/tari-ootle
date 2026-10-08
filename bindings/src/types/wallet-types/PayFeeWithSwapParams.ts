@@ -6,6 +6,10 @@ import type { ResourceAddress } from "../ResourceAddress";
 export type PayFeeWithSwapParams = {
   pool_address: ComponentAddress;
   input_resource: ResourceAddress;
+  /**
+   * The exact amount of `input_resource` withdrawn and swapped to pay the fee. Must be positive: it is the
+   * caller's bound on what the fee payment spends of the input resource.
+   */
   input_amount: Amount;
   min_xtr_output_amount: Amount;
 };

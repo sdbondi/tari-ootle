@@ -52,7 +52,6 @@ use crate::{
             TransferStatementParams,
         },
         substate::{SubstatesApi, ValidatorScanResult},
-        swap_pool,
     },
     models::{
         AccountWithAddress,
@@ -461,7 +460,7 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
     pub async fn transfer(
         &self,
         owner_account: AccountWithAddress,
-        mut params: StealthTransferParams,
+        params: StealthTransferParams,
     ) -> Result<(WalletLockDropGuard<'a, TSpec::Store>, StealthTransferOutput), StealthTransferApiError> {
         let network = self.config_api.get_network()?;
         params.validate(network)?;
@@ -510,36 +509,6 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
         } else {
             Default::default()
         };
-
-        // When paying the fee with a swap but no (positive) input amount was supplied, derive how much of the input
-        // resource must be swapped to yield at least `min_xtr_output_amount` of TARI from the pool's current reserves.
-        // The amounts are in different tokens (and exchange rates), so we cannot simply fall back to `max_fee` here.
-        let derive_swap = params
-            .fee_params
-            .pay_fee_with_swap
-            .as_ref()
-            .filter(|swap| !swap.input_amount.is_positive())
-            .map(|swap| (swap.pool_address, swap.input_resource, swap.min_xtr_output_amount));
-        if let Some((pool_address, input_resource, min_xtr_output_amount)) = derive_swap {
-            let derived_input = swap_pool::derive_swap_input_for_tari_output(
-                &self.substate_api,
-                pool_address,
-                input_resource,
-                min_xtr_output_amount,
-            )
-            .await?;
-            info!(
-                target: LOG_TARGET,
-                "Derived swap input amount {} of {} to yield >= {} TARI from pool {}",
-                derived_input, input_resource, min_xtr_output_amount, pool_address
-            );
-            params
-                .fee_params
-                .pay_fee_with_swap
-                .as_mut()
-                .expect("pay_fee_with_swap is Some")
-                .input_amount = derived_input;
-        }
 
         // Generate outputs
         let resource_view_key = resource
