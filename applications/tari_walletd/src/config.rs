@@ -69,6 +69,11 @@ pub struct WalletDaemonConfig {
     pub json_rpc_address: SocketAddr,
     /// The signaling server address for the webrtc
     pub signaling_server_address: Option<SocketAddr>,
+    /// Allow `webrtc.start`, which hands an app connected through the signaling
+    /// server a token carrying the caller's permissions. Off unless an operator
+    /// opts in, since any credential holding `webrtc` can open such a session.
+    #[serde(default)]
+    pub enable_webrtc: bool,
     /// The indexer API URLs, under the key `indexer_api_url`. The wallet uses one at a time, chosen at random at
     /// startup, and moves to the next when the one in use stops responding. Accepts a list, or a string of
     /// comma-separated URLs.
@@ -256,6 +261,7 @@ impl Default for WalletDaemonConfig {
             transaction_request_ttl: return_default_transaction_request_ttl(),
             signing_request_ttl: return_default_signing_request_ttl(),
             enable_permissive_cors: false,
+            enable_webrtc: false,
             value_lookup_table_file: None,
             recovery_abandon_count: 10,
             webauthn: WebAuthnConfig {

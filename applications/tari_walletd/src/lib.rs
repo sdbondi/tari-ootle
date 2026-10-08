@@ -154,6 +154,12 @@ pub async fn run_tari_ootle_walletd(
         );
     }
     let authenticator = create_authenticator(&config.ootle_wallet_daemon, wallet_store.clone())?;
+    if config.ootle_wallet_daemon.enable_webrtc {
+        info!(
+            target: LOG_TARGET,
+            "🔌 WebRTC is enabled: apps can connect through the signaling server at {signaling_server_address}"
+        );
+    }
 
     // Generate a new secret each time the daemon starts. This means that all JWT tokens will be invalidated on restart.
     let jwt_secret = create_secret_password();

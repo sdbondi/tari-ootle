@@ -28,6 +28,18 @@ pub fn handle_start(
     addresses: (SocketAddr, SocketAddr),
 ) -> JrpcResult {
     let answer_id = value.get_answer_id();
+    if !context.config().enable_webrtc {
+        return Err(JsonRpcResponse::error(
+            answer_id,
+            JsonRpcError::new(
+                JsonRpcErrorReason::ApplicationError(ApplicationErrorCode::InvalidRequest as i32),
+                "WebRTC connections are disabled on this wallet daemon. Start it with --enable-webrtc (or set \
+                 enable_webrtc = true) to let apps connect."
+                    .to_string(),
+                serde_json::Value::Null,
+            ),
+        ));
+    }
     let granted = context.authorize(token, &[Permission::Webrtc]).map_err(|e| {
         JsonRpcResponse::error(
             answer_id.clone(),
@@ -94,4 +106,30 @@ pub fn handle_start(
         }
     });
     Ok(JsonRpcResponse::success(answer_id, WebRtcStartResponse {}))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum_jrpc::Id;
+
+    use super::*;
+    use crate::handlers::test_support::TestDaemon;
+
+    #[tokio::test]
+    async fn webrtc_start_is_refused_unless_enabled() {
+        let daemon = TestDaemon::start().await;
+        assert!(!daemon.context.config().enable_webrtc);
+        let api_key = daemon.api_key("dapp-bridge", "admin");
+
+        let request = JsonRpcExtractor {
+            parsed: serde_json::json!({ "signaling_server_token": "token", "permissions": ["Admin"] }),
+            method: "webrtc.start".to_string(),
+            id: Id::Num(1),
+        };
+        let addresses = ("127.0.0.1:1".parse().unwrap(), "127.0.0.1:2".parse().unwrap());
+        let response = handle_start(Arc::new(daemon.context.clone()), request, Some(&api_key), addresses).unwrap_err();
+
+        let body = serde_json::to_string(&response).unwrap();
+        assert!(body.contains("WebRTC connections are disabled"), "{body}");
+    }
 }
