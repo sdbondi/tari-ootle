@@ -308,7 +308,10 @@ fn third_party_deposits_cannot_grow_an_account_past_the_vault_limit() {
             .seal(test.secret_key()),
         vec![],
     );
-    assert_reject_reason(reason, "Account holds the maximum of 1024 vaults");
+    assert_reject_reason(
+        reason,
+        format!("Account holds the maximum of {MAX_ACCOUNT_VAULTS} vaults"),
+    );
     assert_eq!(account_vault_count(&mut test, owner), MAX_ACCOUNT_VAULTS as usize);
 
     // A full account still pays fees, sends, and receives resources it already holds.
