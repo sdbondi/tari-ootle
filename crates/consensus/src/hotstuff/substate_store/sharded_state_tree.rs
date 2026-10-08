@@ -25,8 +25,7 @@ use tari_state_tree::{
     SubstateTreeChange,
     TreeHash,
     Version,
-    compute_merkle_root_for_hashes,
-    shard_state_leaf,
+    compute_shard_group_root,
 };
 
 const LOG_TARGET: &str = "tari::ootle::consensus::sharded_state_tree";
@@ -91,7 +90,12 @@ impl<TTx: StateStoreReadTransaction> ShardedStateTree<&TTx> {
         let mut shard_state_roots = HashMap::with_capacity(changes.len());
         for (shard, changes) in changes {
             let current_version = self.get_current_version(shard)?;
-            let next_version = current_version.unwrap_or(0) + 1;
+            let next_version = match current_version {
+                Some(current_version) => current_version
+                    .checked_add(1)
+                    .ok_or(StateTreeError::VersionExhausted { current_version })?,
+                None => 1,
+            };
 
             // Read only state store that is scoped to the shard
             let scoped_store = ShardScopedTreeStoreReader::new(self.tx, shard);
@@ -141,15 +145,15 @@ impl<TTx: StateStoreReadTransaction> ShardedStateTree<&TTx> {
         shard_group: ShardGroup,
         mut shard_state_roots: HashMap<Shard, (TreeHash, Version)>,
     ) -> Result<TreeHash, StateTreeError> {
-        let mut leaves = Vec::with_capacity(shard_group.len() + 1);
+        let mut shard_states = Vec::with_capacity(shard_group.len() + 1);
         for shard in shard_group.shard_iter_with_global() {
             let (root, version) = match shard_state_roots.remove(&shard) {
                 Some(state) => state,
                 None => self.get_state_root_for_shard(shard)?,
             };
-            leaves.push(shard_state_leaf(protocol_version, &root, version));
+            shard_states.push((shard, root, version));
         }
-        let hash = compute_merkle_root_for_hashes(leaves)?;
+        let hash = compute_shard_group_root(protocol_version, shard_states)?;
         Ok(hash)
     }
 
@@ -219,5 +223,43 @@ where
         store.insert_nodes(diff.new_nodes)?;
         store.set_state_version(version)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tari_ootle_common_types::NumPreshards;
+    use tari_ootle_storage::StateStore;
+    use tari_state_store_rocksdb::{DatabaseOptions, RocksDbStateStore};
+
+    use super::*;
+
+    /// A shard whose state tree has reached the last version a `Version` can hold has no next
+    /// version to write changes at.
+    #[test]
+    fn a_shard_at_the_last_version_cannot_take_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RocksDbStateStore::<String>::open(dir.path().join("db"), DatabaseOptions::default()).unwrap();
+        let tx = store.create_read_tx().unwrap();
+        let shard = Shard::first();
+        let mut tree = ShardedStateTree::new(&tx).with_pending_diffs(HashMap::from([(shard, vec![
+            PendingShardStateTreeDiff::new(Version::MAX, StateHashTreeDiff::new()),
+        ])]));
+
+        let result = tree.put_substate_tree_changes(
+            ProtocolVersion::V2,
+            ShardGroup::all_shards(NumPreshards::P256),
+            IndexMap::from([(shard, vec![])]),
+        );
+
+        assert!(
+            matches!(
+                result,
+                Err(StateTreeError::VersionExhausted {
+                    current_version: Version::MAX
+                })
+            ),
+            "{result:?}"
+        );
     }
 }

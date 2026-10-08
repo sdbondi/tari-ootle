@@ -2,7 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use tari_jellyfish::{JmtStorageError, TreeHash, Version};
-use tari_ootle_common_types::optional::IsNotFoundError;
+use tari_ootle_common_types::{optional::IsNotFoundError, shard::Shard};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StateTreeError {
@@ -18,6 +18,15 @@ pub enum StateTreeError {
     },
     #[error("Two leaves share the key {key}, so a keyed tree cannot hold both")]
     DuplicateLeafKey { key: TreeHash },
+    #[error("{shard} is not one of the shards the shard group root tree was built over")]
+    ShardNotInShardGroupTree { shard: Shard },
+    #[error("{shard} appears more than once in the shard states a shard group root tree is built over")]
+    DuplicateShardInShardGroupTree { shard: Shard },
+    #[error(
+        "Refusing to write state tree changes on top of version {current_version}: it is the last version a state \
+         tree can hold"
+    )]
+    VersionExhausted { current_version: Version },
 }
 
 impl IsNotFoundError for StateTreeError {

@@ -1154,13 +1154,16 @@ mod tests {
     fn version_proof(state_version: Version, shard_root: TreeHash) -> Result<SyncStateResponse, RpcStatus> {
         use tari_common_types::types::FixedHash;
         use tari_sidechain::{SidechainBlockCommitProof, SidechainBlockHeader};
-        use tari_state_tree::{RootProofTree, compute_merkle_root_for_hashes, shard_state_leaf};
+        use tari_state_tree::ShardGroupRootTree;
 
         let protocol_version = ProtocolVersion::at(NETWORK, EPOCH);
-        let leaf = shard_state_leaf(protocol_version, &shard_root, state_version);
-        let leaves = vec![SPARSE_MERKLE_PLACEHOLDER_HASH, leaf];
-        let state_merkle_root = compute_merkle_root_for_hashes(leaves.clone()).unwrap();
-        let (_, shard_root_proof) = RootProofTree::build(leaves).unwrap().get_proof(leaf).unwrap();
+        let root_tree = ShardGroupRootTree::build(protocol_version, [
+            (Shard::global(), SPARSE_MERKLE_PLACEHOLDER_HASH, 0),
+            (shard(), shard_root, state_version),
+        ])
+        .unwrap();
+        let state_merkle_root = root_tree.root();
+        let (_, shard_root_proof) = root_tree.get_proof(shard()).unwrap();
         let header = SidechainBlockHeader {
             network: NETWORK.as_byte(),
             protocol_version: protocol_version.as_u32(),
