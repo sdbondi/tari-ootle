@@ -9,7 +9,8 @@ export type TransactionSubmitRequest = {
   other_signers: Array<KeyId>;
   /**
    * Signatures collected out of band, attached before walletd adds its own
-   * and seals.
+   * and seals. They must be made over `transaction` as given, so a request
+   * carrying any is refused when `detect_inputs` is set.
    */
   signatures: Array<TransactionSignature>;
   /**
