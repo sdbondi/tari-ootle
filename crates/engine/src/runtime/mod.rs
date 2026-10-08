@@ -182,8 +182,8 @@ pub trait RuntimeInterface {
 
     fn generate_uuid(&self) -> Result<[u8; 32], RuntimeError>;
 
-    /// Ends a top-level instruction. `output` is what the instruction produced, if anything, and is what a following
-    /// `PutLastInstructionOutputOnWorkspace` names.
+    /// Ends a top-level instruction with what it produced, if anything. `Some` becomes the output a following
+    /// `PutLastInstructionOutputOnWorkspace` names; `None` leaves the output of an earlier instruction in place.
     fn complete_instruction(&self, output: Option<IndexedValue>) -> Result<(), RuntimeError>;
 
     fn claim_burn(&self, claim: MinotariBurnClaimProof, output_data: ClaimBurnOutputData) -> Result<(), RuntimeError>;

@@ -79,17 +79,7 @@ export default function TransactionDetails() {
   };
 
   const expandAll = () => {
-    setExpandedPanels([
-      "panel1",
-      "panel2",
-      "panel3",
-      "panel4",
-      "panel5",
-      "panel7",
-      "panel8",
-      "panel9",
-      "panel10",
-    ]);
+    setExpandedPanels(["panel1", "panel2", "panel3", "panel4", "panel5", "panel7", "panel8", "panel9", "panel10"]);
   };
 
   const collapseAll = () => {

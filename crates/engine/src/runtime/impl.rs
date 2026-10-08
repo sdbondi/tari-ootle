@@ -3647,16 +3647,17 @@ where
     }
 
     fn complete_instruction(&self, output: Option<IndexedValue>) -> Result<(), RuntimeError> {
+        if output.is_some() {
+            self.invoke_modules_on_runtime_call("set_last_instruction_output")?;
+        }
         for module in self.modules.iter() {
             module.on_instruction_output(&self.tracker, output.as_ref())?;
         }
-        let Some(output) = output else {
-            return Ok(());
-        };
-        self.invoke_modules_on_runtime_call("set_last_instruction_output")?;
-        self.tracker.write_with(|state| {
-            state.set_last_instruction_output(output);
-        });
+        if let Some(output) = output {
+            self.tracker.write_with(|state| {
+                state.set_last_instruction_output(output);
+            });
+        }
         Ok(())
     }
 
