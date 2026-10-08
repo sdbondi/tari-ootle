@@ -79,7 +79,9 @@ use crate::{
 const LOG_TARGET: &str = "libp2p::rpc::server";
 
 /// How long a refusal may take to write. A refused peer holds no session slot, so this only bounds
-/// how long the task delivering the refusal lives.
+/// how long the task delivering the refusal lives. Refusal tasks run outside the session executor,
+/// so how many are in flight at once is bounded by this timeout and the rate at which the transport
+/// accepts inbound substreams, which its connection and per-connection stream limits cap.
 const REJECTION_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub trait NamedProtocolService {
