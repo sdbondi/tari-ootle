@@ -100,7 +100,9 @@ impl MemoryPool {
         if let Some(mmap) = self.slots.lock().unwrap().pop() {
             return Ok(mmap);
         }
-        Mmap::accessible_reserved(0, self.mapping_bytes, None, MmapType::Private).map_err(MemoryError::Region)
+        // No huge-page hint: the `MAP_FIXED` scrub on release discards madvise state, so a hint
+        // would apply to a mapping's first tenant only.
+        Mmap::accessible_reserved(0, self.mapping_bytes, None, MmapType::Private, false).map_err(MemoryError::Region)
     }
 
     /// Returns a mapping to the pool after scrubbing it back to the fresh-reservation state:
