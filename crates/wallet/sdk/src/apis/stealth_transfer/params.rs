@@ -98,6 +98,17 @@ impl StealthTransferParams {
                 })?;
         }
 
+        if let Some(swap) = &self.fee_params.pay_fee_with_swap &&
+            !swap.input_amount.is_positive()
+        {
+            return Err(StealthTransferApiError::InvalidParameter {
+                param: "pay_fee_with_swap.input_amount",
+                reason: "The amount of the input resource to swap for the fee must be specified. Use \
+                         swap_pools.get_exchange_rate to estimate it."
+                    .to_string(),
+            });
+        }
+
         Ok(())
     }
 
@@ -230,6 +241,8 @@ impl TransferFeeParams {
 pub struct PayFeeWithSwapParams {
     pub pool_address: ComponentAddress,
     pub input_resource: ResourceAddress,
+    /// The exact amount of `input_resource` withdrawn and swapped to pay the fee. Must be positive: it is the
+    /// caller's bound on what the fee payment spends of the input resource.
     pub input_amount: Amount,
     pub min_xtr_output_amount: Amount,
 }
@@ -331,6 +344,40 @@ mod tests {
         params_paying_to(0, 100, PayTo::StealthPublicKey)
             .validate(NETWORK)
             .expect("a revealed-only output needs no spend gating");
+    }
+
+    fn params_paying_fee_with_swap(input_amount: u64) -> StealthTransferParams {
+        let mut params = params_paying_to(100, 0, PayTo::StealthPublicKey);
+        params.fee_params = params.fee_params.with_pay_fee_with_swap(PayFeeWithSwapParams {
+            pool_address: ComponentAddress::from_array([1u8; 32]),
+            input_resource: STEALTH_TARI_RESOURCE_ADDRESS,
+            input_amount: Amount::from(input_amount),
+            min_xtr_output_amount: Amount::from(1000u64),
+        });
+        params
+    }
+
+    /// The swap input is the amount of the caller's token that leaves the account to pay the fee. It must be a figure
+    /// the caller chose, so a zero amount is rejected.
+    #[test]
+    fn rejects_a_fee_swap_without_an_input_amount() {
+        let err = params_paying_fee_with_swap(0)
+            .validate(NETWORK)
+            .expect_err("a fee swap must state its input amount");
+        assert!(
+            matches!(err, StealthTransferApiError::InvalidParameter {
+                param: "pay_fee_with_swap.input_amount",
+                ..
+            }),
+            "expected an InvalidParameter naming pay_fee_with_swap.input_amount, got: {err}"
+        );
+    }
+
+    #[test]
+    fn accepts_a_fee_swap_with_a_positive_input_amount() {
+        params_paying_fee_with_swap(2100)
+            .validate(NETWORK)
+            .expect("a fee swap with an explicit input amount is valid");
     }
 
     #[test]
