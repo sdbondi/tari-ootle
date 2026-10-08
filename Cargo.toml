@@ -295,15 +295,15 @@ ts-rs = { version = "11.0", features = [
     "indexmap-impl",
 ] }
 url = "2.4.1"
-# Capped to 7.4.x. The accepted-module set and memory tunables are consensus-critical and wasmer
+# Capped to 7.5.x. The accepted-module set and memory tunables are consensus-critical and wasmer
 # reshapes both across minor releases, so a bump must be a deliberate, reviewed change.
-wasmer = "~7.4.0"
+wasmer = "~7.5.0"
 # Must stay on the version wasmer re-exports, so a workspace that both parses and executes WASM
 # builds one copy of the parser.
-wasmparser = "0.257.1"
+wasmparser = "0.259.0"
 # Fork of `wasmer-middlewares` that makes `Metering`'s injected global indexes public, which the
 # bulk-memory metering middleware needs to decrement the remaining-points global inline.
-tari-wasmer-middlewares = "~7.4.0"
+tari-wasmer-middlewares = "~7.5.0"
 zeroize = "1"
 webauthn-rs = { version = "0.5.1", features = ["default"] }
 webauthn-rs-proto = { version = "0.5.1", features = ["default"] }
