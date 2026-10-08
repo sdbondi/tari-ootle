@@ -623,79 +623,13 @@ async fn epoch_change_no_vote_wedge_escalates_on_future_qc() {
     );
 }
 
-/// A future-epoch certificate from another shard group says nothing about our own chain, so it must
-/// not escalate to state sync, however valid its signatures are against that group's committee.
-///
-/// Committee 0 is cut off from the network so it stays in Epoch(1), while committee 1 moves on to
-/// Epoch(2). A committee 1 Epoch(2) proposal is then delivered to a committee 0 validator, whose
-/// oracle has observed Epoch(2).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn epoch_change_foreign_future_qc_does_not_escalate() {
-    setup_logger();
-    let foreign_proposal = Arc::new(Mutex::new(None::<HotstuffMessage>));
-    let mut test = Test::builder()
-        .modify_config(|cfg| {
-            cfg.epoch_end_grace_period = Duration::from_millis(10);
-        })
-        .modify_consensus_constants(|c| {
-            c.pacemaker_block_time = Duration::from_secs(1);
-        })
-        .with_test_timeout(Duration::from_secs(60))
-        .add_committee(0, vec!["1", "2"])
-        .add_committee(1, vec!["3", "4"])
-        .with_message_filter(Box::new({
-            let foreign_proposal = foreign_proposal.clone();
-            move |from, _to, msg| {
-                if let HotstuffMessage::Proposal(proposal) = msg {
-                    let justify = proposal.block.justify();
-                    if matches!(from.as_str(), "3" | "4") &&
-                        justify.epoch() == Epoch(2) &&
-                        !justify.justifies_zero_block()
-                    {
-                        foreign_proposal.lock().unwrap().get_or_insert_with(|| msg.clone());
-                    }
-                }
-                true
-            }
-        }))
-        .start()
-        .await;
-
-    test.start_epoch(Epoch(1)).await;
-
-    let victim_addr = TestAddress::new("1");
-    test.network().go_offline(victim_addr.clone()).await;
-    test.network().go_offline(TestAddress::new("2")).await;
-
-    test.start_epoch(Epoch(2)).await;
-
-    let deadline = Instant::now() + Duration::from_secs(45);
-    let foreign_proposal = loop {
-        if let Some(msg) = foreign_proposal.lock().unwrap().clone() {
-            break msg;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "committee 1 sent no Epoch(2) proposal justified by a certified block"
-        );
-        let _unused = tokio::time::timeout(Duration::from_millis(100), test.on_block_committed()).await;
-    };
-
-    let victim = test.get_validator(&victim_addr);
-    assert_eq!(
-        victim._current_view.get_epoch(),
-        Epoch(1),
-        "committee 0 must still be in Epoch(1) when the foreign certificate arrives"
-    );
-
-    let mut events = victim.events.resubscribe();
-    victim
-        .tx_inbound_message
-        .send((TestAddress::new("3"), foreign_proposal))
-        .await
-        .unwrap();
-
-    let escalation = tokio::time::timeout(Duration::from_secs(5), async {
+/// Waits up to `timeout` for a state sync escalation raised by the future-epoch certificate probe, returning its
+/// reason.
+async fn next_future_qc_escalation(
+    events: &mut broadcast::Receiver<HotstuffEvent>,
+    timeout: Duration,
+) -> Option<String> {
+    tokio::time::timeout(timeout, async {
         loop {
             match events.recv().await {
                 Ok(HotstuffEvent::SyncRequired { message }) if message.contains("Received valid 2f+1 QC") => {
@@ -707,12 +641,118 @@ async fn epoch_change_foreign_future_qc_does_not_escalate() {
             }
         }
     })
-    .await;
+    .await
+    .ok()
+}
 
-    test.stop();
-    if let Ok(reason) = escalation {
+/// A future-epoch certificate from another shard group says nothing about our own chain, so it must
+/// not escalate to state sync, however valid its signatures are against that group's committee.
+///
+/// Validator "1" is held in Epoch(1), cut off from the network, while the rest of committee 0 and
+/// all of committee 1 move on to Epoch(2). Once its oracle has observed Epoch(2), it is delivered a
+/// committee 1 Epoch(2) proposal, which must not escalate, followed by a committee 0 Epoch(2)
+/// proposal, which must.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn epoch_change_foreign_future_qc_does_not_escalate() {
+    setup_logger();
+    let local_proposal = Arc::new(Mutex::new(None::<HotstuffMessage>));
+    let foreign_proposal = Arc::new(Mutex::new(None::<HotstuffMessage>));
+    let mut test = Test::builder()
+        .modify_config(|cfg| {
+            cfg.epoch_end_grace_period = Duration::from_millis(10);
+        })
+        .modify_consensus_constants(|c| {
+            c.pacemaker_block_time = Duration::from_secs(1);
+        })
+        .with_test_timeout(Duration::from_secs(90))
+        .add_committee(0, vec!["1", "2", "3", "4"])
+        .add_committee(1, vec!["5", "6"])
+        .with_message_filter(Box::new({
+            let local_proposal = local_proposal.clone();
+            let foreign_proposal = foreign_proposal.clone();
+            move |from, _to, msg| {
+                if let HotstuffMessage::Proposal(proposal) = msg {
+                    let justify = proposal.block.justify();
+                    if justify.epoch() == Epoch(2) && !justify.justifies_zero_block() {
+                        let captured = match from.as_str() {
+                            "2" | "3" | "4" => &local_proposal,
+                            "5" | "6" => &foreign_proposal,
+                            _ => return true,
+                        };
+                        captured.lock().unwrap().get_or_insert_with(|| msg.clone());
+                    }
+                }
+                true
+            }
+        }))
+        .start()
+        .await;
+
+    let victim_addr = TestAddress::new("1");
+
+    test.start_epoch(Epoch(1)).await;
+
+    test.get_validator(&victim_addr)
+        .epoch_manager
+        .set_oracle_current_epoch_cap(Epoch(1));
+    test.get_validator(&victim_addr)
+        .epoch_manager
+        .set_oracle_visible_epoch(Epoch(1));
+    test.network().go_offline(victim_addr.clone()).await;
+
+    test.start_epoch(Epoch(2)).await;
+    wait_for_validators_at_epoch(&mut test, &victim_addr, Epoch(2), Duration::from_secs(45)).await;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let (local_proposal, foreign_proposal) = loop {
+        let local = local_proposal.lock().unwrap().clone();
+        let foreign = foreign_proposal.lock().unwrap().clone();
+        if let (Some(local), Some(foreign)) = (local, foreign) {
+            break (local, foreign);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "both committees must send an Epoch(2) proposal justified by a certified block"
+        );
+        let _unused = tokio::time::timeout(Duration::from_millis(100), test.on_block_committed()).await;
+    };
+
+    let victim = test.get_validator(&victim_addr);
+    assert_eq!(
+        victim._current_view.get_epoch(),
+        Epoch(1),
+        "validator {victim_addr} must still be in Epoch(1) when the certificates arrive"
+    );
+
+    let mut events = victim.events.resubscribe();
+    victim.epoch_manager.clear_oracle_current_epoch_cap();
+    victim.epoch_manager.clear_oracle_visible_epoch();
+
+    victim
+        .tx_inbound_message
+        .send((TestAddress::new("5"), foreign_proposal))
+        .await
+        .unwrap();
+    if let Some(reason) = next_future_qc_escalation(&mut events, Duration::from_secs(5)).await {
         panic!("a certificate from another shard group escalated to state sync: {reason}");
     }
+
+    // The inbound channel is drained in order, so an escalation on this proposal shows that the one above was
+    // processed and ignored.
+    victim
+        .tx_inbound_message
+        .send((TestAddress::new("2"), local_proposal))
+        .await
+        .unwrap();
+    let reason = next_future_qc_escalation(&mut events, Duration::from_secs(20))
+        .await
+        .expect("a certificate from our own shard group must escalate to state sync");
+    assert!(
+        reason.contains("Epoch(2)"),
+        "escalation reason should reference the Epoch(2) certificate; got: {reason}"
+    );
+
+    test.stop();
 }
 
 /// Companion to [`epoch_change_no_vote_wedge_escalates_on_future_qc`]: verifies the probe
