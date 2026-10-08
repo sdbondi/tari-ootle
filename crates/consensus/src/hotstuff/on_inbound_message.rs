@@ -302,8 +302,8 @@ impl<TConsensusSpec: ConsensusSpec> MessageBuffer<TConsensusSpec> {
         Some(justify.clone())
     }
 
-    /// Returns `Some(reason)` if `msg` carries a 2f+1-signed QC for an epoch strictly ahead of
-    /// `current_epoch`, validated against that epoch's committee. The presence of such a QC is
+    /// Returns `Some(reason)` if `msg` carries a 2f+1-signed QC for our own shard group's chain in an epoch strictly
+    /// ahead of `current_epoch`, validated against that epoch's committee. The presence of such a QC is
     /// unforgeable proof that the network has run consensus past the local view — so we need to
     /// state-sync rather than continue waiting on peers who have moved on.
     ///
@@ -317,6 +317,7 @@ impl<TConsensusSpec: ConsensusSpec> MessageBuffer<TConsensusSpec> {
     /// - the QC's epoch is not strictly ahead of `current_epoch` (nothing to prove);
     /// - the local oracle has not yet observed the QC's epoch or assigned its committee (both surface as `NoEpochFound`
     ///   and are caught by `.optional()`) — buffer and re-probe on the next future-epoch message;
+    /// - the QC certifies another shard group's chain, or this node has no shard group in the QC's epoch;
     /// - the QC is empty / justifies the zero block (no signatures to verify, so unforgeability doesn't hold — must not
     ///   promote on this);
     /// - signature verification fails (likely spam or a malicious peer trying to wedge us into sync mode — drop
@@ -339,6 +340,21 @@ impl<TConsensusSpec: ConsensusSpec> MessageBuffer<TConsensusSpec> {
         // verify the signatures; buffer and try again on the next incoming future-epoch
         // message (peers keep proposing in the new epoch, so this retries naturally).
         if self.epoch_manager.get_epoch_hash(qc_epoch).await.optional()?.is_none() {
+            return Ok(None);
+        }
+
+        // Only our own chain's progress says we fell behind; another shard group runs its own chain at its own pace.
+        // Shard groups can be reassigned across epochs, so ours is resolved at `qc_epoch`.
+        let Some(local_committee_info) = self.epoch_manager.get_local_committee_info(qc_epoch).await.optional()? else {
+            return Ok(None);
+        };
+        if qc.shard_group() != local_committee_info.shard_group() {
+            debug!(
+                target: LOG_TARGET,
+                "Ignoring future-epoch QC for {qc_epoch} from {}: our shard group in that epoch is {}",
+                qc.shard_group(),
+                local_committee_info.shard_group()
+            );
             return Ok(None);
         }
 
