@@ -570,7 +570,7 @@ mod component_owner_rule {
 }
 
 mod m_of_n_threshold {
-    use tari_template_lib::types::{NonFungibleAddress, SubstateOwnerRule};
+    use tari_template_lib::types::{NonFungibleAddress, SubstateOwnerRule, crypto::RistrettoPublicKeyBytes};
 
     use super::*;
 
@@ -690,6 +690,43 @@ mod m_of_n_threshold {
         assert_reject_reason(reason, invalid_threshold("access_rules", 2, 1));
         let reason = test.execute_expect_failure(update_resource_rule, vec![badge]);
         assert_reject_reason(reason, invalid_threshold("new_rule", 0, 1));
+    }
+
+    #[test]
+    fn a_rule_listing_a_requirement_twice_is_rejected() {
+        let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/access_rules"]);
+        let badge = signer_badge(&test);
+        let other = NonFungibleAddress::from_public_key(RistrettoPublicKeyBytes::from_bytes(&[1; 32]).unwrap());
+        let result = test.execute_expect_success(
+            create_component(
+                &test,
+                OwnerRule::OwnedBySigner,
+                ComponentAccessRules::new().default(AccessRule::AllowAll),
+                ResourceAccessRules::new(),
+            ),
+            vec![badge.clone()],
+        );
+        let component = result.finalize.execution_results[0]
+            .decode::<ComponentAddress>()
+            .unwrap();
+
+        let council = rule!(m_of_n(
+            2,
+            non_fungible(badge.clone()),
+            non_fungible(badge.clone()),
+            non_fungible(other)
+        ));
+        let set_owner_rule = Transaction::builder_localnet(Epoch(1))
+            .call_method(component, "set_component_owner_rule", args![
+                SubstateOwnerRule::ByAccessRule(council)
+            ])
+            .build_and_seal(test.secret_key());
+
+        let reason = test.execute_expect_failure(set_owner_rule, vec![badge.clone()]);
+        assert_reject_reason(reason, RuntimeError::DuplicateMOfNRequirement {
+            argument: "owner_rule",
+            requirement: RuleRequirement::NonFungibleAddress(badge),
+        });
     }
 }
 

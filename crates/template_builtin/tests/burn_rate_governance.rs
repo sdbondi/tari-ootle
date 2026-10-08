@@ -282,3 +282,18 @@ fn a_council_cannot_rotate_to_an_unsatisfiable_threshold() {
     let transaction = council.set_burn_rate(&[0, 1], 700, EARLIEST_ACTIVATION);
     council.test.execute_expect_success(transaction, vec![]);
 }
+
+/// A member listed twice would count twice towards the threshold, so one key could meet a 2-of-3 alone.
+#[test]
+fn a_council_cannot_rotate_to_one_listing_a_member_twice() {
+    let mut council = Council::seated(3, 2);
+    let members = vec![council.public_key(0), council.public_key(0), council.public_key(1)];
+
+    let transaction = council.call("set_council", &[0, 1], args![2u16, members]);
+    let reason = council.test.execute_expect_failure(transaction, vec![]);
+    assert_reject_reason(&reason, "a council lists a member more than once");
+
+    let transaction = council.set_burn_rate(&[0], 700, EARLIEST_ACTIVATION);
+    let reason = council.test.execute_expect_failure(transaction, vec![]);
+    assert_reject_reason(&reason, "Access Denied");
+}

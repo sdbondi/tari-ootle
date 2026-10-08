@@ -54,6 +54,7 @@ use tari_template_lib::{
         TemplateAddress,
         TransactionReceiptAddress,
         VaultId,
+        access_rules::RuleRequirement,
         crypto::PedersenCommitmentBytes,
         engine_args::IntrinsicId,
     },
@@ -127,6 +128,11 @@ pub enum RuntimeError {
         argument: &'static str,
         threshold: u16,
         num_requirements: usize,
+    },
+    #[error("{argument} has an m_of_n rule that lists {requirement} more than once")]
+    DuplicateMOfNRequirement {
+        argument: &'static str,
+        requirement: RuleRequirement,
     },
     #[error(
         "Intrinsic {intrinsic} is not supported by this validator. The template requires a newer engine — validators \
@@ -493,6 +499,7 @@ impl RuntimeError {
             Self::IntrinsicNotSupported { .. } |
             Self::InvalidNumberOfArguments { .. } |
             Self::InvalidMOfNThreshold { .. } |
+            Self::DuplicateMOfNRequirement { .. } |
             Self::InvalidAmount { .. } |
             Self::BucketNotFound { .. } |
             Self::BucketNotInScope { .. } |

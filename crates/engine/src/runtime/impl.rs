@@ -4334,7 +4334,7 @@ where
 
 fn reject_invalid_m_of_n(argument: &'static str, invalid: Option<InvalidMOfN>) -> Result<(), RuntimeError> {
     match invalid {
-        Some(InvalidMOfN {
+        Some(InvalidMOfN::ThresholdOutOfRange {
             threshold,
             num_requirements,
         }) => Err(RuntimeError::InvalidMOfNThreshold {
@@ -4342,6 +4342,9 @@ fn reject_invalid_m_of_n(argument: &'static str, invalid: Option<InvalidMOfN>) -
             threshold,
             num_requirements,
         }),
+        Some(InvalidMOfN::DuplicateRequirement { requirement }) => {
+            Err(RuntimeError::DuplicateMOfNRequirement { argument, requirement })
+        },
         None => Ok(()),
     }
 }
