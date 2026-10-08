@@ -78,6 +78,10 @@ use crate::{
 
 const LOG_TARGET: &str = "libp2p::rpc::server";
 
+/// How long a refusal may take to write. A refused peer holds no session slot, so this only bounds
+/// how long the task delivering the refusal lives.
+const REJECTION_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+
 pub trait NamedProtocolService {
     const PROTOCOL_NAME: &'static str;
 
@@ -210,6 +214,14 @@ impl RpcServerBuilder {
         self
     }
 
+    /// Sets how long a new session may take to send its handshake. The session holds its slot while
+    /// the server waits, and a client sends its handshake as soon as it opens the substream, so this
+    /// only needs to cover network latency.
+    pub fn with_handshake_timeout(mut self, timeout: Duration) -> Self {
+        self.handshake_timeout = timeout;
+        self
+    }
+
     /// Sets the shortest keepalive interval the server is willing to emit. A client asking for a
     /// shorter interval is served this one, so that a client cannot make the server produce frames
     /// at an arbitrary rate.
@@ -243,7 +255,7 @@ impl Default for RpcServerBuilder {
             minimum_client_deadline: Duration::from_secs(1),
             maximum_client_deadline: Duration::from_secs(10 * 60),
             minimum_keepalive_interval: crate::DEFAULT_MINIMUM_KEEPALIVE_INTERVAL,
-            handshake_timeout: Duration::from_secs(15),
+            handshake_timeout: Duration::from_secs(5),
             idle_session_timeout: Duration::from_secs(2 * 60),
         }
     }
@@ -304,7 +316,7 @@ where
             tokio::select! {
                 maybe_notif = protocol_notifs.recv() => {
                     match maybe_notif {
-                        Some(notif) => self.handle_protocol_notification(notif).await?,
+                        Some(notif) => self.handle_protocol_notification(notif).await,
                         // No more protocol notifications to come, so we're done
                         None => break,
                     }
@@ -368,10 +380,7 @@ where
         }
     }
 
-    async fn handle_protocol_notification(
-        &mut self,
-        notification: ProtocolNotification<TSubstream>,
-    ) -> Result<(), RpcServerError> {
+    async fn handle_protocol_notification(&mut self, notification: ProtocolNotification<TSubstream>) {
         match notification.event {
             ProtocolEvent::NewInboundSubstream { peer_id, substream } => {
                 debug!(
@@ -382,24 +391,11 @@ where
                 );
 
                 let framed = framing::canonical(substream, RPC_MAX_FRAME_SIZE);
-                match self
-                    .try_initiate_service(notification.protocol.clone(), peer_id, framed)
-                    .await
-                {
-                    Ok(_) => {},
-                    Err(err @ RpcServerError::HandshakeError(_)) => {
-                        debug!(target: LOG_TARGET, "Handshake error: {}", err);
-                        #[cfg(feature = "metrics")]
-                        metrics::handshake_error_counter(&peer_id, &notification.protocol).inc();
-                    },
-                    Err(err) => {
-                        debug!(target: LOG_TARGET, "Unable to spawn RPC service: {}", err);
-                    },
+                if let Err(err) = self.try_initiate_service(notification.protocol, peer_id, framed).await {
+                    debug!(target: LOG_TARGET, "Unable to spawn RPC service: {}", err);
                 }
             },
         }
-
-        Ok(())
     }
 
     fn new_session_for(&mut self, peer_id: PeerId) -> Result<usize, RpcServerError> {
@@ -428,39 +424,23 @@ where
         }
     }
 
+    /// Admits or refuses a session without waiting on the peer: the handshake runs in the session's
+    /// own task, so peers that are slow to send theirs cannot hold up admitting anyone else.
     async fn try_initiate_service(
         &mut self,
         protocol: StreamProtocol,
         peer_id: PeerId,
-        mut framed: CanonicalFraming<TSubstream>,
+        framed: CanonicalFraming<TSubstream>,
     ) -> Result<(), RpcServerError> {
-        let mut handshake = Handshake::new(&mut framed).with_timeout(self.config.handshake_timeout);
-
         if !self.executor.can_spawn() {
-            debug!(
-                target: LOG_TARGET,
-                "Rejecting RPC session request for peer `{}` because {}",
-                peer_id,
-                HandshakeRejectReason::NoSessionsAvailable
-            );
-            handshake
-                .reject_with_reason(HandshakeRejectReason::NoSessionsAvailable)
-                .await?;
+            reject_session(peer_id, framed, HandshakeRejectReason::NoSessionsAvailable);
             return Err(RpcServerError::MaximumSessionsReached);
         }
 
         let service = match self.service.make_service(protocol.clone()).await {
             Ok(s) => s,
             Err(err) => {
-                debug!(
-                    target: LOG_TARGET,
-                    "Rejecting RPC session request for peer `{}` because {}",
-                    peer_id,
-                    HandshakeRejectReason::ProtocolNotSupported
-                );
-                handshake
-                    .reject_with_reason(HandshakeRejectReason::ProtocolNotSupported)
-                    .await?;
+                reject_session(peer_id, framed, HandshakeRejectReason::ProtocolNotSupported);
                 return Err(err);
             },
         };
@@ -474,63 +454,103 @@ where
             },
 
             Err(err) => {
-                handshake
-                    .reject_with_reason(HandshakeRejectReason::NoSessionsAvailable)
-                    .await?;
+                reject_session(peer_id, framed, HandshakeRejectReason::NoSessionsAvailable);
                 return Err(err);
             },
         }
 
+        let session = run_session(self.config.clone(), protocol, peer_id, service, framed);
         // The session slot taken above is released when the spawned task completes, so a session
         // that never starts must release it here.
-        match self.start_session(protocol, peer_id, service, framed).await {
+        match self.executor.try_spawn(session) {
             Ok(handle) => {
                 self.tasks.push(handle);
                 Ok(())
             },
-            Err(err) => {
+            Err(_) => {
                 self.on_session_complete(&peer_id);
-                Err(err)
+                Err(RpcServerError::MaximumSessionsReached)
             },
         }
     }
+}
 
-    async fn start_session(
-        &mut self,
-        protocol: StreamProtocol,
-        peer_id: PeerId,
-        service: TSvc::Service,
-        mut framed: CanonicalFraming<TSubstream>,
-    ) -> Result<JoinHandle<PeerId>, RpcServerError> {
-        let version = Handshake::new(&mut framed)
-            .with_timeout(self.config.handshake_timeout)
-            .perform_server_handshake()
-            .await?;
-        debug!(
-            target: LOG_TARGET,
-            "Server negotiated RPC v{} with client node `{}`", version, peer_id
-        );
-
-        let service = ActivePeerRpcService::new(self.config.clone(), protocol, peer_id, service, framed);
-
-        let handle = self
-            .executor
-            .try_spawn(async move {
-                #[cfg(feature = "metrics")]
-                let num_sessions = metrics::num_sessions(&peer_id, &service.protocol);
-                #[cfg(feature = "metrics")]
-                num_sessions.inc();
-                service.start().await;
-                debug!(target: LOG_TARGET, "END OF SESSION for {} ", peer_id,);
-                #[cfg(feature = "metrics")]
-                num_sessions.dec();
-
-                peer_id
-            })
-            .map_err(|_| RpcServerError::MaximumSessionsReached)?;
-
-        Ok(handle)
+/// Performs the server handshake on `framed`, then serves the session until it ends. Returns
+/// `peer_id` either way, which is what releases the session's slot.
+async fn run_session<TSvc, TSubstream>(
+    config: RpcServerBuilder,
+    protocol: StreamProtocol,
+    peer_id: PeerId,
+    service: TSvc,
+    mut framed: CanonicalFraming<TSubstream>,
+) -> PeerId
+where
+    TSvc: Service<Request<Bytes>, Response = Response<Body>, Error = RpcStatus>,
+    TSubstream: AsyncRead + AsyncWrite + Unpin,
+{
+    let handshake = Handshake::new(&mut framed)
+        .with_timeout(config.handshake_timeout)
+        .perform_server_handshake()
+        .await;
+    match handshake {
+        Ok(version) => {
+            debug!(
+                target: LOG_TARGET,
+                "Server negotiated RPC v{} with client node `{}`", version, peer_id
+            );
+        },
+        Err(err) => {
+            debug!(target: LOG_TARGET, "Handshake error with peer `{}`: {}", peer_id, err);
+            #[cfg(feature = "metrics")]
+            metrics::handshake_error_counter(&peer_id, &protocol).inc();
+            return peer_id;
+        },
     }
+
+    let service = ActivePeerRpcService::new(config, protocol, peer_id, service, framed);
+    #[cfg(feature = "metrics")]
+    let num_sessions = metrics::num_sessions(&peer_id, &service.protocol);
+    #[cfg(feature = "metrics")]
+    num_sessions.inc();
+    service.start().await;
+    debug!(target: LOG_TARGET, "END OF SESSION for {} ", peer_id,);
+    #[cfg(feature = "metrics")]
+    num_sessions.dec();
+
+    peer_id
+}
+
+/// Refuses a session from a task of its own, so that a peer slow to take the refusal cannot hold up
+/// admitting anyone else.
+fn reject_session<TSubstream>(
+    peer_id: PeerId,
+    mut framed: CanonicalFraming<TSubstream>,
+    reason: HandshakeRejectReason,
+) where
+    TSubstream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    debug!(
+        target: LOG_TARGET,
+        "Rejecting RPC session request for peer `{}` because {}", peer_id, reason
+    );
+    tokio::spawn(async move {
+        let mut handshake = Handshake::new(&mut framed);
+        match time::timeout(REJECTION_WRITE_TIMEOUT, handshake.reject_with_reason(reason)).await {
+            Ok(Ok(())) => {},
+            Ok(Err(err)) => {
+                debug!(
+                    target: LOG_TARGET,
+                    "Failed to refuse session for peer `{}`: {}", peer_id, err
+                );
+            },
+            Err(_) => {
+                debug!(
+                    target: LOG_TARGET,
+                    "Peer `{}` did not take the session refusal within {:.0?}", peer_id, REJECTION_WRITE_TIMEOUT
+                );
+            },
+        }
+    });
 }
 
 struct ActivePeerRpcService<TSvc, TSubstream> {

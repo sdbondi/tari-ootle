@@ -19,17 +19,18 @@ use tokio::{
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
 
 use crate::{
+    Handshake,
     NamedProtocolService,
     RPC_MAX_FRAME_SIZE,
     RpcClient,
     RpcError,
-    RpcHandshakeError,
     RpcServer,
     RpcServerBuilder,
     RpcStatusCode,
     error::HandshakeRejectReason,
     framing,
     framing::CanonicalFraming,
+    handshake::decode_session_rejection,
     max_response_payload_size,
     test::greeting_service::{
         GreetingClient,
@@ -154,22 +155,18 @@ async fn connect_with_deadline(
 
 /// The reason the server gave for refusing this session.
 ///
-/// A refusal surfaces at whichever point the peer's close beats. The handshake does not wait for a
-/// reply, so when the peer closes before the client's write lands the reason comes back from
-/// connecting; otherwise it comes back from the first request, in place of its response.
-async fn refusal_reason(framed: CanonicalFraming<TestSubstream>) -> String {
-    match connect(framed).await {
-        Err(RpcError::HandshakeError(RpcHandshakeError::Rejected(reason))) => reason.to_string(),
-        Err(err) => panic!("expected the session to be refused, got {err:?}"),
-        Ok(mut client) => {
-            let err = client.say_hello(SayHelloRequest::default()).await.unwrap_err();
-            let RpcError::RequestFailed(status) = err else {
-                panic!("expected the session to be refused, got {err:?}");
-            };
-            assert_eq!(status.as_status_code(), RpcStatusCode::HandshakeDenied);
-            status.details().to_string()
-        },
-    }
+/// The server refuses without waiting for the client's handshake, so its refusal is the first frame
+/// on the substream. How a client surfaces it depends on when it lands relative to the client's own
+/// writes, which `a_refusal_in_place_of_the_first_response_is_reported` pins down.
+async fn refusal_reason(mut framed: CanonicalFraming<TestSubstream>) -> String {
+    let frame = time::timeout(Duration::from_secs(5), framed.next())
+        .await
+        .expect("the server did not refuse the session in time")
+        .expect("the server closed the session without refusing it")
+        .unwrap();
+    decode_session_rejection(&frame)
+        .expect("the server's first frame is not a refusal")
+        .to_string()
 }
 
 #[tokio::test]
@@ -399,6 +396,34 @@ async fn a_session_beyond_the_server_s_limit_is_refused() {
 }
 
 #[tokio::test]
+async fn a_refusal_in_place_of_the_first_response_is_reported() {
+    let (server_io, client_io) = tokio::io::duplex(TRANSPORT_WINDOW);
+    let mut server_framed = framing::canonical(server_io.compat(), RPC_MAX_FRAME_SIZE);
+    let mut client = connect(framing::canonical(client_io.compat(), RPC_MAX_FRAME_SIZE))
+        .await
+        .unwrap();
+
+    // The refusal goes out only once the request has been read, so it arrives where the client is
+    // waiting for the response.
+    let server = task::spawn(async move {
+        let _handshake = server_framed.next().await.unwrap().unwrap();
+        let _request = server_framed.next().await.unwrap().unwrap();
+        Handshake::new(&mut server_framed)
+            .reject_with_reason(HandshakeRejectReason::NoSessionsAvailable)
+            .await
+            .unwrap();
+    });
+
+    let err = client.say_hello(SayHelloRequest::default()).await.unwrap_err();
+    let RpcError::RequestFailed(status) = err else {
+        panic!("expected the session to be refused, got {err:?}");
+    };
+    assert_eq!(status.as_status_code(), RpcStatusCode::HandshakeDenied);
+    assert_eq!(status.details(), HandshakeRejectReason::NoSessionsAvailable.to_string());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn a_session_for_an_unknown_protocol_is_refused() {
     let server = TestRpcServer::with_sessions(GreetingService::new(&[]), 1);
     let framed = server.dial_as(
@@ -495,15 +520,56 @@ async fn failed_handshakes_do_not_count_against_the_per_client_limit() {
         drop(server.dial_peer(peer_id));
     }
 
-    let mut client = connect(server.dial_peer(peer_id)).await.unwrap();
-    client.say_hello(SayHelloRequest::default()).await.unwrap();
+    wait_for_session_from(&server, peer_id).await;
 }
 
-/// Opens sessions until one is accepted. A slot is released when the server's task for that session
-/// finishes, which trails the client closing its end.
+#[tokio::test]
+async fn a_substream_that_never_sends_its_handshake_does_not_hold_up_other_sessions() {
+    let server = TestRpcServer::spawn(GreetingService::default(), RpcServer::builder());
+
+    // Held open for the whole test without a handshake ever being written to them.
+    let _silent = (0..3).map(|_| server.dial()).collect::<Vec<_>>();
+
+    let admitted = time::timeout(Duration::from_secs(2), async {
+        let mut client = connect(server.dial()).await.unwrap();
+        client.say_hello(SayHelloRequest::default()).await.unwrap();
+    })
+    .await;
+    assert!(
+        admitted.is_ok(),
+        "a session behind substreams awaiting their handshake was not served"
+    );
+}
+
+#[tokio::test]
+async fn a_substream_that_never_sends_its_handshake_releases_its_slot_at_the_handshake_timeout() {
+    let handshake_timeout = Duration::from_millis(500);
+    let server = TestRpcServer::spawn(
+        GreetingService::default(),
+        RpcServer::builder()
+            .with_maximum_simultaneous_sessions(1)
+            .with_handshake_timeout(handshake_timeout),
+    );
+
+    let _silent = server.dial();
+    assert_eq!(
+        refusal_reason(server.dial()).await,
+        HandshakeRejectReason::NoSessionsAvailable.to_string()
+    );
+
+    time::sleep(handshake_timeout).await;
+    wait_for_session(&server).await;
+}
+
 async fn wait_for_session(server: &TestRpcServer) -> GreetingClient {
+    wait_for_session_from(server, PeerId::random()).await
+}
+
+/// Opens sessions from `peer_id` until one is accepted. A slot is released when the server's task
+/// for that session finishes, which trails the client closing its end.
+async fn wait_for_session_from(server: &TestRpcServer, peer_id: PeerId) -> GreetingClient {
     for _ in 0..50 {
-        if let Ok(mut client) = connect(server.dial()).await &&
+        if let Ok(mut client) = connect(server.dial_peer(peer_id)).await &&
             client.say_hello(SayHelloRequest::default()).await.is_ok()
         {
             return client;
