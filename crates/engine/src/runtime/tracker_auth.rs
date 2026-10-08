@@ -205,14 +205,20 @@ fn check_require_rule<TStore: StateReader>(
             Ok(true)
         },
         RequireRule::MOfN(n, requirements) => {
-            // The engine rejects a threshold of zero or above `requirements.len()` wherever it stores a rule. A stealth
-            // output commits only to a hash of its spend conditions, so its rules are first seen here and an invalid
-            // threshold must fail closed.
+            // The engine rejects a threshold of zero or above `requirements.len()`, and a requirement listed more than
+            // once, wherever it stores a rule. A stealth output commits only to a hash of its spend conditions, so its
+            // rules are first seen here: an invalid threshold fails closed and a repeated requirement counts once.
             if *n == 0 {
                 return Ok(false);
             }
             let mut satisfied = 0u16;
-            for requirement in requirements {
+            for (i, requirement) in requirements.iter().enumerate() {
+                if requirements[..i]
+                    .iter()
+                    .any(|earlier| earlier.is_same_requirement_as(requirement))
+                {
+                    continue;
+                }
                 if check_requirement(state, scope, requirement)? {
                     satisfied += 1;
                     if satisfied == *n {

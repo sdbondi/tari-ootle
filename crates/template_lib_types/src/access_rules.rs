@@ -175,7 +175,7 @@ impl RequireRule {
 impl RuleRequirement {
     /// Returns `true` if `self` and `other` are satisfied by exactly the same scope, treating each caller badge
     /// shorthand as the badge it stands for.
-    fn is_same_requirement_as(&self, other: &Self) -> bool {
+    pub fn is_same_requirement_as(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::CallerComponent(component), Self::NonFungibleAddress(badge)) |
             (Self::NonFungibleAddress(badge), Self::CallerComponent(component)) => {

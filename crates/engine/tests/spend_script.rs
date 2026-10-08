@@ -235,6 +235,55 @@ fn script_path_zero_of_n_access_rule_leaf_denies_spend() {
     assert_reject_reason(&reason, "Access Denied");
 }
 
+#[test]
+fn script_path_m_of_n_access_rule_leaf_counts_a_repeated_requirement_once() {
+    let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
+    let signer = test.to_public_key_bytes();
+    let (_secret, other) = create_key_pair_from_seed(42);
+    let (resx, mint) = mint_utxo(
+        &mut test,
+        conditions(vec![SpendCondition::access_rule(rule!(m_of_n(
+            2,
+            public_key(signer),
+            public_key(signer),
+            public_key(other.to_byte_type())
+        )))]),
+    );
+
+    let transfer = spend_into(&mint, key_path(test.to_public_key_bytes()));
+    let reason = test.execute_expect_failure(
+        Transaction::builder_localnet(Epoch(1))
+            .stealth_transfer(resx, transfer.statement)
+            .finish()
+            .seal(test.secret_key()),
+        vec![],
+    );
+    assert_reject_reason(&reason, "Access Denied");
+}
+
+#[test]
+fn script_path_m_of_n_access_rule_leaf_with_a_repeated_requirement_allows_spend() {
+    let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
+    let signer = test.to_public_key_bytes();
+    let (resx, mint) = mint_utxo(
+        &mut test,
+        conditions(vec![SpendCondition::access_rule(rule!(m_of_n(
+            1,
+            public_key(signer),
+            public_key(signer)
+        )))]),
+    );
+
+    let transfer = spend_into(&mint, key_path(test.to_public_key_bytes()));
+    test.execute_expect_success(
+        Transaction::builder_localnet(Epoch(1))
+            .stealth_transfer(resx, transfer.statement)
+            .finish()
+            .seal(test.secret_key()),
+        vec![],
+    );
+}
+
 // -------------------------------- Script path: multi-leaf tree -------------------------------- //
 
 #[test]
