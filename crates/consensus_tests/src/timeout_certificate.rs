@@ -1,7 +1,11 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-//! Tests for the rule that binds a proposal to the certificate height its timeout certificate attests to.
+//! Tests for the rules that bind a proposal to the timeout certificate it carries.
+//!
+//! A timeout certificate proves that one view failed: the view directly below the proposal, in the proposal's epoch.
+//! `check_timeout_certificate_precedes_block` (`crates/consensus/src/validations/common.rs`) holds a proposal to
+//! that, so a certificate from another epoch or another view cannot entitle it to skip views.
 //!
 //! Every timeout vote signs the height of the certificate its signer held when the view failed, so a timeout
 //! certificate proves that a quorum has reached that height. The rule is implemented by
@@ -15,6 +19,7 @@ use tari_common_types::types::FixedHash;
 use tari_consensus::{
     check_block_commits_to_timeout_certificate,
     check_justify_reaches_timeout_certificate,
+    check_timeout_certificate_precedes_block,
     hotstuff::ProposalValidationError,
     messages::NewViewMessage,
 };
@@ -40,8 +45,12 @@ const TEST_EPOCH: Epoch = Epoch(0);
 
 /// A timeout certificate for `height` whose signers attest to `high_pc_heights`.
 fn timeout_certificate(height: NodeHeight, high_pc_heights: &[u64]) -> TimeoutCertificate {
+    timeout_certificate_in(TEST_EPOCH, height, high_pc_heights)
+}
+
+fn timeout_certificate_in(epoch: Epoch, height: NodeHeight, high_pc_heights: &[u64]) -> TimeoutCertificate {
     TimeoutCertificate::new(
-        TEST_EPOCH,
+        epoch,
         height,
         high_pc_heights
             .iter()
@@ -78,16 +87,25 @@ fn timeout_vote(height: NodeHeight, high_pc_height: NodeHeight) -> TimeoutVote {
 }
 
 fn block_justifying(justify_height: NodeHeight, timeout_certificate: TimeoutCertificate) -> Block {
-    let justify = proposal_certificate(justify_height);
     let height = timeout_certificate.height() + NodeHeight(1);
+    block_at(TEST_EPOCH, height, justify_height, timeout_certificate)
+}
+
+fn block_at(
+    epoch: Epoch,
+    height: NodeHeight,
+    justify_height: NodeHeight,
+    timeout_certificate: TimeoutCertificate,
+) -> Block {
+    let justify = proposal_certificate(justify_height);
     let header = BlockHeader::create_unsigned(
         NETWORK,
-        ProtocolVersion::at(NETWORK, TEST_EPOCH),
+        ProtocolVersion::at(NETWORK, epoch),
         BlockId::zero(),
         justify.calculate_id(),
         Some(timeout_certificate.calculate_id()),
         height,
-        TEST_EPOCH,
+        epoch,
         ShardGroup::all_shards(NUM_PRESHARDS),
         RistrettoPublicKeyBytes::default(),
         FixedHash::zero(),
@@ -100,6 +118,61 @@ fn block_justifying(justify_height: NodeHeight, timeout_certificate: TimeoutCert
     )
     .unwrap();
     Block::new(header, justify, BTreeSet::new(), Some(timeout_certificate))
+}
+
+#[test]
+fn a_timeout_certificate_for_the_preceding_view_is_accepted() {
+    let tc = timeout_certificate_in(Epoch(1), NodeHeight(10), &[8, 8, 7]);
+    let block = block_at(Epoch(1), NodeHeight(11), NodeHeight(8), tc);
+
+    check_timeout_certificate_precedes_block(&block).unwrap();
+}
+
+/// Each timeout is signed over its own epoch, so a certificate from an earlier epoch still verifies against a
+/// committee that kept its signers; it proves nothing about a view of the block's epoch.
+#[test]
+fn a_timeout_certificate_from_an_earlier_epoch_is_rejected() {
+    let tc = timeout_certificate_in(Epoch(0), NodeHeight(10), &[8, 8, 7]);
+    let block = block_at(Epoch(1), NodeHeight(11), NodeHeight(8), tc);
+
+    let err = check_timeout_certificate_precedes_block(&block).unwrap_err();
+    assert!(
+        matches!(err, ProposalValidationError::TimeoutCertificateFromAnotherEpoch { .. }),
+        "unexpected error: {err}"
+    );
+}
+
+/// A certificate for an earlier view of the same epoch proves that view failed, not the views the block skips.
+#[test]
+fn a_timeout_certificate_for_an_earlier_view_is_rejected() {
+    let tc = timeout_certificate_in(Epoch(1), NodeHeight(2), &[1, 1, 1]);
+    let block = block_at(Epoch(1), NodeHeight(11), NodeHeight(8), tc);
+
+    let err = check_timeout_certificate_precedes_block(&block).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ProposalValidationError::TimeoutCertificateNotForPrecedingView { .. }
+        ),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn a_timeout_certificate_at_or_above_the_block_is_rejected() {
+    for tc_height in [NodeHeight(11), NodeHeight(12), NodeHeight(u64::MAX)] {
+        let tc = timeout_certificate_in(Epoch(1), tc_height, &[8, 8, 7]);
+        let block = block_at(Epoch(1), NodeHeight(11), NodeHeight(8), tc);
+
+        let err = check_timeout_certificate_precedes_block(&block).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ProposalValidationError::TimeoutCertificateNotForPrecedingView { .. }
+            ),
+            "unexpected error for timeout certificate at {tc_height}: {err}"
+        );
+    }
 }
 
 #[test]
@@ -132,6 +205,7 @@ fn a_block_without_a_timeout_certificate_is_accepted() {
     block = Block::new(block.header().clone(), block.justify().clone(), BTreeSet::new(), None);
 
     check_justify_reaches_timeout_certificate(&block).unwrap();
+    check_timeout_certificate_precedes_block(&block).unwrap();
 }
 
 /// A committee member can self-sign a `SignedTimeout` for any height and add it to a certificate it observes;

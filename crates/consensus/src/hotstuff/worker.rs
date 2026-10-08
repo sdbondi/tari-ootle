@@ -1342,7 +1342,9 @@ impl<TConsensusSpec: ConsensusSpec> HotstuffWorker<TConsensusSpec> {
                 Ok::<_, HotStuffError>((high_qc, high_tc, justify_block))
             })?;
 
-            propose_high_tc = high_tc;
+            // A block may only carry the timeout certificate for the view directly below it
+            // (`check_timeout_certificate_precedes_block`).
+            propose_high_tc = high_tc.filter(|tc| tc.height().checked_add(NodeHeight(1)) == Some(next_height));
 
             // Fill [justify_block.height + 1, next_height - 1] with dummy blocks anchored on the HighQC,
             // so our parent matches what every validator deterministically recomputes from the QC. When

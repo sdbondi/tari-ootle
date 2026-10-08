@@ -292,17 +292,39 @@ pub(super) fn check_timeout_certificate<TConsensusSpec: ConsensusSpec>(
     let Some(tc) = candidate_block.timeout_certificate() else {
         return Ok(());
     };
-    if candidate_block.height() <= tc.height() {
-        return Err(ProposalValidationError::CandidateBlockNotHigherThanJustify {
-            justify_block_height: tc.height(),
-            candidate_block_height: candidate_block.height(),
-        });
-    }
+    check_timeout_certificate_precedes_block(candidate_block)?;
 
     check_quorum_certificate_signatures::<TConsensusSpec>(network, tc.into(), committee, signing_service)?;
 
     check_justify_reaches_timeout_certificate(candidate_block)?;
 
+    Ok(())
+}
+
+/// Checks that a block's timeout certificate is for the view directly below the block, in the block's epoch.
+///
+/// A timeout certificate proves that a quorum gave up on one view and nothing more, and it is what entitles a
+/// proposer to skip views (`check_extends_justify`). Each timeout is signed over the certificate's own epoch and
+/// height, so its signatures verify wherever it is carried; this binding is what ties it to the views the block
+/// skips.
+pub fn check_timeout_certificate_precedes_block(block: &Block) -> Result<(), ProposalValidationError> {
+    let Some(tc) = block.timeout_certificate() else {
+        return Ok(());
+    };
+    if tc.epoch() != block.epoch() {
+        return Err(ProposalValidationError::TimeoutCertificateFromAnotherEpoch {
+            block_id: *block.id(),
+            block_epoch: block.epoch(),
+            tc_epoch: tc.epoch(),
+        });
+    }
+    if tc.height().checked_add(NodeHeight(1)) != Some(block.height()) {
+        return Err(ProposalValidationError::TimeoutCertificateNotForPrecedingView {
+            block_id: *block.id(),
+            block_height: block.height(),
+            tc_height: tc.height(),
+        });
+    }
     Ok(())
 }
 
