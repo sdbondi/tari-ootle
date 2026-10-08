@@ -22,8 +22,11 @@ use crate::{
 /// [`SubstateValueProof::verify_exclusion`]) without trusting the node that produced the proof. From
 /// [`ProtocolVersion::V2`] the verifier derives the substate's shard itself and checks the shard's own
 /// leaf, so the proof can only cite that shard's state. The caller is responsible for obtaining a
-/// trusted `group_root` (e.g. from a verified committed block proof) and, for inclusion, for binding
-/// `value_hash` to the returned substate value.
+/// trusted `group_root` (e.g. from a verified committed block proof), for checking that the
+/// substate's shard is one of the shards that root's group covers, and, for inclusion, for binding
+/// `value_hash` to the returned substate value. Under V2 a shard outside the group has no leaf, the
+/// same as an empty shard, so without the group check an exclusion proof against another group's
+/// root verifies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubstateValueProof {
     /// The substate's shard JMT root.

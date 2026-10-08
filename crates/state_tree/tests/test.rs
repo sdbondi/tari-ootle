@@ -13,6 +13,7 @@ use tari_state_tree::{
     compute_merkle_root_for_hashes,
     compute_shard_group_root,
     memory_store::MemoryTreeStore,
+    shard_state_leaf,
 };
 
 use crate::support::{HashTreeTester, change, hash_value_from_seed, make_value};
@@ -262,6 +263,41 @@ fn v0_shard_group_root_is_the_set_of_shard_roots() {
         compute_shard_group_root(ProtocolVersion::V0, shard_states).unwrap(),
         compute_merkle_root_for_hashes(roots).unwrap()
     );
+}
+
+/// Esmeralda's history was committed under V1, so its roots must stay the set of V1 shard state leaves.
+#[test]
+fn v1_shard_group_root_is_the_set_of_shard_state_leaves() {
+    let shard_states = [
+        (Shard::global(), SPARSE_MERKLE_PLACEHOLDER_HASH, 0),
+        (Shard::from_u32(1), hash_value_from_seed(1), 3),
+        (Shard::from_u32(2), SPARSE_MERKLE_PLACEHOLDER_HASH, 0),
+        (Shard::from_u32(3), hash_value_from_seed(2), 7),
+    ];
+    let leaves = shard_states
+        .iter()
+        .map(|(_, root, version)| shard_state_leaf(ProtocolVersion::V1, root, *version));
+    assert_eq!(
+        compute_shard_group_root(ProtocolVersion::V1, shard_states).unwrap(),
+        compute_merkle_root_for_hashes(leaves).unwrap()
+    );
+}
+
+#[test]
+fn a_shard_listed_twice_is_rejected() {
+    for protocol_version in [ProtocolVersion::V0, ProtocolVersion::V1, ProtocolVersion::V2] {
+        let result = compute_shard_group_root(protocol_version, [
+            (Shard::from_u32(1), hash_value_from_seed(1), 1),
+            (Shard::from_u32(1), hash_value_from_seed(2), 2),
+        ]);
+        assert!(
+            matches!(
+                result,
+                Err(StateTreeError::DuplicateShardInShardGroupTree { shard }) if shard == Shard::from_u32(1)
+            ),
+            "{protocol_version}: {result:?}"
+        );
+    }
 }
 
 #[test]

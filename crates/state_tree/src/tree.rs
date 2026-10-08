@@ -380,7 +380,7 @@ pub struct ShardGroupRootTree {
 
 impl ShardGroupRootTree {
     /// Builds the tree over `(shard, shard root, state version)` entries, in the canonical
-    /// `[global, shard_0, ...]` order a V0 root is formed in. Each shard must appear at most once.
+    /// `[global, shard_0, ...]` order a V0 root is formed in. Fails if a shard appears more than once.
     pub fn build<I: IntoIterator<Item = (Shard, TreeHash, Version)>>(
         protocol_version: ProtocolVersion,
         shard_states: I,
@@ -394,7 +394,9 @@ impl ShardGroupRootTree {
             if let Some(value) = leaf.value {
                 changes.push((leaf.key, Some((value, ()))));
             }
-            leaves.insert(shard, leaf);
+            if leaves.insert(shard, leaf).is_some() {
+                return Err(StateTreeError::DuplicateShardInShardGroupTree { shard });
+            }
         }
         if changes.is_empty() {
             return Ok(Self {

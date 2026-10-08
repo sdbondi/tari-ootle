@@ -20,6 +20,8 @@ pub enum StateTreeError {
     DuplicateLeafKey { key: TreeHash },
     #[error("{shard} is not one of the shards the shard group root tree was built over")]
     ShardNotInShardGroupTree { shard: Shard },
+    #[error("{shard} appears more than once in the shard states a shard group root tree is built over")]
+    DuplicateShardInShardGroupTree { shard: Shard },
     #[error(
         "Refusing to write state tree changes on top of version {current_version}: it is the last version a state \
          tree can hold"
