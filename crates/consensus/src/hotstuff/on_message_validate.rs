@@ -16,7 +16,7 @@ use tari_ootle_storage::{
     StateStore,
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
-    consensus_models::{Block, ForeignParkedProposal, ForeignProposal, ForeignProposalRecord, TransactionRecord},
+    consensus_models::{Block, ForeignParkedProposal, ForeignProposal, TransactionRecord},
 };
 use tari_ootle_transaction::{Transaction, TransactionId};
 use tokio::sync::broadcast;
@@ -559,18 +559,18 @@ impl<TConsensusSpec: ConsensusSpec> OnMessageValidate<TConsensusSpec> {
     }
 
     /// The first parked copy of a block holds its slot until it is unparked, so a block is only parked if every
-    /// embedded foreign proposal not already stored is authenticated by its committee and pledges the values its
-    /// evidence commits to. A copy that fails is turned away, leaving the slot for the genuine block.
+    /// embedded foreign proposal whose commit proof is not already stored is authenticated by its committee and
+    /// pledges the values its evidence commits to. A copy that fails is turned away, leaving the slot for the genuine
+    /// block.
     async fn are_embedded_foreign_proposals_parkable(
         &self,
         epoch_state: &EpochState<TConsensusSpec::Addr>,
         proposal: &ProposalMessage,
     ) -> Result<bool, HotStuffError> {
         for foreign_proposal in &proposal.foreign_proposals {
-            let block_id = foreign_proposal.calculate_block_id();
             if self
                 .store
-                .with_read_tx(|tx| ForeignProposalRecord::record_exists(tx, &block_id))?
+                .with_read_tx(|tx| validations::is_authenticated_commit_proof_stored(tx, foreign_proposal))?
             {
                 continue;
             }

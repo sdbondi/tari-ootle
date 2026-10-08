@@ -59,7 +59,7 @@ use crate::{
     messages::{ForeignProposalNotificationMessage, HotstuffMessage, ProposalMessage, VoteMessage},
     tracing::TraceTimer,
     traits::{CertificateStore, ConsensusSpec, OutboundMessaging, ValidatorSignerService, hooks::ConsensusHooks},
-    validations::{authenticate_foreign_proposal, check_proposed_by_leader},
+    validations::{authenticate_foreign_proposal, check_proposed_by_leader, is_authenticated_commit_proof_stored},
 };
 
 const LOG_TARGET: &str = "tari::ootle::consensus::hotstuff::on_receive_local_proposal";
@@ -299,17 +299,15 @@ impl<TConsensusSpec: ConsensusSpec> OnReceiveLocalProposalHandler<TConsensusSpec
     }
 
     /// Foreign proposals embedded in a local proposal are relayed by the local leader rather than fetched from the
-    /// foreign committee, so each one not already stored must carry that committee's commit proof before any of it
-    /// is saved.
+    /// foreign committee, so each one must carry that committee's commit proof before any of it is saved.
     async fn are_foreign_proposals_authentic(
         &self,
         foreign_proposals: &[ForeignProposal],
     ) -> Result<bool, HotStuffError> {
         for proposal in foreign_proposals {
-            let block_id = proposal.calculate_block_id();
             if self
                 .store
-                .with_read_tx(|tx| ForeignProposalRecord::record_exists(tx, &block_id))?
+                .with_read_tx(|tx| is_authenticated_commit_proof_stored(tx, proposal))?
             {
                 continue;
             }

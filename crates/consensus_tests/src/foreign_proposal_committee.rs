@@ -10,9 +10,10 @@ use std::{
 };
 
 use ootle_byte_type::ToByteType;
-use tari_common_types::types::{CompressedPublicKey, PrivateKey};
+use tari_common_types::types::{CompressedPublicKey, FixedHash, PrivateKey};
 use tari_consensus::{
     hotstuff::{HotStuffError, ProposalValidationError},
+    is_authenticated_commit_proof_stored,
     messages::{HotstuffMessage, ProposalMessage},
     resolve_foreign_committee,
 };
@@ -27,10 +28,11 @@ use tari_ootle_common_types::{
 };
 use tari_ootle_storage::{
     StateStore,
-    consensus_models::{BlockPledge, CommandsCommitProof, ForeignProposal, ForeignProposalRecord},
+    consensus_models::{BlockPledge, CommandOrHash, CommandsCommitProof, ForeignProposal, ForeignProposalRecord},
 };
 use tari_ootle_transaction::{Network, Transaction};
 use tari_sidechain::{SidechainBlockCommitProof, SidechainBlockHeader};
+use tari_state_store_rocksdb::DatabaseOptions;
 use tokio::{
     sync::broadcast,
     time::{sleep, timeout},
@@ -41,6 +43,7 @@ use crate::support::{
     Test,
     TestAddress,
     TestEpochManager,
+    TestStore,
     TestVnDestination,
     build_transaction_from,
     committee_number_to_shard_group,
@@ -157,6 +160,47 @@ async fn it_finds_no_committee_for_a_shard_group_that_is_not_assigned() {
 
     let committee = resolve_foreign_committee(&epoch_manager, &proposal).await.unwrap();
     assert!(committee.is_none());
+}
+
+/// The same proposal with `commands` in place of the commands its commit proof covers.
+fn with_commands(proposal: &ForeignProposal, commands: Vec<CommandOrHash>) -> ForeignProposal {
+    ForeignProposal::new(
+        CommandsCommitProof::new_latest(commands, proposal.commit_proof().sidechain_block_commit_proof().clone()),
+        proposal.block_pledge().clone(),
+    )
+}
+
+/// Stored foreign proposals are pruned by epoch, so a copy that shares only the block id of a stored proposal can be
+/// saved once the stored proposal is gone. Only a copy carrying the stored commit proof inherits its authentication.
+#[test]
+fn only_a_stored_commit_proof_counts_as_authenticated() {
+    let group_b = committee_number_to_shard_group(TEST_NUM_PRESHARDS, 1, 2);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let store = TestStore::open(&temp_dir, DatabaseOptions::default()).unwrap();
+
+    let stored = with_commands(&proposal("b1", to_header_shard_group(group_b)), vec![
+        CommandOrHash::Hash(FixedHash::new([1u8; 32])),
+    ]);
+    let same_block_id = with_commands(&stored, vec![CommandOrHash::Hash(FixedHash::new([2u8; 32]))]);
+    assert_eq!(stored.calculate_block_id(), same_block_id.calculate_block_id());
+
+    store
+        .with_write_tx(|tx| ForeignProposalRecord::new(stored.clone()).save(tx))
+        .unwrap();
+
+    let (stored_is_authenticated, copy_is_authenticated) = store
+        .with_read_tx(|tx| {
+            Ok::<_, HotStuffError>((
+                is_authenticated_commit_proof_stored(tx, &stored)?,
+                is_authenticated_commit_proof_stored(tx, &same_block_id)?,
+            ))
+        })
+        .unwrap();
+    assert!(stored_is_authenticated);
+    assert!(
+        !copy_is_authenticated,
+        "a copy with different commands was treated as authenticated by the stored proposal's block id"
+    );
 }
 
 /// The same proposal with its commit proof stripped of the foreign committee's signatures.

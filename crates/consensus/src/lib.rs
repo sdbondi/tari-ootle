@@ -16,5 +16,6 @@ pub use validations::{
     check_justify_reaches_timeout_certificate,
     check_quorum_certificate_signatures,
     check_timeout_certificate_precedes_block,
+    is_authenticated_commit_proof_stored,
     resolve_foreign_committee,
 };
