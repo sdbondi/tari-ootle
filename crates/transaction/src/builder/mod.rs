@@ -1102,8 +1102,10 @@ impl Signable<&RistrettoPublicKeyBytes> for TransactionBuilder<MainIntent> {
     type MessageOutput = [u8; 64];
     type Signature = TransactionSignature;
 
+    /// The message covers the body [`IntoSigned::into_signed`] produces, so it is taken over a copy with the fee
+    /// instructions applied.
     fn to_signing_message(&self, sealed_signer: &RistrettoPublicKeyBytes) -> Self::MessageOutput {
-        self.unsigned_transaction.to_signing_message(sealed_signer)
+        self.clone().build_unsigned().to_signing_message(sealed_signer)
     }
 }
 

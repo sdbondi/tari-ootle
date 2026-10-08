@@ -1,14 +1,22 @@
 //   Copyright 2025 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
+use ootle_byte_type::ToByteType;
+use tari_crypto::{
+    keys::{PublicKey as _, SecretKey as _},
+    ristretto::{RistrettoPublicKey, RistrettoSchnorr, RistrettoSecretKey},
+};
 use tari_ootle_common_types::Epoch;
-use tari_template_lib_types::TemplateAddress;
+use tari_template_lib_types::{ComponentAddress, TemplateAddress};
 
 use crate::{
     AllocatableAddressType,
     ComponentReference,
     Instruction,
+    IntoSigned,
+    Signable,
     Transaction,
+    TransactionSignature,
     args,
     args::{InstructionArg, WorkspaceOffsetId},
     builder::named_component_call::CallFromWorkspace,
@@ -209,4 +217,30 @@ fn the_fallible_api_refuses_the_blob_that_does_not_fit() {
         b
     });
     assert!(builder.add_blob_checked("main", vec![0]).is_err());
+}
+
+/// A signature made over the builder's signing message has to verify against the transaction the
+/// builder turns into, fee instructions included.
+#[test]
+fn a_signature_over_the_builder_message_verifies_once_fee_instructions_are_applied() {
+    let seal_secret = RistrettoSecretKey::random(&mut rand::rng());
+    let seal_signer = RistrettoPublicKey::from_secret_key(&seal_secret).to_byte_type();
+    let signer_secret = RistrettoSecretKey::random(&mut rand::rng());
+
+    let builder = Transaction::builder_localnet(Epoch(1))
+        .call_method(ComponentAddress::from_array([1; 32]), "method", args![])
+        .pay_fee_from_component(ComponentAddress::from_array([2; 32]), 1000u64);
+    assert!(!builder.clone().build_unsigned().fee_instructions().is_empty());
+
+    let message = builder.to_signing_message(&seal_signer);
+    let signature = TransactionSignature::new(
+        RistrettoPublicKey::from_secret_key(&signer_secret).to_byte_type(),
+        RistrettoSchnorr::sign(&signer_secret, message, &mut rand::rng())
+            .unwrap()
+            .to_byte_type(),
+    );
+    let unsealed = builder.into_signed(signature);
+
+    assert!(unsealed.verify_all_signatures(&seal_signer));
+    assert!(unsealed.seal(&seal_secret).verify_all_signatures());
 }
