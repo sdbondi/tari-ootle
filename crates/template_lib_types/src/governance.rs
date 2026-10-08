@@ -17,7 +17,7 @@ use minicbor::{CborLen, Decode, Encode};
 use tari_template_abi::rust::prelude::*;
 
 use crate::{
-    access_rules::{AccessRule, RequireRule, RestrictedAccessRule, RuleRequirement},
+    access_rules::{AccessRule, InvalidMOfN, RequireRule, RestrictedAccessRule, RuleRequirement},
     crypto::RistrettoPublicKeyBytes,
     owner_rule::SubstateOwnerRule,
 };
@@ -103,21 +103,25 @@ impl BurnRateGovernanceState {
 /// an m-of-n over those badges is satisfied by the signatures on the transaction. No badge resource
 /// is minted, held in a vault or passed to a method.
 ///
-/// Panics if the engine would reject the rule it builds — a threshold of zero admits everyone and one
-/// above the council admits nobody, and neither is a council anyone means to seat. The engine applies
-/// the same check to a rule reaching it through `SetOwnerRule`; this one covers genesis, which writes
-/// the component straight to the state store.
+/// Panics if the engine would reject the rule it builds — a threshold of zero admits everyone, one
+/// above the council admits nobody, and a member listed twice counts twice towards the threshold, so
+/// none of these is a council anyone means to seat. The engine applies the same check to a rule
+/// reaching it through `SetOwnerRule`; this one covers genesis, which writes the component straight to
+/// the state store.
 pub fn council_owner_rule(threshold: u16, council: &[RistrettoPublicKeyBytes]) -> SubstateOwnerRule {
     let rule = AccessRule::Restricted(RestrictedAccessRule::Require(RequireRule::MOfN(
         threshold,
         council.iter().copied().map(RuleRequirement::from).collect(),
     )));
 
-    if let Some(invalid) = rule.find_invalid_m_of_n() {
-        panic!(
-            "a council of {} cannot be seated at a threshold of {}",
-            invalid.num_requirements, invalid.threshold
-        );
+    match rule.find_invalid_m_of_n() {
+        Some(InvalidMOfN::ThresholdOutOfRange {
+            threshold,
+            num_requirements,
+        }) => panic!("a council of {num_requirements} cannot be seated at a threshold of {threshold}"),
+        // The member goes unnamed: formatting a key would put hex encoding into every template that seats a council.
+        Some(InvalidMOfN::DuplicateRequirement { .. }) => panic!("a council lists a member more than once"),
+        None => {},
     }
 
     SubstateOwnerRule::ByAccessRule(rule)
@@ -281,6 +285,14 @@ mod tests {
     #[should_panic(expected = "a council of 3 cannot be seated at a threshold of 4")]
     fn a_threshold_larger_than_the_council_is_rejected() {
         council_owner_rule(4, &council(3));
+    }
+
+    #[test]
+    #[should_panic(expected = "a council lists a member more than once")]
+    fn a_member_listed_twice_is_rejected() {
+        let mut members = council(2);
+        members.push(members[0]);
+        council_owner_rule(2, &members);
     }
 
     #[test]

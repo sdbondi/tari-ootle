@@ -4,7 +4,11 @@
 
 use minicbor::{CborLen, Decode, Decoder, Encode, data::Type, decode};
 use tari_bor::adapters::boxed_slice;
-use tari_template_abi::rust::{collections::BTreeMap, prelude::*};
+use tari_template_abi::rust::{
+    collections::BTreeMap,
+    fmt::{self, Display},
+    prelude::*,
+};
 
 use crate::{ComponentAddress, NonFungibleAddress, ResourceAddress, TemplateAddress, crypto::RistrettoPublicKeyBytes};
 
@@ -66,8 +70,10 @@ impl AccessRule {
     }
 
     /// Returns the first [`RequireRule::MOfN`] whose threshold is zero or larger than its number of
-    /// requirements. A zero threshold admits every caller and an unreachable one admits none, so either one is a
-    /// miscomputed threshold rather than a rule anyone means to write.
+    /// requirements, or that lists the same requirement more than once. A zero threshold admits every caller and an
+    /// unreachable one admits none, so either one is a miscomputed threshold rather than a rule anyone means to write.
+    /// A repeated requirement counts once per listing, so one party holding it meets more of the threshold than the
+    /// rule appears to grant them.
     pub fn find_invalid_m_of_n(&self) -> Option<InvalidMOfN> {
         match self {
             Self::AllowAll | Self::DenyAll => None,
@@ -76,11 +82,13 @@ impl AccessRule {
     }
 }
 
-/// An `m_of_n` rule whose threshold `m` is zero or exceeds its `n` requirements.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InvalidMOfN {
-    pub threshold: u16,
-    pub num_requirements: usize,
+/// Why an `m_of_n` rule is rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidMOfN {
+    /// The threshold `m` is zero or exceeds the `n` requirements.
+    ThresholdOutOfRange { threshold: u16, num_requirements: usize },
+    /// The rule lists `requirement` more than once, directly or through its shorthand.
+    DuplicateRequirement { requirement: RuleRequirement },
 }
 
 /// An enum that represents the possible ways to restrict access to components or resources
@@ -144,14 +152,40 @@ impl RequireRule {
     }
 
     fn find_invalid_m_of_n(&self) -> Option<InvalidMOfN> {
-        match self {
-            Self::MOfN(threshold, requirements) if *threshold == 0 || usize::from(*threshold) > requirements.len() => {
-                Some(InvalidMOfN {
-                    threshold: *threshold,
-                    num_requirements: requirements.len(),
+        let Self::MOfN(threshold, requirements) = self else {
+            return None;
+        };
+        if *threshold == 0 || usize::from(*threshold) > requirements.len() {
+            return Some(InvalidMOfN::ThresholdOutOfRange {
+                threshold: *threshold,
+                num_requirements: requirements.len(),
+            });
+        }
+        requirements.iter().enumerate().find_map(|(i, requirement)| {
+            requirements[..i]
+                .iter()
+                .any(|earlier| earlier.is_same_requirement_as(requirement))
+                .then(|| InvalidMOfN::DuplicateRequirement {
+                    requirement: requirement.clone(),
                 })
+        })
+    }
+}
+
+impl RuleRequirement {
+    /// Returns `true` if `self` and `other` are satisfied by exactly the same scope, treating each caller badge
+    /// shorthand as the badge it stands for.
+    fn is_same_requirement_as(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::CallerComponent(component), Self::NonFungibleAddress(badge)) |
+            (Self::NonFungibleAddress(badge), Self::CallerComponent(component)) => {
+                *badge == NonFungibleAddress::caller_component_badge(*component)
             },
-            _ => None,
+            (Self::DirectCallerTemplate(template), Self::NonFungibleAddress(badge)) |
+            (Self::NonFungibleAddress(badge), Self::DirectCallerTemplate(template)) => {
+                *badge == NonFungibleAddress::direct_caller_template_badge(*template)
+            },
+            _ => self == other,
         }
     }
 }
@@ -265,6 +299,22 @@ pub enum RuleRequirement {
     /// `NonFungibleAddress(NonFungibleAddress::direct_caller_template_badge(address))`.
     #[n(5)]
     DirectCallerTemplate(#[n(0)] TemplateAddress),
+}
+
+impl Display for RuleRequirement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Resource(address) => write!(f, "resource({address})"),
+            Self::NonFungibleAddress(address) => match address.to_public_key() {
+                Some(public_key) => write!(f, "public_key({public_key})"),
+                None => write!(f, "non_fungible({address})"),
+            },
+            Self::ScopedToComponent(address) => write!(f, "component({address})"),
+            Self::ScopedToTemplate(address) => write!(f, "template({address})"),
+            Self::CallerComponent(address) => write!(f, "caller_component({address})"),
+            Self::DirectCallerTemplate(address) => write!(f, "direct_caller_template({address})"),
+        }
+    }
 }
 
 impl From<ResourceAddress> for RuleRequirement {
@@ -1293,17 +1343,13 @@ mod tests {
     fn find_invalid_m_of_n_finds_a_nested_threshold_outside_one_to_n() {
         let pk = RistrettoPublicKeyBytes::default();
         let invalid = |threshold, num_requirements| {
-            Some(InvalidMOfN {
+            Some(InvalidMOfN::ThresholdOutOfRange {
                 threshold,
                 num_requirements,
             })
         };
 
         assert_eq!(rule!(m_of_n(1, public_key(pk))).find_invalid_m_of_n(), None);
-        assert_eq!(
-            rule!(m_of_n(2, public_key(pk), public_key(pk))).find_invalid_m_of_n(),
-            None
-        );
         assert_eq!(rule!(m_of_n(0, public_key(pk))).find_invalid_m_of_n(), invalid(0, 1));
         assert_eq!(
             rule!(m_of_n(3, public_key(pk), public_key(pk))).find_invalid_m_of_n(),
@@ -1315,5 +1361,79 @@ mod tests {
 
         let resource_rules = ResourceAccessRules::new().burnable(AccessRule::DenyAll, rule!(m_of_n(2, public_key(pk))));
         assert_eq!(resource_rules.find_invalid_m_of_n(), invalid(2, 1));
+    }
+
+    #[test]
+    fn find_invalid_m_of_n_finds_a_requirement_listed_more_than_once() {
+        let a = RistrettoPublicKeyBytes::from_bytes(&[1; 32]).unwrap();
+        let b = RistrettoPublicKeyBytes::from_bytes(&[2; 32]).unwrap();
+        let duplicate = |requirement: RuleRequirement| Some(InvalidMOfN::DuplicateRequirement { requirement });
+        let badge_of = |pk| RuleRequirement::NonFungibleAddress(NonFungibleAddress::from_public_key(pk));
+
+        assert_eq!(
+            rule!(m_of_n(2, public_key(a), public_key(b))).find_invalid_m_of_n(),
+            None
+        );
+        assert_eq!(
+            rule!(m_of_n(2, public_key(a), public_key(a))).find_invalid_m_of_n(),
+            duplicate(badge_of(a))
+        );
+        assert_eq!(
+            rule!(m_of_n(2, public_key(a), public_key(b), public_key(a))).find_invalid_m_of_n(),
+            duplicate(badge_of(a))
+        );
+
+        let nested = rule!(public_key(b)).or(rule!(public_key(a)).and(rule!(m_of_n(
+            1,
+            public_key(b),
+            public_key(a),
+            public_key(b)
+        ))));
+        assert_eq!(nested.find_invalid_m_of_n(), duplicate(badge_of(b)));
+
+        let resource_rules =
+            ResourceAccessRules::new().burnable(AccessRule::DenyAll, rule!(m_of_n(1, public_key(a), public_key(a))));
+        assert_eq!(resource_rules.find_invalid_m_of_n(), duplicate(badge_of(a)));
+    }
+
+    #[test]
+    fn find_invalid_m_of_n_treats_a_caller_badge_shorthand_as_its_badge() {
+        let component = ComponentAddress::from_array([1; 32]);
+        let template = TemplateAddress::from_array([2; 32]);
+        let component_badge =
+            RuleRequirement::NonFungibleAddress(NonFungibleAddress::caller_component_badge(component));
+        let template_badge =
+            RuleRequirement::NonFungibleAddress(NonFungibleAddress::direct_caller_template_badge(template));
+        let m_of_n = |requirements: Vec<RuleRequirement>| {
+            AccessRule::Restricted(RestrictedAccessRule::Require(RequireRule::MOfN(
+                2,
+                requirements.into_boxed_slice(),
+            )))
+        };
+
+        assert_eq!(
+            m_of_n(vec![
+                RuleRequirement::CallerComponent(component),
+                component_badge.clone()
+            ])
+            .find_invalid_m_of_n(),
+            Some(InvalidMOfN::DuplicateRequirement {
+                requirement: component_badge
+            })
+        );
+        assert_eq!(
+            m_of_n(vec![template_badge, RuleRequirement::DirectCallerTemplate(template)]).find_invalid_m_of_n(),
+            Some(InvalidMOfN::DuplicateRequirement {
+                requirement: RuleRequirement::DirectCallerTemplate(template)
+            })
+        );
+        assert_eq!(
+            m_of_n(vec![
+                RuleRequirement::CallerComponent(component),
+                RuleRequirement::ScopedToComponent(component)
+            ])
+            .find_invalid_m_of_n(),
+            None
+        );
     }
 }

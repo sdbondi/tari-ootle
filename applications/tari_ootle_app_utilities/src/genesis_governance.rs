@@ -55,6 +55,14 @@ impl GenesisCouncil {
                 members,
             });
         }
+        if let Some(member) = self
+            .members
+            .iter()
+            .enumerate()
+            .find_map(|(i, member)| self.members[..i].contains(member).then_some(*member))
+        {
+            return Err(GenesisCouncilError::DuplicateMember { member });
+        }
         Ok(())
     }
 }
@@ -101,6 +109,8 @@ pub enum GenesisCouncilError {
     ConfiguredOnMainNet,
     #[error("A council of {members} cannot be seated at a threshold of {threshold}")]
     Unmeetable { threshold: u16, members: usize },
+    #[error("The council lists member {member} more than once")]
+    DuplicateMember { member: RistrettoPublicKeyBytes },
 }
 
 #[cfg(test)]
@@ -182,5 +192,17 @@ mod tests {
                 "threshold {threshold}"
             );
         }
+    }
+
+    #[test]
+    fn a_configured_council_must_list_each_member_once() {
+        let council = GenesisCouncil {
+            threshold: 2,
+            members: vec![member(1), member(2), member(1)],
+        };
+        assert!(matches!(
+            resolve_genesis_council(Network::LocalNet, Some(council)),
+            Err(GenesisCouncilError::DuplicateMember { member: duplicate }) if duplicate == member(1)
+        ));
     }
 }
