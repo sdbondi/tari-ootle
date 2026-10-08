@@ -170,6 +170,21 @@ pub enum ProposalValidationError {
         justify_height: NodeHeight,
         max_high_pc_height: NodeHeight,
     },
+    #[error("Block {block_id} in epoch {block_epoch} carries a timeout certificate from epoch {tc_epoch}")]
+    TimeoutCertificateFromAnotherEpoch {
+        block_id: BlockId,
+        block_epoch: Epoch,
+        tc_epoch: Epoch,
+    },
+    #[error(
+        "Block {block_id} at height {block_height} carries a timeout certificate for view {tc_height}, which only \
+         entitles a proposal at the height directly above it"
+    )]
+    TimeoutCertificateNotForPrecedingView {
+        block_id: BlockId,
+        block_height: NodeHeight,
+        tc_height: NodeHeight,
+    },
     #[error("Block {block_id} header commits to timeout certificate {header_tc_id:?} but the block carries {tc_id:?}")]
     TimeoutCertificateIdMismatch {
         block_id: BlockId,
