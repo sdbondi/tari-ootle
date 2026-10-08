@@ -3,10 +3,10 @@
 
 //! Create / approve / submit for transaction requests (issue #2343).
 //!
-//! A limited-permission tool creates a request; a principal holding
-//! `transaction_requests:approve` authorises it; submit seals it. The three are
-//! separately permissioned, so a tool granted only `:create` cannot approve the
-//! requests it creates.
+//! A limited-permission tool creates a request; an interactive user session
+//! holding `transaction_requests:approve` authorises it; submit seals it. The
+//! three are separately permissioned, and approval refuses API keys outright,
+//! so a tool cannot approve the requests it creates.
 //!
 //! The transaction is **frozen at creation**: stored verbatim (the caller
 //! supplies complete inputs and any out-of-band signatures). The approver views
@@ -189,9 +189,10 @@ pub async fn handle_approve(
     token: Option<&Bearer>,
     req: TransactionRequestDecisionRequest,
 ) -> Result<TransactionRequestDecisionResponse, anyhow::Error> {
-    // Deliberately NOT `authorize_user_only`: approve is grantable to a tool.
-    // The control is who holds the scope, not what kind of credential they are.
-    context.authorize(token, &[Permission::TransactionRequests(TxRequestAction::Approve)])?;
+    // Approving authorises the value transfer the request describes, so it is
+    // a human decision: it takes an interactive user session, and no API key
+    // can approve whatever it was granted.
+    context.authorize_user_only(token, &[Permission::TransactionRequests(TxRequestAction::Approve)])?;
 
     let model = transition(
         context,

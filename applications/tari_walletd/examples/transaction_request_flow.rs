@@ -17,7 +17,8 @@
 //! - `transaction_requests:create` -- create the request, poll it, submit once approved
 //!
 //! Deliberately absent: `transactions:create` (the tool cannot submit arbitrary
-//! transactions) and `transaction_requests:approve` (the tool cannot approve its own ask).
+//! transactions). Approval takes an interactive user session, so no API key can
+//! approve its own ask.
 //!
 //! Run against a local walletd:
 //!
