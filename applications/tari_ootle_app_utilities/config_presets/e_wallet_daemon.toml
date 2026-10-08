@@ -11,6 +11,10 @@
 # Signaling server address (default = "127.0.0.1:9100")
 # signaling_server_addr = "127.0.0.1:9100"
 
+# Allow apps to connect over WebRTC (webrtc.start). A connected app receives a token carrying the caller's permissions,
+# so leave this off unless you use WebRTC apps. Also settable with --enable-webrtc. (default = false)
+# enable_webrtc = false
+
 # The largest max_fee, in microtari, the wallet submits a transaction with. Larger requests are refused; dry runs are
 # exempt. (default = 100000000, i.e. 100 TARI)
 # max_fee_limit = 100000000
