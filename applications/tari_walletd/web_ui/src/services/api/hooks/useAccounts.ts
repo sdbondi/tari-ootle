@@ -187,21 +187,26 @@ export const useAccountsTransfer = () => {
         };
         return accountsConfidentialTransfer(transferRequest);
       } else if (params.resourceType === "Stealth") {
+        const swapInputAmount = params.swap_input_amount;
+        if (params.swap_pool_address && !swapInputAmount) {
+          throw new Error("A swap amount is required to pay the fee with a pool swap");
+        }
         let transferRequest = {
           owner_account: account,
           fee_params: {
             // For simplicity, we'll use prefer revealed for fees whenever a non-TARI_TOKEN stealth transfer is made
             input_selection: params.resource_address === TARI_TOKEN ? params.input_selection : "PreferRevealed",
-            pay_fee_with_swap: params.swap_pool_address
-              ? {
-                  pool_address: params.swap_pool_address,
-                  input_resource: params.resource_address,
-                  input_amount: params.swap_input_amount || 0n,
-                  // Set min output to max_fee so the swap must produce enough TARI to cover the fee.
-                  // Any excess TARI from the swap is deposited back to the user's account.
-                  min_xtr_output_amount: max_fee,
-                }
-              : null,
+            pay_fee_with_swap:
+              params.swap_pool_address && swapInputAmount
+                ? {
+                    pool_address: params.swap_pool_address,
+                    input_resource: params.resource_address,
+                    input_amount: swapInputAmount,
+                    // Set min output to max_fee so the swap must produce enough TARI to cover the fee.
+                    // Any excess TARI from the swap is deposited back to the user's account.
+                    min_xtr_output_amount: max_fee,
+                  }
+                : null,
           },
           input_selection: params.input_selection,
           resource_address: params.resource_address,

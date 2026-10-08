@@ -223,6 +223,8 @@ export function SendMoneyDialog(props: SendMoneyDialogProps) {
     setTransferFormState({
       ...transferFormState,
       [name]: processedValue,
+      // The swap amount is calculated for a specific fee
+      ...(name === "fee" ? { swapInputAmount: "" } : {}),
     });
   }
 
@@ -394,6 +396,25 @@ export function SendMoneyDialog(props: SendMoneyDialogProps) {
           message: `Failed to estimate fee: ${error}`,
         });
         console.error("Fee estimation failed:", error);
+        return;
+      }
+    } else if (transferFormState.swapPoolAddress && !transferFormState.swapInputAmount) {
+      try {
+        const rateResp = await swapPoolGetExchangeRate({
+          pool_address: transferFormState.swapPoolAddress,
+          desired_tari_output: Number(transferFormState.fee),
+        });
+        if (rateResp.swap_input_amount == null) {
+          throw new Error("The pool did not return a swap amount");
+        }
+        const swapInputAmount = rateResp.swap_input_amount.toString();
+        setTransferFormState((prevState) => ({ ...prevState, swapInputAmount }));
+      } catch (error) {
+        setFormError({
+          type: "general",
+          message: `Failed to calculate the swap amount: ${error}`,
+        });
+        console.error("Swap amount calculation failed:", error);
         return;
       }
     }
