@@ -25,6 +25,11 @@ use tari_template_lib::prelude::*;
 type VaultMap = PrehashedMap<ResourceAddress, Vault>;
 type ApprovalMap = PrehashedMap<(ResourceAddress, NonFungibleAddress), Amount>;
 
+/// The maximum number of vaults an account may hold. Anyone may deposit into an account and vaults can never be
+/// removed, while every call on the account decodes its whole vault map, and every `&mut self` call re-encodes it,
+/// inside the WASM memory limit. The map must stay bounded well below what that limit can hold.
+const MAX_VAULTS: usize = 1024;
+
 #[template]
 mod account_template {
     use super::*;
@@ -94,9 +99,9 @@ mod account_template {
             self.get_vault(resource).commitment_count()
         }
 
-        pub fn withdraw(&mut self, resource: ResourceAddress, amount: Amount) -> Bucket {
+        pub fn withdraw(&self, resource: ResourceAddress, amount: Amount) -> Bucket {
             // An event is emitted by the vault.withdraw method
-            let v = self.get_vault_mut(resource);
+            let v = self.get_vault(resource);
             v.withdraw(amount)
         }
 
@@ -105,29 +110,29 @@ mod account_template {
         /// A resource whose withdraw rule names a badge is reachable only by a frame that holds that badge, and a
         /// `Proof` is how a badge reaches a frame. `auth` remains the caller's: it authorizes for the duration of
         /// this call and is neither consumed nor dropped here.
-        pub fn withdraw_with_auth(&mut self, resource: ResourceAddress, amount: Amount, auth: Proof) -> Bucket {
+        pub fn withdraw_with_auth(&self, resource: ResourceAddress, amount: Amount, auth: Proof) -> Bucket {
             auth.authorize_with(|| self.withdraw(resource, amount))
         }
 
-        pub fn withdraw_all(&mut self, resource: ResourceAddress) -> Bucket {
-            let v = self.get_vault_mut(resource);
-            v.withdraw_all()
+        pub fn withdraw_all(&self, resource: ResourceAddress) -> Bucket {
+            let v = self.get_vault(resource);
+            v.withdraw(v.balance())
         }
 
         /// [`Self::withdraw_all`] with `auth` authorizing the resource's withdraw rule.
-        pub fn withdraw_all_with_auth(&mut self, resource: ResourceAddress, auth: Proof) -> Bucket {
+        pub fn withdraw_all_with_auth(&self, resource: ResourceAddress, auth: Proof) -> Bucket {
             auth.authorize_with(|| self.withdraw_all(resource))
         }
 
-        pub fn withdraw_non_fungible(&mut self, resource: ResourceAddress, nf_id: NonFungibleId) -> Bucket {
+        pub fn withdraw_non_fungible(&self, resource: ResourceAddress, nf_id: NonFungibleId) -> Bucket {
             // An event is emitted by the vault.withdraw_non_fungibles method
-            let v = self.get_vault_mut(resource);
+            let v = self.get_vault(resource);
             v.withdraw_non_fungibles([nf_id])
         }
 
         /// [`Self::withdraw_non_fungible`] with `auth` authorizing the resource's withdraw rule.
         pub fn withdraw_non_fungible_with_auth(
-            &mut self,
+            &self,
             resource: ResourceAddress,
             nf_id: NonFungibleId,
             auth: Proof,
@@ -135,15 +140,15 @@ mod account_template {
             auth.authorize_with(|| self.withdraw_non_fungible(resource, nf_id))
         }
 
-        pub fn withdraw_many_non_fungibles(&mut self, resource: ResourceAddress, nf_ids: Vec<NonFungibleId>) -> Bucket {
+        pub fn withdraw_many_non_fungibles(&self, resource: ResourceAddress, nf_ids: Vec<NonFungibleId>) -> Bucket {
             // An event is emitted by the vault.withdraw_non_fungibles method
-            let v = self.get_vault_mut(resource);
+            let v = self.get_vault(resource);
             v.withdraw_non_fungibles(nf_ids)
         }
 
         /// [`Self::withdraw_many_non_fungibles`] with `auth` authorizing the resource's withdraw rule.
         pub fn withdraw_many_non_fungibles_with_auth(
-            &mut self,
+            &self,
             resource: ResourceAddress,
             nf_ids: Vec<NonFungibleId>,
             auth: Proof,
@@ -152,18 +157,18 @@ mod account_template {
         }
 
         pub fn withdraw_confidential(
-            &mut self,
+            &self,
             resource: ResourceAddress,
             withdraw_proof: ConfidentialWithdrawProof,
         ) -> Bucket {
             // An event is emitted by the vault.withdraw_confidential method
-            let v = self.get_vault_mut(resource);
+            let v = self.get_vault(resource);
             v.withdraw_confidential(withdraw_proof)
         }
 
         /// [`Self::withdraw_confidential`] with `auth` authorizing the resource's withdraw rule.
         pub fn withdraw_confidential_with_auth(
-            &mut self,
+            &self,
             resource: ResourceAddress,
             withdraw_proof: ConfidentialWithdrawProof,
             auth: Proof,
@@ -179,11 +184,16 @@ mod account_template {
             }
             // An event is emitted by the vault.deposit method
             let resource_address = bucket.resource_address();
-            let vault_mut = self
-                .vaults
-                .entry(resource_address)
-                .or_insert_with(|| Vault::new_empty(resource_address));
-            vault_mut.deposit(bucket);
+            if let Some(vault) = self.vaults.get(&resource_address) {
+                vault.deposit(bucket);
+                return;
+            }
+            assert!(
+                self.vaults.len() < MAX_VAULTS,
+                "Account holds the maximum of {MAX_VAULTS} vaults and cannot accept new resource {resource_address}. \
+                 Deposit into another account."
+            );
+            self.vaults.insert(resource_address, Vault::from_bucket(bucket));
         }
 
         /// [`Self::deposit`] with `auth` authorizing the resource's deposit rule.
@@ -197,12 +207,6 @@ mod account_template {
                 .unwrap_or_else(|| panic!("No vault for resource {}", resource))
         }
 
-        fn get_vault_mut(&mut self, resource: ResourceAddress) -> &mut Vault {
-            self.vaults
-                .get_mut(&resource)
-                .unwrap_or_else(|| panic!("No vault for resource {}", resource))
-        }
-
         pub fn get_balances(&self) -> Vec<(ResourceAddress, Amount)> {
             self.vaults.iter().map(|(k, v)| (*k, v.balance())).collect()
         }
@@ -210,53 +214,53 @@ mod account_template {
         /// Withdraws funds using the ConfidentialWithdrawProof, and immediately deposits the withdrawal back into the
         /// vault. It will panic if the proof is invalid or the resource type contained in the vault is not
         /// confidential. This is useful for converting confidential tokens into revealed tokens and vice versa.
-        pub fn join_confidential(&mut self, resource: ResourceAddress, proof: ConfidentialWithdrawProof) {
+        pub fn join_confidential(&self, resource: ResourceAddress, proof: ConfidentialWithdrawProof) {
             // An event is emitted by the vault.withdraw_confidential and vault.deposit methods
-            let vault_mut = self.get_vault_mut(resource);
-            let bucket = vault_mut.withdraw_confidential(proof);
-            vault_mut.deposit(bucket);
+            let vault = self.get_vault(resource);
+            let bucket = vault.withdraw_confidential(proof);
+            vault.deposit(bucket);
         }
 
         // Fee methods. These are used to pay fees and satisfy a "duck-typed" interface.
 
         /// Pay fees from previously revealed stealth resource.
-        pub fn pay_fee(&mut self, amount: Amount) {
-            self.get_vault_mut(STEALTH_TARI_RESOURCE_ADDRESS).pay_fee(amount);
+        pub fn pay_fee(&self, amount: Amount) {
+            self.get_vault(STEALTH_TARI_RESOURCE_ADDRESS).pay_fee(amount);
         }
 
         /// Reveal stealth tokens and return the revealed bucket to pay fees.
-        pub fn pay_fee_stealth(&mut self, transfer: StealthTransferStatement) {
-            self.get_vault_mut(STEALTH_TARI_RESOURCE_ADDRESS)
+        pub fn pay_fee_stealth(&self, transfer: StealthTransferStatement) {
+            self.get_vault(STEALTH_TARI_RESOURCE_ADDRESS)
                 .pay_fee_stealth(transfer);
         }
 
-        pub fn create_proof_for_resource(&mut self, resource: ResourceAddress) -> Proof {
-            let v = self.get_vault_mut(resource);
+        pub fn create_proof_for_resource(&self, resource: ResourceAddress) -> Proof {
+            let v = self.get_vault(resource);
             v.create_proof()
         }
 
         /// [`Self::create_proof_for_resource`] with `auth` authorizing the resource's withdraw rule, which is what
         /// taking a proof over a vault is checked against.
-        pub fn create_proof_for_resource_with_auth(&mut self, resource: ResourceAddress, auth: Proof) -> Proof {
+        pub fn create_proof_for_resource_with_auth(&self, resource: ResourceAddress, auth: Proof) -> Proof {
             auth.authorize_with(|| self.create_proof_for_resource(resource))
         }
 
-        pub fn create_proof_by_non_fungible(&mut self, nft: NonFungibleAddress) -> Proof {
+        pub fn create_proof_by_non_fungible(&self, nft: NonFungibleAddress) -> Proof {
             self.create_proof_by_non_fungible_ids(*nft.resource_address(), vec![nft.id().clone()])
         }
 
         pub fn create_proof_by_non_fungible_ids(
-            &mut self,
+            &self,
             resource: ResourceAddress,
             ids: Vec<NonFungibleId>,
         ) -> Proof {
-            let v = self.get_vault_mut(resource);
+            let v = self.get_vault(resource);
             v.create_proof_by_non_fungible_ids(ids.into_iter().collect())
         }
 
         /// [`Self::create_proof_by_non_fungible_ids`] with `auth` authorizing the resource's withdraw rule.
         pub fn create_proof_by_non_fungible_ids_with_auth(
-            &mut self,
+            &self,
             resource: ResourceAddress,
             ids: Vec<NonFungibleId>,
             auth: Proof,
@@ -264,14 +268,14 @@ mod account_template {
             auth.authorize_with(|| self.create_proof_by_non_fungible_ids(resource, ids))
         }
 
-        pub fn create_proof_by_amount(&mut self, resource: ResourceAddress, amount: Amount) -> Proof {
-            let v = self.get_vault_mut(resource);
+        pub fn create_proof_by_amount(&self, resource: ResourceAddress, amount: Amount) -> Proof {
+            let v = self.get_vault(resource);
             v.create_proof_by_amount(amount)
         }
 
         /// [`Self::create_proof_by_amount`] with `auth` authorizing the resource's withdraw rule.
         pub fn create_proof_by_amount_with_auth(
-            &mut self,
+            &self,
             resource: ResourceAddress,
             amount: Amount,
             auth: Proof,
@@ -279,7 +283,7 @@ mod account_template {
             auth.authorize_with(|| self.create_proof_by_amount(resource, amount))
         }
 
-        pub fn create_ownership_proof(&mut self) -> Proof {
+        pub fn create_ownership_proof(&self) -> Proof {
             ComponentManager::current()
                 .get_owner_proof()
                 .expect("create_ownership_proof requires an account owned by a single public key")
@@ -345,7 +349,7 @@ mod account_template {
                 self.approvals.swap_remove(&(resource, badge));
             }
 
-            self.get_vault_mut(resource).withdraw(amount)
+            self.get_vault(resource).withdraw(amount)
         }
     }
 }
