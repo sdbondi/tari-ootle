@@ -100,8 +100,9 @@ impl MemoryPool {
         if let Some(mmap) = self.slots.lock().unwrap().pop() {
             return Ok(mmap);
         }
-        // No huge-page hint: the `MAP_FIXED` scrub on release discards madvise state, so a hint
-        // would apply to a mapping's first tenant only.
+        // No huge-page hint. The `MAP_FIXED` scrub on release clears madvise state over the range a
+        // tenant made accessible and keeps it above, so a hint would cover only the pages above
+        // every earlier tenant's high-water mark, and paging would vary with a mapping's history.
         Mmap::accessible_reserved(0, self.mapping_bytes, None, MmapType::Private, false).map_err(MemoryError::Region)
     }
 

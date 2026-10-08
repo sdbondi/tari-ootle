@@ -81,14 +81,12 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// reads never reaches the binary.
 ///
 /// The wasmer version is the one input not derived here, because a crate cannot read its
-/// dependencies' resolved versions and a published crate cannot reach the lockfile. Two things
-/// stand in for it: wasmer's own `MetadataHeader` carries an ABI version it refuses to load across,
-/// so a format change ends as a miss and a recompile; and `tari-wasmer-middlewares` pins `wasmer`,
-/// `wasmer-types` and `wasmer-vm` at an exact version, so the resolved version moves only when a
-/// manifest does. A wasmer bump that keeps the artifact format and changes codegen is what this
-/// leaves to the upgrade itself.
+/// dependencies' resolved versions and a published crate cannot reach the lockfile. It is hashed as
+/// [`WASMER_VERSION`] instead, which a test holds to the workspace lockfile.
 const ENGINE_FINGERPRINT_BITS: u64 = {
     let h = const_hash::init(b"tari.ootle.wasm_cache.engine_fingerprint.v2");
+    // The compiler that generated every artifact's native code.
+    let h = const_hash::part(h, WASMER_VERSION.as_bytes());
     // The compiler flags, feature set and tunables every artifact is built under.
     let h = const_hash::part(h, include_bytes!("../engine.rs"));
     // The derivation of the shape counts a hit serves verbatim out of the header.
@@ -130,6 +128,12 @@ const ENGINE_FINGERPRINT_BITS: u64 = {
         max_table_elements as u128,
     ]))
 };
+
+/// The resolved `wasmer` version. It decides the codegen as well as the artifact format: wasmer pins
+/// cranelift at an exact version, and its `MetadataHeader` version moves only when the format does,
+/// so a release that changes only the generated code still loads every artifact the previous one
+/// wrote. Two nodes that differ only in cache history then run different code for the same template.
+const WASMER_VERSION: &str = "7.5.0";
 
 /// The fingerprint as the lowercase hex it appears in a filename as.
 ///
@@ -1117,6 +1121,23 @@ mod tests {
         fn get_template(&self, address: &TemplateAddress) -> Result<Option<Self::Template>, Self::Error> {
             Ok(self.templates.get(address).cloned())
         }
+    }
+
+    #[test]
+    fn wasmer_version_matches_the_lockfile() {
+        let lockfile = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock"))
+            .expect("workspace Cargo.lock");
+        let resolved = lockfile
+            .split("[[package]]")
+            .find(|entry| entry.lines().any(|line| line == r#"name = "wasmer""#))
+            .and_then(|entry| entry.lines().find_map(|line| line.strip_prefix(r#"version = ""#)))
+            .and_then(|version| version.strip_suffix('"'))
+            .expect("wasmer in Cargo.lock");
+        assert_eq!(
+            WASMER_VERSION, resolved,
+            "WASMER_VERSION must name the wasmer the workspace resolves, so that artifacts compiled by another \
+             release are not served"
+        );
     }
 
     /// Comfortably larger than the one artifact the shared fixtures compile, so that a test that is
