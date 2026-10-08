@@ -373,7 +373,6 @@ mod tests {
             transaction_hash: Hash32::from_array([0xab; 32]),
             events: vec![event],
             logs: vec![LogEntry::new(LogLevel::Info, "hello".to_string())],
-            execution_results: Vec::new(),
             result,
             total_fees_required: fee_receipt.total_fees_charged(),
             fee_receipt,

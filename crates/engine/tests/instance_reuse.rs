@@ -21,7 +21,7 @@ fn setup() -> (TemplateTest, TemplateAddress) {
 fn a_guest_static_does_not_outlive_its_call() {
     let (mut test, template) = setup();
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template, "count", args![])
             .call_function(template, "count", args![])
@@ -30,12 +30,7 @@ fn a_guest_static_does_not_outlive_its_call() {
         vec![],
     );
 
-    let counts: Vec<u32> = result
-        .finalize
-        .execution_results
-        .iter()
-        .map(|r| r.decode().unwrap())
-        .collect();
+    let counts: Vec<u32> = test.return_values().iter().map(|r| r.decoded().unwrap()).collect();
     assert_eq!(counts, [1, 1, 1]);
 }
 
@@ -43,7 +38,7 @@ fn a_guest_static_does_not_outlive_its_call() {
 fn memory_grown_by_one_call_is_not_grown_for_the_next() {
     let (mut test, template) = setup();
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template, "grow_memory", args![])
             .call_function(template, "grow_memory", args![])
@@ -51,15 +46,18 @@ fn memory_grown_by_one_call_is_not_grown_for_the_next() {
         vec![],
     );
 
-    let results = &result.finalize.execution_results;
-    assert_eq!(results[0].decode::<u32>().unwrap(), results[1].decode::<u32>().unwrap());
+    let results = test.return_values();
+    assert_eq!(
+        results[0].decoded::<u32>().unwrap(),
+        results[1].decoded::<u32>().unwrap()
+    );
 }
 
 #[test]
 fn memory_written_by_one_call_is_zero_for_the_next() {
     let (mut test, template) = setup();
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template, "scribble_last_byte", args![])
             .call_function(template, "read_last_byte", args![])
@@ -67,14 +65,14 @@ fn memory_written_by_one_call_is_zero_for_the_next() {
         vec![],
     );
 
-    assert_eq!(result.finalize.execution_results[1].decode::<u8>().unwrap(), 0);
+    assert_eq!(test.return_values()[1].decoded::<u8>().unwrap(), 0);
 }
 
 #[test]
 fn a_reentrant_call_starts_fresh() {
     let (mut test, template) = setup();
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template, "count", args![])
             .call_function(template, "count_reentrant", args![template])
@@ -83,10 +81,10 @@ fn a_reentrant_call_starts_fresh() {
         vec![],
     );
 
-    let results = &result.finalize.execution_results;
-    assert_eq!(results[0].decode::<u32>().unwrap(), 1);
-    assert_eq!(results[1].decode::<(u32, u32)>().unwrap(), (1, 1));
-    assert_eq!(results[2].decode::<u32>().unwrap(), 1);
+    let results = test.return_values();
+    assert_eq!(results[0].decoded::<u32>().unwrap(), 1);
+    assert_eq!(results[1].decoded::<(u32, u32)>().unwrap(), (1, 1));
+    assert_eq!(results[2].decoded::<u32>().unwrap(), 1);
 }
 
 #[test]

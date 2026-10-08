@@ -30,10 +30,7 @@ fn it_allocates_addresses_in_template_code() {
         .find_map(|(k, _)| k.as_component_address())
         .unwrap();
 
-    let allocated = result.finalize.execution_results[0]
-        .indexed
-        .decoded::<ComponentAddress>()
-        .unwrap();
+    let allocated = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
     assert_eq!(component_addr, allocated);
 
     let actual = result
@@ -132,7 +129,7 @@ fn it_allocates_an_address_using_instructions() {
         .find_map(|(k, _)| k.as_component_address())
         .unwrap();
 
-    let addr = result.expect_return::<String>(2);
+    let addr = test.expect_return::<String>(2);
     assert_eq!(addr, actual_comp.to_string());
 
     let actual_resx = result
@@ -144,7 +141,7 @@ fn it_allocates_an_address_using_instructions() {
         .find_map(|(k, _)| k.as_resource_address())
         .unwrap();
 
-    let addr = result.expect_return::<String>(3);
+    let addr = test.expect_return::<String>(3);
     assert_eq!(addr, actual_resx.to_string());
 }
 
@@ -173,7 +170,7 @@ fn it_allows_calls_to_component_using_the_allocated_address() {
         .find_map(|(k, _)| k.as_resource_address())
         .unwrap();
 
-    let addr = result.expect_return::<ResourceAddress>(3);
+    let addr = test.expect_return::<ResourceAddress>(3);
     assert_eq!(addr, actual_resx);
 }
 

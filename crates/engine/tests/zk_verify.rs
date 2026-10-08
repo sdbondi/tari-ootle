@@ -79,7 +79,7 @@ impl Harness {
             ])
             .build_and_seal(&self.key);
         let result = self.test.execute_expect_success(tx, vec![]);
-        let verified = result.finalize.execution_results[0].decode::<bool>().unwrap();
+        let verified = self.test.return_values()[0].decoded::<bool>().unwrap();
         (verified, result.wasm_execution_points)
     }
 }
@@ -179,7 +179,7 @@ fn groth16_verifies_from_a_caller_supplied_key() {
         let result = h.test.execute_expect_success(tx, vec![]);
 
         assert!(
-            result.finalize.execution_results[0].decode::<bool>().unwrap(),
+            h.test.return_values()[0].decoded::<bool>().unwrap(),
             "{func} must verify a valid proof",
         );
         assert!(

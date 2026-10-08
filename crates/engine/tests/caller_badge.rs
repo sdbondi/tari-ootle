@@ -181,7 +181,7 @@ fn auth_hook_cannot_spend_the_depositors_caller_badge() {
     let attacker_template = test.get_template_address("HookAttacker");
     let (victim, _, _) = test.create_empty_account();
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(holder_template, "new_mint_gated", args![victim])
             .put_last_instruction_output_on_workspace("holder")
@@ -191,8 +191,8 @@ fn auth_hook_cannot_spend_the_depositors_caller_badge() {
             .build_and_seal(test.secret_key()),
         vec![test.owner_proof()],
     );
-    let gated: ResourceAddress = result.finalize.execution_results[2].decode().unwrap();
-    let attacker: ComponentAddress = result.finalize.execution_results[4].decode().unwrap();
+    let gated: ResourceAddress = test.return_values()[2].decoded().unwrap();
+    let attacker: ComponentAddress = test.return_values()[4].decoded().unwrap();
 
     let reason = test.execute_expect_failure(
         test.transaction()

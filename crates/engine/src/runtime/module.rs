@@ -1,6 +1,7 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
+use tari_engine_types::indexed_value::IndexedValue;
 use tari_template_lib::types::TemplateAddress;
 
 use crate::runtime::{ChargeableState, StateTracker};
@@ -54,6 +55,19 @@ pub trait RuntimeModule<TStore>: Send + Sync {
     /// [`Self::on_before_finalize`] saw, so any charge that is a function of what gets persisted
     /// must be recomputed here against `state`.
     fn on_before_persist(&self, _state: &mut ChargeableState<'_, TStore>) -> Result<(), RuntimeModuleError> {
+        Ok(())
+    }
+
+    /// Invoked once for every top-level instruction that completes, fee intent first, with what the instruction
+    /// produced: the value its template call returned, or the bucket, account or other value it leaves for
+    /// `PutLastInstructionOutputOnWorkspace`. `None` for an instruction that produces nothing.
+    ///
+    /// `output` is borrowed for the duration of the call, so a module that keeps it must copy it.
+    fn on_instruction_output(
+        &self,
+        _track: &StateTracker<TStore>,
+        _output: Option<&IndexedValue>,
+    ) -> Result<(), RuntimeModuleError> {
         Ok(())
     }
 

@@ -42,7 +42,6 @@ use libp2p::futures::{
 };
 use regex::Regex;
 use tari_common::initialize_logging;
-use tari_engine::abi::Type;
 use tari_shutdown::Shutdown;
 use tari_sidechain::QuorumDecision;
 use tari_validator_node_client::types::AddPeerRequest;
@@ -313,43 +312,16 @@ async fn call_component_method_on_all_vns(
     // tokio::time::sleep(Duration::from_secs(4)).await;
 }
 
-#[when(expr = "I invoke on {word} on component {word} the method call \"{word}\" the result is \"{word}\"")]
-async fn call_component_method_and_check_result(
-    world: &mut TariWorld,
-    vn_name: String,
-    component_name: String,
-    method_call: String,
-    expected_result: String,
-) {
-    let resp =
-        validator_node_client::call_method(world, vn_name, component_name, "dummy_outputs".to_string(), method_call)
-            .await
-            .unwrap();
-    let finalize_result = resp.dry_run_result.unwrap();
-    assert_eq!(finalize_result.decision, QuorumDecision::Accept);
-
-    let results = finalize_result.finalize.execution_results;
-    let result = results.first().unwrap();
-    match result.return_type {
-        Type::U32 => {
-            let u32_result: u32 = result.decode().unwrap();
-            assert_eq!(u32_result.to_string(), expected_result);
-        },
-        // TODO: handle other possible return types
-        _ => todo!(),
-    };
-}
-
 #[when(
-    expr = r#"I invoke on wallet daemon {word} on account {word} on component {word} the method call "{word}" the result is "{word}""#
+    expr = r#"I invoke on wallet daemon {word} on account {word} on component {word} the method call "{word}" with argument "{word}""#
 )]
-async fn call_wallet_daemon_method_and_check_result(
+async fn call_wallet_daemon_method_with_argument(
     world: &mut TariWorld,
     wallet_daemon_name: String,
     account_name: String,
     output_ref: String,
     method_call: String,
-    expected_result: String,
+    argument: String,
 ) -> anyhow::Result<()> {
     let resp = wallet_daemon_client::call_component(
         world,
@@ -357,26 +329,18 @@ async fn call_wallet_daemon_method_and_check_result(
         output_ref,
         wallet_daemon_name,
         method_call,
+        vec![argument],
         None,
         true,
     )
     .await?;
 
-    let finalize_result = resp
-        .result
-        .clone()
-        .unwrap_or_else(|| panic!("Failed to unwrap result from response: {:?}", resp));
-    let result = finalize_result
-        .execution_results
-        .first()
-        .unwrap_or_else(|| panic!("Failed to call first() on results: {:?}", resp));
-    match result.return_type {
-        Type::U32 => {
-            let u32_result: u32 = result.decode()?;
-            assert_eq!(u32_result.to_string(), expected_result);
-        },
-        _ => todo!(),
+    let Some(finalize) = resp.result else {
+        bail!("Method call timed out");
     };
+    if let Some(reason) = finalize.any_reject() {
+        bail!("Method call rejected: {}", reason);
+    }
 
     Ok(())
 }
@@ -395,6 +359,7 @@ async fn call_wallet_daemon_method(
         output_ref,
         wallet_daemon_name,
         method_call,
+        vec![],
         None,
         true,
     )
@@ -420,6 +385,7 @@ async fn call_wallet_daemon_method_with_output_name(
         output_ref,
         wallet_daemon_name,
         method_call,
+        vec![],
         Some(new_output_name),
         true,
     )
@@ -446,6 +412,7 @@ async fn call_wallet_daemon_method_with_output_name_error_result(
         output_ref,
         wallet_daemon_name,
         method_call,
+        vec![],
         Some(new_output_name),
         // We expect this to fail due to a substate being downed so we need to use versioned inputs
         false,
@@ -489,42 +456,6 @@ async fn call_wallet_daemon_method_concurrently(
     )
     .await
     .unwrap_or_else(|e| panic!("Concurrent wallet daemon call failed: {:?}", e));
-}
-
-#[when(
-    expr = "I invoke on all validator nodes on component {word} the method call \"{word}\" the result is \"{word}\""
-)]
-async fn call_component_method_on_all_vns_and_check_result(
-    world: &mut TariWorld,
-    component_name: String,
-    method_call: String,
-    expected_result: String,
-) {
-    let vn_names = world.validator_nodes.iter().map(|(v, _)| v.clone()).collect::<Vec<_>>();
-    for vn_name in vn_names {
-        let resp = validator_node_client::call_method(
-            world,
-            vn_name,
-            component_name.clone(),
-            "dummy_outputs".to_string(),
-            method_call.clone(),
-        )
-        .await
-        .unwrap();
-        let finalize_result = resp.dry_run_result.unwrap();
-        assert_eq!(finalize_result.decision, QuorumDecision::Accept);
-
-        let results = finalize_result.finalize.execution_results;
-        let result = results.first().unwrap();
-        match result.return_type {
-            Type::U32 => {
-                let u32_result: u32 = result.decode().unwrap();
-                assert_eq!(u32_result.to_string(), expected_result);
-            },
-            // TODO: handle other possible return types
-            _ => todo!(),
-        };
-    }
 }
 
 #[when(regex = r#"^I submit a transaction manifest via wallet daemon (\w+) with inputs "([^"]+)" named "(\w+)"$"#)]

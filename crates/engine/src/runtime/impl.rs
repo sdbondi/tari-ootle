@@ -39,7 +39,6 @@ use tari_engine_types::{
     fees::FeeReceipt,
     hashing::hash_template_code,
     indexed_value::{IndexedValue, IndexedWellKnownTypes},
-    instruction_result::InstructionResult,
     limits,
     limits::{CompileCounts, ModuleShape},
     lock::LockFlag,
@@ -527,11 +526,11 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
             },
             _ => e,
         })?;
-        // Enforce that the return type is actually empty. We cannot rely on InstructionResult::return_type field
+        // Enforce that the return type is actually empty. We cannot rely on the function's declared return type
         // because that comes from the template definition which is defined by the template author and may not reflect
         // actual behaviour. `is_unit` accepts either `Value::Null` (ciborium/serde encoding of `()`) or
         // `Value::Array([])` (minicbor encoding of `()`).
-        if !ret.indexed.value().is_unit() {
+        if !ret.value().is_unit() {
             return Err(RuntimeError::UnexpectedNonNullInAuthHookReturn);
         }
 
@@ -596,7 +595,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         method: &str,
         args: Vec<Bytes>,
         restrict_frame_to: Option<FrameWriteMode>,
-    ) -> Result<InstructionResult, RuntimeError> {
+    ) -> Result<IndexedValue, RuntimeError> {
         let call_runtime = self.for_nested_call();
 
         TransactionProcessor::<TStore, _>::call_method(
@@ -620,7 +619,7 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         function: &str,
         args: Vec<InstructionArg>,
         restrict_frame_to: Option<FrameWriteMode>,
-    ) -> Result<InstructionResult, RuntimeError> {
+    ) -> Result<IndexedValue, RuntimeError> {
         let call_runtime = self.for_nested_call();
 
         TransactionProcessor::<TStore, _>::call_function(
@@ -3647,10 +3646,16 @@ where
         })
     }
 
-    fn set_last_instruction_output(&self, value: IndexedValue) -> Result<(), RuntimeError> {
+    fn complete_instruction(&self, output: Option<IndexedValue>) -> Result<(), RuntimeError> {
+        for module in self.modules.iter() {
+            module.on_instruction_output(&self.tracker, output.as_ref())?;
+        }
+        let Some(output) = output else {
+            return Ok(());
+        };
         self.invoke_modules_on_runtime_call("set_last_instruction_output")?;
         self.tracker.write_with(|state| {
-            state.set_last_instruction_output(value);
+            state.set_last_instruction_output(output);
         });
         Ok(())
     }
@@ -3719,7 +3724,7 @@ where
         &self,
         pool_address: ValidatorFeePoolAddress,
         max_amount: Option<Amount>,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<BucketId, RuntimeError> {
         self.tracker.write_with(|state| {
             let resource = match max_amount {
                 Some(max_amount) => state.withdraw_fees_from_pool_up_to(pool_address, max_amount)?,
@@ -3727,8 +3732,7 @@ where
             };
             let bucket_id = state.new_bucket_id()?;
             state.new_bucket(bucket_id, resource)?;
-            state.set_last_instruction_output(IndexedValue::from_type(&bucket_id)?);
-            Ok(())
+            Ok(bucket_id)
         })
     }
 
@@ -3908,7 +3912,7 @@ where
             },
         };
 
-        Ok(InvokeResult::from_value(exec_result.indexed.into_value())?)
+        Ok(InvokeResult::from_value(exec_result.into_value())?)
     }
 
     fn builtin_template_invoke(&self, action: BuiltinTemplateAction) -> Result<InvokeResult, RuntimeError> {

@@ -16,14 +16,14 @@ fn it_burns_all_resource_types() {
     // tests.
     let initial_supply = ConfidentialOutputStatement::mint_revealed(1000u64);
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
             .call_function(recall_template, "new", args![initial_supply])
             .build_and_seal(test.secret_key()),
         vec![],
     );
 
-    let component: ComponentAddress = result.finalize.execution_results[0].decode().unwrap();
+    let component: ComponentAddress = test.return_values()[0].decoded().unwrap();
 
     // Burn fields: 0=fungible, 1=non_fungible, 2=confidential, 3=stealth.
     let fungible_vault = test.extract_component_value(component, "$.0");

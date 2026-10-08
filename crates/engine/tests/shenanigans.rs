@@ -59,16 +59,14 @@ fn it_rejects_dangling_vaults_in_component() {
     let template_addr = test.get_template_address(TEMPLATE_NAME);
 
     //  Create with vault
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
             .call_function(template_addr, "with_vault", args![])
             .build_and_seal(test.secret_key()),
         vec![],
     );
 
-    let component_address = result.finalize.execution_results[0]
-        .decode::<ComponentAddress>()
-        .unwrap();
+    let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
     let component = test.read_only_state_store().get_component(component_address).unwrap();
     let indexed = IndexedWellKnownTypes::from_value(component.state()).unwrap();
 
@@ -127,16 +125,14 @@ fn it_rejects_references_to_buckets_that_arent_in_scope() {
     let template_addr = test.get_template_address(TEMPLATE_NAME);
     let (account, owner_token, owner_key) = test.create_funded_account();
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
             .call_function(template_addr, "with_vault", args![])
             .build_and_seal(&owner_key),
         vec![owner_token.clone()],
     );
 
-    let shenanigans = result.finalize.execution_results[0]
-        .decode::<ComponentAddress>()
-        .unwrap();
+    let shenanigans = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
     let reason = test.execute_expect_failure(
         Transaction::builder_localnet(Epoch(1))
@@ -178,16 +174,14 @@ fn it_prevents_access_to_vault_id_in_component_context() {
         values.vault_ids()[0]
     };
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
             .call_function(template_addr, "with_vault", args![])
             .build_and_seal(test.secret_key()),
         vec![test.owner_proof()],
     );
 
-    let shenanigans = result.finalize.execution_results[0]
-        .decode::<ComponentAddress>()
-        .unwrap();
+    let shenanigans = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
     let reason = test.execute_expect_failure(
         Transaction::builder_localnet(Epoch(1))
@@ -209,16 +203,14 @@ fn it_prevents_access_to_out_of_scope_component() {
     let template_addr = test.get_template_address(TEMPLATE_NAME);
     let (account, _, _) = test.create_funded_account();
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
             .call_function(template_addr, "new", args![])
             .build_and_seal(test.secret_key()),
         vec![test.owner_proof()],
     );
 
-    let shenanigans = result.finalize.execution_results[0]
-        .decode::<ComponentAddress>()
-        .unwrap();
+    let shenanigans = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
     let reason = test.execute_expect_failure(
         Transaction::builder_localnet(Epoch(1))
@@ -295,16 +287,14 @@ fn it_disallows_minting_different_resource_type() {
     let template_addr = test.get_template_address(TEMPLATE_NAME);
     let (account, _, _) = test.create_empty_account();
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
             .call_function(template_addr, "new", args![])
             .build_and_seal(test.secret_key()),
         vec![],
     );
 
-    let component = result.finalize.execution_results[0]
-        .decode::<ComponentAddress>()
-        .unwrap();
+    let component = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
     let reason = test.execute_expect_failure(
         Transaction::builder_localnet(Epoch(1))
@@ -411,16 +401,14 @@ fn it_disallows_withdraws_from_vaults_outside_of_owning_component() {
         vault_id.to_string(),
     )]);
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
             .call_function(template_addr, "new", args![])
             .build_and_seal(test.secret_key()),
         vec![],
     );
 
-    let component = result.finalize.execution_results[0]
-        .decode::<ComponentAddress>()
-        .unwrap();
+    let component = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
     let reason = test.execute_expect_failure(
         Transaction::builder_localnet(Epoch(1))
@@ -474,15 +462,13 @@ fn it_rejects_a_bucket_that_is_neither_consumed_nor_returned_by_a_call() {
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
     let template_addr = test.get_template_address(TEMPLATE_NAME);
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template_addr, "with_fungible_vault", args![])
             .build_and_seal(test.secret_key()),
         vec![],
     );
-    let component = result.finalize.execution_results[0]
-        .decode::<ComponentAddress>()
-        .unwrap();
+    let component = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
     let reason = test.execute_expect_failure(
         test.transaction()
@@ -518,15 +504,13 @@ fn it_rejects_a_proof_that_is_neither_dropped_nor_returned_by_a_call() {
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
     let template_addr = test.get_template_address(TEMPLATE_NAME);
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template_addr, "with_fungible_vault", args![])
             .build_and_seal(test.secret_key()),
         vec![],
     );
-    let component = result.finalize.execution_results[0]
-        .decode::<ComponentAddress>()
-        .unwrap();
+    let component = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
     let reason = test.execute_expect_failure(
         test.transaction()
@@ -543,15 +527,13 @@ fn a_proof_outlives_the_authorization_taken_from_it() {
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
     let template_addr = test.get_template_address(TEMPLATE_NAME);
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template_addr, "with_fungible_vault", args![])
             .build_and_seal(test.secret_key()),
         vec![],
     );
-    let component = result.finalize.execution_results[0]
-        .decode::<ComponentAddress>()
-        .unwrap();
+    let component = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
     test.execute_expect_success(
         test.transaction()
@@ -577,15 +559,13 @@ fn it_does_not_leak_a_callees_vaults_into_a_calling_components_scope() {
     let (victim, _, _) = test.create_funded_account();
     let (attacker_account, _, _) = test.create_empty_account();
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template_addr, "with_fungible_vault", args![])
             .build_and_seal(test.secret_key()),
         vec![],
     );
-    let attacker = result.finalize.execution_results[0]
-        .decode::<ComponentAddress>()
-        .unwrap();
+    let attacker = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
     let vault_id = {
         let store = test.read_only_state_store();
@@ -617,15 +597,13 @@ fn it_does_not_leak_a_callees_address_allocation_into_the_callers_scope() {
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
     let template_addr = test.get_template_address(TEMPLATE_NAME);
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template_addr, "with_fungible_vault", args![])
             .build_and_seal(test.secret_key()),
         vec![],
     );
-    let victim = result.finalize.execution_results[0]
-        .decode::<ComponentAddress>()
-        .unwrap();
+    let victim = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
     // An allocation is a reservation of an address, and nothing checks that the template consuming one is the
     // template that made it, so the caller must never be handed one it was not given.
@@ -644,22 +622,18 @@ fn it_refuses_to_authorize_a_proof_the_frame_does_not_hold() {
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
     let template_addr = test.get_template_address(TEMPLATE_NAME);
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template_addr, "with_fungible_vault", args![])
             .call_function(template_addr, "with_fungible_vault", args![])
             .build_and_seal(test.secret_key()),
         vec![],
     );
-    let victim = result.finalize.execution_results[0]
-        .decode::<ComponentAddress>()
-        .unwrap();
-    let attacker = result.finalize.execution_results[1]
-        .decode::<ComponentAddress>()
-        .unwrap();
+    let victim = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
+    let attacker = test.return_values()[1].decoded::<ComponentAddress>().unwrap();
 
     // The victim holds a proof across a call into the attacker, which is handed nothing and guesses the id.
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_method(victim, "hold_proof_and_call", args![
                 attacker,
@@ -670,10 +644,7 @@ fn it_refuses_to_authorize_a_proof_the_frame_does_not_hold() {
         vec![],
     );
 
-    assert_eq!(
-        result.finalize.execution_results[0].decode::<Amount>().unwrap(),
-        Amount::zero()
-    );
+    assert_eq!(test.return_values()[0].decoded::<Amount>().unwrap(), Amount::zero());
 }
 
 #[test]
@@ -681,19 +652,15 @@ fn it_refuses_to_read_a_proof_the_frame_does_not_hold() {
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
     let template_addr = test.get_template_address(TEMPLATE_NAME);
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template_addr, "with_fungible_vault", args![])
             .call_function(template_addr, "with_fungible_vault", args![])
             .build_and_seal(test.secret_key()),
         vec![],
     );
-    let victim = result.finalize.execution_results[0]
-        .decode::<ComponentAddress>()
-        .unwrap();
-    let attacker = result.finalize.execution_results[1]
-        .decode::<ComponentAddress>()
-        .unwrap();
+    let victim = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
+    let attacker = test.return_values()[1].decoded::<ComponentAddress>().unwrap();
 
     let reason = test.execute_expect_failure(
         test.transaction()
@@ -722,19 +689,15 @@ fn it_answers_a_drop_authorize_for_any_proof_id() {
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
     let template_addr = test.get_template_address(TEMPLATE_NAME);
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template_addr, "with_fungible_vault", args![])
             .call_function(template_addr, "with_fungible_vault", args![])
             .build_and_seal(test.secret_key()),
         vec![],
     );
-    let victim = result.finalize.execution_results[0]
-        .decode::<ComponentAddress>()
-        .unwrap();
-    let attacker = result.finalize.execution_results[1]
-        .decode::<ComponentAddress>()
-        .unwrap();
+    let victim = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
+    let attacker = test.return_values()[1].decoded::<ComponentAddress>().unwrap();
 
     // Id 0 is live and held by the victim, and the victim's own `proof.drop()` after the call still finds it.
     test.execute_expect_success(
@@ -769,15 +732,13 @@ fn it_rejects_transient_values_in_non_fungible_data() {
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
     let template_addr = test.get_template_address(TEMPLATE_NAME);
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template_addr, "with_fungible_vault", args![])
             .build_and_seal(test.secret_key()),
         vec![],
     );
-    let holder = result.finalize.execution_results[0]
-        .decode::<ComponentAddress>()
-        .unwrap();
+    let holder = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
     for (function, location) in [
         ("mint_nft_with_proof_in_data", "Non-fungible data"),
@@ -816,15 +777,13 @@ fn it_rejects_transient_values_in_component_state() {
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
     let template_addr = test.get_template_address(TEMPLATE_NAME);
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template_addr, "with_fungible_vault", args![])
             .build_and_seal(test.secret_key()),
         vec![],
     );
-    let holder = result.finalize.execution_results[0]
-        .decode::<ComponentAddress>()
-        .unwrap();
+    let holder = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
     let reason = test.execute_expect_failure(
         test.transaction()

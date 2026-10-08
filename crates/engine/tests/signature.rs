@@ -143,7 +143,7 @@ fn check_signature_api() {
 
     let good_sig = sign_it(&s1);
     let bad_sig = sign_it_with(&s1, b"A different message");
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
             .call_function(template_addr, "check_sig", args![p1, bad_sig])
             .call_function(template_addr, "check_sig", args![p1, good_sig])
@@ -154,15 +154,15 @@ fn check_signature_api() {
     );
 
     assert!(
-        !result.finalize.execution_results[0].decode::<bool>().unwrap(),
+        !test.return_values()[0].decoded::<bool>().unwrap(),
         "Expected bad_sig to be false"
     );
     assert!(
-        result.finalize.execution_results[1].decode::<bool>().unwrap(),
+        test.return_values()[1].decoded::<bool>().unwrap(),
         "Expected good_sig to be true"
     );
     assert!(
-        !result.finalize.execution_results[2].decode::<bool>().unwrap(),
+        !test.return_values()[2].decoded::<bool>().unwrap(),
         "Expected bad public key to be false"
     );
 }
@@ -176,12 +176,12 @@ fn check_signature_with_a_zero_public_key() {
     let (mut test, _) = setup(vec![p1]);
     let template_addr = test.get_template_address(TEMPLATE_NAME);
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template_addr, "check_sig", args![PublicKey::Zero, sign_it(&s1)])
             .build_and_seal(test.secret_key()),
         vec![],
     );
 
-    assert!(!result.finalize.execution_results[0].decode::<bool>().unwrap());
+    assert!(!test.return_values()[0].decoded::<bool>().unwrap());
 }

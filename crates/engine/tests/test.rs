@@ -71,7 +71,7 @@ fn instruction_arg_blob_resolves_to_template_method_arg() {
     let component: ComponentAddress = test.call_function("HelloWorld", "new", args!["Hello".to_string()], vec![]);
 
     let name_bytes = encode(&"World".to_string()).expect("encode String");
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .add_blob("name", name_bytes)
             .call_method(component, "custom_greeting", args![Blob("name")])
@@ -79,13 +79,7 @@ fn instruction_arg_blob_resolves_to_template_method_arg() {
         vec![],
     );
 
-    let greeting: String = result
-        .finalize
-        .execution_results
-        .first()
-        .expect("single instruction result")
-        .decode()
-        .unwrap();
+    let greeting: String = test.expect_return(0);
     assert_eq!(greeting, "Hello World!");
 }
 
@@ -698,7 +692,7 @@ mod fungible {
         result.expect_success();
 
         assert_eq!(
-            result.finalize.execution_results[1].decode::<Amount>().unwrap(),
+            test.return_values()[1].decoded::<Amount>().unwrap(),
             initial_supply - Amount::from(500u64)
         );
 
@@ -712,10 +706,7 @@ mod fungible {
         );
         result.expect_success();
 
-        assert_eq!(
-            result.finalize.execution_results[1].decode::<Amount>().unwrap(),
-            Amount::zero()
-        );
+        assert_eq!(test.return_values()[1].decoded::<Amount>().unwrap(), Amount::zero());
 
         test.build_and_execute(
             Transaction::builder_localnet(Epoch(1)).call_method(faucet_component, "burn_coins", args![1]),
@@ -814,11 +805,11 @@ mod basic_nft {
             .unwrap();
         result.finalize.result.expect("execution failed");
         // sparkle_nft.inner_vault_balance()
-        assert_eq!(result.finalize.execution_results[3].decode::<Amount>().unwrap(), 0);
+        assert_eq!(template_test.return_values()[3].decoded::<Amount>().unwrap(), 0);
         // account.balance(nft_resx)
-        assert_eq!(result.finalize.execution_results[4].decode::<Amount>().unwrap(), 5);
+        assert_eq!(template_test.return_values()[4].decoded::<Amount>().unwrap(), 5);
         // sparkle_nft.total_supply()
-        assert_eq!(result.finalize.execution_results[5].decode::<Amount>().unwrap(), 5);
+        assert_eq!(template_test.return_values()[5].decoded::<Amount>().unwrap(), 5);
     }
 
     #[test]
@@ -981,7 +972,7 @@ mod basic_nft {
             1
         );
         assert_eq!(nfts.len(), 4);
-        assert_eq!(result.finalize.execution_results[12].decode::<Amount>().unwrap(), 8);
+        assert_eq!(template_test.return_values()[12].decoded::<Amount>().unwrap(), 8);
 
         // Try mint 2 nfts with the same id in a single transaction - should fail
         template_test
@@ -1031,7 +1022,7 @@ mod basic_nft {
         let total_supply: Amount = template_test.call_method(nft_component, "total_supply", args![], vec![]);
         assert_eq!(total_supply, 5);
 
-        let result = template_test
+        template_test
             .execute_and_commit_manifest(
                 r#"
             let account = var!["account"];
@@ -1048,7 +1039,7 @@ mod basic_nft {
             )
             .unwrap();
 
-        assert_eq!(result.finalize.execution_results[3].decode::<Amount>().unwrap(), 4);
+        assert_eq!(template_test.return_values()[3].decoded::<Amount>().unwrap(), 4);
 
         let total_supply: Amount = template_test.call_method(nft_component, "total_supply", args![], vec![]);
         assert_eq!(total_supply, 4);
@@ -1098,15 +1089,11 @@ mod basic_nft {
         result.finalize.result.expect("execution failed");
 
         // sparkle_nft.get_non_fungibles_from_bucket()
-        let nfts_from_bucket = result.finalize.execution_results[0]
-            .decode::<Vec<NonFungible>>()
-            .unwrap();
+        let nfts_from_bucket = template_test.return_values()[0].decoded::<Vec<NonFungible>>().unwrap();
         assert_eq!(nfts_from_bucket.len(), 4);
 
         // sparkle_nft.get_non_fungibles_from_vault()
-        let nfts_from_bucket = result.finalize.execution_results[1]
-            .decode::<Vec<NonFungible>>()
-            .unwrap();
+        let nfts_from_bucket = template_test.return_values()[1].decoded::<Vec<NonFungible>>().unwrap();
         assert_eq!(nfts_from_bucket.len(), 4);
     }
 }
@@ -1179,7 +1166,7 @@ mod emoji_id {
                 vec![owner_proof.clone()],
             )
             .unwrap_success();
-        let emoji_id_minter: ComponentAddress = result.finalize.execution_results[0].decode().unwrap();
+        let emoji_id_minter: ComponentAddress = test.return_values()[0].decoded().unwrap();
         let emoji_id_resource = result
             .finalize
             .result
@@ -1275,7 +1262,7 @@ mod tickets {
                 .build_and_seal(&secret),
             vec![owner_proof.clone()],
         );
-        let ticket_seller: ComponentAddress = result.finalize.execution_results[0].decode().unwrap();
+        let ticket_seller: ComponentAddress = test.return_values()[0].decoded().unwrap();
         let ticket_resource = result
             .finalize
             .result

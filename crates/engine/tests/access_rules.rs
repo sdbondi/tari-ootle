@@ -121,7 +121,7 @@ mod component_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_configured_rules", args![
                     // Owner
@@ -137,9 +137,7 @@ mod component_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         // Access Denied
         let reason = test.execute_expect_failure(
@@ -192,7 +190,7 @@ mod component_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_configured_rules", args![
                     // Owner
@@ -208,9 +206,7 @@ mod component_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         // Owner cannot set access rules
         let reason = test.execute_expect_failure(
@@ -235,7 +231,7 @@ mod component_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_configured_rules", args![
                     OwnerRule::OwnedBySigner,
@@ -247,9 +243,7 @@ mod component_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         // Build a rule set that bypasses the builder lint, the way a hand-written or non-Rust template
         // could, and confirm the engine rejects it rather than installing a constant method rule.
@@ -277,7 +271,7 @@ mod component_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_configured_rules", args![
                     OwnerRule::OwnedBySigner,
@@ -288,9 +282,7 @@ mod component_access_rules {
                 .build_and_seal(&owner_key),
             vec![owner_proof.clone()],
         );
-        let some_component = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let some_component = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         // A `component(..)` owner rule is constant on a component (its own frame is always on top), so the
         // engine rejects it at creation rather than installing an "owned by everyone" rule.
@@ -371,7 +363,7 @@ mod component_owner_rule {
     /// component actions under test.
     fn create_component(test: &mut TemplateTest, owner: &Owner) -> ComponentAddress {
         let template = test.get_template_address("AccessRulesTest");
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(template, "with_configured_rules", args![
                     OwnerRule::OwnedBySigner,
@@ -382,9 +374,7 @@ mod component_owner_rule {
                 .build_and_seal(&owner.secret_key),
             vec![owner.proof.clone()],
         );
-        result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap()
+        test.return_values()[0].decoded::<ComponentAddress>().unwrap()
     }
 
     fn set_owner_rule(caller: &Owner, component: ComponentAddress, owner_rule: SubstateOwnerRule) -> Transaction {
@@ -655,7 +645,7 @@ mod m_of_n_threshold {
     fn changing_a_rule_to_an_invalid_threshold_is_rejected() {
         let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/access_rules"]);
         let badge = signer_badge(&test);
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             create_component(
                 &test,
                 OwnerRule::OwnedBySigner,
@@ -664,9 +654,7 @@ mod m_of_n_threshold {
             ),
             vec![badge.clone()],
         );
-        let component = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         let call = |method: &str, args| {
             Transaction::builder_localnet(Epoch(1))
@@ -697,7 +685,7 @@ mod m_of_n_threshold {
         let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/access_rules"]);
         let badge = signer_badge(&test);
         let other = NonFungibleAddress::from_public_key(RistrettoPublicKeyBytes::from_bytes(&[1; 32]).unwrap());
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             create_component(
                 &test,
                 OwnerRule::OwnedBySigner,
@@ -706,9 +694,7 @@ mod m_of_n_threshold {
             ),
             vec![badge.clone()],
         );
-        let component = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         let council = rule!(m_of_n(
             2,
@@ -746,7 +732,7 @@ mod resource_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_configured_rules", args![
                     // Owner
@@ -762,9 +748,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         // User cannot get tokens
         let reason = test.execute_expect_failure(
@@ -821,7 +805,7 @@ mod resource_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_configured_rules", args![
                     // Owner - Everyone!
@@ -837,9 +821,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         // Give the user a withdraw and deposit badge
         test.execute_expect_success(
@@ -892,16 +874,14 @@ mod resource_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "using_badge_rules", args![])
                 .build_and_seal(&owner_key),
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
         // AccessRulesTest field layout: 0=value, 1=tokens, 2=badges, 3=allowed, 4=attack_component.
         let vault: VaultId = test.extract_component_value(component_address, "$.2");
         // Find the resource address for the badge from the output substates
@@ -943,7 +923,7 @@ mod resource_access_rules {
         );
 
         // User can take tokens
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_method(user_account, "create_proof_by_non_fungible_ids", args![
                     badge_resource,
@@ -968,7 +948,7 @@ mod resource_access_rules {
             vec![user_proof.clone()],
         );
 
-        let badge_data = result.finalize.execution_results[2].decode::<Vec<Metadata>>().unwrap();
+        let badge_data = test.return_values()[2].decoded::<Vec<Metadata>>().unwrap();
         assert!(badge_data.iter().all(|b| b.contains_key("colour")));
 
         let vaults: BTreeMap<ResourceAddress, VaultId> = test.extract_component_value(user_account, "$.0");
@@ -1018,9 +998,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let access_rules_component = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let access_rules_component = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
         // Find the resource address for the badge from the output substates
         let badge_resource = result
             .finalize
@@ -1095,9 +1073,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let access_rules_component = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let access_rules_component = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
         let badge_resource = result
             .finalize
             .result
@@ -1195,9 +1171,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let access_rules_component = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let access_rules_component = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
         let resources = result
             .finalize
             .result
@@ -1308,9 +1282,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let access_rules_component = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let access_rules_component = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
         let resources = result
             .finalize
             .result
@@ -1399,9 +1371,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
         // Find the resource address for the tokens from the output substates
         let token_resource = result
             .finalize
@@ -1468,9 +1438,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
         // Find the resource address for the tokens from the output substates
         let badge_resource = result
             .finalize
@@ -1550,9 +1518,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
         let badge_resource = result
             .finalize
             .result
@@ -1688,9 +1654,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
         // Find the resource address for the badge from the output substates
         let badge_resource = result
             .finalize
@@ -1834,9 +1798,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
         // Find the resource address for the tokens from the output substates
         let token_resource = result
             .finalize
@@ -1917,7 +1879,7 @@ mod resource_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_auth_hook_gated_on_caller", args![
                     gated_account
@@ -1926,9 +1888,7 @@ mod resource_access_rules {
             vec![gated_proof],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         let result = test.execute_expect_failure(
             Transaction::builder_localnet(Epoch(1))
@@ -1951,16 +1911,14 @@ mod resource_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_auth_hook", args![true, "valid_auth_hook"])
                 .build_and_seal(&owner_key),
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
@@ -1980,16 +1938,14 @@ mod resource_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_auth_hook", args![false, "valid_auth_hook"])
                 .build_and_seal(&owner_key),
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         let result = test.execute_expect_failure(
             Transaction::builder_localnet(Epoch(1))
@@ -2015,7 +1971,7 @@ mod resource_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_auth_hook", args![
                     true,
@@ -2025,9 +1981,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         let result = test.execute_expect_failure(
             Transaction::builder_localnet(Epoch(1))
@@ -2053,7 +2007,7 @@ mod resource_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_auth_hook", args![
                     true,
@@ -2063,9 +2017,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         let result = test.execute_expect_failure(
             Transaction::builder_localnet(Epoch(1))
@@ -2090,7 +2042,7 @@ mod resource_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_auth_hook", args![
                     true,
@@ -2100,11 +2052,9 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_method(component_address, "take_tokens", args![10])
                 .put_last_instruction_output_on_workspace("tokens")
@@ -2114,7 +2064,7 @@ mod resource_access_rules {
             vec![user_proof.clone()],
         );
 
-        let value = result.finalize.execution_results[3].decode::<u32>().unwrap();
+        let value = test.return_values()[3].decoded::<u32>().unwrap();
         assert_eq!(value, 1, "the hook fired once for the deposit");
     }
 
@@ -2127,7 +2077,7 @@ mod resource_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_auth_hook", args![
                     true,
@@ -2137,9 +2087,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         let result = test.execute_expect_failure(
             Transaction::builder_localnet(Epoch(1))
@@ -2205,20 +2153,18 @@ mod resource_access_rules {
 
         // User has a state component
         let state_template = test.get_template_address("State");
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(state_template, "restricted", args![])
                 .build_and_seal(&user_key),
             vec![owner_proof.clone()],
         );
 
-        let state_component = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let state_component = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_auth_hook_attack_component", args![
                     state_component
@@ -2227,9 +2173,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         let result = test.execute_expect_failure(
             Transaction::builder_localnet(Epoch(1))
@@ -2291,16 +2235,14 @@ mod resource_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_auth_hook", args![true, "valid_auth_hook"])
                 .build_and_seal(&owner_key),
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         let reason = test.execute_expect_failure(
             Transaction::builder_localnet(Epoch(1))
@@ -2324,7 +2266,7 @@ mod resource_access_rules {
 
         // `allowed = false` makes `valid_auth_hook` panic on every action, which is the failure this action
         // exists to recover from.
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_updatable_auth_hook", args![
                     false,
@@ -2335,9 +2277,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         let take_and_deposit = || {
             Transaction::builder_localnet(Epoch(1))
@@ -2374,7 +2314,7 @@ mod resource_access_rules {
         // `caller_gated_hook` permits every action, so the resource starts usable. `allowed = false` only
         // takes effect once `valid_auth_hook` is the hook in force, which is what the swap below installs —
         // so the denial afterwards can only come from the replacement, not from the hook having been dropped.
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_updatable_auth_hook", args![
                     false,
@@ -2385,9 +2325,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         let take_and_deposit = || {
             Transaction::builder_localnet(Epoch(1))
@@ -2421,7 +2359,7 @@ mod resource_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_updatable_auth_hook", args![
                     true,
@@ -2432,9 +2370,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         for hook in [
             "invalid_auth_hook2",
@@ -2468,7 +2404,7 @@ mod resource_access_rules {
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
         let updater: UpdateRule = rule!(non_fungible(user_proof.clone())).into();
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_updatable_auth_hook", args![
                     true,
@@ -2479,9 +2415,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         // The resource owner does not hold the badge, so they cannot touch the hook.
         let reason = test.execute_expect_failure(
@@ -2511,7 +2445,7 @@ mod resource_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_configured_rules", args![
                     OwnerRule::OwnedBySigner,
@@ -2524,9 +2458,7 @@ mod resource_access_rules {
             vec![owner_proof],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         let mut new_metadata = Metadata::new();
         new_metadata.insert("description", "updated");
@@ -2550,7 +2482,7 @@ mod resource_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_configured_rules", args![
                     OwnerRule::OwnedBySigner,
@@ -2562,9 +2494,7 @@ mod resource_access_rules {
             vec![owner_proof],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         let mut new_metadata = Metadata::new();
         new_metadata.insert("description", "updated by user");
@@ -2588,7 +2518,7 @@ mod resource_access_rules {
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
         // Withdraw starts denied; the updater is `OWNER`, so the owner can change the rule later.
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_configured_rules", args![
                     OwnerRule::OwnedBySigner,
@@ -2600,9 +2530,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         // Owner relaxes the withdraw rule.
         test.execute_expect_success(
@@ -2636,7 +2564,7 @@ mod resource_access_rules {
 
         let access_rules_template = test.get_template_address("AccessRulesTest");
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(access_rules_template, "with_configured_rules", args![
                     OwnerRule::OwnedBySigner,
@@ -2648,9 +2576,7 @@ mod resource_access_rules {
             vec![owner_proof.clone()],
         );
 
-        let component_address = result.finalize.execution_results[0]
-            .decode::<ComponentAddress>()
-            .unwrap();
+        let component_address = test.return_values()[0].decoded::<ComponentAddress>().unwrap();
 
         test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))

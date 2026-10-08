@@ -55,7 +55,6 @@ import { CURRENCY } from "../../../utils/constants";
 import { formatCurrency, isNotFoundError, validateHash } from "../../../utils/helpers";
 import SubstateChanges from "../../TransactionReceipts/components/SubstateChanges";
 import EventsContent from "./EventsContent";
-import ExecutionResults from "./ExecutionResults";
 import FeeReceipt from "./FeeReceipt";
 import Inputs from "./Inputs";
 import Instructions from "./Instructions";
@@ -157,7 +156,7 @@ function Result({ transaction_id }: Pick<IndexerGetTransactionResultRequest, "tr
     setExpandedPanels((prev) => (isExpanded ? [...prev, panel] : prev.filter((p) => p !== panel)));
   };
 
-  const expandAll = () => setExpandedPanels(["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10"]);
+  const expandAll = () => setExpandedPanels(["p1", "p2", "p3", "p4", "p5", "p7", "p8", "p9", "p10"]);
 
   const collapseAll = () => setExpandedPanels([]);
 
@@ -422,18 +421,6 @@ function Result({ transaction_id }: Pick<IndexerGetTransactionResultRequest, "tr
                   </AccordionSummary>
                   <AccordionDetails>
                     <SubstateChanges upped={receipt.diff_summary.upped} downed={receipt.diff_summary.downed} />
-                  </AccordionDetails>
-                </Accordion>
-              ) : null}
-
-              {/* Execution Results */}
-              {finalize?.execution_results?.length ? (
-                <Accordion expanded={expandedPanels.includes("p6")} onChange={handleChange("p6")}>
-                  <AccordionSummary>
-                    <Typography variant="h5">Execution Results</Typography>
-                  </AccordionSummary>
-                  <AccordionDetails>
-                    <ExecutionResults data={finalize.execution_results} />
                   </AccordionDetails>
                 </Accordion>
               ) : null}

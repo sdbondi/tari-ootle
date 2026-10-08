@@ -37,6 +37,7 @@ use tari_engine::{
 use tari_engine_types::{
     commit_result::{ExecuteResult, RejectReason},
     fees::ExhaustBurnRate,
+    indexed_value::IndexedValue,
     substate::{Substate, SubstateDiff, SubstateId},
     virtual_substate::{VirtualSubstate, VirtualSubstateId},
 };
@@ -74,6 +75,7 @@ use crate::{
         initialize_builtin_nft_faucet_state,
         initialize_burn_rate_governance_state,
     },
+    capture_outputs::CaptureOutputsModule,
     helpers::derive_account_address_from_public_key,
     mocks::AlwaysPassesProofVerifier,
     read_only_state_store::ReadOnlyStateStore,
@@ -116,6 +118,7 @@ pub struct TemplateTest {
     public_key: RistrettoPublicKey,
     last_outputs: HashSet<SubstateId>,
     last_execution_points: ExecutionPoints,
+    last_return_values: Vec<IndexedValue>,
     name_to_template: HashMap<String, TemplateAddress>,
     state_store: MemoryStateStore,
     enable_fees: bool,
@@ -271,6 +274,7 @@ impl TemplateTest {
             state_store: MemoryStateStore::new(),
             virtual_substates,
             last_execution_points: ExecutionPoints::default(),
+            last_return_values: Vec::new(),
             transaction_seq: Cell::new(0),
             enable_fees: false,
             dry_run: false,
@@ -497,6 +501,31 @@ impl TemplateTest {
         self.last_execution_points
     }
 
+    /// What each main-intent instruction of the most recently executed transaction produced, indexed like the
+    /// instructions: the value a template call returned, or the bucket, account or other value an instruction
+    /// leaves for `PutLastInstructionOutputOnWorkspace`. Unit for an instruction that produces nothing.
+    ///
+    /// A runtime module the harness installs captures these as the transaction runs. An instruction after the one
+    /// that failed has no entry.
+    pub fn return_values(&self) -> &[IndexedValue] {
+        &self.last_return_values
+    }
+
+    /// Decodes [`Self::return_values`] at `index`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if there is no value at `index` or it cannot be decoded into `T`.
+    #[track_caller]
+    pub fn expect_return<T>(&self, index: usize) -> T
+    where T: for<'b> tari_bor::Decode<'b, ()> {
+        self.last_return_values
+            .get(index)
+            .unwrap_or_else(|| panic!("No return value at index {index}"))
+            .decoded()
+            .unwrap_or_else(|e| panic!("Failed to decode return value at index {index}: {e}"))
+    }
+
     fn commit_diff(&mut self, diff: &SubstateDiff) {
         self.last_outputs.clear();
 
@@ -604,19 +633,13 @@ impl TemplateTest {
         T: DeserializeOwned + for<'b> tari_bor::Decode<'b, ()>,
     {
         let address = self.get_template_address(template_name);
-        let result = self.execute_expect_success(
+        self.execute_expect_success(
             self.transaction()
                 .call_function(address, func_name, args)
                 .build_and_seal(&self.secret_key),
             proofs,
         );
-        result
-            .finalize
-            .execution_results
-            .first()
-            .expect("single instruction without execution result")
-            .decode()
-            .unwrap()
+        self.expect_return(0)
     }
 
     /// Calls a method on an existing component and returns the deserialized result.
@@ -638,20 +661,13 @@ impl TemplateTest {
     where
         T: DeserializeOwned + for<'b> tari_bor::Decode<'b, ()>,
     {
-        let result = self.execute_expect_success(
+        self.execute_expect_success(
             self.transaction()
                 .call_method(component_address, method_name, args)
                 .build_and_seal(&self.secret_key),
             proofs,
         );
-
-        result
-            .finalize
-            .execution_results
-            .first()
-            .expect("single instruction without execution result")
-            .decode()
-            .unwrap()
+        self.expect_return(0)
     }
 
     /// Returns the default owner proof (non-fungible address) and secret key pair.
@@ -811,9 +827,11 @@ impl TemplateTest {
         transaction: Transaction,
         mut proofs: Vec<NonFungibleAddress>,
     ) -> Result<ExecuteResult, TransactionError> {
-        let mut modules: Vec<Box<dyn RuntimeModule<ReadOnlyMemoryStateStore>>> = Vec::with_capacity(2);
+        let mut modules: Vec<Box<dyn RuntimeModule<ReadOnlyMemoryStateStore>>> = Vec::with_capacity(3);
 
         modules.push(Box::new(self.track_calls.clone()));
+        let capture_outputs = CaptureOutputsModule::new();
+        modules.push(Box::new(capture_outputs.clone()));
 
         // When fees are disabled there is no payment-funded compute bound (only the per-transaction
         // hard cap), matching the absence of a fee module.
@@ -849,6 +867,7 @@ impl TemplateTest {
             self.dry_run,
         );
 
+        let num_fee_instructions = transaction.fee_instructions().len();
         let mut wrapped_transaction = WrappedTransaction::new(transaction);
         // Add all the substates as inputs - this avoids the need for tests to explicitly include inputs
         wrapped_transaction.extend_inputs(
@@ -862,7 +881,10 @@ impl TemplateTest {
 
         let result = processor.execute(wrapped_transaction).inspect_err(|_| {
             self.last_execution_points = ExecutionPoints::default();
+            self.last_return_values.clear();
         })?;
+        let mut outputs = capture_outputs.take();
+        self.last_return_values = outputs.split_off(num_fee_instructions.min(outputs.len()));
         self.last_execution_points = ExecutionPoints {
             wasm: result.wasm_execution_points,
             native: result.native_execution_points,

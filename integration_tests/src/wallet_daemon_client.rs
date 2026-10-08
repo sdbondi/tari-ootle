@@ -739,6 +739,7 @@ pub async fn call_component(
     output_ref: String,
     wallet_daemon_name: String,
     function_call: String,
+    args: Vec<String>,
     new_outputs_name: Option<String>,
     use_unversioned_inputs: bool,
 ) -> anyhow::Result<TransactionWaitResultResponse> {
@@ -775,9 +776,13 @@ pub async fn call_component(
         ]
     };
 
+    let args = args
+        .iter()
+        .map(|a| parse_arg(a).map_err(|e| anyhow!(e)))
+        .collect::<Result<_, _>>()?;
     let tx = transaction_builder()
         .pay_fee_from_component(account_component_address, MAX_FEE)
-        .call_method(source_component_address, &function_call, vec![])
+        .call_method(source_component_address, &function_call, args)
         .with_inputs(inputs)
         .build_unsigned();
 

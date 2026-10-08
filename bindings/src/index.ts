@@ -99,7 +99,6 @@ export * from "./types/IndexedWellKnownTypes";
 export * from "./types/InputDeclaration";
 export * from "./types/Instruction";
 export * from "./types/InstructionArg";
-export * from "./types/InstructionResult";
 export * from "./types/LeaderFee";
 export * from "./types/LocalOnlyAtom";
 export * from "./types/LockedEpoch";

@@ -16,7 +16,7 @@ Feature: Concurrency
     ##### Scenario
     # The initial value of the counter must be 0
     When I call function "new" on template "counter" using account ACC to pay fees via wallet daemon WALLET_D named "COUNTER"
-    When I invoke on wallet daemon WALLET_D on account ACC on component COUNTER/components/counter the method call "value" the result is "0"
+    When I invoke on wallet daemon WALLET_D on account ACC on component COUNTER/components/counter the method call "assert_value" with argument "0"
 
     # Send multiple concurrent transactions to increase the counter
     # Currently there is a lock bug where the subsequent transactions executed are being rejected, should be tested later after engine changes:
@@ -25,4 +25,4 @@ Feature: Concurrency
 
     # Check that the counter has been increased
     # Note: this is currently not working together with the previous test case when times > 1, only the first transaction is being executed properly
-    When I invoke on wallet daemon WALLET_D on account ACC on component COUNTER/components/counter the method call "value" the result is "30"
+    When I invoke on wallet daemon WALLET_D on account ACC on component COUNTER/components/counter the method call "assert_value" with argument "30"
