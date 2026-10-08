@@ -115,8 +115,8 @@ where TConsensusSpec: ConsensusSpec
                     Some(ProposalValidationError::ForeignPledgesNotCommitted { .. })
                 ) {
                     // The pledges travel beside the commit proof, so a bad set says nothing about the block itself.
-                    // Nothing is recorded against the block id, and the timed-out request is retried with another
-                    // member of the foreign committee.
+                    // Nothing is recorded against the block id, so another copy is still accepted. A pending request
+                    // for the block is retried with another member of the foreign committee when it times out.
                     warn!(target: LOG_TARGET, "⚠️ Discarding foreign proposal: {}", err);
                     return Ok(false);
                 }
