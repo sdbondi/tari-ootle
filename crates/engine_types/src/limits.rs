@@ -109,7 +109,9 @@ pub const MIN_MAX_COMPUTE_TRANSACTIONS_PER_BLOCK: u64 = 18;
 /// [`template_compile_points`] for a binary at [`EngineLimits::max_template_binary_size_bytes`] comes to ~2.34e9,
 /// and that limit is chosen so the remainder still covers a fee intent (see
 /// `the_largest_publishable_binary_leaves_room_to_source_a_fee`). So a max-size publish *can* reach this cap, by
-/// construction — it is what makes the publish limit binding — whereas every other flow stays under it on the
+/// construction — it is what makes the publish limit binding. Template return values are the other flow this cap
+/// bounds: [`return_value_points`] is bounded per call, not per transaction, and about 18 maximal item-heavy
+/// returns reach the cap, failing the transaction out of compute. Every remaining flow stays under it on the
 /// structural caps alone.
 pub const MAX_NATIVE_POINTS_PER_TRANSACTION: u64 = 2_400_000_000;
 
@@ -296,6 +298,25 @@ pub const fn instantiation_points(shape: &ModuleShape) -> u64 {
         .saturating_add(PER_TEMPLATE_TABLE_SLOT.saturating_mul(shape.declared_table_slots))
 }
 
+/// Points charged for the host-side handling of a template call's return value, before it is
+/// decoded.
+///
+/// A template function hands the engine up to `max_call_size` bytes of CBOR. The engine decodes it
+/// into an `IndexedValue`, indexes it for well-known types, validates what it references, keeps a
+/// clone as the instruction output and encodes it again for a calling template. That work runs
+/// outside the Wasmer meter and follows the number of CBOR items far more than the number of bytes —
+/// a run of one-byte integers is an item a byte, where a byte string is one item however long — so
+/// `items` is counted by [`tari_bor::count_data_items`] and priced per item, with the copies priced
+/// per byte.
+///
+/// Measured with `cargo run -p tari_engine --release --example return_value_points_calibrate`, which
+/// times that whole sequence over return values filling `max_call_size` in each item shape.
+pub const fn return_value_points(bytes: u64, items: u64) -> u64 {
+    NativeExecutionPoints::PER_RETURN_VALUE_ITEM
+        .saturating_mul(items)
+        .saturating_add(NativeExecutionPoints::PER_RETURN_VALUE_BYTE.saturating_mul(bytes))
+}
+
 /// Metering-point prices for native (non-WASM) verification work, charged against the same
 /// payment-funded allowance as WASM execution ([`FREE_COMPUTE_GRACE_POINTS`] of credit, then
 /// payments fund the rest). Native crypto runs outside the Wasmer meter, so these price it by
@@ -328,6 +349,16 @@ impl NativeExecutionPoints {
     /// viewable-balance proof (~0.26ms measured marginal). Charged only once the resource's view
     /// key presence is known — a cheap substate read that precedes all proof crypto.
     pub const PER_OUTPUT_VIEWABLE_SURCHARGE: u64 = 2_000_000;
+    /// Each byte of a template call's return value, which the engine copies out of linear memory,
+    /// into the decoded value, its clone and its re-encoding. A single 128 KiB byte string, which is
+    /// nothing but those copies, measures at ~0.7 points a byte. Charged by [`return_value_points`].
+    pub const PER_RETURN_VALUE_BYTE: u64 = 1;
+    /// Each CBOR data item in a template call's return value: counting it, decoding it into a `Value`
+    /// node, visiting it for well-known types, cloning it and encoding it again. Arrays of one-byte
+    /// integers or empty containers measure at ~450-600 points an item; the costliest shapes, where
+    /// every item is an allocation of its own (one-character strings, singly nested arrays), at
+    /// ~800-900. Set above those. Charged by [`return_value_points`].
+    pub const PER_RETURN_VALUE_ITEM: u64 = 1_000;
     /// Fixed cost of a multi-scalar multiplication, before its per-term charge.
     pub const PER_RISTRETTO_MSM: u64 = 100_000;
     /// Each term of a multi-scalar multiplication. Below [`Self::PER_RISTRETTO_MUL`] because the
