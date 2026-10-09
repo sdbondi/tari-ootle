@@ -331,12 +331,9 @@ pub trait StateStoreReadTransaction: Sized {
     ) -> Result<TransactionPoolRecord, StorageError>;
     fn transaction_pool_exists(&self, transaction_id: &TransactionId) -> Result<bool, StorageError>;
     fn transaction_pool_get_all(&self, limit: usize) -> Result<Vec<TransactionPoolRecord>, StorageError>;
-    fn transaction_pool_get_many_ready(
-        &self,
-        weight_budget: u64,
-        max_count: usize,
-        block_id: &BlockId,
-    ) -> Result<Vec<TransactionPoolRecord>, StorageError>;
+    /// Every ready record that is not lock-conflicted, with the pending updates in the chain ending at
+    /// `block_id` applied. The order of the returned records is unspecified.
+    fn transaction_pool_get_all_ready(&self, block_id: &BlockId) -> Result<Vec<TransactionPoolRecord>, StorageError>;
     fn transaction_pool_has_pending_state_updates(&self, block_id: &BlockId) -> Result<bool, StorageError>;
 
     fn transaction_pool_count(

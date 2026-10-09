@@ -89,6 +89,11 @@ use crate::{
 
 const LOG_TARGET: &str = "tari::ootle::consensus::hotstuff::on_propose";
 
+/// One block in this many is an oversized turn (see `select_proposal_batch`): a transaction heavier than the
+/// whole block budget may then take the block even when lighter ready transactions are waiting. This caps the
+/// share of blocks oversized transactions can take from transactions that fit.
+const OVERSIZED_TRANSACTION_TURN_INTERVAL: u64 = 10;
+
 struct NextBlock {
     block: Block,
     foreign_proposals: Vec<ForeignProposal>,
@@ -406,7 +411,7 @@ where TConsensusSpec: ConsensusSpec
         let batch = if should_not_propose_commands {
             ProposalBatch::default()
         } else {
-            self.fetch_next_proposal_batch(tx, state_anchor_leaf)?
+            self.fetch_next_proposal_batch(tx, state_anchor_leaf, next_height)?
         };
         debug!(target: LOG_TARGET, "🌿 PROPOSE: {} (justify: {}) {batch}", highest_seen_block.height(), justify_block.height());
 
@@ -731,6 +736,7 @@ where TConsensusSpec: ConsensusSpec
         &self,
         tx: &TTx,
         state_anchor_leaf: LeafBlock,
+        next_height: NodeHeight,
     ) -> Result<ProposalBatch, HotStuffError> {
         let _timer = TraceTimer::debug(LOG_TARGET, "fetch_next_proposal_batch");
         // A block is budgeted by total command weight (`max_block_weight`), not a flat command count.
@@ -765,6 +771,7 @@ where TConsensusSpec: ConsensusSpec
         // Bound the transaction count so the total command count (foreign proposals + transactions)
         // stays under the hard command cap regardless of how light the transactions are.
         let max_tx_count = max_commands.saturating_sub(foreign_proposals.len());
+        let oversized_turn = next_height.as_u64().is_multiple_of(OVERSIZED_TRANSACTION_TURN_INTERVAL);
 
         let transactions = remaining_weight
             .filter(|_| max_tx_count > 0)
@@ -773,6 +780,7 @@ where TConsensusSpec: ConsensusSpec
                     tx,
                     weight_budget,
                     max_tx_count,
+                    oversized_turn,
                     state_anchor_leaf.block_id(),
                 )
             })

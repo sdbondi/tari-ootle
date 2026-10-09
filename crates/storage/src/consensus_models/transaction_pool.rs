@@ -11,6 +11,7 @@ use std::{
 };
 
 use log::*;
+use rand::{Rng, seq::SliceRandom};
 use serde::{Deserialize, Serialize};
 use tari_consensus_types::{BlockId, Decision, LeafBlock};
 use tari_engine_types::{SubstateVersion, substate::SubstateId};
@@ -122,22 +123,26 @@ impl<TStateStore: StateStore> TransactionPool<TStateStore> {
     }
 
     /// Fetch ready transactions for the next block, bounded by a weight budget and a hard command
-    /// count cap. Records are accumulated in order until either their cumulative
-    /// [`TransactionPoolRecord::proposal_weight`] would exceed `weight_budget` or `max_count` records
-    /// have been collected. At least one ready record is always returned (if any exist) so that a
-    /// single transaction heavier than the whole budget still makes progress.
+    /// count cap. See [`select_proposal_batch`] for how records are chosen.
     pub fn get_batch_for_next_block(
         &self,
         tx: &impl StateStoreReadTransaction,
         weight_budget: u64,
         max_count: usize,
+        oversized_turn: bool,
         block_id: &BlockId,
     ) -> Result<Vec<TransactionPoolRecord>, TransactionPoolError> {
         if weight_budget == 0 || max_count == 0 {
             return Ok(Vec::new());
         }
-        let recs = tx.transaction_pool_get_many_ready(weight_budget, max_count, block_id)?;
-        Ok(recs)
+        let recs = tx.transaction_pool_get_all_ready(block_id)?;
+        Ok(select_proposal_batch(
+            recs,
+            weight_budget,
+            max_count,
+            oversized_turn,
+            &mut rand::rng(),
+        ))
     }
 
     pub fn has_ready_or_pending_transaction_updates(
@@ -214,6 +219,62 @@ impl<TStateStore: StateStore> TransactionPool<TStateStore> {
     ) -> Result<Vec<TransactionPoolRecord>, TransactionPoolError> {
         TransactionPoolRecord::remove_all(tx, tx_ids)
     }
+}
+
+/// Choose the ready records to propose in the next block.
+///
+/// Records are considered in a fresh random order drawn from `rng`, so a submitter cannot choose or
+/// predict where their transaction sorts. Each record whose
+/// [`TransactionPoolRecord::proposal_weight`] fits the remaining `weight_budget` is taken; one that
+/// does not fit is skipped so the lighter records behind it still pack. Selection stops at `max_count`
+/// records.
+///
+/// A record heavier than the whole `weight_budget` is oversized and can only be proposed alone. It is
+/// chosen when no ready record fits the budget, or when `oversized_turn` is set. The caller sets
+/// `oversized_turn` on a fixed fraction of blocks: oversized transactions still commit while the pool
+/// never drains, but they cannot claim more than that fraction of blocks from transactions that fit.
+pub fn select_proposal_batch<R: Rng + ?Sized>(
+    mut records: Vec<TransactionPoolRecord>,
+    weight_budget: u64,
+    max_count: usize,
+    oversized_turn: bool,
+    rng: &mut R,
+) -> Vec<TransactionPoolRecord> {
+    if weight_budget == 0 || max_count == 0 {
+        return Vec::new();
+    }
+    records.shuffle(rng);
+
+    let is_oversized = |rec: &TransactionPoolRecord| rec.proposal_weight() > weight_budget;
+    if oversized_turn && let Some(pos) = records.iter().position(is_oversized) {
+        return vec![records.swap_remove(pos)];
+    }
+
+    let mut batch = Vec::new();
+    let mut first_oversized = None;
+    let mut accumulated_weight = 0u64;
+    for rec in records {
+        if is_oversized(&rec) {
+            if first_oversized.is_none() {
+                first_oversized = Some(rec);
+            }
+            continue;
+        }
+        let next_weight = accumulated_weight.saturating_add(rec.proposal_weight());
+        if next_weight > weight_budget {
+            continue;
+        }
+        accumulated_weight = next_weight;
+        batch.push(rec);
+        if batch.len() >= max_count || accumulated_weight == weight_budget {
+            break;
+        }
+    }
+
+    if batch.is_empty() {
+        batch.extend(first_oversized);
+    }
+    batch
 }
 
 // Ord: ensure that the enum variants are ordered in the order of their progression

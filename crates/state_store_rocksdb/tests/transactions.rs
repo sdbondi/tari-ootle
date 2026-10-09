@@ -129,7 +129,7 @@ mod confirm_all_transitions {
         tx.transaction_pool_add_pending_update(&block1.as_leaf(), &TransactionPoolStatusUpdate::new(tx_3, true))
             .unwrap();
 
-        let rec = tx.transaction_pool_get_many_ready(u64::MAX, 10, &block_id).unwrap();
+        let rec = tx.transaction_pool_get_all_ready(&block_id).unwrap();
         assert_eq!(rec.len(), 3);
 
         let rec = tx.transaction_pool_get_for_blocks(&block_id, &atom1.id).unwrap();
@@ -799,17 +799,40 @@ mod finalized_transaction_gc {
     }
 }
 
-mod get_many_ready_weight_budget {
+mod get_batch_for_next_block {
+    use std::collections::HashSet;
+
     use tari_consensus_types::BlockId;
+    use tari_ootle_storage::consensus_models::{TransactionPool, TransactionPoolRecord};
     use tari_ootle_transaction::Network;
+    use tari_state_store_rocksdb::RocksDbStateStore;
     use tari_template_lib_types::crypto::SchnorrSignatureBytes;
 
     use super::*;
     use crate::helpers::num_preshards;
 
+    fn get_batch(
+        tx: &impl StateStoreReadTransaction,
+        weight_budget: u64,
+        max_count: usize,
+        oversized_turn: bool,
+        block_id: &BlockId,
+    ) -> Vec<TransactionPoolRecord> {
+        TransactionPool::<RocksDbStateStore<String>>::new()
+            .get_batch_for_next_block(tx, weight_budget, max_count, oversized_turn, block_id)
+            .unwrap()
+    }
+
     /// Insert `weights.len()` ready (New stage) transactions with the given static weights and return
     /// the block id to query against.
     fn setup_ready_pool(db: &impl StateStore, weights: &[u64]) -> BlockId {
+        let records: Vec<_> = weights.iter().map(|w| (create_tx_atom().id, *w)).collect();
+        setup_ready_pool_with_ids(db, &records)
+    }
+
+    /// Insert ready (New stage) transactions with the given ids and static weights and return the block
+    /// id to query against.
+    fn setup_ready_pool_with_ids(db: &impl StateStore, records: &[(TransactionId, u64)]) -> BlockId {
         let mut tx = db.create_write_tx().unwrap();
         let network = Network::LocalNet;
         let zero_block = Block::zero_block(network, num_preshards());
@@ -819,7 +842,6 @@ mod get_many_ready_weight_budget {
             .unwrap();
         let shard_group = zero_block.shard_group();
 
-        let atoms: Vec<_> = weights.iter().map(|_| create_tx_atom()).collect();
         let block1 = Block::create(
             network,
             ProtocolVersion::V0,
@@ -831,7 +853,7 @@ mod get_many_ready_weight_budget {
             shard_group,
             Default::default(),
             // Need at least one command so the block causes a state change and is queryable.
-            [Command::LocalPrepare(atoms[0].clone())].into_iter().collect(),
+            [Command::LocalPrepare(create_tx_atom())].into_iter().collect(),
             Default::default(),
             Default::default(),
             SchnorrSignatureBytes::zero(),
@@ -845,10 +867,10 @@ mod get_many_ready_weight_budget {
         block1.as_locked().set(&mut tx).unwrap();
         block1.as_leaf().set(&mut tx).unwrap();
 
-        for (atom, weight) in atoms.iter().zip(weights) {
+        for (id, weight) in records {
             tx.transaction_pool_insert_new(
-                atom.id,
-                atom.decision,
+                *id,
+                Decision::Commit,
                 &Evidence::empty(),
                 true,
                 false,
@@ -870,24 +892,76 @@ mod get_many_ready_weight_budget {
         let tx = db.create_read_tx().unwrap();
 
         // Budget for 2 (100 + 100 = 200 <= 250; the third would push to 300 > 250).
-        let recs = tx.transaction_pool_get_many_ready(250, 10, &block_id).unwrap();
+        let recs = get_batch(&tx, 250, 10, false, &block_id);
         assert_eq!(recs.len(), 2);
 
         // Generous budget fits all three.
-        let recs = tx.transaction_pool_get_many_ready(u64::MAX, 10, &block_id).unwrap();
+        let recs = get_batch(&tx, u64::MAX, 10, false, &block_id);
         assert_eq!(recs.len(), 3);
     }
 
     #[test]
-    fn it_always_returns_at_least_one_rocksdb() {
+    fn an_oversized_record_is_proposed_alone_when_nothing_fits_rocksdb() {
         let (db, _tmp) = create_rocksdb();
-        // A single transaction heavier than the whole budget must still be returned so consensus
-        // makes progress.
         let block_id = setup_ready_pool(&db, &[1000, 1000]);
         let tx = db.create_read_tx().unwrap();
 
-        let recs = tx.transaction_pool_get_many_ready(10, 10, &block_id).unwrap();
+        let recs = get_batch(&tx, 10, 10, false, &block_id);
         assert_eq!(recs.len(), 1);
+    }
+
+    #[test]
+    fn an_oversized_record_does_not_displace_records_that_fit_rocksdb() {
+        let (db, _tmp) = create_rocksdb();
+        let mut oversized_id = [0xffu8; 32];
+        oversized_id[0] = 0;
+        let oversized_id = TransactionId::new(oversized_id);
+        let mut records = vec![(oversized_id, 24_001)];
+        records.extend((1..=100u8).map(|i| (TransactionId::new([i; 32]), 125)));
+        let block_id = setup_ready_pool_with_ids(&db, &records);
+        let tx = db.create_read_tx().unwrap();
+
+        let batch = get_batch(&tx, 24_000, 1000, false, &block_id);
+        assert_eq!(batch.len(), 100);
+        assert!(batch.iter().all(|rec| *rec.id() != oversized_id));
+
+        let batch = get_batch(&tx, 24_000, 1000, true, &block_id);
+        assert_eq!(batch.len(), 1);
+        assert_eq!(*batch[0].id(), oversized_id);
+    }
+
+    #[test]
+    fn a_record_that_overflows_the_budget_is_skipped_rocksdb() {
+        let (db, _tmp) = create_rocksdb();
+        let block_id = setup_ready_pool(&db, &[15_000, 15_000, 100]);
+        let tx = db.create_read_tx().unwrap();
+
+        // Whichever 15k record comes first, the other one overflows the budget and the light record
+        // behind it still packs.
+        for _ in 0..20 {
+            let batch = get_batch(&tx, 24_000, 1000, false, &block_id);
+            let weights = batch.iter().map(|rec| rec.proposal_weight()).collect::<HashSet<_>>();
+            assert_eq!(weights, HashSet::from([15_000, 100]));
+        }
+    }
+
+    #[test]
+    fn packing_order_does_not_follow_transaction_id_rocksdb() {
+        let (db, _tmp) = create_rocksdb();
+        let low_id = TransactionId::new([0; 32]);
+        let high_id = TransactionId::new([0xff; 32]);
+        // Only one of the two fits the budget, so the packing order alone decides which one is packed.
+        let block_id = setup_ready_pool_with_ids(&db, &[(low_id, 15_000), (high_id, 15_000)]);
+        let tx = db.create_read_tx().unwrap();
+
+        let packed = (0..200)
+            .map(|_| {
+                let batch = get_batch(&tx, 24_000, 1000, false, &block_id);
+                assert_eq!(batch.len(), 1);
+                *batch[0].id()
+            })
+            .collect::<HashSet<_>>();
+        assert_eq!(packed, HashSet::from([low_id, high_id]));
     }
 
     #[test]
@@ -897,7 +971,7 @@ mod get_many_ready_weight_budget {
         let tx = db.create_read_tx().unwrap();
 
         // Weight is effectively unbounded but the count cap limits the batch.
-        let recs = tx.transaction_pool_get_many_ready(u64::MAX, 2, &block_id).unwrap();
+        let recs = get_batch(&tx, u64::MAX, 2, false, &block_id);
         assert_eq!(recs.len(), 2);
     }
 
@@ -920,7 +994,7 @@ mod get_many_ready_weight_budget {
         tx.commit().unwrap();
 
         let tx = db.create_read_tx().unwrap();
-        let recs = tx.transaction_pool_get_many_ready(u64::MAX, 10, &block_id).unwrap();
+        let recs = get_batch(&tx, u64::MAX, 10, false, &block_id);
         assert_eq!(recs.len(), 2);
         assert!(recs.iter().all(|rec| *rec.id() != conflicted));
 
