@@ -101,7 +101,7 @@ use tari_state_tree::{Child, Nibble, Node, NodeKey, NodeType, StaleTreeNode, Sta
 use crate::{
     block_diff_table::BlockDiffEntry,
     cf_api::{CfContext, DbContext},
-    codecs::{ByteColumn, DbEncoder, DefaultCodec, KeyPrefix},
+    codecs::{ByteColumn, DbEncoder, DefaultCodec, KeyPrefix, StaleTreeNodesCodec},
     column_families::{
         block,
         block::BlockCf,
@@ -1602,12 +1602,12 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
     fn state_tree_nodes_batch_insert(
         &mut self,
         shard: Shard,
-        nodes: Vec<(NodeKey, Node<StateTreePayload>)>,
+        nodes: &[(NodeKey, Node<StateTreePayload>)],
     ) -> Result<(), StorageError> {
         const OPERATION: &str = "state_tree_nodes_insert";
         let cf = self.db().cf(StateTreeCf)?;
         for (key, node) in nodes {
-            cf.put(&(shard, key), &node, OPERATION)?;
+            cf.put(&(shard, key.clone()), node, OPERATION)?;
         }
         Ok(())
     }
@@ -1616,13 +1616,14 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         &mut self,
         shard: Shard,
         version: Version,
-        nodes: Vec<StaleTreeNode>,
+        nodes: &[StaleTreeNode],
     ) -> Result<(), StorageError> {
         const OPERATION: &str = "state_tree_nodes_record_stale_tree_nodes";
 
+        let encoded = StaleTreeNodesCodec.encode_slice(nodes)?;
         self.db()
             .cf(StateTreeStaleNodesCf)?
-            .put(&(shard, version), &nodes, OPERATION)?;
+            .put_raw_value(&(shard, version), &encoded, OPERATION)?;
 
         Ok(())
     }

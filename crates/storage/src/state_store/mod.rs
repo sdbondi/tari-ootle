@@ -738,14 +738,14 @@ pub trait StateStoreWriteTransaction {
     fn state_tree_nodes_batch_insert(
         &mut self,
         shard: Shard,
-        nodes: Vec<(NodeKey, Node<StateTreePayload>)>,
+        nodes: &[(NodeKey, Node<StateTreePayload>)],
     ) -> Result<(), StorageError>;
 
     fn state_tree_nodes_record_stale_tree_nodes(
         &mut self,
         shard: Shard,
         version: Version,
-        nodes: Vec<StaleTreeNode>,
+        nodes: &[StaleTreeNode],
     ) -> Result<(), StorageError>;
 
     /// Deletes stale state tree nodes older than the state history window, one whole stale version at a time,

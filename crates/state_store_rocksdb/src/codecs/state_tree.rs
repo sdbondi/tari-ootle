@@ -143,24 +143,40 @@ impl DbDecoder<Node<StateTreePayload>> for TreeNodeCodec {
 #[derive(Default)]
 pub struct StaleTreeNodesCodec;
 
-impl DbEncoder<Vec<StaleTreeNode>> for StaleTreeNodesCodec {
-    fn encode_len(&self, value: &Vec<StaleTreeNode>) -> Result<usize, RocksDbStorageError> {
-        let len = value.iter().fold(minicbor::len(value.len() as u64), |acc, stale| {
+impl StaleTreeNodesCodec {
+    fn encoded_len(nodes: &[StaleTreeNode]) -> usize {
+        nodes.iter().fold(minicbor::len(nodes.len() as u64), |acc, stale| {
             acc + cbor::stale_tree_node::cbor_len(stale, &mut ())
-        });
-        Ok(len)
+        })
     }
 
-    fn encode_into<W: io::Write>(&self, value: &Vec<StaleTreeNode>, writer: &mut W) -> Result<(), RocksDbStorageError> {
+    fn encode_slice_into<W: io::Write>(nodes: &[StaleTreeNode], writer: &mut W) -> Result<(), RocksDbStorageError> {
         let encode_error = |e| RocksDbStorageError::EncodeError {
             source: anyhow!("StaleTreeNodesCodec: {e}"),
         };
         let mut encoder = minicbor::Encoder::new(minicbor::encode::write::Writer::new(writer));
-        encoder.array(value.len() as u64).map_err(encode_error)?;
-        for stale in value {
+        encoder.array(nodes.len() as u64).map_err(encode_error)?;
+        for stale in nodes {
             cbor::stale_tree_node::encode(stale, &mut encoder, &mut ()).map_err(encode_error)?;
         }
         Ok(())
+    }
+
+    /// Encodes `nodes` as a stored list, without first collecting them into a `Vec`.
+    pub fn encode_slice(&self, nodes: &[StaleTreeNode]) -> Result<Vec<u8>, RocksDbStorageError> {
+        let mut encoded = Vec::with_capacity(Self::encoded_len(nodes));
+        Self::encode_slice_into(nodes, &mut encoded)?;
+        Ok(encoded)
+    }
+}
+
+impl DbEncoder<Vec<StaleTreeNode>> for StaleTreeNodesCodec {
+    fn encode_len(&self, value: &Vec<StaleTreeNode>) -> Result<usize, RocksDbStorageError> {
+        Ok(Self::encoded_len(value))
+    }
+
+    fn encode_into<W: io::Write>(&self, value: &Vec<StaleTreeNode>, writer: &mut W) -> Result<(), RocksDbStorageError> {
+        Self::encode_slice_into(value, writer)
     }
 }
 

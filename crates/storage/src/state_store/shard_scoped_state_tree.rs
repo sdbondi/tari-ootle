@@ -95,14 +95,14 @@ impl<'a, TTx: StateStoreWriteTransaction> ShardScopedTreeStoreWriter<'a, TTx> {
     pub fn record_stale_tree_nodes(
         &mut self,
         version: Version,
-        nodes: Vec<StaleTreeNode>,
+        nodes: &[StaleTreeNode],
     ) -> Result<(), JmtStorageError> {
         self.tx
             .state_tree_nodes_record_stale_tree_nodes(self.shard, version, nodes)
             .map_err(|e| JmtStorageError::UnexpectedError(e.to_string()))
     }
 
-    pub fn insert_nodes(&mut self, nodes: Vec<(NodeKey, Node<StateTreePayload>)>) -> Result<(), JmtStorageError> {
+    pub fn insert_nodes(&mut self, nodes: &[(NodeKey, Node<StateTreePayload>)]) -> Result<(), JmtStorageError> {
         self.tx
             .state_tree_nodes_batch_insert(self.shard, nodes)
             .map_err(|e| JmtStorageError::UnexpectedError(e.to_string()))
@@ -136,13 +136,13 @@ where
 impl<TTx: StateStoreWriteTransaction> TreeStoreBatchWriter<StateTreePayload> for ShardScopedTreeStoreWriter<'_, TTx> {
     fn batch_insert_nodes(&mut self, nodes: Vec<(NodeKey, Node<StateTreePayload>)>) -> Result<(), JmtStorageError> {
         self.tx
-            .state_tree_nodes_batch_insert(self.shard, nodes)
+            .state_tree_nodes_batch_insert(self.shard, &nodes)
             .map_err(|e| JmtStorageError::UnexpectedError(e.to_string()))
     }
 
     fn record_stale_tree_nodes(&mut self, version: Version, nodes: Vec<StaleTreeNode>) -> Result<(), JmtStorageError> {
         self.tx
-            .state_tree_nodes_record_stale_tree_nodes(self.shard, version, nodes)
+            .state_tree_nodes_record_stale_tree_nodes(self.shard, version, &nodes)
             .map_err(|e| JmtStorageError::UnexpectedError(e.to_string()))
     }
 }

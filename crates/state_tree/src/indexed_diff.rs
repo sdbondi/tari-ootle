@@ -39,15 +39,6 @@ impl<P> IndexedTreeDiff<P> {
         let position = *self.inner.positions.get(key)?;
         Some(&self.inner.diff.new_nodes[position].1)
     }
-
-    /// The diff, copied only if it is shared.
-    pub fn into_diff(self) -> StateHashTreeDiff<P>
-    where P: Clone {
-        match Arc::try_unwrap(self.inner) {
-            Ok(indexed) => indexed.diff,
-            Err(shared) => shared.diff.clone(),
-        }
-    }
 }
 
 impl<P> Clone for IndexedTreeDiff<P> {
