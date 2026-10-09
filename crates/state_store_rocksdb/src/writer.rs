@@ -157,8 +157,7 @@ use crate::{
         state_version_proof::StateVersionProofCf,
         substate,
         substate::{SubstateCf, SubstateHeadData},
-        substate_locks,
-        substate_locks::{SubstateLockKey, SubstateLockModel},
+        substate_locks::BlockLockSetCf,
         transaction::TransactionCf,
         transaction_pool::TransactionPoolCf,
         transaction_pool_state_update,
@@ -168,6 +167,7 @@ use crate::{
         vote_equivocation,
     },
     error::RocksDbStorageError,
+    lock_table::{BlockLocks, LockTableView, SharedLockTable, StagedLocks},
     options::DatabaseOptions,
     read_only::ReadOnly,
     reader::RocksDbStateStoreReadTransaction,
@@ -186,11 +186,20 @@ pub struct RocksDbStateStoreWriteTransaction<'a, TAddr> {
 }
 
 impl<'a, TAddr: NodeAddressable> RocksDbStateStoreWriteTransaction<'a, TAddr> {
-    pub(crate) fn new(db: &'a TransactionDB, tx: Transaction<'a, TransactionDB>, options: &'a DatabaseOptions) -> Self {
+    pub(crate) fn new(
+        db: &'a TransactionDB,
+        tx: Transaction<'a, TransactionDB>,
+        locks: &'a SharedLockTable,
+        options: &'a DatabaseOptions,
+    ) -> Self {
         Self {
             db,
             // We have access to the inner transaction so we can use it to read/write
-            transaction: Some(RocksDbStateStoreReadTransaction::new(db, ReadOnly::new(tx))),
+            transaction: Some(RocksDbStateStoreReadTransaction::new(
+                db,
+                ReadOnly::new(tx),
+                LockTableView::writer(locks),
+            )),
             options,
         }
     }
@@ -204,6 +213,72 @@ impl<'a, TAddr: NodeAddressable> RocksDbStateStoreWriteTransaction<'a, TAddr> {
             .as_ref()
             .expect("DB transaction already taken")
             .rocksdb_transaction()
+    }
+
+    fn staged_locks(&mut self) -> &mut StagedLocks {
+        self.transaction
+            .as_mut()
+            .expect("DB transaction already taken")
+            .locks_mut()
+            .staged_mut()
+    }
+
+    /// Writes `block_id`'s lock-set record to match the staged table: rewritten while the block holds locks, deleted
+    /// once it holds none.
+    fn write_block_lock_set(&mut self, block_id: &BlockId, operation: &'static str) -> Result<(), StorageError> {
+        let record = self
+            .staged_locks()
+            .table()
+            .block(block_id)
+            .map(|locks| locks.to_record());
+        let cf = self.db().cf(BlockLockSetCf)?;
+        match record {
+            Some(record) => cf.put(block_id, &record, operation)?,
+            None => cf.delete(block_id, operation)?,
+        }
+        Ok(())
+    }
+
+    /// [`StateStoreWriteTransaction::substate_locks_insert_all`] for the block at `block_epoch` and `block_height`.
+    pub fn substate_locks_insert_for_block<'b, I: IntoIterator<Item = (&'b SubstateId, &'b Vec<SubstateLock>)>>(
+        &mut self,
+        block_id: &BlockId,
+        block_epoch: Epoch,
+        block_height: NodeHeight,
+        locks: I,
+    ) -> Result<(), StorageError> {
+        const OPERATION: &str = "substate_locks_insert_for_block";
+
+        let mut substates = IndexMap::<SubstateId, Vec<SubstateLock>>::new();
+        for (substate_id, locks) in locks {
+            if !locks.is_empty() {
+                substates.entry(substate_id.clone()).or_default().extend(locks);
+            }
+        }
+        if substates.is_empty() {
+            return self.remove_block_lock_set(block_id, OPERATION);
+        }
+
+        let locks = BlockLocks {
+            epoch: block_epoch,
+            height: block_height,
+            substates,
+        };
+        self.db()
+            .cf(BlockLockSetCf)?
+            .put(block_id, &locks.to_record(), OPERATION)?;
+        self.staged_locks().insert_block(*block_id, locks);
+
+        Ok(())
+    }
+
+    fn remove_block_lock_set(&mut self, block_id: &BlockId, operation: &'static str) -> Result<(), StorageError> {
+        if self.lock_table().block(block_id).is_none() {
+            return Ok(());
+        }
+        self.staged_locks().remove_block(block_id);
+        self.db().cf(BlockLockSetCf)?.delete(block_id, operation)?;
+        Ok(())
     }
 
     fn parked_blocks_insert(
@@ -257,12 +332,17 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         // Take so that we mark this transaction as complete in the drop impl
         let tx = self.transaction.take().expect("commit: already committed");
 
-        tx.into_rocksdb_transaction()
-            .commit()
-            .map_err(|source| RocksDbStorageError::RocksDbError {
+        let (tx, locks) = tx.into_parts();
+        let commit = || {
+            tx.commit().map_err(|source| RocksDbStorageError::RocksDbError {
                 source,
                 operation: "commit",
-            })?;
+            })
+        };
+        match locks.into_staged() {
+            Some((shared, staged)) => shared.commit_and_publish(staged, commit)?,
+            None => commit()?,
+        }
         Ok(())
     }
 
@@ -271,7 +351,8 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         self.transaction
             .take()
             .expect("rollback: already committed")
-            .into_rocksdb_transaction()
+            .into_parts()
+            .0
             .rollback()
             .map_err(|source| RocksDbStorageError::RocksDbError {
                 source,
@@ -1165,31 +1246,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         block: &LeafBlock,
         locks: I,
     ) -> Result<(), StorageError> {
-        const OPERATION: &str = "substate_locks_insert_all";
-
-        let cf = self.db().cf(SubstateLockModel)?;
-        let index_cf = self.db().cf(substate_locks::BlockIdIndex)?;
-        let substate_index_cf = self.db().cf(substate_locks::SubstateIdIndex)?;
-        let chain_order_cf = self.db().cf(substate_locks::ChainOrderIndex)?;
-        for (substate_id, locks) in locks {
-            for (grant_seq, lock) in locks.iter().enumerate() {
-                let grant_seq = grant_seq as u32;
-                let key = SubstateLockKey {
-                    block_id: *block.block_id(),
-                    block_epoch: block.epoch(),
-                    block_height: block.height(),
-                    substate_id: substate_id.clone(),
-                    transaction_id: *lock.transaction_id(),
-                    grant_seq,
-                };
-                cf.put(&key, lock, OPERATION)?;
-                index_cf.put(&key, &(), OPERATION)?;
-                substate_index_cf.put(&key, &lock.lock_type(), OPERATION)?;
-                chain_order_cf.put(&key.to_chain_order_key(), lock.transaction_id(), OPERATION)?;
-            }
-        }
-
-        Ok(())
+        self.substate_locks_insert_for_block(block.block_id(), block.epoch(), block.height(), locks)
     }
 
     fn substate_locks_remove_many_for_transactions<'a, I: IntoIterator<Item = &'a TransactionId>>(
@@ -1197,28 +1254,20 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         transaction_ids: I,
     ) -> Result<(), StorageError> {
         const OPERATION: &str = "substate_locks_remove_many_for_transactions";
-        // check the peekable iterator to save an OP.
-        let mut transaction_ids = transaction_ids.into_iter().peekable();
-        if transaction_ids.peek().is_none() {
+        let transaction_ids = {
+            let table = self.lock_table();
+            transaction_ids
+                .into_iter()
+                .filter(|id| table.holds_locks(id))
+                .copied()
+                .collect::<Vec<_>>()
+        };
+        if transaction_ids.is_empty() {
             return Ok(());
         }
 
-        let cf = self.db().cf(SubstateLockModel)?;
-        let query_cf = self.db().cf(substate_locks::ByTransactionIdQuery)?;
-        let substate_index_cf = self.db().cf(substate_locks::SubstateIdIndex)?;
-        let index_cf = self.db().cf(substate_locks::BlockIdIndex)?;
-        let chain_order_cf = self.db().cf(substate_locks::ChainOrderIndex)?;
-        for tx_id in transaction_ids {
-            for key in query_cf.query_prefix_range_keys(Ordering::default(), tx_id)? {
-                trace!(
-                    target: LOG_TARGET,
-                    "Removing substate locks {key}",
-                );
-                cf.delete(&key, OPERATION)?;
-                index_cf.delete(&key, OPERATION)?;
-                substate_index_cf.delete(&key, OPERATION)?;
-                chain_order_cf.delete(&key.to_chain_order_key(), OPERATION)?;
-            }
+        for block_id in self.staged_locks().release(&transaction_ids) {
+            self.write_block_lock_set(&block_id, OPERATION)?;
         }
 
         Ok(())
@@ -1226,20 +1275,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
 
     fn substate_locks_remove_any_by_block_id(&mut self, block_id: &BlockId) -> Result<(), StorageError> {
         const OPERATION: &str = "substate_locks_remove_any_by_block_id";
-
-        let cf = self.db().cf(SubstateLockModel)?;
-        let index_cf = self.db().cf(substate_locks::BlockIdIndex)?;
-        let substate_index_cf = self.db().cf(substate_locks::SubstateIdIndex)?;
-        let chain_order_cf = self.db().cf(substate_locks::ChainOrderIndex)?;
-        let query_cf = self.db().cf(substate_locks::ByBlockIdQuery)?;
-        for key in query_cf.query_prefix_range_keys(Ordering::Ascending, block_id)? {
-            cf.delete(&key, OPERATION)?;
-            index_cf.delete(&key, OPERATION)?;
-            substate_index_cf.delete(&key, OPERATION)?;
-            chain_order_cf.delete(&key.to_chain_order_key(), OPERATION)?;
-        }
-
-        Ok(())
+        self.remove_block_lock_set(block_id, OPERATION)
     }
 
     fn substates_commit_batch(&mut self, update_batch: SubstateUpdateBatch) -> Result<(), StorageError> {
@@ -1959,7 +1995,8 @@ impl<TAddr> Drop for RocksDbStateStoreWriteTransaction<'_, TAddr> {
                 .transaction
                 .take()
                 .expect("rollback: already committed")
-                .into_rocksdb_transaction()
+                .into_parts()
+                .0
                 .rollback()
                 .map_err(|source| RocksDbStorageError::RocksDbError {
                     source,

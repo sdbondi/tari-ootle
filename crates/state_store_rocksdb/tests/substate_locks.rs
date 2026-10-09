@@ -13,9 +13,11 @@ use tari_ootle_storage::{
     StateStore,
     StateStoreReadTransaction,
     StateStoreWriteTransaction,
+    StorageError,
     consensus_models::SubstateLock,
 };
 use tari_ootle_transaction::TransactionId;
+use tari_state_store_rocksdb::{DatabaseOptions, RocksDbStateStore};
 
 use crate::helpers::{
     chain_across_an_epoch_change,
@@ -288,7 +290,7 @@ fn releasing_one_transactions_lock_leaves_the_rest() {
     tx.rollback().unwrap();
 }
 
-/// Removing a block releases every lock it granted, including the ones the chain-order index holds.
+/// Removing a block releases every lock it granted.
 #[test]
 fn removing_a_block_releases_every_lock_it_granted() {
     let (db, _tmp) = create_rocksdb();
@@ -372,11 +374,8 @@ fn a_lock_from_a_branch_below_the_commit_height_is_not_found() {
     tx.rollback().unwrap();
 }
 
-/// Releasing locks must clear every index entry, over a loop long enough to matter.
-///
-/// Each release path rebuilds a lock's chain-order key from the `grant_seq` in its lock key, so it can address the
-/// wrong entry and leave one behind. A record whose index entry outlives it is caught here because the lookup raises
-/// `DataInconsistency` rather than reporting the substate as unlocked.
+/// Releasing locks leaves none behind, by block or by transaction, over enough substates that a lock the lock table
+/// indexes under the wrong key would be left reachable.
 #[test]
 fn releasing_many_locks_leaves_none_behind() {
     let (db, _tmp) = create_rocksdb();
@@ -675,4 +674,223 @@ fn the_latest_lock_across_an_epoch_change_is_this_epochs() {
     assert_eq!(lock.transaction_id(), &transaction_id_from_seed(2));
 
     tx.rollback().unwrap();
+}
+
+/// Locks a committed transaction granted survive reopening the store, and so do partial releases: a release is
+/// persisted by rewriting the lock-set record it shrinks.
+#[test]
+fn locks_and_releases_survive_reopening_the_store() {
+    let (db, tmp) = create_rocksdb();
+    let chain = create_chain(10);
+    let b8 = chain[8].as_leaf();
+    let b9 = chain[9].as_leaf();
+    let substate_id = create_random_substate_id();
+    let other_substate_id = create_random_substate_id();
+    let (granted_first, granted_last) = ordered_transaction_ids();
+
+    let mut locks = two_locks(&substate_id, granted_first, granted_last);
+    locks.insert(other_substate_id.clone(), vec![SubstateLock::new(
+        granted_first,
+        SubstateVersion::new(0),
+        SubstateLockType::Write,
+        false,
+    )]);
+    db.with_write_tx(|tx| {
+        commit_chain(tx, &chain);
+        tx.substate_locks_insert_all(&b8, &locks)
+    })
+    .unwrap();
+
+    let db = reopen(db, &tmp);
+    {
+        let tx = db.create_read_tx().unwrap();
+        let lock = tx.substate_locks_get_latest_for_substate(&b9, &substate_id).unwrap();
+        assert_eq!(lock.transaction_id(), &granted_last);
+        assert_eq!(
+            tx.substate_locks_get_locked_substates_for_transaction(&b9, &granted_first)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    db.with_write_tx(|tx| tx.substate_locks_remove_many_for_transactions(Some(&granted_last)))
+        .unwrap();
+
+    let db = reopen(db, &tmp);
+    {
+        let tx = db.create_read_tx().unwrap();
+        let lock = tx.substate_locks_get_latest_for_substate(&b9, &substate_id).unwrap();
+        assert_eq!(
+            lock.transaction_id(),
+            &granted_first,
+            "a released lock came back after reopening"
+        );
+        assert!(
+            tx.substate_locks_get_locked_substates_for_transaction(&b9, &granted_last)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    db.with_write_tx(|tx| tx.substate_locks_remove_many_for_transactions(Some(&granted_first)))
+        .unwrap();
+
+    let db = reopen(db, &tmp);
+    let tx = db.create_read_tx().unwrap();
+    for id in [&substate_id, &other_substate_id] {
+        let lock = tx.substate_locks_get_latest_for_substate(&b9, id).optional().unwrap();
+        assert!(lock.is_none(), "a released lock came back after reopening");
+    }
+}
+
+/// A rolled-back transaction's locks are never seen by later transactions.
+#[test]
+fn a_rolled_back_transactions_locks_are_discarded() {
+    let (db, _tmp) = create_rocksdb();
+    let chain = create_chain(10);
+    db.with_write_tx(|tx| {
+        commit_chain(tx, &chain);
+        Ok::<_, StorageError>(())
+    })
+    .unwrap();
+    let b8 = chain[8].as_leaf();
+    let b9 = chain[9].as_leaf();
+    let substate_id = create_random_substate_id();
+    let (granted_first, granted_last) = ordered_transaction_ids();
+
+    let mut tx = db.create_write_tx().unwrap();
+    tx.substate_locks_insert_all(&b8, &two_locks(&substate_id, granted_first, granted_last))
+        .unwrap();
+    assert!(tx.substate_locks_get_latest_for_substate(&b9, &substate_id).is_ok());
+    tx.rollback().unwrap();
+
+    let tx = db.create_read_tx().unwrap();
+    let lock = tx
+        .substate_locks_get_latest_for_substate(&b9, &substate_id)
+        .optional()
+        .unwrap();
+    assert!(lock.is_none());
+}
+
+/// A read view sees the locks committed when it was opened, and none committed after.
+#[test]
+fn a_read_view_sees_the_locks_of_its_snapshot() {
+    let (db, _tmp) = create_rocksdb();
+    let chain = create_chain(10);
+    db.with_write_tx(|tx| {
+        commit_chain(tx, &chain);
+        Ok::<_, StorageError>(())
+    })
+    .unwrap();
+    let b8 = chain[8].as_leaf();
+    let b9 = chain[9].as_leaf();
+    let substate_id = create_random_substate_id();
+    let (granted_first, granted_last) = ordered_transaction_ids();
+
+    let before = db.create_read_tx().unwrap();
+    db.with_write_tx(|tx| tx.substate_locks_insert_all(&b8, &two_locks(&substate_id, granted_first, granted_last)))
+        .unwrap();
+    let after = db.create_read_tx().unwrap();
+    db.with_write_tx(|tx| tx.substate_locks_remove_many_for_transactions([&granted_first, &granted_last]))
+        .unwrap();
+
+    assert!(
+        before
+            .substate_locks_get_latest_for_substate(&b9, &substate_id)
+            .optional()
+            .unwrap()
+            .is_none(),
+        "a read view saw a lock committed after it was opened"
+    );
+    assert_eq!(
+        after
+            .substate_locks_get_latest_for_substate(&b9, &substate_id)
+            .unwrap()
+            .transaction_id(),
+        &granted_last,
+        "a read view lost a lock released after it was opened"
+    );
+}
+
+/// Of two write transactions that change locks concurrently, the second to commit is refused and changes nothing,
+/// in memory or on disk: any lock-set record it wrote was computed from a table the first has since changed.
+#[test]
+fn a_write_transaction_that_staged_from_an_outdated_table_is_not_committed() {
+    let (db, tmp) = create_rocksdb();
+    let chain = create_chain(10);
+    let b8 = chain[8].as_leaf();
+    let b9 = chain[9].as_leaf();
+    let substate_id = create_random_substate_id();
+    let (granted_first, granted_last) = ordered_transaction_ids();
+    db.with_write_tx(|tx| {
+        commit_chain(tx, &chain);
+        tx.substate_locks_insert_all(&b8, &two_locks(&substate_id, granted_first, granted_last))
+    })
+    .unwrap();
+
+    let mut first = db.create_write_tx().unwrap();
+    let mut second = db.create_write_tx().unwrap();
+    first
+        .substate_locks_remove_many_for_transactions(Some(&granted_first))
+        .unwrap();
+    let refused_substate = create_random_substate_id();
+    second
+        .substate_locks_insert_all(&b9, &two_locks(&refused_substate, granted_first, granted_last))
+        .unwrap();
+    first.commit().unwrap();
+    second.commit().unwrap_err();
+    drop((first, second));
+
+    let check = |db: &RocksDbStateStore<String>| {
+        let tx = db.create_read_tx().unwrap();
+        let lock = tx.substate_locks_get_latest_for_substate(&b9, &substate_id).unwrap();
+        assert_eq!(lock.transaction_id(), &granted_last);
+        assert!(
+            tx.substate_locks_get_latest_for_substate(&b9, &refused_substate)
+                .optional()
+                .unwrap()
+                .is_none(),
+            "the refused transaction's locks took effect"
+        );
+        assert!(
+            tx.substate_locks_get_locked_substates_for_transaction(&b9, &granted_first)
+                .unwrap()
+                .is_empty(),
+            "the committed release was lost"
+        );
+    };
+    check(&db);
+    let db = reopen(db, &tmp);
+    check(&db);
+}
+
+/// Recording an empty lock set for a block leaves it holding no locks.
+#[test]
+fn an_empty_lock_set_replaces_the_blocks_locks() {
+    let (db, tmp) = create_rocksdb();
+    let chain = create_chain(10);
+    let b8 = chain[8].as_leaf();
+    let b9 = chain[9].as_leaf();
+    let substate_id = create_random_substate_id();
+    let (granted_first, granted_last) = ordered_transaction_ids();
+    db.with_write_tx(|tx| {
+        commit_chain(tx, &chain);
+        tx.substate_locks_insert_all(&b8, &two_locks(&substate_id, granted_first, granted_last))?;
+        tx.substate_locks_insert_all(&b8, &IndexMap::new())
+    })
+    .unwrap();
+
+    let db = reopen(db, &tmp);
+    let tx = db.create_read_tx().unwrap();
+    let lock = tx
+        .substate_locks_get_latest_for_substate(&b9, &substate_id)
+        .optional()
+        .unwrap();
+    assert!(lock.is_none());
+}
+
+fn reopen(db: RocksDbStateStore<String>, tmp: &tempfile::TempDir) -> RocksDbStateStore<String> {
+    drop(db);
+    RocksDbStateStore::open(tmp.path().join("rocksdb"), DatabaseOptions::default()).unwrap()
 }

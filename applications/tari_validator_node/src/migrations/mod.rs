@@ -29,9 +29,6 @@
 //! }
 //! ```
 //!
-//! No database below [`CURRENT_VERSION`] is supported, so there are no migrations yet and [`migrate`] refuses such a
-//! database.
-//!
 //! A migration must be able to run against a database at any earlier supported version, so it may not assume the
 //! current schema of anything it does not itself write.
 //!
@@ -55,6 +52,8 @@ use tari_state_store_rocksdb::{
 };
 
 use crate::genesis_state::create_genesis_state;
+
+mod v1;
 
 const LOG_TARGET: &str = "tari::validator_node::migrations";
 
@@ -80,11 +79,25 @@ pub fn migrate<TAddr: NodeAddressable + 'static>(
                 "Database already bootstrapped at migration version {version} (current {CURRENT_VERSION})"
             );
         },
-        Some(version) => {
-            anyhow::bail!(
-                "Database is at migration version {version}, and no migration upgrades it to version \
-                 {CURRENT_VERSION}. Delete the database and resync."
-            );
+        Some(mut version) => {
+            while version < CURRENT_VERSION {
+                info!(
+                    target: LOG_TARGET,
+                    "Migrating database from version {version} to {}", version + 1
+                );
+                match version {
+                    0 => v1::migrate(tx)?,
+                    other => anyhow::bail!(
+                        "Database is at migration version {other}, and no migration upgrades it to version {}. Delete \
+                         the database and resync.",
+                        other + 1
+                    ),
+                }
+                version += 1;
+                tx.db()
+                    .cf(DatabaseMigrationVersion)?
+                    .put(&ByteColumn, &version, OPERATION)?;
+            }
         },
         // A fresh database: lay down the genesis state and stamp the current version.
         None => {

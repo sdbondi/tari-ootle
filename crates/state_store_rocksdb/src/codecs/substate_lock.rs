@@ -12,7 +12,7 @@ use tari_ootle_transaction::TransactionId;
 
 use crate::{
     codecs::{DbDecoder, DbEncoder, SubstateIdCodec},
-    column_families::substate_locks::SubstateLockKey,
+    column_families::substate_locks::legacy::SubstateLockKey,
     error::RocksDbStorageError,
     utils::take_fixed,
 };
