@@ -49,11 +49,10 @@ latent risk, explicitly out of scope of the read-consistency work.
 
 ## Pending block state
 
-The substate locks uncommitted blocks hold and the substate changes they make are answered from
-in-memory tables (`pending_state.rs`), not from RocksDB. Each block's locks and each block's changes
-persist as one record per block, written in the same RocksDB transaction as the change that produced
-it; the tables are rebuilt from those records when the store opens. A block's pending state tree
-diffs are one record per block too, read from RocksDB.
+The substate locks uncommitted blocks hold, the substate changes they make and their state tree
+diffs are answered from in-memory tables (`pending_state.rs`), not from RocksDB. Each block's locks,
+changes and tree diffs persist as one record per block, written in the same RocksDB transaction as
+the change that produced it; the tables are rebuilt from those records when the store opens.
 
 - A **read view** pins the state published when its snapshot was taken, so its reads of it are as
   consistent as its database reads.

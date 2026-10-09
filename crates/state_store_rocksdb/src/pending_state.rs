@@ -1,8 +1,8 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-//! The in-memory state of uncommitted blocks: the substate locks they hold ([`LockTable`]) and the substate changes
-//! they make ([`BlockDiffTable`]).
+//! The in-memory state of uncommitted blocks: the substate locks they hold ([`LockTable`]), the substate changes
+//! they make ([`BlockDiffTable`]) and their state tree diffs ([`TreeDiffTable`]).
 //!
 //! Each table answers every read of its kind. Its persistent form is one record per block, written in the same
 //! RocksDB transaction as the change that produced it, and the tables are rebuilt from those records when the store
@@ -13,13 +13,19 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::{block_diff_table::BlockDiffTable, error::RocksDbStorageError, lock_table::LockTable};
+use crate::{
+    block_diff_table::BlockDiffTable,
+    error::RocksDbStorageError,
+    lock_table::LockTable,
+    tree_diff_table::TreeDiffTable,
+};
 
-/// Cloning shares both tables; a staged copy copies a table only when it first changes it.
+/// Cloning shares every table; a staged copy copies a table only when it first changes it.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PendingState {
     pub locks: Arc<LockTable>,
     pub block_diffs: Arc<BlockDiffTable>,
+    pub tree_diffs: Arc<TreeDiffTable>,
 }
 
 /// The pending state every transaction of one store reads and publishes to.
@@ -110,6 +116,10 @@ impl StagedPendingState {
 
     pub fn block_diffs_mut(&mut self) -> &mut BlockDiffTable {
         Arc::make_mut(&mut self.state.block_diffs)
+    }
+
+    pub fn tree_diffs_mut(&mut self) -> &mut TreeDiffTable {
+        Arc::make_mut(&mut self.state.tree_diffs)
     }
 }
 

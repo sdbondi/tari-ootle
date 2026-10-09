@@ -198,7 +198,7 @@ where
         for (shard, pending_diffs) in diffs {
             for pending_diff in pending_diffs {
                 state_versions.insert(shard, pending_diff.version);
-                self.commit_diff(shard, pending_diff.version, pending_diff.diff)?;
+                self.commit_diff(shard, pending_diff.version, pending_diff.diff.into_diff())?;
             }
         }
 

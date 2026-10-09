@@ -11,25 +11,25 @@ use minicbor::{CborLen, Decode, Encode};
 use serde::{Deserialize, Serialize};
 use tari_consensus_types::BlockId;
 use tari_ootle_common_types::shard::Shard;
-use tari_state_tree::{StateHashTreeDiff, StateTreePayload, Version};
+use tari_state_tree::{IndexedTreeDiff, StateHashTreeDiff, StateTreePayload, Version};
 
 use crate::{StateStoreReadTransaction, StateStoreWriteTransaction, StorageError};
 
+/// The diff a pending block makes to one shard's state tree. Cloning shares the diff.
 #[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, CborLen)]
 pub struct PendingShardStateTreeDiff {
     #[n(0)]
     pub version: Version,
     #[n(1)]
-    pub diff: StateHashTreeDiff<StateTreePayload>,
+    pub diff: IndexedTreeDiff<StateTreePayload>,
 }
 
 impl PendingShardStateTreeDiff {
     pub fn new(version: Version, diff: StateHashTreeDiff<StateTreePayload>) -> Self {
-        Self { version, diff }
-    }
-
-    pub fn load(version: Version, diff: StateHashTreeDiff<StateTreePayload>) -> Self {
-        Self { version, diff }
+        Self {
+            version,
+            diff: IndexedTreeDiff::new(diff),
+        }
     }
 }
 

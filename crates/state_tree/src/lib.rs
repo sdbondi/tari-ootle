@@ -3,6 +3,8 @@
 
 pub use tari_jellyfish::*;
 
+pub mod cbor;
+
 mod error;
 pub use error::*;
 
@@ -11,6 +13,9 @@ pub mod memory_store;
 
 mod shard_state_leaf;
 pub use shard_state_leaf::*;
+
+mod indexed_diff;
+pub use indexed_diff::*;
 
 mod staged_store;
 pub use staged_store::*;

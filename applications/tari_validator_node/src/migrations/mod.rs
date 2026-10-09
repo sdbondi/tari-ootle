@@ -55,6 +55,7 @@ use crate::genesis_state::create_genesis_state;
 
 mod v1;
 mod v2;
+mod v3;
 
 const LOG_TARGET: &str = "tari::validator_node::migrations";
 
@@ -89,6 +90,7 @@ pub fn migrate<TAddr: NodeAddressable + 'static>(
                 match version {
                     0 => v1::migrate(tx)?,
                     1 => v2::migrate(tx)?,
+                    2 => v3::migrate(tx)?,
                     other => anyhow::bail!(
                         "Database is at migration version {other}, and no migration upgrades it to version {}. Delete \
                          the database and resync.",

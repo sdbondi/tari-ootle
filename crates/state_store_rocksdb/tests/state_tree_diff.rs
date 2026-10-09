@@ -12,7 +12,7 @@ use tari_ootle_storage::{
     consensus_models::{BookkeepingModel, PendingShardStateTreeDiff},
 };
 use tari_state_store_rocksdb::{DatabaseOptions, RocksDbStateStore};
-use tari_state_tree::StateHashTreeDiff;
+use tari_state_tree::{Node, NodeKey, StateHashTreeDiff};
 
 #[test]
 fn pending_state_tree_diff_rocksdb() {
@@ -68,7 +68,15 @@ fn pending_state_tree_diff_operations(db: impl StateStore) {
     tx.rollback().unwrap();
 }
 
-/// A block's pending state tree diffs, one per shard, survive reopening the store as one record.
+fn diff_with_root(version: u64) -> PendingShardStateTreeDiff {
+    PendingShardStateTreeDiff::new(version, StateHashTreeDiff {
+        new_nodes: vec![(NodeKey::new_empty_path(version), Node::Null)],
+        stale_tree_nodes: vec![],
+    })
+}
+
+/// A block's pending state tree diffs, one per shard, survive reopening the store as one record, still indexed by
+/// node key, and removing them is persisted.
 #[test]
 fn pending_state_tree_diffs_survive_reopening_the_store() {
     let (db, tmp) = create_rocksdb();
@@ -78,12 +86,7 @@ fn pending_state_tree_diffs_survive_reopening_the_store() {
     let diffs = shards
         .iter()
         .enumerate()
-        .map(|(i, shard)| {
-            (
-                *shard,
-                PendingShardStateTreeDiff::new(i as u64, StateHashTreeDiff::new()),
-            )
-        })
+        .map(|(i, shard)| (*shard, diff_with_root(i as u64)))
         .collect::<Vec<_>>();
     db.with_write_tx(|tx| {
         commit_chain(tx, &chain);
@@ -100,7 +103,14 @@ fn pending_state_tree_diffs_survive_reopening_the_store() {
     for (i, shard) in shards.iter().enumerate() {
         assert_eq!(res[shard].len(), 1);
         assert_eq!(res[shard][0].version, i as u64);
+        assert_eq!(
+            res[shard][0].diff.get_node(&NodeKey::new_empty_path(i as u64)),
+            Some(&Node::Null)
+        );
     }
+
+    drop(db);
+    let db = RocksDbStateStore::<String>::open(tmp.path().join("rocksdb"), DatabaseOptions::default()).unwrap();
     let res = db
         .with_write_tx(|tx| tx.pending_state_tree_diffs_remove_and_return_by_block(block8.id()))
         .unwrap();
