@@ -153,7 +153,7 @@ use crate::{
         state_tree,
         state_tree::{StateTreeCf, StateTreeStaleNodesCf},
         state_tree_shard_versions::StateTreeShardVersionCf,
-        state_version_proof::StateVersionProofCf,
+        state_version_proof::{BlockCommitProofCf, StateVersionProofCf},
         substate,
         substate::{SubstateCf, SubstateHeadData},
         substate_locks::BlockLockSetCf,
@@ -1792,6 +1792,14 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         self.db()
             .cf(StateVersionProofCf)?
             .put(&(proof.shard, proof.state_version), proof, OPERATION)?;
+        Ok(())
+    }
+
+    fn block_commit_proofs_insert(&mut self, block_id: &BlockId, commit_proof: &[u8]) -> Result<(), StorageError> {
+        const OPERATION: &str = "block_commit_proofs_insert";
+        self.db()
+            .cf(BlockCommitProofCf)?
+            .put_raw_value(block_id, commit_proof, OPERATION)?;
         Ok(())
     }
 

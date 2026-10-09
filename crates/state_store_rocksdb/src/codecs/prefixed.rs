@@ -70,6 +70,7 @@ pub enum KeyPrefix {
     SubstateLockSets = 53,
     BlockDiffRecords = 54,
     PendingStateTreeDiffRecords = 55,
+    BlockCommitProofs = 56,
 }
 
 impl KeyPrefix {

@@ -5,7 +5,7 @@ use std::num::NonZeroU64;
 
 use log::*;
 use tari_common_types::types::FixedHash;
-use tari_consensus_types::{Decision, LastVoted, LeafBlock, PcId};
+use tari_consensus_types::{Decision, LastVoted, LeafBlock, PcId, ProposalCertificate};
 use tari_crypto::ristretto::RistrettoPublicKey;
 use tari_engine_types::commit_result::{AbortReason, RejectReason};
 use tari_ootle_common_types::{Epoch, ShardGroup, committee::CommitteeInfo, optional::Optional};
@@ -20,6 +20,7 @@ use tari_ootle_storage::{
         BlockTransactionExecution,
         BookkeepingModel,
         Command,
+        CommittedBlockProof,
         ForeignProposalAtom,
         ForeignProposalStatus,
         InvalidEvidenceReason,
@@ -50,6 +51,7 @@ use crate::{
         apply_leader_fee_to_substate_store,
         block_change_set::{BlockDecision, ProposedBlockChangeSet},
         calculate_state_merkle_root,
+        commit_proofs::generate_block_commit_proof,
         error::HotStuffError,
         event::HotstuffEvent,
         exhaust_burn_rate::resolve_epoch_exhaust_burn_rate,
@@ -124,7 +126,8 @@ where TConsensusSpec: ConsensusSpec
             valid_block,
         );
 
-        let block_qc_id = valid_block.block().justify().calculate_id();
+        let block_qc = valid_block.block().justify();
+        let block_qc_id = block_qc.calculate_id();
         // The QC is valid, update high QC - Regardless if we accept the proposal commands.
         // Update high TC
         let maybe_high_tc = valid_block
@@ -140,7 +143,7 @@ where TConsensusSpec: ConsensusSpec
             tx,
             |tx, _prev_locked, block, _justify_qc| self.on_lock_block(tx, block),
             |tx, mut commit_block| {
-                let committed = self.on_commit(tx, &block_qc_id, &commit_block)?;
+                let committed = self.on_commit(tx, block_qc, &block_qc_id, &commit_block)?;
                 // NOTE: update the commit QC in the local copy so that foreign proposals can obtain the commit QC
                 // on_commit already sets the persisted commit_qc for the block
                 commit_block.set_commit_qc(block_qc_id);
@@ -1709,10 +1712,11 @@ where TConsensusSpec: ConsensusSpec
     fn on_commit(
         &self,
         tx: &mut <TConsensusSpec::StateStore as StateStore>::WriteTransaction<'_>,
+        commit_qc: &ProposalCertificate,
         commit_qc_id: &PcId,
         block: &Block,
     ) -> Result<Vec<TransactionPoolRecord>, HotStuffError> {
-        let committed_transactions = self.finalize_block(tx, commit_qc_id, block)?;
+        let committed_transactions = self.finalize_block(tx, commit_qc, commit_qc_id, block)?;
         debug!(
             target: LOG_TARGET,
             "✅ COMMIT block {}",
@@ -1763,6 +1767,7 @@ where TConsensusSpec: ConsensusSpec
     fn finalize_block(
         &self,
         tx: &mut <TConsensusSpec::StateStore as StateStore>::WriteTransaction<'_>,
+        commit_qc: &ProposalCertificate,
         commit_qc_id: &PcId,
         block: &Block,
     ) -> Result<Vec<TransactionPoolRecord>, HotStuffError> {
@@ -1789,7 +1794,22 @@ where TConsensusSpec: ConsensusSpec
         let mut state_tree = ShardedStateTree::new(tx);
         let version_updates = state_tree.commit_diffs(pending)?;
         let tx = state_tree.into_transaction();
-        index_committed_block_state_versions(tx, block, &version_updates)?;
+        // The state version proofs just indexed name this block, which is pruned with its epoch, so they are served
+        // with the commit proof stored here. A storage error fails the commit; a block that breaks a commit-proof
+        // invariant is logged, and the node keeps committing, as it does when it cannot index the proofs.
+        if index_committed_block_state_versions(tx, block, &version_updates)? {
+            match generate_block_commit_proof(&**tx, commit_qc, block) {
+                Ok(commit_proof) => {
+                    tx.block_commit_proofs_insert(block.id(), &CommittedBlockProof::new(commit_proof).to_bytes())?
+                },
+                Err(err @ HotStuffError::StorageError(_)) => return Err(err),
+                Err(err) => error!(
+                    target: LOG_TARGET,
+                    "BUG: cannot generate the commit proof of {block}, so its state versions cannot be proven to \
+                     syncing peers once it is pruned: {err}"
+                ),
+            }
+        }
 
         {
             let _timer = TraceTimer::debug(LOG_TARGET, "commit_block");

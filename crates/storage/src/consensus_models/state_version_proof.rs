@@ -52,7 +52,8 @@ pub struct StateVersionProof {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StateVersionProofSource {
-    /// This node committed the block that produced the version, and generates its commit proof when serving it.
+    /// This node committed the block that produced the version, and stored the block's commit proof under its id
+    /// (see [`StateStoreReadTransaction::block_commit_proofs_get`]).
     Committed { block_id: BlockId },
     /// A CBOR-encoded [`CommittedBlockProof`] received from a peer during state sync and verified.
     Received { commit_proof: Vec<u8> },
@@ -139,11 +140,15 @@ pub enum StateVersionProofError {
 ///
 /// Must run once the block's tree diffs are committed, while the committed tree holds exactly the state the
 /// block's root commits: every shard of the group at its latest committed root and version.
+///
+/// Returns true if it recorded any proof. Those proofs name `block` as their source, so the caller must then store
+/// the block's commit proof with [`StateStoreWriteTransaction::block_commit_proofs_insert`]: the block itself is
+/// pruned with its epoch, and the proofs are served for as long as the state versions are.
 pub fn index_committed_block_state_versions<TTx>(
     tx: &mut TTx,
     block: &Block,
     version_updates: &HashMap<Shard, Version>,
-) -> Result<(), StorageError>
+) -> Result<bool, StorageError>
 where
     TTx: StateStoreWriteTransaction + Deref,
     TTx::Target: StateStoreReadTransaction,
@@ -151,7 +156,7 @@ where
     let protocol_version = block.header().protocol_version();
     // Only a V1 or later root commits each shard's state version, so only it can prove one.
     if version_updates.is_empty() || protocol_version < ProtocolVersion::V1 {
-        return Ok(());
+        return Ok(false);
     }
     let mut shard_states = Vec::with_capacity(block.shard_group().len() + 1);
     for shard in block.shard_group().shard_iter_with_global() {
@@ -184,7 +189,7 @@ where
             block.id(),
             block.state_merkle_root()
         );
-        return Ok(());
+        return Ok(false);
     }
 
     for (shard, state_version) in version_updates {
@@ -205,7 +210,7 @@ where
             shard_root_proof,
         })?;
     }
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]

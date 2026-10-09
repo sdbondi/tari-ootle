@@ -143,7 +143,7 @@ use crate::{
         state_tree::StateTreeCf,
         state_tree_shard_versions,
         state_tree_shard_versions::StateTreeShardVersionCf,
-        state_version_proof::StateVersionProofCf,
+        state_version_proof::{BlockCommitProofCf, StateVersionProofCf},
         substate,
         substate::SubstateCf,
         transaction::TransactionCf,
@@ -1978,6 +1978,12 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
             .map(|res| res.map(|(_, proof)| proof))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(proofs)
+    }
+
+    fn block_commit_proofs_get(&self, block_id: &BlockId) -> Result<Vec<u8>, StorageError> {
+        const OPERATION: &str = "block_commit_proofs_get";
+        let commit_proof = self.db().cf(BlockCommitProofCf)?.get(block_id, OPERATION)?;
+        Ok(commit_proof)
     }
 
     fn state_sync_rewind_points_get_all(&self) -> Result<Vec<(Shard, Version)>, StorageError> {
