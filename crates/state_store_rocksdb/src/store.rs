@@ -23,13 +23,15 @@ use rocksdb::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 use tari_ootle_common_types::NodeAddressable;
-use tari_ootle_storage::{StateStore, StorageError};
+use tari_ootle_storage::{Ordering, StateStore, StorageError};
 
 use crate::{
-    column_families::cf_names,
+    cf_api::DbContext,
+    column_families::{cf_names, substate_locks::BlockLockSetCf},
     dbs::read_only::ReadOnlyDb,
     error::RocksDbStorageError,
     info::ColumnFamilyInfo,
+    lock_table::{BlockLocks, LockTable, LockTableView, SharedLockTable},
     memory_budget::RocksDbMemoryBudget,
     options::{DatabaseOptions, MAX_WRITE_BUFFER_NUMBER},
     read_only_ctx::ReadOnlyContext,
@@ -112,6 +114,7 @@ pub(crate) fn build_default_store_opts(options: &DatabaseOptions) -> (rocksdb::O
 pub type RocksDbReadOnlyStateStore<TAddr> = RocksDbStateStore<TAddr, ReadOnlyDb>;
 pub struct RocksDbStateStore<TAddr, DB = TransactionDB> {
     db: Arc<DB>,
+    locks: Arc<SharedLockTable>,
     options: DatabaseOptions,
     memory_budget: RocksDbMemoryBudget,
     _addr: PhantomData<TAddr>,
@@ -131,8 +134,10 @@ impl<TAddr> RocksDbStateStore<TAddr, TransactionDB> {
             .map_err(|e| StorageError::ConnectionError {
                 reason: e.into_string(),
             })?;
+        let locks = load_lock_table(&db)?;
         let db = Self {
             db: Arc::new(db),
+            locks: Arc::new(SharedLockTable::new(locks)),
             options,
             memory_budget,
             _addr: PhantomData,
@@ -162,8 +167,8 @@ impl<TAddr> RocksDbStateStore<TAddr, TransactionDB> {
     /// bound-free inherent form of [`tari_ootle_storage::StateStore::create_read_tx`]; see CONTEXT.md
     /// (read view).
     pub fn read_view(&self) -> ReadView<'_, TAddr> {
-        let snapshot = self.db.snapshot();
-        RocksDbStateStoreReadTransaction::new(&self.db, snapshot)
+        let (snapshot, locks) = self.locks.pin_with(|| self.db.snapshot());
+        RocksDbStateStoreReadTransaction::new(&self.db, snapshot, LockTableView::Pinned(locks))
     }
 }
 
@@ -183,6 +188,7 @@ impl<TAddr> RocksDbStateStore<TAddr, ReadOnlyDb> {
 
         Ok(Self {
             db: Arc::new(ReadOnlyDb::new(db)),
+            locks: Arc::default(),
             _addr: PhantomData,
             options: db_options,
             memory_budget,
@@ -238,6 +244,20 @@ impl<TAddr, DB: RocksDatabase + RocksReader> RocksDbStateStore<TAddr, DB> {
     }
 }
 
+/// Builds the lock table from the lock-set records the database holds.
+fn load_lock_table(db: &TransactionDB) -> Result<LockTable, StorageError> {
+    const OPERATION: &str = "load_lock_table";
+    let snapshot = db.snapshot();
+    let ctx = DbContext::new(db, &snapshot);
+    let cf = ctx.cf(BlockLockSetCf)?;
+    let mut table = LockTable::default();
+    for result in cf.iterator(Ordering::Ascending, OPERATION) {
+        let (block_id, record) = result?;
+        table.insert_block(block_id, BlockLocks::from_record(record));
+    }
+    Ok(table)
+}
+
 // Manually implement the Debug implementation because `RocksDbStateStore` does not implement the Debug trait
 impl<TAddr, DB> fmt::Debug for RocksDbStateStore<TAddr, DB> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -256,7 +276,7 @@ impl<TAddr: NodeAddressable> RocksDbStateStore<TAddr, TransactionDB> {
         // closes it with `Busy` as soon as the cycle forms.
         tx_opts.set_deadlock_detect(true);
         let tx = self.db.transaction_opt(&write_opts, &tx_opts);
-        let tx = RocksDbStateStoreWriteTransaction::new(&self.db, tx, &self.options);
+        let tx = RocksDbStateStoreWriteTransaction::new(&self.db, tx, &self.locks, &self.options);
         let elapsed = timer.elapsed();
         let level = if elapsed > Duration::from_secs(1) {
             log::Level::Warn
@@ -302,6 +322,7 @@ impl<TAddr, DB> Clone for RocksDbStateStore<TAddr, DB> {
     fn clone(&self) -> Self {
         Self {
             db: self.db.clone(),
+            locks: self.locks.clone(),
             _addr: PhantomData,
             options: self.options.clone(),
             memory_budget: self.memory_budget.clone(),

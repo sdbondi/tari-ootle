@@ -43,6 +43,7 @@ pub enum KeyPrefix {
     MissingTransactionBlockIdIndex = 29,
     ParkedBlocks = 30,
     PendingStateTreeDiff = 31,
+    // 32, 34, 35 and 49 hold the per-lock tables of schema version 0, read only by the migration to version 1.
     SubstateLocks = 32,
     // 33 was SubstateLockHeadIndex
     SubstateLocksBlockIdIndex = 34,
@@ -64,6 +65,7 @@ pub enum KeyPrefix {
     ForeignProposalMissingTransactionsBlockIdIndex = 50,
     StateSyncRewindPoint = 51,
     StateVersionProofs = 52,
+    SubstateLockSets = 53,
 }
 
 impl KeyPrefix {

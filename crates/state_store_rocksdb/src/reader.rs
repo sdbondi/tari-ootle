@@ -101,7 +101,7 @@ use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 
 use crate::{
     cf_api::DbContext,
-    codecs::DbEncoder,
+    codecs::{DbEncoder, SubstateIdCodec},
     column_families::{
         block,
         block::BlockCf,
@@ -147,8 +147,6 @@ use crate::{
         state_version_proof::StateVersionProofCf,
         substate,
         substate::SubstateCf,
-        substate_locks,
-        substate_locks::SubstateLockModel,
         transaction::TransactionCf,
         transaction_pool::TransactionPoolCf,
         transaction_pool_state_update,
@@ -157,6 +155,7 @@ use crate::{
         vote_equivocation,
     },
     error::RocksDbStorageError,
+    lock_table::{LockTableRef, LockTableView},
     read_only::ReadOnly,
     state_tree_iterator::LatestSubstateStateTreeIterator,
     traits::{Cf, RocksReader},
@@ -169,6 +168,7 @@ pub(crate) type ReadOnlyTransaction<'a> = ReadOnly<Transaction<'a, TransactionDB
 pub struct RocksDbStateStoreReadTransaction<'a, TAddr, R = ReadOnlyTransaction<'a>> {
     tx: R,
     db: &'a TransactionDB,
+    locks: LockTableView<'a>,
     _addr: PhantomData<TAddr>,
     // A read view must not be held open across an `.await` or *moved* to another thread: a live
     // snapshot pins SST files (space amplification), and reads are meant to be short and scoped.
@@ -188,10 +188,11 @@ pub struct RocksDbStateStoreReadTransaction<'a, TAddr, R = ReadOnlyTransaction<'
 unsafe impl<TAddr, R: Sync> Sync for RocksDbStateStoreReadTransaction<'_, TAddr, R> {}
 
 impl<'a, TAddr, R> RocksDbStateStoreReadTransaction<'a, TAddr, R> {
-    pub(crate) fn new(db: &'a TransactionDB, tx: R) -> Self {
+    pub(crate) fn new(db: &'a TransactionDB, tx: R, locks: LockTableView<'a>) -> Self {
         Self {
             tx,
             db,
+            locks,
             _addr: PhantomData,
             _not_send: PhantomData,
         }
@@ -200,17 +201,25 @@ impl<'a, TAddr, R> RocksDbStateStoreReadTransaction<'a, TAddr, R> {
     pub fn db(&self) -> DbContext<'_, R> {
         DbContext::new(self.db, &self.tx)
     }
+
+    pub(crate) fn lock_table(&self) -> LockTableRef<'_> {
+        self.locks.table()
+    }
+
+    pub(crate) fn locks_mut(&mut self) -> &mut LockTableView<'a> {
+        &mut self.locks
+    }
 }
 
-// `rocksdb_transaction`/`into_rocksdb_transaction` only exist on the transaction-backed instantiation
+// `rocksdb_transaction`/`into_parts` only exist on the transaction-backed instantiation
 // (the writer uses them for commit/rollback/drop). A snapshot-backed read view has no transaction.
 impl<'a, TAddr> RocksDbStateStoreReadTransaction<'a, TAddr, ReadOnlyTransaction<'a>> {
     pub(crate) fn rocksdb_transaction(&self) -> &Transaction<'a, TransactionDB> {
         &self.tx.inner
     }
 
-    pub(crate) fn into_rocksdb_transaction(self) -> Transaction<'a, TransactionDB> {
-        self.tx.inner
+    pub(crate) fn into_parts(self) -> (Transaction<'a, TransactionDB>, LockTableView<'a>) {
+        (self.tx.inner, self.locks)
     }
 }
 
@@ -1652,27 +1661,37 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
     ) -> Result<Vec<LockedSubstateValue>, StorageError> {
         const OPERATION: &str = "substate_locks_get_locked_substates_for_transaction";
 
-        let substates_cf = self.db().cf(SubstateCf)?;
-        let query = self.db().cf(substate_locks::ByTransactionIdQuery)?;
         let scope = self.chain_scope(leaf_block.block_id())?;
+        let table = self.lock_table();
 
-        let mut locked_substates = Vec::new();
-
-        let iter = query.query_prefix_range_iterator(Ordering::default(), transaction_id);
-
-        for result in iter {
-            let (key, lock) = result?;
-            if !self.is_in_chain_scope(&scope, &key.block_id, key.block_epoch, key.block_height)? {
+        // Ordered by encoded substate id, then by block and grant order, so callers see one order on every node.
+        let mut held = Vec::new();
+        for (block_id, block, substate_id, grant_seq, lock) in table.locks_held_by(transaction_id) {
+            if !self.is_in_chain_scope(&scope, block_id, block.epoch, block.height)? {
                 continue;
             }
+            let sort_key = (
+                SubstateIdCodec.encode(substate_id)?.to_vec(),
+                *block_id,
+                block.epoch,
+                block.height,
+                grant_seq,
+            );
+            held.push((sort_key, substate_id, *lock));
+        }
+        held.sort_by(|(a, ..), (b, ..)| a.cmp(b));
+
+        let substates_cf = self.db().cf(SubstateCf)?;
+        let mut locked_substates = Vec::with_capacity(held.len());
+        for (_, substate_id, lock) in held {
             let substate = substates_cf
                 .get(
-                    &SubstateAddress::from_substate_id(&key.substate_id, lock.version()),
+                    &SubstateAddress::from_substate_id(substate_id, lock.version()),
                     OPERATION,
                 )
                 .optional()?;
             locked_substates.push(LockedSubstateValue {
-                substate_id: key.substate_id,
+                substate_id: substate_id.clone(),
                 lock,
                 value: substate.and_then(|s| s.into_substate_value()),
             });
@@ -1682,7 +1701,7 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
     }
 
     /// Returns the transaction ID of any write lock found for any of the given substates, or None if there are no write
-    /// locks.
+    /// locks. Of several transactions write-locking one substate, the lowest id is returned.
     ///
     /// # Used for:
     /// Foreign proposal conflict resolution, to check if there is a conflicting write lock in a foreign proposal by
@@ -1698,24 +1717,30 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
             return Ok(None);
         }
 
-        let query = self.db().cf(substate_locks::BySubstateIdQuery)?;
         let scope = self.chain_scope(leaf_block.block_id())?;
+        let table = self.lock_table();
 
         for substate_id in substate_ids {
-            let iter = query.query_prefix_range_iterator(Ordering::default(), substate_id);
-            for result in iter {
-                let (key, lock_type) = result?;
-                if !lock_type.is_write() {
+            let mut conflicting = None::<TransactionId>;
+            for (block_id, block, locks) in table.blocks_locking_substate(substate_id) {
+                let lowest = locks
+                    .iter()
+                    .filter(|lock| lock.is_write())
+                    .map(|lock| *lock.transaction_id())
+                    .filter(|id| exclude_transaction_id != Some(id))
+                    .min();
+                let Some(lowest) = lowest else {
+                    continue;
+                };
+                if conflicting.is_some_and(|c| c <= lowest) {
                     continue;
                 }
-                if exclude_transaction_id.is_some_and(|ex| *ex == key.transaction_id) {
-                    continue;
+                if self.is_in_chain_scope(&scope, block_id, block.epoch, block.height)? {
+                    conflicting = Some(lowest);
                 }
-                if !self.is_in_chain_scope(&scope, &key.block_id, key.block_epoch, key.block_height)? {
-                    continue;
-                }
-
-                return Ok(Some(key.transaction_id));
+            }
+            if conflicting.is_some() {
+                return Ok(conflicting);
             }
         }
 
@@ -1725,9 +1750,10 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
     /// Returns the lock most recently granted on a substate by the chain ending at the chain's leaf, searching its
     /// pending blocks and then the committed chain beneath them.
     ///
-    /// The answer is a property of that chain alone: locks granted by blocks on other branches are skipped. The
-    /// chain-order index orders a substate's locks by (block_epoch, block_height, grant_seq), which totally orders the
-    /// locks any one chain holds, so the first entry the descending scan accepts is the answer.
+    /// The answer is a property of that chain alone: locks granted by blocks on other branches are skipped. Heights
+    /// restart at zero each epoch and a chain holds one block per height within an epoch, so (block_epoch,
+    /// block_height, grant order) totally orders the locks any one chain holds on the substate: the latest lock of the
+    /// highest block in the chain is the answer.
     ///
     /// # Used for:
     /// Local proposal conflict resolution, to check if a substate is locked by another transaction.
@@ -1736,34 +1762,18 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         scope: &PendingChain,
         substate_id: &SubstateId,
     ) -> Result<SubstateLock, StorageError> {
-        const OPERATION: &str = "substate_locks_get_latest_for_substate";
         self.debug_assert_chain_is_current(scope)?;
-        let cf = self.db().cf(SubstateLockModel)?;
+        let table = self.lock_table();
 
-        let query = self.db().cf(substate_locks::ByChainOrderQuery)?;
-        for result in query.query_prefix_range_iterator(Ordering::Descending, substate_id) {
-            let ((_, block_epoch, block_height, block_id, grant_seq), transaction_id) = result?;
-            if !self.is_in_chain_scope(scope, &block_id, block_epoch, block_height)? {
+        let mut candidates = table.blocks_locking_substate(substate_id).collect::<Vec<_>>();
+        candidates.sort_by(|(a_id, a, _), (b_id, b, _)| (b.epoch, b.height, b_id).cmp(&(a.epoch, a.height, a_id)));
+        for (block_id, block, locks) in candidates {
+            if !self.is_in_chain_scope(scope, block_id, block.epoch, block.height)? {
                 continue;
             }
-
-            let lock_key = substate_locks::SubstateLockKey {
-                block_id,
-                block_epoch,
-                block_height,
-                substate_id: substate_id.clone(),
-                transaction_id,
-                grant_seq,
-            };
-            let Some(lock) = cf.get(&lock_key, OPERATION).optional()? else {
-                // The index entry and the record it names are written and removed together. Reporting the substate as
-                // unlocked here would let a transaction conflicting with a live lock through, so an index entry that
-                // outlived its record is raised rather than read past.
-                return Err(StorageError::DataInconsistency {
-                    details: format!("{lock_key} is in the substate lock chain-order index but has no lock record"),
-                });
-            };
-            return Ok(lock);
+            if let Some(lock) = locks.last() {
+                return Ok(*lock);
+            }
         }
 
         Err(StorageError::NotFound {

@@ -666,17 +666,20 @@ pub trait StateStoreWriteTransaction {
     ) -> Result<Vec<ForeignParkedProposal>, StorageError>;
 
     //---------------------------------- Substates --------------------------------------------//
+    /// Records the locks `block` granted, each substate's in grant order, replacing any recorded for the block before.
     fn substate_locks_insert_all<'a, I: IntoIterator<Item = (&'a SubstateId, &'a Vec<SubstateLock>)>>(
         &mut self,
         block: &LeafBlock,
         locks: I,
     ) -> Result<(), StorageError>;
 
+    /// Releases every lock the transactions hold, in any block.
     fn substate_locks_remove_many_for_transactions<'a, I: IntoIterator<Item = &'a TransactionId>>(
         &mut self,
         transaction_ids: I,
     ) -> Result<(), StorageError>;
 
+    /// Releases every lock `block_id` granted.
     fn substate_locks_remove_any_by_block_id(&mut self, block_id: &BlockId) -> Result<(), StorageError>;
 
     // -------------------------------- Substates -------------------------------- //
