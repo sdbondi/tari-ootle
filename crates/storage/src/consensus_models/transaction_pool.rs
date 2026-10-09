@@ -238,7 +238,9 @@ impl<TStateStore: StateStore> TransactionPool<TStateStore> {
 ///
 /// The returned batch is sorted by transaction id. The proposer prepares transactions in batch order and
 /// replicas process a block's commands in transaction-id order, so two transactions contending for a lock
-/// must reach it in the same order on both sides.
+/// must reach it in the same order on both sides. A caller that stops preparing part way through the batch
+/// (at a deadline or execution budget) therefore defers the highest ids; which records enter the batch is
+/// random, the order within it is not.
 pub fn select_proposal_batch<R: Rng + ?Sized>(
     mut records: Vec<TransactionPoolRecord>,
     weight_budget: u64,
