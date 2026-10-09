@@ -5,9 +5,10 @@ use log::*;
 use tari_common_types::types::CompressedPublicKey;
 use tari_consensus_types::ProposalCertificate;
 use tari_crypto::{ristretto::RistrettoSecretKey, tari_utilities::ByteArray};
+use tari_ootle_common_types::optional::Optional;
 use tari_ootle_storage::{
     StateStoreReadTransaction,
-    consensus_models::{Block, BlockHeader, EndOfEpochCommand},
+    consensus_models::{Block, BlockHeader, CommittedBlockProof, EndOfEpochCommand, StateVersionProofSource},
 };
 use tari_sidechain::{
     ChainLink,
@@ -62,6 +63,28 @@ pub fn generate_end_of_epoch_commit_proof<TTx: StateStoreReadTransaction>(
         inclusion_proof,
     );
     Ok(command_commit_proof)
+}
+
+/// The CBOR-encoded [`CommittedBlockProof`] that a state version proof from `source` is served with.
+///
+/// A [`StateVersionProofSource::Committed`] block's commit proof is the one stored when it committed. A block with no
+/// stored commit proof is proven from the block itself, which is possible only while the block is retained.
+pub fn state_version_commit_proof<TTx: StateStoreReadTransaction>(
+    tx: &TTx,
+    source: StateVersionProofSource,
+) -> Result<Vec<u8>, HotStuffError> {
+    match source {
+        StateVersionProofSource::Committed { block_id } => {
+            if let Some(commit_proof) = tx.block_commit_proofs_get(&block_id).optional()? {
+                return Ok(commit_proof);
+            }
+            let block = Block::get(tx, &block_id)?;
+            let commit_qc = block.get_commit_qc(tx)?;
+            let commit_proof = generate_block_commit_proof(tx, &commit_qc, &block)?;
+            Ok(CommittedBlockProof::new(commit_proof).to_bytes())
+        },
+        StateVersionProofSource::Received { commit_proof } => Ok(commit_proof),
+    }
 }
 
 pub fn generate_block_commit_proof<TTx: StateStoreReadTransaction>(

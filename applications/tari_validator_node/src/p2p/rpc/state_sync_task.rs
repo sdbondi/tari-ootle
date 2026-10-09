@@ -5,7 +5,7 @@ use std::num::NonZeroUsize;
 
 use log::*;
 use prost::Message;
-use tari_consensus::hotstuff::{HotstuffEvent, commit_proofs::generate_block_commit_proof};
+use tari_consensus::hotstuff::{HotstuffEvent, commit_proofs::state_version_commit_proof};
 use tari_engine_types::published_template::MAX_TEMPLATE_BLOB_WIRE_BYTES;
 use tari_epoch_manager::{EpochManagerReader, service::EpochManagerHandle};
 use tari_ootle_common_types::{
@@ -22,12 +22,9 @@ use tari_ootle_storage::{
     StateStoreReadTransaction,
     StorageError,
     consensus_models::{
-        Block,
-        CommittedBlockProof,
         EpochCheckpoint,
         StateTransition,
         StateVersionProof,
-        StateVersionProofSource,
         StateVersionTransitions,
         SubstateValueFilterFlags,
         is_state_version_proof_point,
@@ -755,23 +752,14 @@ fn into_batches(
     Ok(batches)
 }
 
-/// The wire form of `proof`, generating the commit proof of a block this node committed.
+/// The wire form of `proof`.
 fn version_proof_message<TTx: StateStoreReadTransaction>(
     tx: &TTx,
     proof: StateVersionProof,
 ) -> Result<rpc::StateVersionProof, StorageError> {
-    let commit_proof = match proof.source {
-        StateVersionProofSource::Committed { block_id } => {
-            let block = Block::get(tx, &block_id)?;
-            let commit_qc = block.get_commit_qc(tx)?;
-            let commit_proof =
-                generate_block_commit_proof(tx, &commit_qc, &block).map_err(|e| StorageError::QueryError {
-                    reason: format!("generate_block_commit_proof for {block_id}: {e}"),
-                })?;
-            CommittedBlockProof::new(commit_proof).to_bytes()
-        },
-        StateVersionProofSource::Received { commit_proof } => commit_proof,
-    };
+    let commit_proof = state_version_commit_proof(tx, proof.source).map_err(|e| StorageError::QueryError {
+        reason: format!("commit proof of {} v{}: {e}", proof.shard, proof.state_version),
+    })?;
     let shard_root_proof =
         tari_bor::serde_codec::to_vec(&proof.shard_root_proof).map_err(|e| StorageError::QueryError {
             reason: format!("encode shard root proof: {e}"),

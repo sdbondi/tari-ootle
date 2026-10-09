@@ -66,6 +66,7 @@ pub enum KeyPrefix {
     StateSyncRewindPoint = 51,
     StateVersionProofs = 52,
     SubstateLockSets = 53,
+    BlockCommitProofs = 54,
 }
 
 impl KeyPrefix {

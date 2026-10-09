@@ -456,6 +456,8 @@ pub trait StateStoreReadTransaction: Sized {
         from: Version,
         to: Version,
     ) -> Result<Vec<StateVersionProof>, StorageError>;
+    /// The CBOR-encoded commit proof of `block_id`, a block this node committed that produced state versions.
+    fn block_commit_proofs_get(&self, block_id: &BlockId) -> Result<Vec<u8>, StorageError>;
 
     // -------------------------------- Epoch checkpoint -------------------------------- //
     fn epoch_checkpoint_get_all_from_epoch(
@@ -777,6 +779,9 @@ pub trait StateStoreWriteTransaction {
     fn state_sync_rewind_point_set(&mut self, shard: Shard, version: Version) -> Result<(), StorageError>;
     fn state_sync_rewind_point_remove(&mut self, shard: Shard) -> Result<(), StorageError>;
     fn state_version_proofs_insert(&mut self, proof: &StateVersionProof) -> Result<(), StorageError>;
+    /// Stores the CBOR-encoded commit proof of `block_id`. It is never pruned: the state version proofs that name the
+    /// block outlive it.
+    fn block_commit_proofs_insert(&mut self, block_id: &BlockId, commit_proof: &[u8]) -> Result<(), StorageError>;
 
     // -------------------------------- Epoch checkpoint -------------------------------- //
     fn epoch_checkpoint_save(&mut self, checkpoint: &EpochCheckpoint) -> Result<(), StorageError>;
