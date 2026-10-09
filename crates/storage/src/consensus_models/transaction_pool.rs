@@ -129,7 +129,7 @@ impl<TStateStore: StateStore> TransactionPool<TStateStore> {
         tx: &impl StateStoreReadTransaction,
         weight_budget: u64,
         max_count: usize,
-        oversized_turn: bool,
+        heavy_turn: bool,
         block_id: &BlockId,
     ) -> Result<Vec<TransactionPoolRecord>, TransactionPoolError> {
         if weight_budget == 0 || max_count == 0 {
@@ -140,7 +140,7 @@ impl<TStateStore: StateStore> TransactionPool<TStateStore> {
             recs,
             weight_budget,
             max_count,
-            oversized_turn,
+            heavy_turn,
             &mut rand::rng(),
         ))
     }
@@ -229,15 +229,17 @@ impl<TStateStore: StateStore> TransactionPool<TStateStore> {
 /// does not fit is skipped so the lighter records behind it still pack. Selection stops at `max_count`
 /// records.
 ///
-/// A record heavier than the whole `weight_budget` is oversized and can only be proposed alone. It is
-/// chosen when no ready record fits the budget, or when `oversized_turn` is set. The caller sets
-/// `oversized_turn` on a fixed fraction of blocks: oversized transactions still commit while the pool
-/// never drains, but they cannot claim more than that fraction of blocks from transactions that fit.
+/// A heavy record weighs more than half the `weight_budget`, so a random draw rarely reaches it before
+/// lighter records fill the budget. On a `heavy_turn` one heavy record, if any is ready, is taken first.
+/// A record heavier than the whole `weight_budget` is oversized and can only be proposed alone: it is
+/// chosen on a heavy turn, or when no ready record fits the budget. The caller sets `heavy_turn` on a
+/// fixed fraction of blocks, so heavy transactions still commit while the pool never drains, and oversized
+/// ones cannot claim more than that fraction of blocks from transactions that fit.
 pub fn select_proposal_batch<R: Rng + ?Sized>(
     mut records: Vec<TransactionPoolRecord>,
     weight_budget: u64,
     max_count: usize,
-    oversized_turn: bool,
+    heavy_turn: bool,
     rng: &mut R,
 ) -> Vec<TransactionPoolRecord> {
     if weight_budget == 0 || max_count == 0 {
@@ -246,8 +248,11 @@ pub fn select_proposal_batch<R: Rng + ?Sized>(
     records.shuffle(rng);
 
     let is_oversized = |rec: &TransactionPoolRecord| rec.proposal_weight() > weight_budget;
-    if oversized_turn && let Some(pos) = records.iter().position(is_oversized) {
-        return vec![records.swap_remove(pos)];
+    if heavy_turn && let Some(pos) = records.iter().position(|rec| rec.proposal_weight() > weight_budget / 2) {
+        if is_oversized(&records[pos]) {
+            return vec![records.swap_remove(pos)];
+        }
+        records.swap(0, pos);
     }
 
     let mut batch = Vec::new();
@@ -1117,7 +1122,7 @@ mod tests {
     mod proposal_weight {
         use super::*;
 
-        fn record_with_weight_and_stage(weight: u64, stage: TransactionPoolStage) -> TransactionPoolRecord {
+        pub(super) fn record_with_weight_and_stage(weight: u64, stage: TransactionPoolStage) -> TransactionPoolRecord {
             TransactionPoolRecord {
                 transaction_id: TransactionId::new([0; 32]),
                 original_decision: Decision::Commit,
@@ -1175,6 +1180,94 @@ mod tests {
             // is the only thing bounding it, never an unbounded fill.
             let rec = record_with_weight_and_stage(0, TransactionPoolStage::New);
             assert_eq!(rec.proposal_weight(), 1);
+        }
+    }
+
+    mod select_proposal_batch {
+        use std::collections::HashSet;
+
+        use rand::{SeedableRng, rngs::StdRng};
+
+        use super::{proposal_weight::record_with_weight_and_stage, *};
+        use crate::consensus_models::select_proposal_batch;
+
+        const BUDGET: u64 = 24_000;
+
+        /// New-stage records with the given weights, each id derived from its index.
+        fn records(weights: &[u64]) -> Vec<TransactionPoolRecord> {
+            weights
+                .iter()
+                .enumerate()
+                .map(|(i, weight)| {
+                    let mut rec = record_with_weight_and_stage(*weight, TransactionPoolStage::New);
+                    rec.transaction_id = TransactionId::new([u8::try_from(i).unwrap(); 32]);
+                    rec
+                })
+                .collect()
+        }
+
+        fn weights_with_lights(heavy: u64) -> Vec<u64> {
+            let mut weights = vec![heavy];
+            weights.extend([150; 200]);
+            weights
+        }
+
+        fn select(weights: &[u64], max_count: usize, heavy_turn: bool, seed: u64) -> Vec<TransactionPoolRecord> {
+            select_proposal_batch(
+                records(weights),
+                BUDGET,
+                max_count,
+                heavy_turn,
+                &mut StdRng::seed_from_u64(seed),
+            )
+        }
+
+        fn contains_heavy(batch: &[TransactionPoolRecord]) -> bool {
+            batch.iter().any(|rec| *rec.id() == TransactionId::new([0; 32]))
+        }
+
+        #[test]
+        fn a_record_that_overflows_the_budget_is_skipped() {
+            for seed in 0..20 {
+                let batch = select(&[15_000, 15_000, 100], 1000, false, seed);
+                let weights = batch.iter().map(|rec| rec.proposal_weight()).collect::<HashSet<_>>();
+                assert_eq!(weights, HashSet::from([15_000, 100]));
+            }
+        }
+
+        #[test]
+        fn an_oversized_record_is_proposed_alone_when_nothing_fits() {
+            let batch = select(&[25_000, 25_000], 1000, false, 0);
+            assert_eq!(batch.len(), 1);
+        }
+
+        #[test]
+        fn an_oversized_record_waits_for_a_heavy_turn_while_records_fit() {
+            for seed in 0..20 {
+                let batch = select(&weights_with_lights(BUDGET + 1), 1000, false, seed);
+                assert!(!contains_heavy(&batch));
+                assert_eq!(batch.len(), 160);
+
+                let batch = select(&weights_with_lights(BUDGET + 1), 1000, true, seed);
+                assert_eq!(batch.len(), 1);
+                assert!(contains_heavy(&batch));
+            }
+        }
+
+        #[test]
+        fn a_heavy_turn_packs_a_heavy_record_first_and_fills_the_rest() {
+            for seed in 0..20 {
+                let batch = select(&weights_with_lights(20_000), 1000, true, seed);
+                assert!(contains_heavy(&batch));
+                let total = batch.iter().map(|rec| rec.proposal_weight()).sum::<u64>();
+                assert_eq!(total, 20_000 + 26 * 150);
+            }
+        }
+
+        #[test]
+        fn it_respects_the_hard_count_cap() {
+            let batch = select(&[1, 1, 1, 1], 2, true, 0);
+            assert_eq!(batch.len(), 2);
         }
     }
 

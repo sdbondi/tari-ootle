@@ -815,11 +815,11 @@ mod get_batch_for_next_block {
         tx: &impl StateStoreReadTransaction,
         weight_budget: u64,
         max_count: usize,
-        oversized_turn: bool,
+        heavy_turn: bool,
         block_id: &BlockId,
     ) -> Vec<TransactionPoolRecord> {
         TransactionPool::<RocksDbStateStore<String>>::new()
-            .get_batch_for_next_block(tx, weight_budget, max_count, oversized_turn, block_id)
+            .get_batch_for_next_block(tx, weight_budget, max_count, heavy_turn, block_id)
             .unwrap()
     }
 

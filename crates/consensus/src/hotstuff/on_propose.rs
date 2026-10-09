@@ -89,10 +89,11 @@ use crate::{
 
 const LOG_TARGET: &str = "tari::ootle::consensus::hotstuff::on_propose";
 
-/// One block in this many is an oversized turn (see `select_proposal_batch`): a transaction heavier than the
-/// whole block budget may then take the block even when lighter ready transactions are waiting. This caps the
-/// share of blocks oversized transactions can take from transactions that fit.
-const OVERSIZED_TRANSACTION_TURN_INTERVAL: u64 = 10;
+/// One block in this many is a heavy turn (see `select_proposal_batch`): a transaction weighing more than half the
+/// block's remaining transaction budget is packed first, and one heavier than that whole budget may take the block
+/// alone, even when lighter ready transactions are waiting. This caps the share of blocks oversized transactions can
+/// take from transactions that fit.
+const HEAVY_TRANSACTION_TURN_INTERVAL: u64 = 10;
 
 struct NextBlock {
     block: Block,
@@ -771,7 +772,7 @@ where TConsensusSpec: ConsensusSpec
         // Bound the transaction count so the total command count (foreign proposals + transactions)
         // stays under the hard command cap regardless of how light the transactions are.
         let max_tx_count = max_commands.saturating_sub(foreign_proposals.len());
-        let oversized_turn = next_height.as_u64().is_multiple_of(OVERSIZED_TRANSACTION_TURN_INTERVAL);
+        let heavy_turn = next_height.as_u64().is_multiple_of(HEAVY_TRANSACTION_TURN_INTERVAL);
 
         let transactions = remaining_weight
             .filter(|_| max_tx_count > 0)
@@ -780,7 +781,7 @@ where TConsensusSpec: ConsensusSpec
                     tx,
                     weight_budget,
                     max_tx_count,
-                    oversized_turn,
+                    heavy_turn,
                     state_anchor_leaf.block_id(),
                 )
             })
