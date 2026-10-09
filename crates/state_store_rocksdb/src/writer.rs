@@ -239,6 +239,48 @@ impl<'a, TAddr: NodeAddressable> RocksDbStateStoreWriteTransaction<'a, TAddr> {
         Ok(())
     }
 
+    /// [`StateStoreWriteTransaction::substate_locks_insert_all`] for the block at `block_epoch` and `block_height`.
+    pub fn substate_locks_insert_for_block<'b, I: IntoIterator<Item = (&'b SubstateId, &'b Vec<SubstateLock>)>>(
+        &mut self,
+        block_id: &BlockId,
+        block_epoch: Epoch,
+        block_height: NodeHeight,
+        locks: I,
+    ) -> Result<(), StorageError> {
+        const OPERATION: &str = "substate_locks_insert_for_block";
+
+        let mut substates = IndexMap::<SubstateId, Vec<SubstateLock>>::new();
+        for (substate_id, locks) in locks {
+            if !locks.is_empty() {
+                substates.entry(substate_id.clone()).or_default().extend(locks);
+            }
+        }
+        if substates.is_empty() {
+            return self.remove_block_lock_set(block_id, OPERATION);
+        }
+
+        let locks = BlockLocks {
+            epoch: block_epoch,
+            height: block_height,
+            substates,
+        };
+        self.db()
+            .cf(BlockLockSetCf)?
+            .put(block_id, &locks.to_record(), OPERATION)?;
+        self.staged_locks().insert_block(*block_id, locks);
+
+        Ok(())
+    }
+
+    fn remove_block_lock_set(&mut self, block_id: &BlockId, operation: &'static str) -> Result<(), StorageError> {
+        if self.lock_table().block(block_id).is_none() {
+            return Ok(());
+        }
+        self.staged_locks().remove_block(block_id);
+        self.db().cf(BlockLockSetCf)?.delete(block_id, operation)?;
+        Ok(())
+    }
+
     fn parked_blocks_insert(
         &mut self,
         block: &Block,
@@ -1204,29 +1246,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         block: &LeafBlock,
         locks: I,
     ) -> Result<(), StorageError> {
-        const OPERATION: &str = "substate_locks_insert_all";
-
-        let mut substates = IndexMap::<SubstateId, Vec<SubstateLock>>::new();
-        for (substate_id, locks) in locks {
-            if !locks.is_empty() {
-                substates.entry(substate_id.clone()).or_default().extend(locks);
-            }
-        }
-        if substates.is_empty() {
-            return Ok(());
-        }
-
-        let locks = BlockLocks {
-            epoch: block.epoch(),
-            height: block.height(),
-            substates,
-        };
-        self.db()
-            .cf(BlockLockSetCf)?
-            .put(block.block_id(), &locks.to_record(), OPERATION)?;
-        self.staged_locks().insert_block(*block.block_id(), locks);
-
-        Ok(())
+        self.substate_locks_insert_for_block(block.block_id(), block.epoch(), block.height(), locks)
     }
 
     fn substate_locks_remove_many_for_transactions<'a, I: IntoIterator<Item = &'a TransactionId>>(
@@ -1246,7 +1266,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
             return Ok(());
         }
 
-        for block_id in self.staged_locks().release(transaction_ids) {
+        for block_id in self.staged_locks().release(&transaction_ids) {
             self.write_block_lock_set(&block_id, OPERATION)?;
         }
 
@@ -1255,14 +1275,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
 
     fn substate_locks_remove_any_by_block_id(&mut self, block_id: &BlockId) -> Result<(), StorageError> {
         const OPERATION: &str = "substate_locks_remove_any_by_block_id";
-
-        if self.lock_table().block(block_id).is_none() {
-            return Ok(());
-        }
-        self.staged_locks().remove_block(block_id);
-        self.db().cf(BlockLockSetCf)?.delete(block_id, OPERATION)?;
-
-        Ok(())
+        self.remove_block_lock_set(block_id, OPERATION)
     }
 
     fn substates_commit_batch(&mut self, update_batch: SubstateUpdateBatch) -> Result<(), StorageError> {

@@ -24,7 +24,10 @@ use tari_ootle_common_types::{Epoch, NodeHeight};
 use tari_ootle_storage::consensus_models::SubstateLock;
 use tari_ootle_transaction::TransactionId;
 
-use crate::column_families::substate_locks::{BlockLockSet, SubstateLockGrants};
+use crate::{
+    column_families::substate_locks::{BlockLockSet, SubstateLockGrants},
+    error::RocksDbStorageError,
+};
 
 /// The locks one block granted that are still held.
 #[derive(Debug, Clone)]
@@ -181,18 +184,6 @@ impl LockTable {
         }
         affected
     }
-
-    fn apply(&mut self, change: LockTableChange) {
-        match change {
-            LockTableChange::InsertBlock(block_id, locks) => self.insert_block(block_id, locks),
-            LockTableChange::RemoveBlock(block_id) => {
-                self.remove_block(&block_id);
-            },
-            LockTableChange::Release(transaction_ids) => {
-                self.release(&transaction_ids);
-            },
-        }
-    }
 }
 
 fn push_unique<T: PartialEq>(items: &mut Vec<T>, item: T) {
@@ -212,13 +203,6 @@ where
             index.remove(key);
         }
     }
-}
-
-#[derive(Debug, Clone)]
-enum LockTableChange {
-    InsertBlock(BlockId, BlockLocks),
-    RemoveBlock(BlockId),
-    Release(Vec<TransactionId>),
 }
 
 /// The lock table every transaction of one store reads and publishes to.
@@ -268,24 +252,29 @@ impl SharedLockTable {
         StagedLocks {
             base_generation: published.generation,
             table: (*published.table).clone(),
-            changes: Vec::new(),
         }
     }
 
     /// Commits the database transaction with `commit` and, if it succeeds, publishes `staged`.
-    pub fn commit_and_publish<E, F: FnOnce() -> Result<(), E>>(&self, staged: StagedLocks, commit: F) -> Result<(), E> {
+    ///
+    /// A staged copy describes the table it was copied from plus this transaction's changes, and the records the
+    /// transaction wrote were computed from it. If another transaction has published since, both are out of date, so
+    /// the database transaction is left uncommitted and an error is returned.
+    pub fn commit_and_publish<F: FnOnce() -> Result<(), RocksDbStorageError>>(
+        &self,
+        staged: StagedLocks,
+        commit: F,
+    ) -> Result<(), RocksDbStorageError> {
         let mut published = self.published();
-        commit()?;
-        if published.generation == staged.base_generation {
-            published.table = Arc::new(staged.table);
-        } else {
-            // Another transaction published since this one staged. Its changes are already in the latest table, so
-            // this transaction's changes are replayed on top of them.
-            let table = Arc::make_mut(&mut published.table);
-            for change in staged.changes {
-                table.apply(change);
-            }
+        if published.generation != staged.base_generation {
+            return Err(RocksDbStorageError::GeneralError {
+                message: "Write transaction not committed: another write transaction changed substate locks after \
+                          this one read them"
+                    .to_string(),
+            });
         }
+        commit()?;
+        published.table = Arc::new(staged.table);
         published.generation += 1;
         Ok(())
     }
@@ -296,7 +285,6 @@ impl SharedLockTable {
 pub(crate) struct StagedLocks {
     base_generation: u64,
     table: LockTable,
-    changes: Vec<LockTableChange>,
 }
 
 impl StagedLocks {
@@ -305,24 +293,15 @@ impl StagedLocks {
     }
 
     pub fn insert_block(&mut self, block_id: BlockId, locks: BlockLocks) {
-        self.table.insert_block(block_id, locks.clone());
-        self.changes.push(LockTableChange::InsertBlock(block_id, locks));
+        self.table.insert_block(block_id, locks);
     }
 
     pub fn remove_block(&mut self, block_id: &BlockId) -> bool {
-        let removed = self.table.remove_block(block_id);
-        if removed {
-            self.changes.push(LockTableChange::RemoveBlock(*block_id));
-        }
-        removed
+        self.table.remove_block(block_id)
     }
 
-    pub fn release(&mut self, transaction_ids: Vec<TransactionId>) -> Vec<BlockId> {
-        let affected = self.table.release(&transaction_ids);
-        if !affected.is_empty() {
-            self.changes.push(LockTableChange::Release(transaction_ids));
-        }
-        affected
+    pub fn release(&mut self, transaction_ids: &[TransactionId]) -> Vec<BlockId> {
+        self.table.release(transaction_ids)
     }
 }
 

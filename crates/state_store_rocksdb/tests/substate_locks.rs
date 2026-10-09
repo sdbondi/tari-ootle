@@ -813,76 +813,81 @@ fn a_read_view_sees_the_locks_of_its_snapshot() {
     );
 }
 
-/// Two write transactions that change locks concurrently both take effect, whichever commits first.
+/// Of two write transactions that change locks concurrently, the second to commit is refused and changes nothing,
+/// in memory or on disk: any lock-set record it wrote was computed from a table the first has since changed.
 #[test]
-fn concurrent_lock_changes_are_all_published() {
-    let (db, _tmp) = create_rocksdb();
+fn a_write_transaction_that_staged_from_an_outdated_table_is_not_committed() {
+    let (db, tmp) = create_rocksdb();
     let chain = create_chain(10);
     let b8 = chain[8].as_leaf();
     let b9 = chain[9].as_leaf();
-    let released = transaction_id_from_seed(3);
-    let released_substate = create_random_substate_id();
+    let substate_id = create_random_substate_id();
+    let (granted_first, granted_last) = ordered_transaction_ids();
     db.with_write_tx(|tx| {
         commit_chain(tx, &chain);
-        tx.substate_locks_insert_all(
-            &b8,
-            &IndexMap::from([(released_substate.clone(), vec![SubstateLock::new(
-                released,
-                SubstateVersion::new(0),
-                SubstateLockType::Write,
-                false,
-            )])]),
-        )
+        tx.substate_locks_insert_all(&b8, &two_locks(&substate_id, granted_first, granted_last))
     })
     .unwrap();
-
-    let b7 = chain[7].as_leaf();
-    let on_b7 = create_random_substate_id();
-    let on_b9 = create_random_substate_id();
-    let lock = |seed: u32| {
-        vec![SubstateLock::new(
-            transaction_id_from_seed(seed),
-            SubstateVersion::new(0),
-            SubstateLockType::Write,
-            false,
-        )]
-    };
 
     let mut first = db.create_write_tx().unwrap();
     let mut second = db.create_write_tx().unwrap();
     first
-        .substate_locks_insert_all(&b7, &IndexMap::from([(on_b7.clone(), lock(1))]))
+        .substate_locks_remove_many_for_transactions(Some(&granted_first))
         .unwrap();
+    let refused_substate = create_random_substate_id();
     second
-        .substate_locks_insert_all(&b9, &IndexMap::from([(on_b9.clone(), lock(2))]))
-        .unwrap();
-    second
-        .substate_locks_remove_many_for_transactions(Some(&released))
+        .substate_locks_insert_all(&b9, &two_locks(&refused_substate, granted_first, granted_last))
         .unwrap();
     first.commit().unwrap();
-    second.commit().unwrap();
+    second.commit().unwrap_err();
+    drop((first, second));
 
+    let check = |db: &RocksDbStateStore<String>| {
+        let tx = db.create_read_tx().unwrap();
+        let lock = tx.substate_locks_get_latest_for_substate(&b9, &substate_id).unwrap();
+        assert_eq!(lock.transaction_id(), &granted_last);
+        assert!(
+            tx.substate_locks_get_latest_for_substate(&b9, &refused_substate)
+                .optional()
+                .unwrap()
+                .is_none(),
+            "the refused transaction's locks took effect"
+        );
+        assert!(
+            tx.substate_locks_get_locked_substates_for_transaction(&b9, &granted_first)
+                .unwrap()
+                .is_empty(),
+            "the committed release was lost"
+        );
+    };
+    check(&db);
+    let db = reopen(db, &tmp);
+    check(&db);
+}
+
+/// Recording an empty lock set for a block leaves it holding no locks.
+#[test]
+fn an_empty_lock_set_replaces_the_blocks_locks() {
+    let (db, tmp) = create_rocksdb();
+    let chain = create_chain(10);
+    let b8 = chain[8].as_leaf();
+    let b9 = chain[9].as_leaf();
+    let substate_id = create_random_substate_id();
+    let (granted_first, granted_last) = ordered_transaction_ids();
+    db.with_write_tx(|tx| {
+        commit_chain(tx, &chain);
+        tx.substate_locks_insert_all(&b8, &two_locks(&substate_id, granted_first, granted_last))?;
+        tx.substate_locks_insert_all(&b8, &IndexMap::new())
+    })
+    .unwrap();
+
+    let db = reopen(db, &tmp);
     let tx = db.create_read_tx().unwrap();
-    assert_eq!(
-        tx.substate_locks_get_latest_for_substate(&b9, &on_b9)
-            .unwrap()
-            .transaction_id(),
-        &transaction_id_from_seed(2)
-    );
-    assert!(
-        tx.substate_locks_get_latest_for_substate(&b9, &released_substate)
-            .optional()
-            .unwrap()
-            .is_none(),
-        "the second commit's release was lost"
-    );
-    assert_eq!(
-        tx.substate_locks_get_latest_for_substate(&b9, &on_b7)
-            .unwrap()
-            .transaction_id(),
-        &transaction_id_from_seed(1),
-        "the first commit's lock was lost"
-    );
+    let lock = tx
+        .substate_locks_get_latest_for_substate(&b9, &substate_id)
+        .optional()
+        .unwrap();
+    assert!(lock.is_none());
 }
 
 fn reopen(db: RocksDbStateStore<String>, tmp: &tempfile::TempDir) -> RocksDbStateStore<String> {

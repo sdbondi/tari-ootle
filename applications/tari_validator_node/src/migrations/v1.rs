@@ -10,13 +10,8 @@ use std::collections::HashMap;
 use log::*;
 use tari_consensus_types::BlockId;
 use tari_engine_types::substate::SubstateId;
-use tari_ootle_common_types::NodeAddressable;
-use tari_ootle_storage::{
-    Ordering,
-    StateStoreReadTransaction,
-    StateStoreWriteTransaction,
-    consensus_models::SubstateLock,
-};
+use tari_ootle_common_types::{Epoch, NodeAddressable, NodeHeight};
+use tari_ootle_storage::{Ordering, consensus_models::SubstateLock};
 use tari_state_store_rocksdb::{
     cf_api::CfContext,
     column_families::substate_locks::legacy::{BlockIdIndex, ChainOrderIndex, SubstateIdIndex, SubstateLockModel},
@@ -32,13 +27,13 @@ pub fn migrate<TAddr: NodeAddressable + 'static>(
 ) -> anyhow::Result<()> {
     const OPERATION: &str = "migrate_v1";
 
-    let mut grants_by_block = HashMap::<BlockId, Vec<(SubstateId, u32, SubstateLock)>>::new();
+    let mut grants_by_block = HashMap::<(BlockId, Epoch, NodeHeight), Vec<(SubstateId, u32, SubstateLock)>>::new();
     {
         let db = tx.db();
         for result in db.cf(SubstateLockModel)?.iterator(Ordering::Ascending, OPERATION) {
             let (key, lock) = result?;
             grants_by_block
-                .entry(key.block_id)
+                .entry((key.block_id, key.block_epoch, key.block_height))
                 .or_default()
                 .push((key.substate_id, key.grant_seq, lock));
         }
@@ -49,10 +44,7 @@ pub fn migrate<TAddr: NodeAddressable + 'static>(
     }
 
     let num_blocks = grants_by_block.len();
-    for (block_id, mut grants) in grants_by_block {
-        let block = tx.blocks_get(&block_id).map_err(|e| {
-            anyhow::anyhow!("Block {block_id} granted substate locks but its record cannot be loaded: {e}")
-        })?;
+    for ((block_id, block_epoch, block_height), mut grants) in grants_by_block {
         grants.sort_by(|(a_id, a_seq, _), (b_id, b_seq, _)| (a_id, a_seq).cmp(&(b_id, b_seq)));
         let mut locks = Vec::<(SubstateId, Vec<SubstateLock>)>::new();
         for (substate_id, _, lock) in grants {
@@ -61,7 +53,12 @@ pub fn migrate<TAddr: NodeAddressable + 'static>(
                 _ => locks.push((substate_id, vec![lock])),
             }
         }
-        tx.substate_locks_insert_all(&block.as_leaf(), locks.iter().map(|(id, locks)| (id, locks)))?;
+        tx.substate_locks_insert_for_block(
+            &block_id,
+            block_epoch,
+            block_height,
+            locks.iter().map(|(id, locks)| (id, locks)),
+        )?;
     }
 
     info!(
@@ -96,7 +93,8 @@ mod tests {
     use super::*;
 
     /// Every version 0 lock lands in its block's lock set in grant order, whatever order its transaction id sorts in,
-    /// and none of the version 0 tables survive.
+    /// and none of the version 0 tables survive. The block's position comes from the version 0 keys, so the block
+    /// record is never read.
     #[test]
     fn version_0_locks_are_moved_into_block_lock_sets() {
         const OPERATION: &str = "test";
@@ -114,7 +112,6 @@ mod tests {
         ];
 
         db.with_write_tx(|tx| {
-            block.insert(tx)?;
             let db = tx.db();
             for (transaction_id, grant_seq, lock_type, version) in granted {
                 let key = SubstateLockKey {

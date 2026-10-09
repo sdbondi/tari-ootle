@@ -59,3 +59,5 @@ it; the table is rebuilt from those records when the store opens.
   from then on its own staged copy (read-your-writes).
 - A write transaction publishes its staged lock changes only after its RocksDB commit succeeds, so
   the table never holds a lock the database does not.
+- A write transaction whose staged copy was taken from a table another transaction has since
+  published over is refused at commit: the records it wrote were computed from an outdated table.
