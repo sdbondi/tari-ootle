@@ -235,6 +235,10 @@ impl<TStateStore: StateStore> TransactionPool<TStateStore> {
 /// chosen on a heavy turn, or when no ready record fits the budget. The caller sets `heavy_turn` on a
 /// fixed fraction of blocks, so heavy transactions still commit while the pool never drains, and oversized
 /// ones cannot claim more than that fraction of blocks from transactions that fit.
+///
+/// The returned batch is sorted by transaction id. The proposer prepares transactions in batch order and
+/// replicas process a block's commands in transaction-id order, so two transactions contending for a lock
+/// must reach it in the same order on both sides.
 pub fn select_proposal_batch<R: Rng + ?Sized>(
     mut records: Vec<TransactionPoolRecord>,
     weight_budget: u64,
@@ -279,6 +283,7 @@ pub fn select_proposal_batch<R: Rng + ?Sized>(
     if batch.is_empty() {
         batch.extend(first_oversized);
     }
+    batch.sort_unstable_by(|a, b| a.id().cmp(b.id()));
     batch
 }
 
@@ -1268,6 +1273,15 @@ mod tests {
         fn it_respects_the_hard_count_cap() {
             let batch = select(&[1, 1, 1, 1], 2, true, 0);
             assert_eq!(batch.len(), 2);
+        }
+
+        #[test]
+        fn the_batch_is_in_transaction_id_order() {
+            for seed in 0..20 {
+                let batch = select(&[100; 50], 1000, false, seed);
+                assert_eq!(batch.len(), 50);
+                assert!(batch.is_sorted_by_key(|rec| *rec.id()));
+            }
         }
     }
 
