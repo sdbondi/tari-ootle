@@ -101,7 +101,7 @@ use tari_state_tree::{Child, Nibble, Node, NodeKey, NodeType, StaleTreeNode, Sta
 use crate::{
     block_diff_table::BlockDiffEntry,
     cf_api::{CfContext, DbContext},
-    codecs::{ByteColumn, DbEncoder, DefaultCodec, KeyPrefix},
+    codecs::{ByteColumn, DbEncoder, DefaultCodec, KeyPrefix, StaleTreeNodesCodec},
     column_families::{
         block,
         block::BlockCf,
@@ -1554,15 +1554,26 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         self.db()
             .cf(PendingStateTreeDiffRecordCf)?
             .put_raw_value(block_id, &encoded, OPERATION)?;
+        let entry = diffs
+            .into_iter()
+            .map(|ShardStateTreeDiffRef { shard, diff }| ShardStateTreeDiff {
+                shard,
+                diff: diff.clone(),
+            })
+            .collect();
+        self.staged().tree_diffs_mut().insert(*block_id, entry);
         Ok(())
     }
 
     fn pending_state_tree_diffs_remove_by_block(&mut self, block_id: &BlockId) -> Result<(), StorageError> {
         const OPERATION: &str = "pending_state_tree_diffs_remove_by_block";
-        let cf = self.db().cf(PendingStateTreeDiffRecordCf)?;
-        if cf.exists(block_id, OPERATION)? {
-            cf.delete(block_id, OPERATION)?;
+        if self.pending_state().tree_diffs.get(block_id).is_none() {
+            return Ok(());
         }
+        self.staged().tree_diffs_mut().remove(block_id);
+        self.db()
+            .cf(PendingStateTreeDiffRecordCf)?
+            .delete(block_id, OPERATION)?;
         Ok(())
     }
 
@@ -1571,15 +1582,19 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         block_id: &BlockId,
     ) -> Result<IndexMap<Shard, Vec<PendingShardStateTreeDiff>>, StorageError> {
         const OPERATION: &str = "pending_state_tree_diffs_remove_and_return_by_block";
-        let cf = self.db().cf(PendingStateTreeDiffRecordCf)?;
-        let Some(record) = cf.get(block_id, OPERATION).optional()? else {
+        if self.pending_state().tree_diffs.get(block_id).is_none() {
+            return Ok(IndexMap::new());
+        }
+        let Some(entry) = self.staged().tree_diffs_mut().remove(block_id) else {
             return Ok(IndexMap::new());
         };
-        cf.delete(block_id, OPERATION)?;
+        self.db()
+            .cf(PendingStateTreeDiffRecordCf)?
+            .delete(block_id, OPERATION)?;
 
         let mut diffs = IndexMap::<Shard, Vec<PendingShardStateTreeDiff>>::new();
-        for ShardStateTreeDiff { shard, diff } in record {
-            diffs.entry(shard).or_default().push(diff);
+        for ShardStateTreeDiff { shard, diff } in entry.iter() {
+            diffs.entry(*shard).or_default().push(diff.clone());
         }
         Ok(diffs)
     }
@@ -1587,12 +1602,12 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
     fn state_tree_nodes_batch_insert(
         &mut self,
         shard: Shard,
-        nodes: Vec<(NodeKey, Node<StateTreePayload>)>,
+        nodes: &[(NodeKey, Node<StateTreePayload>)],
     ) -> Result<(), StorageError> {
         const OPERATION: &str = "state_tree_nodes_insert";
         let cf = self.db().cf(StateTreeCf)?;
         for (key, node) in nodes {
-            cf.put(&(shard, key), &node, OPERATION)?;
+            cf.put(&(shard, key.clone()), node, OPERATION)?;
         }
         Ok(())
     }
@@ -1601,13 +1616,14 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
         &mut self,
         shard: Shard,
         version: Version,
-        nodes: Vec<StaleTreeNode>,
+        nodes: &[StaleTreeNode],
     ) -> Result<(), StorageError> {
         const OPERATION: &str = "state_tree_nodes_record_stale_tree_nodes";
 
+        let encoded = StaleTreeNodesCodec.encode_slice(nodes)?;
         self.db()
             .cf(StateTreeStaleNodesCf)?
-            .put(&(shard, version), &nodes, OPERATION)?;
+            .put_raw_value(&(shard, version), &encoded, OPERATION)?;
 
         Ok(())
     }

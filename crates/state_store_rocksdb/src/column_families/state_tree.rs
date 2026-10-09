@@ -24,7 +24,7 @@ use tari_ootle_common_types::shard::Shard;
 use tari_state_tree::{Node, NodeKey, StaleTreeNode, StateTreePayload, Version};
 
 use crate::{
-    codecs::{KeyPrefix, NodeKeyCodec, NumberCodec, SerdeBridgeCodec, ShardCodec},
+    codecs::{KeyPrefix, NodeKeyCodec, NumberCodec, ShardCodec, StaleTreeNodesCodec, TreeNodeCodec},
     column_families::cf_names,
     prefixed,
     traits::{Cf, QueryCf},
@@ -38,8 +38,7 @@ impl Cf for StateTreeCf {
     type KeyCodec = (ShardCodec, NodeKeyCodec);
     type Prefix = StateTreePrefix;
     type Value = Node<StateTreePayload>;
-    // Node<StateTreePayload> is foreign (tari_jellyfish), serde-only — bridge it.
-    type ValueCodec = SerdeBridgeCodec<Self::Value>;
+    type ValueCodec = TreeNodeCodec;
 
     fn name() -> &'static str {
         cf_names::STATE_TREE
@@ -64,8 +63,7 @@ impl Cf for StateTreeStaleNodesCf {
     type KeyCodec = (ShardCodec, NumberCodec<Version>);
     type Prefix = StateTreeStaleNodesPrefix;
     type Value = Vec<StaleTreeNode>;
-    // StaleTreeNode is foreign (tari_jellyfish), serde-only — bridge it.
-    type ValueCodec = SerdeBridgeCodec<Self::Value>;
+    type ValueCodec = StaleTreeNodesCodec;
 
     fn name() -> &'static str {
         cf_names::STATE_TREE
@@ -89,4 +87,46 @@ impl QueryCf for ByStateTreeStaleShardVersionQuery {
     type Cf = StateTreeStaleNodesCf;
     type Key = (Shard, Version);
     type KeyCodec = (ShardCodec, NumberCodec<Version>);
+}
+
+/// The state tree's tables as stored up to schema version 2, with values in the serde-bridged encoding. Only the
+/// migration to version 3 reads them, rewriting each value in the native encoding.
+pub mod legacy {
+    use tari_ootle_common_types::shard::Shard;
+    use tari_state_tree::{Node, NodeKey, StaleTreeNode, StateTreePayload, Version};
+
+    use super::{StateTreePrefix, StateTreeStaleNodesPrefix};
+    use crate::{
+        codecs::{NodeKeyCodec, NumberCodec, SerdeBridgeCodec, ShardCodec},
+        column_families::cf_names,
+        traits::Cf,
+    };
+
+    pub struct StateTreeCf;
+
+    impl Cf for StateTreeCf {
+        type Key = (Shard, NodeKey);
+        type KeyCodec = (ShardCodec, NodeKeyCodec);
+        type Prefix = StateTreePrefix;
+        type Value = Node<StateTreePayload>;
+        type ValueCodec = SerdeBridgeCodec<Self::Value>;
+
+        fn name() -> &'static str {
+            cf_names::STATE_TREE
+        }
+    }
+
+    pub struct StateTreeStaleNodesCf;
+
+    impl Cf for StateTreeStaleNodesCf {
+        type Key = (Shard, Version);
+        type KeyCodec = (ShardCodec, NumberCodec<Version>);
+        type Prefix = StateTreeStaleNodesPrefix;
+        type Value = Vec<StaleTreeNode>;
+        type ValueCodec = SerdeBridgeCodec<Self::Value>;
+
+        fn name() -> &'static str {
+            cf_names::STATE_TREE
+        }
+    }
 }

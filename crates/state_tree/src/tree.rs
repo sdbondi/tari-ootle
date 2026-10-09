@@ -30,6 +30,7 @@ use crate::{
     SPARSE_MERKLE_PLACEHOLDER_HASH,
     StateTreePayload,
     TreeStoreBatchWriter,
+    cbor,
     error::StateTreeError,
     key_mapper::{DbKeyMapper, HashIdentityKeyMapper, ShardKeyMapper, SpreadPrefixKeyMapper},
     memory_store::MemoryTreeStore,
@@ -241,35 +242,65 @@ pub struct StateHashTreeDiff<P> {
     pub stale_tree_nodes: Vec<StaleTreeNode>,
 }
 
-// NodeKey, Node and StaleTreeNode come from tari_jellyfish (external git dep) and only implement
-// serde. Bridge the whole struct through `tari_bor::adapters::serde_bridge` rather than forking
-// the upstream crate. minicbor's derive doesn't accept where-bounds on generics, hence the
-// manual impls.
-impl<C, P> minicbor::Encode<C> for StateHashTreeDiff<P>
-where P: serde::Serialize
-{
+/// Encoded as `[[[node_key, node], ...], [stale_tree_node, ...]]`, the array a minicbor derive gives the struct.
+impl<C, P: minicbor::Encode<C>> minicbor::Encode<C> for StateHashTreeDiff<P> {
     fn encode<W: minicbor::encode::Write>(
         &self,
         e: &mut minicbor::Encoder<W>,
         ctx: &mut C,
     ) -> Result<(), minicbor::encode::Error<W::Error>> {
-        tari_bor::adapters::serde_bridge::encode(self, e, ctx)
+        e.array(2)?;
+        e.array(self.new_nodes.len() as u64)?;
+        for (key, node) in &self.new_nodes {
+            e.array(2)?;
+            cbor::node_key::encode(key, e, ctx)?;
+            cbor::node::encode(node, e, ctx)?;
+        }
+        e.array(self.stale_tree_nodes.len() as u64)?;
+        for stale in &self.stale_tree_nodes {
+            cbor::stale_tree_node::encode(stale, e, ctx)?;
+        }
+        Ok(())
     }
 }
 
-impl<'b, C, P> minicbor::Decode<'b, C> for StateHashTreeDiff<P>
-where P: serde::Deserialize<'b>
-{
+impl<'b, C, P: minicbor::Decode<'b, C>> minicbor::Decode<'b, C> for StateHashTreeDiff<P> {
     fn decode(d: &mut minicbor::Decoder<'b>, ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
-        tari_bor::adapters::serde_bridge::decode(d, ctx)
+        let definite = |len: Option<u64>| {
+            len.ok_or_else(|| minicbor::decode::Error::message("StateHashTreeDiff: expected a definite-length array"))
+        };
+        d.array()?;
+        let num_new = definite(d.array()?)?;
+        let mut new_nodes = Vec::with_capacity(num_new.min(4096) as usize);
+        for _ in 0..num_new {
+            d.array()?;
+            let key = cbor::node_key::decode(d, ctx)?;
+            let node = cbor::node::decode(d, ctx)?;
+            new_nodes.push((key, node));
+        }
+        let num_stale = definite(d.array()?)?;
+        let mut stale_tree_nodes = Vec::with_capacity(num_stale.min(4096) as usize);
+        for _ in 0..num_stale {
+            stale_tree_nodes.push(cbor::stale_tree_node::decode(d, ctx)?);
+        }
+        Ok(Self {
+            new_nodes,
+            stale_tree_nodes,
+        })
     }
 }
 
-impl<C, P> minicbor::CborLen<C> for StateHashTreeDiff<P>
-where P: serde::Serialize
-{
+impl<C, P: minicbor::CborLen<C>> minicbor::CborLen<C> for StateHashTreeDiff<P> {
     fn cbor_len(&self, ctx: &mut C) -> usize {
-        tari_bor::adapters::serde_bridge::cbor_len(self, ctx)
+        let header = |len: usize| cbor::header_len(len as u64);
+        let mut len = header(2) + header(self.new_nodes.len()) + header(self.stale_tree_nodes.len());
+        for (key, node) in &self.new_nodes {
+            len += header(2) + cbor::node_key::cbor_len(key, ctx) + cbor::node::cbor_len(node, ctx);
+        }
+        for stale in &self.stale_tree_nodes {
+            len += cbor::stale_tree_node::cbor_len(stale, ctx);
+        }
+        len
     }
 }
 

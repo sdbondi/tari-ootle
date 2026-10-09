@@ -34,7 +34,7 @@ fn state_tree_operations(db: impl StateStore, num_nodes: usize) {
         .collect::<Vec<_>>();
     db.with_write_tx(|tx| {
         for (key, value) in &nodes {
-            tx.state_tree_nodes_batch_insert(SHARD, vec![(key.clone(), value.clone())])
+            tx.state_tree_nodes_batch_insert(SHARD, &[(key.clone(), value.clone())])
                 .unwrap();
         }
         Ok::<_, StorageError>(())
@@ -54,10 +54,10 @@ fn state_tree_operations(db: impl StateStore, num_nodes: usize) {
         tx.state_tree_nodes_record_stale_tree_nodes(
             SHARD,
             2,
-            nodes[..100]
+            &nodes[..100]
                 .iter()
                 .map(|(k, _)| StaleTreeNode::Node(k.clone()))
-                .collect(),
+                .collect::<Vec<_>>(),
         )
         .unwrap();
         for shard in ShardGroup::all_shards(num_preshards()).shard_iter() {
@@ -115,11 +115,14 @@ fn clear_stale_is_bounded_per_call_and_resumes() {
 
     db.with_write_tx(|tx| {
         for (v, nodes) in (1u64..).zip(&all_nodes) {
-            tx.state_tree_nodes_batch_insert(SHARD, nodes.clone()).unwrap();
+            tx.state_tree_nodes_batch_insert(SHARD, nodes).unwrap();
             tx.state_tree_nodes_record_stale_tree_nodes(
                 SHARD,
                 v,
-                nodes.iter().map(|(k, _)| StaleTreeNode::Node(k.clone())).collect(),
+                &nodes
+                    .iter()
+                    .map(|(k, _)| StaleTreeNode::Node(k.clone()))
+                    .collect::<Vec<_>>(),
             )
             .unwrap();
         }
@@ -169,17 +172,15 @@ fn truncate_to_version_removes_newer_versions_and_resets_pointer() {
 
     db.with_write_tx(|tx| {
         for (_, nodes) in &all_nodes {
-            tx.state_tree_nodes_batch_insert(SHARD, nodes.clone()).unwrap();
+            tx.state_tree_nodes_batch_insert(SHARD, nodes).unwrap();
         }
         // Record stale markers at versions 3, 4, 5 — these should be truncated.
         for v in [3, 4, 5] {
-            tx.state_tree_nodes_record_stale_tree_nodes(SHARD, v, vec![StaleTreeNode::Node(
-                all_nodes[0].1[0].0.clone(),
-            )])
-            .unwrap();
+            tx.state_tree_nodes_record_stale_tree_nodes(SHARD, v, &[StaleTreeNode::Node(all_nodes[0].1[0].0.clone())])
+                .unwrap();
         }
         // And a stale marker at version 2 that should survive.
-        tx.state_tree_nodes_record_stale_tree_nodes(SHARD, 2, vec![StaleTreeNode::Node(all_nodes[0].1[0].0.clone())])
+        tx.state_tree_nodes_record_stale_tree_nodes(SHARD, 2, &[StaleTreeNode::Node(all_nodes[0].1[0].0.clone())])
             .unwrap();
         tx.state_tree_shard_versions_set(SHARD, 5).unwrap();
         Ok::<_, StorageError>(())
@@ -228,8 +229,8 @@ fn truncate_to_version_is_shard_scoped() {
     let nodes_v3 = gen_nodes(3, 5).collect::<Vec<_>>();
 
     db.with_write_tx(|tx| {
-        tx.state_tree_nodes_batch_insert(shard_a, nodes_v3.clone()).unwrap();
-        tx.state_tree_nodes_batch_insert(shard_b, nodes_v3.clone()).unwrap();
+        tx.state_tree_nodes_batch_insert(shard_a, &nodes_v3).unwrap();
+        tx.state_tree_nodes_batch_insert(shard_b, &nodes_v3).unwrap();
         tx.state_tree_shard_versions_set(shard_a, 3).unwrap();
         tx.state_tree_shard_versions_set(shard_b, 3).unwrap();
         Ok::<_, StorageError>(())
@@ -272,15 +273,12 @@ fn truncate_to_version_zero_keeps_genesis_v0_pointer() {
 
     db.with_write_tx(|tx| {
         // genesis_shard: bootstrapped at v0, then two consensus commits.
-        tx.state_tree_nodes_batch_insert(genesis_shard, nodes_v0.clone())
-            .unwrap();
-        tx.state_tree_nodes_batch_insert(genesis_shard, nodes_v1.clone())
-            .unwrap();
-        tx.state_tree_nodes_batch_insert(genesis_shard, nodes_v2.clone())
-            .unwrap();
+        tx.state_tree_nodes_batch_insert(genesis_shard, &nodes_v0).unwrap();
+        tx.state_tree_nodes_batch_insert(genesis_shard, &nodes_v1).unwrap();
+        tx.state_tree_nodes_batch_insert(genesis_shard, &nodes_v2).unwrap();
         tx.state_tree_shard_versions_set(genesis_shard, 2).unwrap();
         // empty_shard: first state committed at v1 (no genesis substates).
-        tx.state_tree_nodes_batch_insert(empty_shard, nodes_v1.clone()).unwrap();
+        tx.state_tree_nodes_batch_insert(empty_shard, &nodes_v1).unwrap();
         tx.state_tree_shard_versions_set(empty_shard, 1).unwrap();
         Ok::<_, StorageError>(())
     })

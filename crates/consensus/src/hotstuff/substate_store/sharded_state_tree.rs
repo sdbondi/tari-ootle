@@ -198,7 +198,7 @@ where
         for (shard, pending_diffs) in diffs {
             for pending_diff in pending_diffs {
                 state_versions.insert(shard, pending_diff.version);
-                self.commit_diff(shard, pending_diff.version, pending_diff.diff)?;
+                self.commit_diff(shard, pending_diff.version, &pending_diff.diff)?;
             }
         }
 
@@ -209,7 +209,7 @@ where
         &mut self,
         shard: Shard,
         version: Version,
-        diff: StateHashTreeDiff<StateTreePayload>,
+        diff: &StateHashTreeDiff<StateTreePayload>,
     ) -> Result<(), StateTreeError> {
         let mut store = ShardScopedTreeStoreWriter::new(self.tx, shard);
 
@@ -219,8 +219,8 @@ where
             diff.new_nodes.len(),
             diff.stale_tree_nodes.len()
         );
-        store.record_stale_tree_nodes(version, diff.stale_tree_nodes)?;
-        store.insert_nodes(diff.new_nodes)?;
+        store.record_stale_tree_nodes(version, &diff.stale_tree_nodes)?;
+        store.insert_nodes(&diff.new_nodes)?;
         store.set_state_version(version)?;
         Ok(())
     }

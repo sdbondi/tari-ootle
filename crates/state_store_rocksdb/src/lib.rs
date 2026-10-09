@@ -49,4 +49,5 @@ mod state_tree_iterator;
 mod template_provider;
 #[cfg(test)]
 mod tests;
+mod tree_diff_table;
 mod versioned_types;

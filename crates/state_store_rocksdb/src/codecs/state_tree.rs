@@ -4,7 +4,7 @@
 use std::io;
 
 use anyhow::anyhow;
-use tari_state_tree::{NibblePath, NodeKey, Version};
+use tari_state_tree::{NibblePath, Node, NodeKey, StaleTreeNode, StateTreePayload, Version, cbor};
 
 use crate::{
     codecs::{DbDecoder, DbEncoder},
@@ -105,6 +105,96 @@ impl<'a> DbEncoder<&'a NodeKey> for NodeKeyCodec {
 
     fn encode_into<W: io::Write>(&self, value: &&'a NodeKey, writer: &mut W) -> Result<(), RocksDbStorageError> {
         self.encode_node_key_into(value, writer)
+    }
+}
+
+/// [`Node`]s in `tari_state_tree::cbor`'s native encoding.
+#[derive(Default)]
+pub struct TreeNodeCodec;
+
+impl DbEncoder<Node<StateTreePayload>> for TreeNodeCodec {
+    fn encode_len(&self, value: &Node<StateTreePayload>) -> Result<usize, RocksDbStorageError> {
+        Ok(cbor::node::cbor_len(value, &mut ()))
+    }
+
+    fn encode_into<W: io::Write>(
+        &self,
+        value: &Node<StateTreePayload>,
+        writer: &mut W,
+    ) -> Result<(), RocksDbStorageError> {
+        let mut encoder = minicbor::Encoder::new(minicbor::encode::write::Writer::new(writer));
+        cbor::node::encode(value, &mut encoder, &mut ()).map_err(|e| RocksDbStorageError::EncodeError {
+            source: anyhow!("TreeNodeCodec: {e}"),
+        })
+    }
+}
+
+impl DbDecoder<Node<StateTreePayload>> for TreeNodeCodec {
+    fn decode(&self, bytes: &[u8]) -> Result<(Node<StateTreePayload>, usize), RocksDbStorageError> {
+        let mut decoder = minicbor::Decoder::new(bytes);
+        let node = cbor::node::decode(&mut decoder, &mut ()).map_err(|e| RocksDbStorageError::DecodeError {
+            source: anyhow!("TreeNodeCodec: {e}"),
+        })?;
+        Ok((node, decoder.position()))
+    }
+}
+
+/// Lists of [`StaleTreeNode`]s in `tari_state_tree::cbor`'s native encoding.
+#[derive(Default)]
+pub struct StaleTreeNodesCodec;
+
+impl StaleTreeNodesCodec {
+    fn encoded_len(nodes: &[StaleTreeNode]) -> usize {
+        nodes.iter().fold(minicbor::len(nodes.len() as u64), |acc, stale| {
+            acc + cbor::stale_tree_node::cbor_len(stale, &mut ())
+        })
+    }
+
+    fn encode_slice_into<W: io::Write>(nodes: &[StaleTreeNode], writer: &mut W) -> Result<(), RocksDbStorageError> {
+        let encode_error = |e| RocksDbStorageError::EncodeError {
+            source: anyhow!("StaleTreeNodesCodec: {e}"),
+        };
+        let mut encoder = minicbor::Encoder::new(minicbor::encode::write::Writer::new(writer));
+        encoder.array(nodes.len() as u64).map_err(encode_error)?;
+        for stale in nodes {
+            cbor::stale_tree_node::encode(stale, &mut encoder, &mut ()).map_err(encode_error)?;
+        }
+        Ok(())
+    }
+
+    /// Encodes `nodes` as a stored list, without first collecting them into a `Vec`.
+    pub fn encode_slice(&self, nodes: &[StaleTreeNode]) -> Result<Vec<u8>, RocksDbStorageError> {
+        let mut encoded = Vec::with_capacity(Self::encoded_len(nodes));
+        Self::encode_slice_into(nodes, &mut encoded)?;
+        Ok(encoded)
+    }
+}
+
+impl DbEncoder<Vec<StaleTreeNode>> for StaleTreeNodesCodec {
+    fn encode_len(&self, value: &Vec<StaleTreeNode>) -> Result<usize, RocksDbStorageError> {
+        Ok(Self::encoded_len(value))
+    }
+
+    fn encode_into<W: io::Write>(&self, value: &Vec<StaleTreeNode>, writer: &mut W) -> Result<(), RocksDbStorageError> {
+        Self::encode_slice_into(value, writer)
+    }
+}
+
+impl DbDecoder<Vec<StaleTreeNode>> for StaleTreeNodesCodec {
+    fn decode(&self, bytes: &[u8]) -> Result<(Vec<StaleTreeNode>, usize), RocksDbStorageError> {
+        let decode_error = |e| RocksDbStorageError::DecodeError {
+            source: anyhow!("StaleTreeNodesCodec: {e}"),
+        };
+        let mut decoder = minicbor::Decoder::new(bytes);
+        let len = decoder
+            .array()
+            .map_err(decode_error)?
+            .ok_or_else(|| decode_error(minicbor::decode::Error::message("expected a definite-length array")))?;
+        let mut nodes = Vec::with_capacity(len.min(4096) as usize);
+        for _ in 0..len {
+            nodes.push(cbor::stale_tree_node::decode(&mut decoder, &mut ()).map_err(decode_error)?);
+        }
+        Ok((nodes, decoder.position()))
     }
 }
 

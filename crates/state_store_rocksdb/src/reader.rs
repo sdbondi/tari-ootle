@@ -135,7 +135,7 @@ use crate::{
         foreign_substate_pledge::ForeignSubstatePledgeCf,
         lock_conflict,
         parked_block,
-        pending_state_tree_diff::{PendingStateTreeDiffRecordCf, ShardStateTreeDiff},
+        pending_state_tree_diff::ShardStateTreeDiff,
         state_sync_rewind_point::StateSyncRewindPointCf,
         state_transition,
         state_transition::StateTransitionType,
@@ -1784,21 +1784,20 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
             return Ok(HashMap::new());
         }
 
-        let cf = self.db().cf(PendingStateTreeDiffRecordCf)?;
-
-        let mut diffs = HashMap::new();
-        // Load diffs in from earliest to latest
+        let pending = self.pending_state();
+        let mut diffs = HashMap::<Shard, Vec<PendingShardStateTreeDiff>>::new();
+        // Earliest to latest
         for block_id in block_ids.iter().rev() {
-            let Some(record) = cf.get(block_id, OPERATION).optional()? else {
+            let Some(record) = pending.tree_diffs.get(block_id) else {
                 continue;
             };
-            for ShardStateTreeDiff { shard, diff } in record {
+            for ShardStateTreeDiff { shard, diff } in record.iter() {
                 trace!(
                     target: LOG_TARGET,
                     "{OPERATION}: got diff for shard {} in block {} (v{}, new={}, stale={})",
                     shard, block_id, diff.version, diff.diff.new_nodes.len(), diff.diff.stale_tree_nodes.len()
                 );
-                diffs.entry(shard).or_insert_with(Vec::new).push(diff);
+                diffs.entry(*shard).or_default().push(diff.clone());
             }
         }
 

@@ -10,16 +10,17 @@ use std::collections::HashMap;
 use log::*;
 use tari_consensus_types::BlockId;
 use tari_ootle_common_types::{NodeAddressable, shard::Shard};
-use tari_ootle_storage::{
-    Ordering,
-    StateStoreWriteTransaction,
-    consensus_models::{PendingShardStateTreeDiff, SubstateChange},
-};
+use tari_ootle_storage::{Ordering, StateStoreWriteTransaction, consensus_models::SubstateChange};
 use tari_state_store_rocksdb::{
     cf_api::CfContext,
     column_families::{
         block_diff::legacy::{BlockDiffCf, SubstateIdIndex},
-        pending_state_tree_diff::legacy::PendingStateTreeDiffCf,
+        pending_state_tree_diff::legacy::{
+            LegacyPendingShardStateTreeDiff,
+            LegacyShardStateTreeDiff,
+            PendingStateTreeDiffCf,
+            PendingStateTreeDiffRecordV2Cf,
+        },
     },
     error::RocksDbStorageError,
     traits::{Cf, RocksReader, RocksWriter},
@@ -34,7 +35,7 @@ pub fn migrate<TAddr: NodeAddressable + 'static>(
     const OPERATION: &str = "migrate_v2";
 
     let mut changes_by_block = HashMap::<BlockId, Vec<(u32, SubstateChange)>>::new();
-    let mut tree_diffs_by_block = HashMap::<BlockId, Vec<(Shard, PendingShardStateTreeDiff)>>::new();
+    let mut tree_diffs_by_block = HashMap::<BlockId, Vec<(Shard, LegacyPendingShardStateTreeDiff)>>::new();
     {
         let db = tx.db();
         for result in db.cf(BlockDiffCf)?.iterator(Ordering::Ascending, OPERATION) {
@@ -60,8 +61,14 @@ pub fn migrate<TAddr: NodeAddressable + 'static>(
         tx.block_diffs_insert(&block_id, &changes)?;
     }
     let num_tree_diff_blocks = tree_diffs_by_block.len();
+    // Written in version 2's encoding, which the migration to version 3 reads.
+    let records = tx.db().cf(PendingStateTreeDiffRecordV2Cf)?;
     for (block_id, diffs) in tree_diffs_by_block {
-        tx.pending_state_tree_diffs_insert_all(&block_id, diffs.iter().map(|(shard, diff)| (shard, diff)))?;
+        let record = diffs
+            .into_iter()
+            .map(|(shard, diff)| LegacyShardStateTreeDiff { shard, diff })
+            .collect::<Vec<_>>();
+        records.put(&block_id, &record, OPERATION)?;
     }
 
     info!(
@@ -92,10 +99,7 @@ mod tests {
     use tari_state_store_rocksdb::{
         DatabaseOptions,
         RocksDbStateStore,
-        column_families::{
-            block_diff::{BlockDiffRecordCf, legacy::BlockDiffKey},
-            pending_state_tree_diff::PendingStateTreeDiffRecordCf,
-        },
+        column_families::block_diff::{BlockDiffRecordCf, legacy::BlockDiffKey},
     };
     use tari_state_tree::StateHashTreeDiff;
 
@@ -133,7 +137,10 @@ mod tests {
             }
             db.cf(PendingStateTreeDiffCf)?.put(
                 &(block_id, shard),
-                &PendingShardStateTreeDiff::new(5, StateHashTreeDiff::new()),
+                &LegacyPendingShardStateTreeDiff {
+                    version: 5,
+                    diff: StateHashTreeDiff::new(),
+                },
                 OPERATION,
             )?;
             Ok::<_, StorageError>(())
@@ -160,7 +167,7 @@ mod tests {
                 .unwrap()
         );
         let tree_diffs = db_ctx
-            .cf(PendingStateTreeDiffRecordCf)
+            .cf(PendingStateTreeDiffRecordV2Cf)
             .unwrap()
             .get(&block_id, OPERATION)
             .unwrap();
