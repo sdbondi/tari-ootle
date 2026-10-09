@@ -11,7 +11,7 @@ use std::{
 };
 
 use log::*;
-use rand::{Rng, seq::SliceRandom};
+use rand::{Rng, RngExt, seq::SliceRandom};
 use serde::{Deserialize, Serialize};
 use tari_consensus_types::{BlockId, Decision, LeafBlock};
 use tari_engine_types::{SubstateVersion, substate::SubstateId};
@@ -135,14 +135,10 @@ impl<TStateStore: StateStore> TransactionPool<TStateStore> {
         if weight_budget == 0 || max_count == 0 {
             return Ok(Vec::new());
         }
-        let recs = tx.transaction_pool_get_all_ready(block_id)?;
-        Ok(select_proposal_batch(
-            recs,
-            weight_budget,
-            max_count,
-            heavy_turn,
-            &mut rand::rng(),
-        ))
+        let mut rng = rand::rng();
+        let mut sample = ProposalSample::new(weight_budget, max_count, heavy_turn);
+        tx.transaction_pool_for_each_ready(block_id, |rec| sample.offer(rec, &mut rng))?;
+        Ok(sample.into_batch(&mut rng))
     }
 
     pub fn has_ready_or_pending_transaction_updates(
@@ -221,72 +217,134 @@ impl<TStateStore: StateStore> TransactionPool<TStateStore> {
     }
 }
 
-/// Choose the ready records to propose in the next block.
-///
-/// Records are considered in a fresh random order drawn from `rng`, so a submitter cannot choose or
-/// predict where their transaction sorts. Each record whose
-/// [`TransactionPoolRecord::proposal_weight`] fits the remaining `weight_budget` is taken; one that
-/// does not fit is skipped so the lighter records behind it still pack. Selection stops at `max_count`
-/// records.
-///
-/// A heavy record weighs more than half the `weight_budget`, so a random draw rarely reaches it before
-/// lighter records fill the budget. On a `heavy_turn` one heavy record, if any is ready, is taken first.
-/// A record heavier than the whole `weight_budget` is oversized and can only be proposed alone: it is
-/// chosen on a heavy turn, or when no ready record fits the budget. The caller sets `heavy_turn` on a
-/// fixed fraction of blocks, so heavy transactions still commit while the pool never drains, and oversized
-/// ones cannot claim more than that fraction of blocks from transactions that fit.
-///
-/// The returned batch is sorted by transaction id. The proposer prepares transactions in batch order and
-/// replicas process a block's commands in transaction-id order, so two transactions contending for a lock
-/// must reach it in the same order on both sides. A caller that stops preparing part way through the batch
-/// (at a deadline or execution budget) therefore defers the highest ids; which records enter the batch is
-/// random, the order within it is not.
+/// Choose the ready records to propose in the next block from `records`. See [`ProposalSample`].
 pub fn select_proposal_batch<R: Rng + ?Sized>(
-    mut records: Vec<TransactionPoolRecord>,
+    records: impl IntoIterator<Item = TransactionPoolRecord>,
     weight_budget: u64,
     max_count: usize,
     heavy_turn: bool,
     rng: &mut R,
 ) -> Vec<TransactionPoolRecord> {
-    if weight_budget == 0 || max_count == 0 {
-        return Vec::new();
-    }
-    records.shuffle(rng);
-
-    let is_oversized = |rec: &TransactionPoolRecord| rec.proposal_weight() > weight_budget;
-    if heavy_turn && let Some(pos) = records.iter().position(|rec| rec.proposal_weight() > weight_budget / 2) {
-        if is_oversized(&records[pos]) {
-            return vec![records.swap_remove(pos)];
-        }
-        records.swap(0, pos);
-    }
-
-    let mut batch = Vec::new();
-    let mut first_oversized = None;
-    let mut accumulated_weight = 0u64;
+    let mut sample = ProposalSample::new(weight_budget, max_count, heavy_turn);
     for rec in records {
-        if is_oversized(&rec) {
-            if first_oversized.is_none() {
-                first_oversized = Some(rec);
-            }
-            continue;
-        }
-        let next_weight = accumulated_weight.saturating_add(rec.proposal_weight());
-        if next_weight > weight_budget {
-            continue;
-        }
-        accumulated_weight = next_weight;
-        batch.push(rec);
-        if batch.len() >= max_count || accumulated_weight == weight_budget {
-            break;
+        sample.offer(rec, rng);
+    }
+    sample.into_batch(rng)
+}
+
+/// A bounded uniform random sample of the ready records offered to it, from which the next block's batch is
+/// chosen.
+///
+/// Every offered record has the same chance of being kept whatever its position, so a submitter cannot choose
+/// or predict where their transaction sorts, and memory stays bounded by `max_count` however many records are
+/// ready. Records that fit `weight_budget` share a reservoir of `max_count`, the most a batch can hold. Records
+/// that only fit alone share a single slot.
+///
+/// When packing, records are considered in random order. Each one whose
+/// [`TransactionPoolRecord::proposal_weight`] fits the remaining `weight_budget` is taken; one that does not fit
+/// is skipped so the lighter records behind it still pack. Packing stops at `max_count` records.
+///
+/// A heavy record weighs more than half the `weight_budget`, so a random draw rarely reaches it before lighter
+/// records fill the budget. On a `heavy_turn` one heavy record, if any is ready, is taken first. A record heavier
+/// than the whole `weight_budget` is oversized and can only be proposed alone: it is chosen on a heavy turn, or
+/// when no ready record fits the budget. The caller sets `heavy_turn` on a fixed fraction of blocks, so heavy
+/// transactions still commit while the pool never drains, and oversized ones cannot claim more than that fraction
+/// of blocks from transactions that fit.
+///
+/// The batch is sorted by transaction id. The proposer prepares transactions in batch order and replicas process
+/// a block's commands in transaction-id order, so two transactions contending for a lock must reach it in the
+/// same order on both sides. A caller that stops preparing part way through the batch (at a deadline or execution
+/// budget) therefore defers the highest ids; which records enter the batch is random, the order within it is not.
+pub struct ProposalSample {
+    weight_budget: u64,
+    max_count: usize,
+    heavy_turn: bool,
+    fitting: Vec<TransactionPoolRecord>,
+    num_fitting_offered: u64,
+    /// Holds an oversized record, or on a heavy turn any heavy record. At most one record over half the budget
+    /// fits in a batch, so one slot is all a batch can use.
+    alone: Option<TransactionPoolRecord>,
+    num_alone_offered: u64,
+}
+
+impl ProposalSample {
+    pub fn new(weight_budget: u64, max_count: usize, heavy_turn: bool) -> Self {
+        Self {
+            weight_budget,
+            max_count,
+            heavy_turn,
+            fitting: Vec::new(),
+            num_fitting_offered: 0,
+            alone: None,
+            num_alone_offered: 0,
         }
     }
 
-    if batch.is_empty() {
-        batch.extend(first_oversized);
+    pub fn offer<R: Rng + ?Sized>(&mut self, rec: TransactionPoolRecord, rng: &mut R) {
+        if self.weight_budget == 0 || self.max_count == 0 {
+            return;
+        }
+        let weight = rec.proposal_weight();
+        let is_oversized = weight > self.weight_budget;
+        let is_heavy = weight > self.weight_budget / 2;
+        if is_oversized || (self.heavy_turn && is_heavy) {
+            self.num_alone_offered += 1;
+            if rng.random_range(0..self.num_alone_offered) == 0 {
+                self.alone = Some(rec);
+            }
+            return;
+        }
+
+        self.num_fitting_offered += 1;
+        if self.fitting.len() < self.max_count {
+            self.fitting.push(rec);
+            return;
+        }
+        let slot = rng.random_range(0..self.num_fitting_offered);
+        if let Some(kept) = usize::try_from(slot).ok().and_then(|slot| self.fitting.get_mut(slot)) {
+            *kept = rec;
+        }
     }
-    batch.sort_unstable_by(|a, b| a.id().cmp(b.id()));
-    batch
+
+    pub fn into_batch<R: Rng + ?Sized>(self, rng: &mut R) -> Vec<TransactionPoolRecord> {
+        let Self {
+            weight_budget,
+            max_count,
+            heavy_turn,
+            mut fitting,
+            mut alone,
+            ..
+        } = self;
+
+        let mut batch = Vec::new();
+        let mut accumulated_weight = 0u64;
+        if heavy_turn && let Some(rec) = alone.take() {
+            if rec.proposal_weight() > weight_budget {
+                return vec![rec];
+            }
+            accumulated_weight = rec.proposal_weight();
+            batch.push(rec);
+        }
+
+        fitting.shuffle(rng);
+        for rec in fitting {
+            if batch.len() >= max_count || accumulated_weight == weight_budget {
+                break;
+            }
+            let next_weight = accumulated_weight.saturating_add(rec.proposal_weight());
+            if next_weight > weight_budget {
+                continue;
+            }
+            accumulated_weight = next_weight;
+            batch.push(rec);
+        }
+
+        if batch.is_empty() {
+            batch.extend(alone);
+        }
+        batch.sort_unstable_by(|a, b| a.id().cmp(b.id()));
+        batch
+    }
 }
 
 // Ord: ensure that the enum variants are ordered in the order of their progression
@@ -1196,7 +1254,7 @@ mod tests {
         use rand::{SeedableRng, rngs::StdRng};
 
         use super::{proposal_weight::record_with_weight_and_stage, *};
-        use crate::consensus_models::select_proposal_batch;
+        use crate::consensus_models::{ProposalSample, select_proposal_batch};
 
         const BUDGET: u64 = 24_000;
 
@@ -1275,6 +1333,31 @@ mod tests {
         fn it_respects_the_hard_count_cap() {
             let batch = select(&[1, 1, 1, 1], 2, true, 0);
             assert_eq!(batch.len(), 2);
+        }
+
+        #[test]
+        fn the_sample_is_bounded_by_the_count_cap() {
+            let mut rng = StdRng::seed_from_u64(0);
+            let mut sample = ProposalSample::new(BUDGET, 10, false);
+            for rec in records(&[100; 250]) {
+                sample.offer(rec, &mut rng);
+            }
+            assert_eq!(sample.fitting.len(), 10);
+            assert_eq!(sample.into_batch(&mut rng).len(), 10);
+        }
+
+        #[test]
+        fn a_record_is_sampled_whatever_its_position() {
+            let last = TransactionId::new([249; 32]);
+            let packed = (0..200)
+                .filter(|seed| {
+                    select(&[100; 250], 10, false, *seed)
+                        .iter()
+                        .any(|rec| *rec.id() == last)
+                })
+                .count();
+            // Kept with probability 10/250, so about 8 of 200 draws.
+            assert!((1..=30).contains(&packed), "packed {packed} times");
         }
 
         #[test]

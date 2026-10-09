@@ -1406,8 +1406,9 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         Ok(transactions)
     }
 
-    fn transaction_pool_get_all_ready(&self, block_id: &BlockId) -> Result<Vec<TransactionPoolRecord>, StorageError> {
-        const OPERATION: &str = "transaction_pool_get_all_ready";
+    fn transaction_pool_for_each_ready<F>(&self, block_id: &BlockId, mut f: F) -> Result<(), StorageError>
+    where F: FnMut(TransactionPoolRecord) {
+        const OPERATION: &str = "transaction_pool_for_each_ready";
         if !self.blocks_exists(block_id)? {
             return Err(StorageError::QueryError {
                 reason: format!("transaction_pool_get_for_blocks: Block {} does not exist", block_id),
@@ -1433,7 +1434,6 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
             }
         }
 
-        let mut transactions = Vec::new();
         let iter = cf.value_iterator(Ordering::default(), OPERATION);
 
         for result in iter {
@@ -1445,11 +1445,11 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
                 update.merge_into(&mut tx);
             }
             if tx.is_ready() {
-                transactions.push(tx);
+                f(tx);
             }
         }
 
-        Ok(transactions)
+        Ok(())
     }
 
     fn transaction_pool_has_pending_state_updates(&self, block_id: &BlockId) -> Result<bool, StorageError> {

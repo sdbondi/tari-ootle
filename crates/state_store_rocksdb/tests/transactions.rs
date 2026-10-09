@@ -129,8 +129,10 @@ mod confirm_all_transitions {
         tx.transaction_pool_add_pending_update(&block1.as_leaf(), &TransactionPoolStatusUpdate::new(tx_3, true))
             .unwrap();
 
-        let rec = tx.transaction_pool_get_all_ready(&block_id).unwrap();
-        assert_eq!(rec.len(), 3);
+        let mut num_ready = 0;
+        tx.transaction_pool_for_each_ready(&block_id, |_| num_ready += 1)
+            .unwrap();
+        assert_eq!(num_ready, 3);
 
         let rec = tx.transaction_pool_get_for_blocks(&block_id, &atom1.id).unwrap();
         assert!(rec.committed_stage().is_new());
