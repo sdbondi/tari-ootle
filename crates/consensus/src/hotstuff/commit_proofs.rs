@@ -78,7 +78,12 @@ pub fn state_version_commit_proof<TTx: StateStoreReadTransaction>(
             if let Some(commit_proof) = tx.block_commit_proofs_get(&block_id).optional()? {
                 return Ok(commit_proof);
             }
-            let block = Block::get(tx, &block_id)?;
+            let block = Block::get(tx, &block_id).optional()?.ok_or_else(|| {
+                HotStuffError::InvariantError(format!(
+                    "No commit proof is stored for block {block_id}, and the block is pruned, so its state versions \
+                     cannot be proven"
+                ))
+            })?;
             let commit_qc = block.get_commit_qc(tx)?;
             let commit_proof = generate_block_commit_proof(tx, &commit_qc, &block)?;
             Ok(CommittedBlockProof::new(commit_proof).to_bytes())

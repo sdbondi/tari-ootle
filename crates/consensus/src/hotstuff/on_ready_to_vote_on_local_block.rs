@@ -1795,13 +1795,14 @@ where TConsensusSpec: ConsensusSpec
         let version_updates = state_tree.commit_diffs(pending)?;
         let tx = state_tree.into_transaction();
         // The state version proofs just indexed name this block, which is pruned with its epoch, so they are served
-        // with the commit proof stored here. As with the proofs themselves, a node that cannot produce it keeps
-        // committing.
+        // with the commit proof stored here. A storage error fails the commit; a block that breaks a commit-proof
+        // invariant is logged, and the node keeps committing, as it does when it cannot index the proofs.
         if index_committed_block_state_versions(tx, block, &version_updates)? {
             match generate_block_commit_proof(&**tx, commit_qc, block) {
                 Ok(commit_proof) => {
                     tx.block_commit_proofs_insert(block.id(), &CommittedBlockProof::new(commit_proof).to_bytes())?
                 },
+                Err(err @ HotStuffError::StorageError(_)) => return Err(err),
                 Err(err) => error!(
                     target: LOG_TARGET,
                     "BUG: cannot generate the commit proof of {block}, so its state versions cannot be proven to \
