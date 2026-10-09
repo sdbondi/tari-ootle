@@ -1406,13 +1406,9 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
         Ok(transactions)
     }
 
-    fn transaction_pool_get_many_ready(
-        &self,
-        weight_budget: u64,
-        max_count: usize,
-        block_id: &BlockId,
-    ) -> Result<Vec<TransactionPoolRecord>, StorageError> {
-        const OPERATION: &str = "transaction_pool_get_many_ready";
+    fn transaction_pool_for_each_ready<F>(&self, block_id: &BlockId, mut f: F) -> Result<(), StorageError>
+    where F: FnMut(TransactionPoolRecord) {
+        const OPERATION: &str = "transaction_pool_for_each_ready";
         if !self.blocks_exists(block_id)? {
             return Err(StorageError::QueryError {
                 reason: format!("transaction_pool_get_for_blocks: Block {} does not exist", block_id),
@@ -1438,8 +1434,6 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
             }
         }
 
-        let mut transactions = Vec::new();
-        let mut accumulated_weight = 0u64;
         let iter = cf.value_iterator(Ordering::default(), OPERATION);
 
         for result in iter {
@@ -1451,22 +1445,11 @@ impl<'tx, TAddr: NodeAddressable + Serialize + DeserializeOwned + 'tx, R: RocksR
                 update.merge_into(&mut tx);
             }
             if tx.is_ready() {
-                // Always include at least one ready record so a transaction heavier than the whole
-                // budget still makes progress, then stop once the budget or count cap is reached.
-                let next_weight = accumulated_weight.saturating_add(tx.proposal_weight());
-                if !transactions.is_empty() && next_weight > weight_budget {
-                    break;
-                }
-                accumulated_weight = next_weight;
-                transactions.push(tx);
-
-                if transactions.len() >= max_count {
-                    break;
-                }
+                f(tx);
             }
         }
 
-        Ok(transactions)
+        Ok(())
     }
 
     fn transaction_pool_has_pending_state_updates(&self, block_id: &BlockId) -> Result<bool, StorageError> {

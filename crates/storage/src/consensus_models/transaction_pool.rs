@@ -11,6 +11,7 @@ use std::{
 };
 
 use log::*;
+use rand::{Rng, RngExt, seq::SliceRandom};
 use serde::{Deserialize, Serialize};
 use tari_consensus_types::{BlockId, Decision, LeafBlock};
 use tari_engine_types::{SubstateVersion, substate::SubstateId};
@@ -122,22 +123,22 @@ impl<TStateStore: StateStore> TransactionPool<TStateStore> {
     }
 
     /// Fetch ready transactions for the next block, bounded by a weight budget and a hard command
-    /// count cap. Records are accumulated in order until either their cumulative
-    /// [`TransactionPoolRecord::proposal_weight`] would exceed `weight_budget` or `max_count` records
-    /// have been collected. At least one ready record is always returned (if any exist) so that a
-    /// single transaction heavier than the whole budget still makes progress.
+    /// count cap. See [`select_proposal_batch`] for how records are chosen.
     pub fn get_batch_for_next_block(
         &self,
         tx: &impl StateStoreReadTransaction,
         weight_budget: u64,
         max_count: usize,
+        heavy_turn: bool,
         block_id: &BlockId,
     ) -> Result<Vec<TransactionPoolRecord>, TransactionPoolError> {
         if weight_budget == 0 || max_count == 0 {
             return Ok(Vec::new());
         }
-        let recs = tx.transaction_pool_get_many_ready(weight_budget, max_count, block_id)?;
-        Ok(recs)
+        let mut rng = rand::rng();
+        let mut sample = ProposalSample::new(weight_budget, max_count, heavy_turn);
+        tx.transaction_pool_for_each_ready(block_id, |rec| sample.offer(rec, &mut rng))?;
+        Ok(sample.into_batch(&mut rng))
     }
 
     pub fn has_ready_or_pending_transaction_updates(
@@ -213,6 +214,136 @@ impl<TStateStore: StateStore> TransactionPool<TStateStore> {
         tx_ids: I,
     ) -> Result<Vec<TransactionPoolRecord>, TransactionPoolError> {
         TransactionPoolRecord::remove_all(tx, tx_ids)
+    }
+}
+
+/// Choose the ready records to propose in the next block from `records`. See [`ProposalSample`].
+pub fn select_proposal_batch<R: Rng + ?Sized>(
+    records: impl IntoIterator<Item = TransactionPoolRecord>,
+    weight_budget: u64,
+    max_count: usize,
+    heavy_turn: bool,
+    rng: &mut R,
+) -> Vec<TransactionPoolRecord> {
+    let mut sample = ProposalSample::new(weight_budget, max_count, heavy_turn);
+    for rec in records {
+        sample.offer(rec, rng);
+    }
+    sample.into_batch(rng)
+}
+
+/// A bounded uniform random sample of the ready records offered to it, from which the next block's batch is
+/// chosen.
+///
+/// Every offered record has the same chance of being kept whatever its position, so a submitter cannot choose
+/// or predict where their transaction sorts, and memory stays bounded by `max_count` however many records are
+/// ready. Records that fit `weight_budget` share a reservoir of `max_count`, the most a batch can hold. Records
+/// that only fit alone share a single slot.
+///
+/// When packing, records are considered in random order. Each one whose
+/// [`TransactionPoolRecord::proposal_weight`] fits the remaining `weight_budget` is taken; one that does not fit
+/// is skipped so the lighter records behind it still pack. Packing stops at `max_count` records.
+///
+/// A heavy record weighs more than half the `weight_budget`, so a random draw rarely reaches it before lighter
+/// records fill the budget. On a `heavy_turn` one heavy record, if any is ready, is taken first. A record heavier
+/// than the whole `weight_budget` is oversized and can only be proposed alone: it is chosen on a heavy turn, or
+/// when no ready record fits the budget. The caller sets `heavy_turn` on a fixed fraction of blocks, so heavy
+/// transactions still commit while the pool never drains, and oversized ones cannot claim more than that fraction
+/// of blocks from transactions that fit.
+///
+/// The batch is sorted by transaction id. The proposer prepares transactions in batch order and replicas process
+/// a block's commands in transaction-id order, so two transactions contending for a lock must reach it in the
+/// same order on both sides. A caller that stops preparing part way through the batch (at a deadline or execution
+/// budget) therefore defers the highest ids; which records enter the batch is random, the order within it is not.
+pub struct ProposalSample {
+    weight_budget: u64,
+    max_count: usize,
+    heavy_turn: bool,
+    fitting: Vec<TransactionPoolRecord>,
+    num_fitting_offered: u64,
+    /// Holds an oversized record, or on a heavy turn any heavy record. At most one record over half the budget
+    /// fits in a batch, so one slot is all a batch can use.
+    alone: Option<TransactionPoolRecord>,
+    num_alone_offered: u64,
+}
+
+impl ProposalSample {
+    pub fn new(weight_budget: u64, max_count: usize, heavy_turn: bool) -> Self {
+        Self {
+            weight_budget,
+            max_count,
+            heavy_turn,
+            fitting: Vec::new(),
+            num_fitting_offered: 0,
+            alone: None,
+            num_alone_offered: 0,
+        }
+    }
+
+    pub fn offer<R: Rng + ?Sized>(&mut self, rec: TransactionPoolRecord, rng: &mut R) {
+        if self.weight_budget == 0 || self.max_count == 0 {
+            return;
+        }
+        let weight = rec.proposal_weight();
+        let is_oversized = weight > self.weight_budget;
+        let is_heavy = weight > self.weight_budget / 2;
+        if is_oversized || (self.heavy_turn && is_heavy) {
+            self.num_alone_offered += 1;
+            if rng.random_range(0..self.num_alone_offered) == 0 {
+                self.alone = Some(rec);
+            }
+            return;
+        }
+
+        self.num_fitting_offered += 1;
+        if self.fitting.len() < self.max_count {
+            self.fitting.push(rec);
+            return;
+        }
+        let slot = rng.random_range(0..self.num_fitting_offered);
+        if let Some(kept) = usize::try_from(slot).ok().and_then(|slot| self.fitting.get_mut(slot)) {
+            *kept = rec;
+        }
+    }
+
+    pub fn into_batch<R: Rng + ?Sized>(self, rng: &mut R) -> Vec<TransactionPoolRecord> {
+        let Self {
+            weight_budget,
+            max_count,
+            heavy_turn,
+            mut fitting,
+            mut alone,
+            ..
+        } = self;
+
+        let mut batch = Vec::new();
+        let mut accumulated_weight = 0u64;
+        if heavy_turn && let Some(rec) = alone.take() {
+            if rec.proposal_weight() > weight_budget {
+                return vec![rec];
+            }
+            accumulated_weight = rec.proposal_weight();
+            batch.push(rec);
+        }
+
+        fitting.shuffle(rng);
+        for rec in fitting {
+            if batch.len() >= max_count || accumulated_weight == weight_budget {
+                break;
+            }
+            let next_weight = accumulated_weight.saturating_add(rec.proposal_weight());
+            if next_weight > weight_budget {
+                continue;
+            }
+            accumulated_weight = next_weight;
+            batch.push(rec);
+        }
+
+        if batch.is_empty() {
+            batch.extend(alone);
+        }
+        batch.sort_unstable_by(|a, b| a.id().cmp(b.id()));
+        batch
     }
 }
 
@@ -1056,7 +1187,7 @@ mod tests {
     mod proposal_weight {
         use super::*;
 
-        fn record_with_weight_and_stage(weight: u64, stage: TransactionPoolStage) -> TransactionPoolRecord {
+        pub(super) fn record_with_weight_and_stage(weight: u64, stage: TransactionPoolStage) -> TransactionPoolRecord {
             TransactionPoolRecord {
                 transaction_id: TransactionId::new([0; 32]),
                 original_decision: Decision::Commit,
@@ -1114,6 +1245,128 @@ mod tests {
             // is the only thing bounding it, never an unbounded fill.
             let rec = record_with_weight_and_stage(0, TransactionPoolStage::New);
             assert_eq!(rec.proposal_weight(), 1);
+        }
+    }
+
+    mod select_proposal_batch {
+        use std::collections::HashSet;
+
+        use rand::{SeedableRng, rngs::StdRng};
+
+        use super::{proposal_weight::record_with_weight_and_stage, *};
+        use crate::consensus_models::{ProposalSample, select_proposal_batch};
+
+        const BUDGET: u64 = 24_000;
+
+        /// New-stage records with the given weights, each id derived from its index.
+        fn records(weights: &[u64]) -> Vec<TransactionPoolRecord> {
+            weights
+                .iter()
+                .enumerate()
+                .map(|(i, weight)| {
+                    let mut rec = record_with_weight_and_stage(*weight, TransactionPoolStage::New);
+                    rec.transaction_id = TransactionId::new([u8::try_from(i).unwrap(); 32]);
+                    rec
+                })
+                .collect()
+        }
+
+        fn weights_with_lights(heavy: u64) -> Vec<u64> {
+            let mut weights = vec![heavy];
+            weights.extend([150; 200]);
+            weights
+        }
+
+        fn select(weights: &[u64], max_count: usize, heavy_turn: bool, seed: u64) -> Vec<TransactionPoolRecord> {
+            select_proposal_batch(
+                records(weights),
+                BUDGET,
+                max_count,
+                heavy_turn,
+                &mut StdRng::seed_from_u64(seed),
+            )
+        }
+
+        fn contains_heavy(batch: &[TransactionPoolRecord]) -> bool {
+            batch.iter().any(|rec| *rec.id() == TransactionId::new([0; 32]))
+        }
+
+        #[test]
+        fn a_record_that_overflows_the_budget_is_skipped() {
+            for seed in 0..20 {
+                let batch = select(&[15_000, 15_000, 100], 1000, false, seed);
+                let weights = batch.iter().map(|rec| rec.proposal_weight()).collect::<HashSet<_>>();
+                assert_eq!(weights, HashSet::from([15_000, 100]));
+            }
+        }
+
+        #[test]
+        fn an_oversized_record_is_proposed_alone_when_nothing_fits() {
+            let batch = select(&[25_000, 25_000], 1000, false, 0);
+            assert_eq!(batch.len(), 1);
+        }
+
+        #[test]
+        fn an_oversized_record_waits_for_a_heavy_turn_while_records_fit() {
+            for seed in 0..20 {
+                let batch = select(&weights_with_lights(BUDGET + 1), 1000, false, seed);
+                assert!(!contains_heavy(&batch));
+                assert_eq!(batch.len(), 160);
+
+                let batch = select(&weights_with_lights(BUDGET + 1), 1000, true, seed);
+                assert_eq!(batch.len(), 1);
+                assert!(contains_heavy(&batch));
+            }
+        }
+
+        #[test]
+        fn a_heavy_turn_packs_a_heavy_record_first_and_fills_the_rest() {
+            for seed in 0..20 {
+                let batch = select(&weights_with_lights(20_000), 1000, true, seed);
+                assert!(contains_heavy(&batch));
+                let total = batch.iter().map(|rec| rec.proposal_weight()).sum::<u64>();
+                assert_eq!(total, 20_000 + 26 * 150);
+            }
+        }
+
+        #[test]
+        fn it_respects_the_hard_count_cap() {
+            let batch = select(&[1, 1, 1, 1], 2, true, 0);
+            assert_eq!(batch.len(), 2);
+        }
+
+        #[test]
+        fn the_sample_is_bounded_by_the_count_cap() {
+            let mut rng = StdRng::seed_from_u64(0);
+            let mut sample = ProposalSample::new(BUDGET, 10, false);
+            for rec in records(&[100; 250]) {
+                sample.offer(rec, &mut rng);
+            }
+            assert_eq!(sample.fitting.len(), 10);
+            assert_eq!(sample.into_batch(&mut rng).len(), 10);
+        }
+
+        #[test]
+        fn a_record_is_sampled_whatever_its_position() {
+            let last = TransactionId::new([249; 32]);
+            let packed = (0..200)
+                .filter(|seed| {
+                    select(&[100; 250], 10, false, *seed)
+                        .iter()
+                        .any(|rec| *rec.id() == last)
+                })
+                .count();
+            // Kept with probability 10/250, so about 8 of 200 draws.
+            assert!((1..=30).contains(&packed), "packed {packed} times");
+        }
+
+        #[test]
+        fn the_batch_is_in_transaction_id_order() {
+            for seed in 0..20 {
+                let batch = select(&[100; 50], 1000, false, seed);
+                assert_eq!(batch.len(), 50);
+                assert!(batch.is_sorted_by_key(|rec| *rec.id()));
+            }
         }
     }
 
