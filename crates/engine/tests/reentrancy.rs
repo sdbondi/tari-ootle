@@ -18,7 +18,7 @@ fn it_prevents_reentrant_withdraw() {
     let template_addr = test.get_template_address("Reentrancy");
     let (account, _, account_secret) = test.create_funded_account();
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
             .call_method(account, "withdraw", args![TARI_TOKEN, 1000 * TARI])
             .put_last_instruction_output_on_workspace("bucket")
@@ -27,9 +27,7 @@ fn it_prevents_reentrant_withdraw() {
         vec![],
     );
 
-    let reentrancy = result.finalize.execution_results[2]
-        .decode::<ComponentAddress>()
-        .unwrap();
+    let reentrancy = test.return_values()[2].decoded::<ComponentAddress>().unwrap();
 
     let reason = test.execute_expect_failure(
         Transaction::builder_localnet(Epoch(1))

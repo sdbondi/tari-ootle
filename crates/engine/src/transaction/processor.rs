@@ -30,7 +30,6 @@ use tari_engine_types::{
     entity_id_provider::EntityIdProvider,
     fees::ExhaustBurnRate,
     indexed_value::{IndexedValue, IndexedWellKnownTypes},
-    instruction_result::InstructionResult,
     limits,
     lock::LockFlag,
     published_template::TemplateBlob,
@@ -48,10 +47,10 @@ use tari_ootle_transaction::{
     call_arg,
     call_args,
 };
-use tari_template_abi::{FunctionDef, Type};
+use tari_template_abi::FunctionDef;
 use tari_template_builtin::ACCOUNT_TEMPLATE_ADDRESS;
 use tari_template_lib::{
-    args::{AllocateAddressResult, BucketAction, BucketGetAmountArg, BucketRef, WorkspaceAction},
+    args::{BucketAction, BucketGetAmountArg, BucketRef, WorkspaceAction},
     invoke_args,
     models::{Bucket, BucketId},
     types::{
@@ -229,16 +228,15 @@ where
 
         let transaction_hash = id.as_hash();
 
-        let (runtime, fee_exec_results) =
+        let (runtime, fee_exec_result) =
             Self::process_instructions(&template_provider, runtime, instructions.fee, &blobs);
 
-        let fee_exec_result = match fee_exec_results {
-            Ok(execution_results) => {
+        match fee_exec_result {
+            Ok(()) => {
                 // Checkpoint the tracker state after the fee instructions have been executed in case of transaction
                 // failure.
                 if let Err(err) = runtime.interface().checkpoint_fee_intent() {
                     let mut finalize = FinalizeResult::new_rejected(transaction_hash, err.to_reject_reason(None));
-                    finalize.execution_results = execution_results;
                     // Nothing is taken and nothing is written, but what committing would have cost
                     // is the number the payer has to raise their fee to.
                     let required = runtime.interface().required_fee_payment();
@@ -252,7 +250,6 @@ where
                         native_execution_points: runtime.interface().native_points_consumed(),
                     });
                 }
-                execution_results
             },
             Err(err) if err.is_node_fault() => return Err(err),
             Err(err) => {
@@ -289,9 +286,8 @@ where
 
         match instruction_result {
             Err(err) if err.is_node_fault() => Err(err),
-            Ok(execution_results) => {
-                let mut finalize = runtime.interface().finalize()?;
-                finalize.execution_results = execution_results;
+            Ok(()) => {
+                let finalize = runtime.interface().finalize()?;
                 Ok(ExecuteResult {
                     finalize,
                     execution_time: timer.elapsed(),
@@ -305,8 +301,7 @@ where
                 // Reset the state to when the state at the end of the fee instructions. The fee charges for the
                 // successful instructions are still charged even though the transaction failed.
                 // Finalize will now contain the fee payments and vault refunds only
-                let mut finalize = runtime.interface().finalize_failure(err.to_reject_reason())?;
-                finalize.execution_results = fee_exec_result;
+                let finalize = runtime.interface().finalize_failure(err.to_reject_reason())?;
                 Ok(ExecuteResult {
                     finalize,
                     execution_time: timer.elapsed(),
@@ -323,21 +318,20 @@ where
         runtime: Runtime,
         instructions: Vec<Instruction>,
         blobs: &tari_ootle_transaction::Blobs,
-    ) -> (Runtime, Result<Vec<InstructionResult>, TransactionError>) {
-        let result: Result<_, _> = instructions
+    ) -> (Runtime, Result<(), TransactionError>) {
+        let result = instructions
             .into_iter()
             .enumerate()
-            .map(|(idx, instruction)| {
+            .try_for_each(|(idx, instruction)| {
                 Self::process_instruction(template_provider, &runtime, instruction, blobs)
+                    .and_then(|output| Ok(runtime.interface().complete_instruction(output)?))
                     .map_err(|e| TransactionError::new(idx + 1, e))
             })
-            .collect();
-
-        let result = result.and_then(|result| {
-            // check that the finalized state is valid
-            runtime.interface().validate_finalized()?;
-            Ok::<_, TransactionError>(result)
-        });
+            .and_then(|()| {
+                // check that the finalized state is valid
+                runtime.interface().validate_finalized()?;
+                Ok(())
+            });
 
         (runtime, result)
     }
@@ -348,7 +342,7 @@ where
         runtime: &Runtime,
         instruction: Instruction,
         blobs: &tari_ootle_transaction::Blobs,
-    ) -> Result<InstructionResult, TransactionErrorKind> {
+    ) -> Result<Option<IndexedValue>, TransactionErrorKind> {
         debug!(target: LOG_TARGET, "instruction = {:?}", instruction);
         match instruction {
             Instruction::CreateAccount {
@@ -368,33 +362,33 @@ where
                 address: template_address,
                 function,
                 args,
-            } => Self::call_function(template_provider, runtime, &template_address, &function, args, None),
+            } => Self::call_function(template_provider, runtime, &template_address, &function, args, None).map(Some),
             Instruction::CallMethod { call, method, args } => {
-                Self::call_method(template_provider, runtime, call, &method, args, None)
+                Self::call_method(template_provider, runtime, call, &method, args, None).map(Some)
             },
             // Basically names an output on the workspace so that you can refer to it as an
             // Arg::Variable
             Instruction::PutLastInstructionOutputOnWorkspace { key } => {
                 Self::put_output_on_workspace_with_id(runtime, key)?;
-                Ok(InstructionResult::empty())
+                Ok(None)
             },
             Instruction::DropAllProofsInWorkspace => {
                 Self::drop_all_proofs_in_workspace(runtime)?;
-                Ok(InstructionResult::empty())
+                Ok(None)
             },
             Instruction::ClaimBurn { claim, output_data } => {
                 runtime.interface().claim_burn(*claim, output_data)?;
-                Ok(InstructionResult::empty())
+                Ok(None)
             },
             Instruction::ClaimValidatorFees { address, max_amount } => {
-                runtime.interface().claim_validator_fees(address, max_amount)?;
-                Ok(InstructionResult::empty())
+                let bucket_id = runtime.interface().claim_validator_fees(address, max_amount)?;
+                Ok(Some(IndexedValue::from_type(&bucket_id)?))
             },
             Instruction::Assert { key, assertion } => {
                 runtime
                     .interface()
                     .workspace_invoke(WorkspaceAction::Assert, invoke_args![key, assertion].into())?;
-                Ok(InstructionResult::empty())
+                Ok(None)
             },
             Instruction::TakeFromBucket {
                 input_bucket,
@@ -419,7 +413,7 @@ where
                 }
 
                 runtime_mut.put_on_workspace(output_bucket, IndexedValue::from_value(bucket.into_value()?)?)?;
-                Ok(InstructionResult::empty())
+                Ok(None)
             },
             Instruction::PutIntoBucket { src, dest } => {
                 let runtime_mut = runtime.interface();
@@ -428,7 +422,7 @@ where
                 let dest_item = runtime_mut.workspace_invoke(WorkspaceAction::Get, invoke_args![dest].into())?;
                 let dest_bucket_ref = BucketRef::Ref(dest_item.decode()?);
                 runtime_mut.bucket_invoke(dest_bucket_ref, BucketAction::Join, invoke_args![src_bucket_id].into())?;
-                Ok(InstructionResult::empty())
+                Ok(None)
             },
             Instruction::PublishTemplate { binary, metadata_hash } => {
                 let bytes = blobs.get(binary).ok_or(TransactionErrorKind::BlobIndexOutOfBounds {
@@ -461,7 +455,7 @@ where
         component: ComponentReference,
         new_template_addr: TemplateAddress,
         migrate: Option<MigrateFunction>,
-    ) -> Result<InstructionResult, TransactionErrorKind> {
+    ) -> Result<Option<IndexedValue>, TransactionErrorKind> {
         let (component_address, component) = runtime.interface().load_component(component)?;
 
         let template = template_provider
@@ -559,27 +553,29 @@ where
 
         runtime.interface().update_component_template(new_template_addr)?;
 
-        let returned = if let Some(function_def) = migration_function {
-            // Migrate function is defined, so we need to call it
-            let result =
-                Self::invoke_template(new_template_addr, template, runtime.clone(), &function_def, &final_args)?;
-            runtime.interface().validate_return_value(&result.indexed)?;
-            result.indexed
-        } else {
-            IndexedValue::default()
-        };
+        let returned = migration_function
+            .map(|function_def| {
+                let result =
+                    Self::invoke_template(new_template_addr, template, runtime.clone(), &function_def, &final_args)?;
+                runtime.interface().validate_return_value(&result)?;
+                Ok::<_, TransactionErrorKind>(result)
+            })
+            .transpose()?;
 
-        runtime.interface().pop_call_frame(returned.well_known_types())?;
+        let no_return = IndexedWellKnownTypes::new();
+        runtime
+            .interface()
+            .pop_call_frame(returned.as_ref().map_or(&no_return, IndexedValue::well_known_types))?;
 
-        Ok(InstructionResult::empty())
+        Ok(returned)
     }
 
     fn pay_fee_from_bucket(
         runtime: &Runtime,
         bucket: WorkspaceOffsetId,
-    ) -> Result<InstructionResult, TransactionErrorKind> {
+    ) -> Result<Option<IndexedValue>, TransactionErrorKind> {
         runtime.interface().pay_fee(PayFee::FromBucket { bucket })?;
-        Ok(InstructionResult::empty())
+        Ok(None)
     }
 
     fn stealth_transfer(
@@ -587,7 +583,7 @@ where
         resource_address: ResourceAddressRef,
         statement: StealthTransferStatement,
         revealed_funds_bucket: Option<WorkspaceOffsetId>,
-    ) -> Result<InstructionResult, TransactionErrorKind> {
+    ) -> Result<Option<IndexedValue>, TransactionErrorKind> {
         let revealed_funds_bucket = revealed_funds_bucket
             .map(|id| {
                 runtime.interface().resolve_workspace_id(&id).and_then(|r| {
@@ -601,10 +597,7 @@ where
         let maybe_bucket = runtime
             .interface()
             .stealth_transfer(resource_address, statement, revealed_funds_bucket)?;
-        runtime
-            .interface()
-            .set_last_instruction_output(IndexedValue::from_type(&maybe_bucket.map(Bucket::from_id))?)?;
-        Ok(InstructionResult::empty())
+        Ok(Some(IndexedValue::from_type(&maybe_bucket.map(Bucket::from_id))?))
     }
 
     fn put_output_on_workspace_with_id(runtime: &Runtime, key: WorkspaceId) -> Result<(), TransactionErrorKind> {
@@ -626,26 +619,12 @@ where
         runtime: &Runtime,
         substate_type: AllocatableAddressType,
         workspace_id: WorkspaceId,
-    ) -> Result<InstructionResult, TransactionErrorKind> {
+    ) -> Result<Option<IndexedValue>, TransactionErrorKind> {
         let entity_id = runtime.interface().next_entity_id()?;
-        let result = runtime
+        runtime
             .interface()
             .allocate_address(substate_type, entity_id, workspace_id)?;
-
-        match result {
-            AllocateAddressResult::ComponentAddress(alloc) => Ok(InstructionResult {
-                indexed: IndexedValue::from_type(&alloc)?,
-                return_type: Type::Other {
-                    name: "ComponentAddressAllocation".to_string(),
-                },
-            }),
-            AllocateAddressResult::ResourceAddress(alloc) => Ok(InstructionResult {
-                indexed: IndexedValue::from_type(&alloc)?,
-                return_type: Type::Other {
-                    name: "ResourceAddressAllocation".to_string(),
-                },
-            }),
-        }
+        Ok(None)
     }
 
     /// Load, validate template binary and adds it to TemplateProvider.
@@ -654,7 +633,7 @@ where
         runtime: &Runtime,
         binary: &[u8],
         metadata_hash: Option<MetadataHash>,
-    ) -> Result<InstructionResult, TransactionErrorKind> {
+    ) -> Result<Option<IndexedValue>, TransactionErrorKind> {
         if binary.len() > limits::ENGINE_LIMITS.max_template_binary_size_bytes {
             return Err(TransactionErrorKind::WasmBinaryTooBig {
                 size: binary.len(),
@@ -681,7 +660,7 @@ where
             .interface()
             .publish_template(blob, metadata_hash, template_def)?;
 
-        Ok(InstructionResult::empty())
+        Ok(None)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -692,7 +671,7 @@ where
         owner_rule: Option<OwnerRule>,
         access_rules: Option<ComponentAccessRules>,
         workspace_id: Option<WorkspaceOffsetId>,
-    ) -> Result<InstructionResult, TransactionErrorKind> {
+    ) -> Result<Option<IndexedValue>, TransactionErrorKind> {
         let template = template_provider
             .get_template(&ACCOUNT_TEMPLATE_ADDRESS)
             .map_err(|e| TransactionErrorKind::FailedToLoadTemplate {
@@ -757,11 +736,7 @@ where
                 }
 
                 // The instruction output is always the ComponentAddress
-                runtime
-                    .interface()
-                    .set_last_instruction_output(IndexedValue::from_type(&account_address)?)?;
-
-                Ok(InstructionResult::empty())
+                Ok(Some(IndexedValue::from_type(&account_address)?))
             },
             None => {
                 let function_def = template
@@ -812,13 +787,10 @@ where
                     &resolved_args,
                 )?;
 
-                runtime.interface().validate_return_value(&result.indexed)?;
-                runtime.interface().pop_call_frame(result.indexed.well_known_types())?;
-                runtime
-                    .interface()
-                    .set_last_instruction_output(IndexedValue::from_type(&account_address)?)?;
+                runtime.interface().validate_return_value(&result)?;
+                runtime.interface().pop_call_frame(result.well_known_types())?;
 
-                Ok(InstructionResult::empty())
+                Ok(Some(IndexedValue::from_type(&account_address)?))
             },
         }
     }
@@ -830,7 +802,7 @@ where
         function: &str,
         args: Vec<InstructionArg>,
         restrict_frame_to: Option<FrameWriteMode>,
-    ) -> Result<InstructionResult, TransactionErrorKind> {
+    ) -> Result<IndexedValue, TransactionErrorKind> {
         // An account lives at an address derived from its public key, so which rules a component may be created
         // there under is that key's decision. `CreateAccount` is the sole route to the constructor and is where
         // that decision is enforced.
@@ -886,8 +858,8 @@ where
             &resolved_args,
         )?;
 
-        runtime.interface().validate_return_value(&result.indexed)?;
-        runtime.interface().pop_call_frame(result.indexed.well_known_types())?;
+        runtime.interface().validate_return_value(&result)?;
+        runtime.interface().pop_call_frame(result.well_known_types())?;
 
         Ok(result)
     }
@@ -899,7 +871,7 @@ where
         method: &str,
         args: Vec<InstructionArg>,
         restrict_frame_to: Option<FrameWriteMode>,
-    ) -> Result<InstructionResult, TransactionErrorKind> {
+    ) -> Result<IndexedValue, TransactionErrorKind> {
         let (component_address, component) = runtime.interface().load_component(call)?;
         let template_address = *component.template_address();
 
@@ -937,7 +909,7 @@ where
         method: &str,
         args: Vec<InstructionArg>,
         restrict_frame_to: Option<FrameWriteMode>,
-    ) -> Result<InstructionResult, TransactionErrorKind> {
+    ) -> Result<IndexedValue, TransactionErrorKind> {
         let function_def = template.template_def().get_function(method).cloned().ok_or_else(|| {
             TransactionErrorKind::FunctionNotFound {
                 name: method.to_string(),
@@ -992,8 +964,8 @@ where
             &resolved_args,
         )?;
 
-        runtime.interface().validate_return_value(&result.indexed)?;
-        runtime.interface().pop_call_frame(result.indexed.well_known_types())?;
+        runtime.interface().validate_return_value(&result)?;
+        runtime.interface().pop_call_frame(result.well_known_types())?;
         Ok(result)
     }
 
@@ -1010,7 +982,7 @@ where
         runtime: Runtime,
         function_def: &FunctionDef,
         args: &[tari_bor::Value],
-    ) -> Result<InstructionResult, TransactionErrorKind> {
+    ) -> Result<IndexedValue, TransactionErrorKind> {
         runtime.interface().revoke_boundary_proofs()?;
 
         let result = match module {

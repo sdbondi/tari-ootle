@@ -23,7 +23,7 @@ fn basic_faucet_transfer() {
     let (sender_address, sender_proof, _) = template_test.create_funded_account();
     let (receiver_address, _, _) = template_test.create_empty_account();
 
-    let result = template_test
+    template_test
         .build_and_execute(
             Transaction::builder_localnet(Epoch(1))
                 .call_method(sender_address, "withdraw", args![TARI_TOKEN, 100])
@@ -37,11 +37,11 @@ fn basic_faucet_transfer() {
         .unwrap_success();
 
     assert_eq!(
-        result.finalize.execution_results[3].decode::<Amount>().unwrap(),
+        template_test.return_values()[3].decoded::<Amount>().unwrap(),
         Amount::from(999_999_900u64)
     );
     assert_eq!(
-        result.finalize.execution_results[4].decode::<Amount>().unwrap(),
+        template_test.return_values()[4].decoded::<Amount>().unwrap(),
         Amount::from(100u64)
     );
 }

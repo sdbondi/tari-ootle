@@ -182,7 +182,9 @@ pub trait RuntimeInterface {
 
     fn generate_uuid(&self) -> Result<[u8; 32], RuntimeError>;
 
-    fn set_last_instruction_output(&self, value: IndexedValue) -> Result<(), RuntimeError>;
+    /// Ends a top-level instruction with what it produced, if anything. `Some` becomes the output a following
+    /// `PutLastInstructionOutputOnWorkspace` names; `None` leaves the output of an earlier instruction in place.
+    fn complete_instruction(&self, output: Option<IndexedValue>) -> Result<(), RuntimeError>;
 
     fn claim_burn(&self, claim: MinotariBurnClaimProof, output_data: ClaimBurnOutputData) -> Result<(), RuntimeError>;
 
@@ -190,7 +192,7 @@ pub trait RuntimeInterface {
         &self,
         address: ValidatorFeePoolAddress,
         max_amount: Option<Amount>,
-    ) -> Result<(), RuntimeError>;
+    ) -> Result<BucketId, RuntimeError>;
 
     fn checkpoint_fee_intent(&self) -> Result<(), RuntimeError>;
     fn finalize(&self) -> Result<FinalizeResult, RuntimeError>;

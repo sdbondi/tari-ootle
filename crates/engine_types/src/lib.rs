@@ -11,7 +11,6 @@ pub mod events;
 pub mod fees;
 pub mod hashing;
 pub mod indexed_value;
-pub mod instruction_result;
 pub mod limits;
 pub mod lock;
 pub mod logs;

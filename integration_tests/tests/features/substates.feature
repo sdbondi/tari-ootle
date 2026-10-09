@@ -16,17 +16,17 @@ Feature: Substates
 
     # Create a new counter component
     When I call function "new" on template "counter" using account ACC to pay fees via wallet daemon WALLET_D named "COUNTER_1"
-    When I invoke on wallet daemon WALLET_D on account ACC on component COUNTER_1/components/counter the method call "value" the result is "0"
+    When I invoke on wallet daemon WALLET_D on account ACC on component COUNTER_1/components/counter the method call "assert_value" with argument "0"
 
     # Increase the counter and check the value
     When I invoke on wallet daemon WALLET_D on account ACC on component COUNTER_1/components/counter the method call "increase" named "TX1"
-    When I invoke on wallet daemon WALLET_D on account ACC on component TX1/components/counter the method call "value" the result is "1"
+    When I invoke on wallet daemon WALLET_D on account ACC on component TX1/components/counter the method call "assert_value" with argument "1"
 
     # We should get an error if we se as inputs the same component version thas has already been downed from previous transactions
     # We can achieve this by reusing inputs from COUNTER_1 instead of the most recent TX1
     When I invoke on wallet daemon WALLET_D on account ACC on component COUNTER_1/components/counter the method call "increase" named "TX2", I expect it to fail with "Substate .*? is not found or DOWN"
 
     # Check that the counter has NOT been increased by the previous erroneous transaction
-    When I invoke on wallet daemon WALLET_D on account ACC on component TX1/components/counter the method call "value" the result is "1"
+    When I invoke on wallet daemon WALLET_D on account ACC on component TX1/components/counter the method call "assert_value" with argument "1"
 
 

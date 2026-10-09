@@ -69,11 +69,6 @@ fn airdrop() {
     result.expect_success();
 
     for i in 0..50 {
-        assert_eq!(
-            result.finalize.execution_results[3 + (i * 4)]
-                .decode::<Amount>()
-                .unwrap(),
-            1
-        );
+        assert_eq!(test.return_values()[3 + (i * 4)].decoded::<Amount>().unwrap(), 1);
     }
 }

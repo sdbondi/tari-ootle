@@ -44,5 +44,9 @@ mod counter {
         pub fn increase(&mut self) {
             self.value += 1;
         }
+
+        pub fn assert_value(&self, expected: u32) {
+            assert_eq!(self.value, expected, "counter value mismatch");
+        }
     }
 }

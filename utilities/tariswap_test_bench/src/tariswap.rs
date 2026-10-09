@@ -267,15 +267,6 @@ impl Runner {
                     ])
                     .with_inputs(tariswap.vaults.values().map(|v| InputDeclaration::write(*v)))
                     .pay_fee_from_component(account.component_address, SWAP_FEE)
-                    .call_method(tariswap.component_address, "get_pool_balance", args![TARI_TOKEN])
-                    .call_method(tariswap.component_address, "get_pool_balance", args![
-                        faucet.resource_address,
-                    ])
-                    .call_method(tariswap.component_address, "get_pool_ratio", args![TARI_TOKEN, 1000])
-                    .call_method(tariswap.component_address, "get_pool_ratio", args![
-                        faucet.resource_address,
-                        1000
-                    ])
                     .call_method(account.component_address, "withdraw", args![TARI_TOKEN, amount_a_for_b])
                     .put_last_instruction_output_on_workspace("a")
                     .call_method(tariswap.component_address, "swap", args![
@@ -298,18 +289,8 @@ impl Runner {
             }
 
             for (j, tx_id) in tx_ids.drain(..).enumerate() {
-                let result = self.wait_for_transaction(tx_id).await?;
-                let balance_a = result.execution_results[0].decode::<Amount>()?;
-                let balance_b = result.execution_results[1].decode::<Amount>()?;
-                let ratio_a = result.execution_results[2].decode::<Amount>()?;
-                let ratio_b = result.execution_results[3].decode::<Amount>()?;
-                let amount_swapped = amount_a_for_b.to_u64_checked().expect("overflow") as f64 *
-                    (ratio_b.to_u64_checked().expect("overflow") as f64 / 1000.0);
-                info!(
-                    "Swap {n} for {amount_a_for_b} XTR -> {amount_swapped} FAUCET @ {ratio_a}:{ratio_b} | pool \
-                     liquidity: {balance_a} XTR {balance_b} FAUCET",
-                    n = (i + 1) * (j + 1)
-                );
+                self.wait_for_transaction(tx_id).await?;
+                info!("Swap {n} for {amount_a_for_b} XTR -> FAUCET", n = (i + 1) * (j + 1));
             }
         }
 
@@ -338,15 +319,6 @@ impl Runner {
                     ])
                     .with_inputs(tariswap.vaults.values().map(|v| InputDeclaration::write(*v)))
                     .pay_fee_from_component(account.component_address, SWAP_FEE)
-                    .call_method(tariswap.component_address, "get_pool_balance", args![TARI_TOKEN])
-                    .call_method(tariswap.component_address, "get_pool_balance", args![
-                        faucet.resource_address
-                    ])
-                    .call_method(tariswap.component_address, "get_pool_ratio", args![TARI_TOKEN, 1000])
-                    .call_method(tariswap.component_address, "get_pool_ratio", args![
-                        faucet.resource_address,
-                        1000
-                    ])
                     .call_method(account.component_address, "withdraw", args![
                         faucet.resource_address,
                         amount_b_for_a
@@ -366,18 +338,8 @@ impl Runner {
             }
 
             for (j, tx_id) in tx_ids.drain(..).enumerate() {
-                let result = self.wait_for_transaction(tx_id).await?;
-                let balance_a = result.execution_results[0].decode::<Amount>()?;
-                let balance_b = result.execution_results[1].decode::<Amount>()?;
-                let ratio_a = result.execution_results[2].decode::<Amount>()?;
-                let ratio_b = result.execution_results[3].decode::<Amount>()?;
-                let amount_swapped = amount_b_for_a.to_u64_checked().expect("overflow") as f64 *
-                    (ratio_a.to_u64_checked().expect("overflow") as f64 / 1000.0);
-                info!(
-                    "Swap {n} for {amount_b_for_a} FAUCET -> {amount_swapped} XTR @ {ratio_b}:{ratio_a} | pool \
-                     liquidity: {balance_a} XTR {balance_b} FAUCET",
-                    n = (i + 1) * (j + 1) * 2
-                );
+                self.wait_for_transaction(tx_id).await?;
+                info!("Swap {n} for {amount_b_for_a} FAUCET -> XTR", n = (i + 1) * (j + 1) * 2);
             }
         }
 

@@ -21,7 +21,7 @@ fn it_freezes_vaults_containing_a_freezable_resource() {
     let (account, account_proof, _) = test.create_empty_account();
 
     // Create a new Freeze component and deposit some resources into the account
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
             .allocate_component_address("freeze_comp")
             .call_function(template, "new", args![Workspace("freeze_comp")])
@@ -32,8 +32,8 @@ fn it_freezes_vaults_containing_a_freezable_resource() {
         vec![test.owner_proof()],
     );
 
-    let component: ComponentAddress = result.finalize.execution_results[1].get_value("$.0").unwrap().unwrap();
-    let resource: ResourceAddress = result.finalize.execution_results[1].get_value("$.1").unwrap().unwrap();
+    let component: ComponentAddress = test.return_values()[1].get_value("$.0").unwrap().unwrap();
+    let resource: ResourceAddress = test.return_values()[1].get_value("$.1").unwrap().unwrap();
     // Account fields: 0=vaults, 1=approvals.
     let vaults: BTreeMap<ResourceAddress, VaultId> = test.extract_component_value(account, "$.0");
     let vault_id = vaults[&resource];
@@ -86,7 +86,7 @@ fn it_refuses_to_freeze_a_vault_of_another_resource() {
     let template = test.get_template_address("Freeze");
     let (account, _, _) = test.create_funded_account();
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .allocate_component_address("freeze_comp")
             .call_function(template, "new", args![Workspace("freeze_comp")])
@@ -94,8 +94,8 @@ fn it_refuses_to_freeze_a_vault_of_another_resource() {
         vec![test.owner_proof()],
     );
 
-    let component: ComponentAddress = result.finalize.execution_results[1].get_value("$.0").unwrap().unwrap();
-    let freeze_resource: ResourceAddress = result.finalize.execution_results[1].get_value("$.1").unwrap().unwrap();
+    let component: ComponentAddress = test.return_values()[1].get_value("$.0").unwrap().unwrap();
+    let freeze_resource: ResourceAddress = test.return_values()[1].get_value("$.1").unwrap().unwrap();
 
     // The account's only vault holds TARI, not the freezable resource whose Freeze rule authorized the action.
     let vault_id = {

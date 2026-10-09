@@ -20,14 +20,14 @@ fn it_does_not_overflow_when_minting_a_huge_initial_supply() {
     let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/fungible"]);
     let template = test.get_template_address("Fungible");
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
             .call_function(template, "with_supply", args![Amount::MAX])
             .build_and_seal(test.secret_key()),
         vec![],
     );
 
-    let component: ComponentAddress = result.finalize.execution_results[0].decode().unwrap();
+    let component: ComponentAddress = test.return_values()[0].decoded().unwrap();
     let all_to_confidential = generate_withdraw_proof_with_inputs(&[], u64::MAX, u64::MAX, None, 0);
     test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
@@ -55,14 +55,14 @@ fn it_does_not_overflow_when_minting_more_then_amount_max_fungible_tokens() {
     let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/fungible"]);
     let template = test.get_template_address("Fungible");
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
             .call_function(template, "with_supply", args![i64::MAX])
             .build_and_seal(test.secret_key()),
         vec![],
     );
 
-    let component: ComponentAddress = result.finalize.execution_results[0].decode().unwrap();
+    let component: ComponentAddress = test.return_values()[0].decoded().unwrap();
 
     test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
@@ -90,7 +90,7 @@ fn it_does_not_overflow_when_minting_more_then_amount_max_confidential_tokens() 
         vec![],
     );
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
             .allocate_component_address("fungible")
             .call_function(template, "with_address_and_supply", args![
@@ -102,7 +102,7 @@ fn it_does_not_overflow_when_minting_more_then_amount_max_confidential_tokens() 
         vec![],
     );
 
-    let component: ComponentAddress = result.finalize.execution_results[1].decode().unwrap();
+    let component: ComponentAddress = test.return_values()[1].decoded().unwrap();
 
     let (more_supply1, _mask, _) = generate_confidential_output_statement(u64::MAX, None);
     let (more_supply2, _mask, _) = generate_confidential_output_statement(u64::MAX, None);
@@ -155,13 +155,13 @@ fn minting_past_the_maximum_vault_balance_is_rejected() {
     let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/fungible"]);
     let template = test.get_template_address("Fungible");
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template, "with_supply", args![Amount::MAX])
             .build_and_seal(test.secret_key()),
         vec![],
     );
-    let component: ComponentAddress = result.finalize.execution_results[0].decode().unwrap();
+    let component: ComponentAddress = test.return_values()[0].decoded().unwrap();
 
     let reason = test.execute_expect_failure(
         test.transaction()
@@ -181,13 +181,13 @@ fn minting_past_the_maximum_is_rejected_while_part_of_the_vault_is_locked() {
     let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/fungible"]);
     let template = test.get_template_address("Fungible");
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template, "with_supply", args![Amount::from(100u64)])
             .build_and_seal(test.secret_key()),
         vec![],
     );
-    let component: ComponentAddress = result.finalize.execution_results[0].decode().unwrap();
+    let component: ComponentAddress = test.return_values()[0].decoded().unwrap();
 
     // Locking moves 50 out of the unlocked field, so a mint sized to fit there alone still takes the vault's
     // balance past the maximum once the locked half is counted. The second lock is the operation the bound
@@ -218,13 +218,13 @@ fn a_proof_over_a_confidential_vault_holding_only_revealed_funds() {
     let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/fungible"]);
     let template = test.get_template_address("Fungible");
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template, "with_supply", args![Amount::from(100u64)])
             .build_and_seal(test.secret_key()),
         vec![],
     );
-    let component: ComponentAddress = result.finalize.execution_results[0].decode().unwrap();
+    let component: ComponentAddress = test.return_values()[0].decoded().unwrap();
 
     let vault = get_confidential_vault(&test, component);
     assert!(vault.get_confidential_commitments().unwrap().is_empty());
@@ -251,13 +251,13 @@ fn a_proof_over_a_confidential_vault_preserves_the_balance() {
     let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/fungible"]);
     let template = test.get_template_address("Fungible");
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         test.transaction()
             .call_function(template, "with_supply", args![Amount::from(100u64)])
             .build_and_seal(test.secret_key()),
         vec![],
     );
-    let component: ComponentAddress = result.finalize.execution_results[0].decode().unwrap();
+    let component: ComponentAddress = test.return_values()[0].decoded().unwrap();
 
     // `lock_all` requires a commitment, so move 60 of the 100 revealed into one, leaving 40 revealed.
     let to_commitment = generate_withdraw_proof_with_inputs(&[], 60u64, 60, None, 0u64);

@@ -441,7 +441,7 @@ fn multi_commitment_join() {
         ),
         ("join_proof", ManifestValue::new_value(&join_proof.proof).unwrap()),
     ];
-    let result = template_test
+    template_test
         .execute_and_commit_manifest(
             r#"
         let faucet = var!["faucet"];
@@ -473,9 +473,9 @@ fn multi_commitment_join() {
         )
         .unwrap();
 
-    assert_eq!(result.finalize.execution_results[3].decode::<u32>().unwrap(), 1);
-    assert_eq!(result.finalize.execution_results[7].decode::<u32>().unwrap(), 2);
-    assert_eq!(result.finalize.execution_results[9].decode::<u32>().unwrap(), 1);
+    assert_eq!(template_test.return_values()[3].decoded::<u32>().unwrap(), 1);
+    assert_eq!(template_test.return_values()[7].decoded::<u32>().unwrap(), 2);
+    assert_eq!(template_test.return_values()[9].decoded::<u32>().unwrap(), 1);
 }
 
 #[test]
@@ -494,7 +494,7 @@ fn mint_and_transfer_revealed() {
     // Convert 100 revealed funds to confidential and the remaining 23 to revealed
     let withdraw = generate_withdraw_proof_with_inputs(&[], 123u64, 100, None, 23);
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
             .call_method(faucet, "take_free_coins", args![withdraw.proof])
             .put_last_instruction_output_on_workspace("b")
@@ -505,7 +505,7 @@ fn mint_and_transfer_revealed() {
     );
 
     // The account should have a revealed balance of 23 revealed funds
-    let account_balance = result.finalize.execution_results[3].decode::<Amount>().unwrap();
+    let account_balance = test.return_values()[3].decoded::<Amount>().unwrap();
     assert_eq!(account_balance, 23);
 }
 

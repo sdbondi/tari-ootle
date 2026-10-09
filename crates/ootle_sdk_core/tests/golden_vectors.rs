@@ -511,7 +511,6 @@ fn parse_execute_result(
         transaction_hash: Hash32::from_array([0x51; 32]),
         events: vec![event],
         logs: vec![LogEntry::new(LogLevel::Info, "transfer executed".to_string())],
-        execution_results: Vec::new(),
         result,
         total_fees_required: parse_fee_receipt().total_fees_charged(),
         fee_receipt: parse_fee_receipt(),

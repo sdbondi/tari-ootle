@@ -28,20 +28,18 @@ fn it_recalls_all_resource_types() {
     initial_supply.output_revealed_amount = Amount::from(1000u64);
     let value_proofs = value_proofs_for_commitment(1000u64, &mask);
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
             .call_function(recall_template, "new", args![initial_supply, value_proofs])
             .build_and_seal(test.secret_key()),
         vec![],
     );
 
-    let recall_component: ComponentAddress = result.finalize.execution_results[0].get_value("$.0").unwrap().unwrap();
-    let fungible_resource: ResourceAddress = result.finalize.execution_results[0].get_value("$.1").unwrap().unwrap();
-    let non_fungible_resource: ResourceAddress =
-        result.finalize.execution_results[0].get_value("$.2").unwrap().unwrap();
-    let confidential_resource: ResourceAddress =
-        result.finalize.execution_results[0].get_value("$.3").unwrap().unwrap();
-    let stealth_resource: ResourceAddress = result.finalize.execution_results[0].get_value("$.4").unwrap().unwrap();
+    let recall_component: ComponentAddress = test.return_values()[0].get_value("$.0").unwrap().unwrap();
+    let fungible_resource: ResourceAddress = test.return_values()[0].get_value("$.1").unwrap().unwrap();
+    let non_fungible_resource: ResourceAddress = test.return_values()[0].get_value("$.2").unwrap().unwrap();
+    let confidential_resource: ResourceAddress = test.return_values()[0].get_value("$.3").unwrap().unwrap();
+    let stealth_resource: ResourceAddress = test.return_values()[0].get_value("$.4").unwrap().unwrap();
 
     let withdraw = generate_withdraw_proof(&mask, 10, Some(980), 10u64);
     test.execute_expect_success(
@@ -117,14 +115,14 @@ fn it_rejects_recall_from_a_vault_of_another_resource() {
         initial_supply.output_revealed_amount = Amount::from(1000u64);
         let value_proofs = value_proofs_for_commitment(1000u64, &mask);
 
-        let result = test.execute_expect_success(
+        test.execute_expect_success(
             Transaction::builder_localnet(Epoch(1))
                 .call_function(recall_template, "new", args![initial_supply, value_proofs])
                 .build_and_seal(test.secret_key()),
             vec![],
         );
-        let component: ComponentAddress = result.finalize.execution_results[0].get_value("$.0").unwrap().unwrap();
-        let fungible: ResourceAddress = result.finalize.execution_results[0].get_value("$.1").unwrap().unwrap();
+        let component: ComponentAddress = test.return_values()[0].get_value("$.0").unwrap().unwrap();
+        let fungible: ResourceAddress = test.return_values()[0].get_value("$.1").unwrap().unwrap();
 
         let withdraw = generate_withdraw_proof(&mask, 10, Some(980), 10u64);
         test.execute_expect_success(

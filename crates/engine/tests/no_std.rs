@@ -14,7 +14,7 @@ fn it_can_call_a_method() {
 
     let template = test.get_template_address("NoStdCounter");
 
-    let result = test.execute_expect_success(
+    test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
             .allocate_component_address("no_std_counter")
             .call_function(template, "with_address", args![Workspace("no_std_counter")])
@@ -25,7 +25,7 @@ fn it_can_call_a_method() {
         vec![test.owner_proof()],
     );
 
-    let component_address: ComponentAddress = result.finalize.execution_results[1].decode().unwrap();
+    let component_address: ComponentAddress = test.return_values()[1].decoded().unwrap();
 
     let component = test.read_only_state_store().get_component(component_address).unwrap();
 

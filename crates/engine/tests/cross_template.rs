@@ -133,7 +133,7 @@ fn it_allows_function_to_method_calls() {
     let composability_component_0 = components.cross_template_component;
 
     // create a new cross_template component, this time using a constructor that gets information from a method call
-    let res = test.template_test.execute_expect_success(
+    test.template_test.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
             .allocate_component_address("component_1")
             .call_function(test.cross_call_template, "new_from_component", args![
@@ -147,12 +147,12 @@ fn it_allows_function_to_method_calls() {
     );
 
     // the cross_template component exists in the network and is correctly initialized
-    let inner_component_address = res
-        .finalize
-        .execution_results
+    let inner_component_address = test
+        .template_test
+        .return_values()
         .last()
         .unwrap()
-        .decode::<ComponentAddress>()
+        .decoded::<ComponentAddress>()
         .unwrap();
     assert_eq!(inner_component_address, components.state_component);
 }

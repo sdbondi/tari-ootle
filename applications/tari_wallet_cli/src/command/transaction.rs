@@ -22,7 +22,6 @@
 
 use std::{
     collections::HashMap,
-    fmt,
     fs,
     path::PathBuf,
     str::FromStr,
@@ -34,7 +33,6 @@ use clap::{Args, Subcommand};
 use tari_bor::decode_exact;
 use tari_engine_types::{
     commit_result::{FinalizeResult, RejectReason, TransactionResult},
-    instruction_result::InstructionResult,
     parse_template_address,
     substate::{SubstateDiff, SubstateId, SubstateValue},
 };
@@ -65,18 +63,13 @@ use tari_ootle_walletd_client::{
         TransactionWaitResultResponse,
     },
 };
-use tari_template_abi::Type;
-use tari_template_lib::{
-    models::BucketId,
-    types::{
-        Amount,
-        NonFungibleAddress,
-        NonFungibleId,
-        ResourceAddress,
-        TemplateAddress,
-        constants::STEALTH_TARI_RESOURCE_ADDRESS,
-        crypto::RistrettoPublicKeyBytes,
-    },
+use tari_template_lib::types::{
+    NonFungibleAddress,
+    NonFungibleId,
+    ResourceAddress,
+    TemplateAddress,
+    constants::STEALTH_TARI_RESOURCE_ADDRESS,
+    crypto::RistrettoPublicKeyBytes,
 };
 use tari_transaction_manifest::{ManifestValue, parse_manifest};
 
@@ -668,207 +661,10 @@ pub fn summarize_finalize_result(finalize: &FinalizeResult) {
         TransactionResult::Reject(ref reason) => print_reject_reason(reason),
     }
 
-    println!("========= Return Values =========");
-    print_execution_results(&finalize.execution_results);
-
     println!();
     println!("========= LOGS =========");
     for log in &finalize.logs {
         println!("{}", log);
-    }
-}
-
-fn display_vec<W: fmt::Write>(writer: &mut W, ty: &Type, result: &InstructionResult) -> fmt::Result {
-    fn stringify_slice<T: fmt::Display>(slice: &[T]) -> String {
-        slice.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ")
-    }
-
-    match &ty {
-        Type::Unit => {},
-        Type::Bool => {
-            write!(writer, "{}", stringify_slice(&result.decode::<Vec<bool>>().unwrap()))?;
-        },
-        Type::I8 => {
-            write!(writer, "{}", stringify_slice(&result.decode::<Vec<i8>>().unwrap()))?;
-        },
-        Type::I16 => {
-            write!(writer, "{}", stringify_slice(&result.decode::<Vec<i16>>().unwrap()))?;
-        },
-        Type::I32 => {
-            write!(writer, "{}", stringify_slice(&result.decode::<Vec<i32>>().unwrap()))?;
-        },
-        Type::I64 => {
-            write!(writer, "{}", stringify_slice(&result.decode::<Vec<i64>>().unwrap()))?;
-        },
-        Type::I128 => {
-            // u128/i128 are not natively encodable via minicbor; pull them out of the dynamic Value tree
-            // (they round-trip as `Value::Integer(i128)`).
-            let vs: Vec<i128> = result
-                .indexed
-                .value()
-                .as_array()
-                .unwrap_or(&[])
-                .iter()
-                .filter_map(|v| v.as_integer())
-                .collect();
-            write!(writer, "{}", stringify_slice(&vs))?;
-        },
-        Type::U8 => {
-            write!(writer, "{}", stringify_slice(&result.decode::<Vec<u8>>().unwrap()))?;
-        },
-        Type::U16 => {
-            write!(writer, "{}", stringify_slice(&result.decode::<Vec<u16>>().unwrap()))?;
-        },
-        Type::U32 => {
-            write!(writer, "{}", stringify_slice(&result.decode::<Vec<u32>>().unwrap()))?;
-        },
-        Type::U64 => {
-            write!(writer, "{}", stringify_slice(&result.decode::<Vec<u64>>().unwrap()))?;
-        },
-        Type::U128 => {
-            // u128/i128 are not natively encodable via minicbor; pull them out of the dynamic Value tree.
-            let vs: Vec<u128> = result
-                .indexed
-                .value()
-                .as_array()
-                .unwrap_or(&[])
-                .iter()
-                .filter_map(|v| v.as_integer().and_then(|i| u128::try_from(i).ok()))
-                .collect();
-            write!(writer, "{}", stringify_slice(&vs))?;
-        },
-        Type::String => {
-            write!(writer, "{}", result.decode::<Vec<String>>().unwrap().join(", "))?;
-        },
-        Type::Vec(ty) => {
-            let mut vec_ty = String::new();
-            display_vec(&mut vec_ty, ty, result)?;
-            match &**ty {
-                Type::Other { name } => {
-                    write!(writer, "Vec<{}>: {}", name, vec_ty)?;
-                },
-                _ => {
-                    write!(writer, "Vec<{:?}>: {}", ty, vec_ty)?;
-                },
-            }
-        },
-        Type::Tuple(subtypes) => {
-            let str = format_tuple(subtypes, result);
-            write!(writer, "{}", str)?;
-        },
-        Type::Option(ty) => {
-            write!(writer, "Option<{}>: <not implemented>", ty)?;
-        },
-        Type::Other { name } if name == "Amount" => {
-            write!(writer, "{}", stringify_slice(&result.decode::<Vec<Amount>>().unwrap()))?;
-        },
-        Type::Other { name } if name == "NonFungibleId" => {
-            write!(
-                writer,
-                "{}",
-                stringify_slice(&result.decode::<Vec<NonFungibleId>>().unwrap())
-            )?;
-        },
-        Type::Other { .. } => {
-            write!(writer, "{}", serde_json::to_string_pretty(&result.indexed).unwrap())?;
-        },
-    }
-    Ok(())
-}
-
-fn format_tuple(subtypes: &[Type], result: &InstructionResult) -> String {
-    let tuple_type = Type::Tuple(subtypes.to_vec());
-    let result_json = serde_json::to_string(&result.indexed).unwrap();
-    format!("{}: {}", tuple_type, result_json)
-}
-
-pub fn print_execution_results(results: &[InstructionResult]) {
-    for result in results {
-        match &result.return_type {
-            Type::Unit => {},
-            Type::Bool => {
-                println!("bool: {}", result.decode::<bool>().unwrap());
-            },
-            Type::I8 => {
-                println!("i8: {}", result.decode::<i8>().unwrap());
-            },
-            Type::I16 => {
-                println!("i16: {}", result.decode::<i16>().unwrap());
-            },
-            Type::I32 => {
-                println!("i32: {}", result.decode::<i32>().unwrap());
-            },
-            Type::I64 => {
-                println!("i64: {}", result.decode::<i64>().unwrap());
-            },
-            Type::I128 => {
-                // u128/i128 are not natively encodable via minicbor; read straight from Value.
-                let v = result.indexed.value().as_integer().unwrap_or(0);
-                println!("i128: {}", v);
-            },
-            Type::U8 => {
-                println!("u8: {}", result.decode::<u8>().unwrap());
-            },
-            Type::U16 => {
-                println!("u16: {}", result.decode::<u16>().unwrap());
-            },
-            Type::U32 => {
-                println!("u32: {}", result.decode::<u32>().unwrap());
-            },
-            Type::U64 => {
-                println!("u64: {}", result.decode::<u64>().unwrap());
-            },
-            Type::U128 => {
-                // u128/i128 are not natively encodable via minicbor; read straight from Value.
-                let v = result
-                    .indexed
-                    .value()
-                    .as_integer()
-                    .and_then(|i| u128::try_from(i).ok())
-                    .unwrap_or(0);
-                println!("u128: {}", v);
-            },
-            Type::String => {
-                println!("string: {}", result.decode::<String>().unwrap());
-            },
-            Type::Vec(ty) => {
-                let mut vec_ty = String::new();
-                display_vec(&mut vec_ty, ty, result).unwrap();
-                match &**ty {
-                    Type::Other { name } => {
-                        println!("Vec<{}>: {}", name, vec_ty);
-                    },
-                    _ => {
-                        println!("Vec<{:?}>: {}", ty, vec_ty);
-                    },
-                }
-            },
-            Type::Tuple(subtypes) => {
-                let str = format_tuple(subtypes, result);
-                println!("{}", str);
-            },
-            Type::Option(ty) => {
-                let mut vec_ty = String::new();
-                display_vec(&mut vec_ty, ty, result).unwrap();
-                match &**ty {
-                    Type::Other { name } => {
-                        println!("Option<{}>: {}", name, vec_ty);
-                    },
-                    _ => {
-                        println!("Option<{:?}>: {}", ty, vec_ty);
-                    },
-                }
-            },
-            Type::Other { name } if name == "Amount" => {
-                println!("{}: {}", name, result.decode::<Amount>().unwrap());
-            },
-            Type::Other { name } if name == "Bucket" => {
-                println!("{}: {}", name, result.decode::<BucketId>().unwrap());
-            },
-            Type::Other { name } => {
-                println!("{}: {}", name, serde_json::to_string_pretty(&result.indexed).unwrap());
-            },
-        }
     }
 }
 

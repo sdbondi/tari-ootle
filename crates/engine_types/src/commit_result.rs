@@ -32,7 +32,6 @@ use crate::{
     Epoch,
     events::Event,
     fees::{FEE_ESTIMATE_ALLOWANCE, FeeReceipt},
-    instruction_result::InstructionResult,
     logs::LogEntry,
     resource::Resource,
     substate::SubstateDiff,
@@ -155,16 +154,6 @@ impl ExecuteResult {
         assert!(receipt.is_paid_in_full(), "Fees not paid in full");
         receipt
     }
-
-    #[track_caller]
-    pub fn expect_return<T: for<'b> tari_bor::Decode<'b, ()>>(&self, index: usize) -> T {
-        self.finalize
-            .execution_results
-            .get(index)
-            .expect("No return value at index")
-            .decode()
-            .expect("Failed to decode return value")
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, minicbor::Encode, minicbor::Decode, minicbor::CborLen)]
@@ -176,8 +165,8 @@ pub struct FinalizeResult {
     pub events: Vec<Event>,
     #[n(2)]
     pub logs: Vec<LogEntry>,
-    #[n(3)]
-    pub execution_results: Vec<InstructionResult>,
+    // Index 3 is retired: it carried template return values, which payloads from older nodes may
+    // still hold and decoding skips. It must not be reused.
     #[n(4)]
     pub result: TransactionResult,
     #[n(5)]
@@ -208,7 +197,6 @@ impl FinalizeResult {
             transaction_hash,
             logs,
             events,
-            execution_results: Vec::new(),
             result,
             fee_receipt,
         }
@@ -241,7 +229,6 @@ impl FinalizeResult {
             transaction_hash,
             logs: vec![],
             events: vec![],
-            execution_results: Vec::new(),
             result: TransactionResult::Reject(reason),
             fee_receipt: FeeReceipt::default(),
             total_fees_required: 0,
@@ -725,5 +712,28 @@ mod tests {
     fn required_fees_reports_the_larger_of_the_two() {
         let result = result_charged(400).with_total_fees_required(9_000);
         assert!(result.required_fees() > 9_000);
+    }
+
+    /// A result from an older node carries its template return values at index 3.
+    #[test]
+    fn a_payload_carrying_return_values_still_decodes() {
+        let result = result_charged(400);
+        let return_values = tari_bor::Value::Array(vec![tari_bor::Value::Array(vec![
+            tari_bor::Value::Text("returned".to_string()),
+            tari_bor::Value::Null,
+        ])]);
+
+        let tari_bor::Value::Array(mut fields) = tari_bor::to_value(&result).unwrap() else {
+            panic!("FinalizeResult is not encoded as an array");
+        };
+        fields[3] = return_values;
+        let decoded: FinalizeResult =
+            tari_bor::decode_exact(&tari_bor::encode(&tari_bor::Value::Array(fields)).unwrap()).unwrap();
+        assert_eq!(decoded.fee_receipt.total_fees_charged(), 400);
+
+        let mut json = serde_json::to_value(&result).unwrap();
+        json["execution_results"] = serde_json::json!([{ "indexed": null, "return_type": "Unit" }]);
+        let decoded: FinalizeResult = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded.fee_receipt.total_fees_charged(), 400);
     }
 }

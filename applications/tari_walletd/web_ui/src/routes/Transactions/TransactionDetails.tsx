@@ -55,7 +55,6 @@ import { useState } from "react";
 import { BsQuestionCircle } from "react-icons/bs";
 import { useParams } from "react-router-dom";
 import Events from "./Events";
-import ExecutionResults from "./ExecutionResults";
 import FeeReceipt from "./FeeReceipt";
 import Inputs from "./Inputs";
 import Instructions from "./Instructions";
@@ -80,18 +79,7 @@ export default function TransactionDetails() {
   };
 
   const expandAll = () => {
-    setExpandedPanels([
-      "panel1",
-      "panel2",
-      "panel3",
-      "panel4",
-      "panel5",
-      "panel6",
-      "panel7",
-      "panel8",
-      "panel9",
-      "panel10",
-    ]);
+    setExpandedPanels(["panel1", "panel2", "panel3", "panel4", "panel5", "panel7", "panel8", "panel9", "panel10"]);
   };
 
   const collapseAll = () => {
@@ -327,16 +315,6 @@ export default function TransactionDetails() {
               </AccordionSummary>
               <AccordionDetails>
                 <Substates data={data.result.result} />
-              </AccordionDetails>
-            </Accordion>
-          )}
-          {data.result && data.result.execution_results && (
-            <Accordion expanded={expandedPanels.includes("panel6")} onChange={handleChange("panel6")}>
-              <AccordionSummary aria-controls="panel6bh-content" id="panel6bh-header">
-                <Typography variant="h5">Execution Results</Typography>
-              </AccordionSummary>
-              <AccordionDetails>
-                <ExecutionResults data={data.result.execution_results} />
               </AccordionDetails>
             </Accordion>
           )}

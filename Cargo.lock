@@ -12593,7 +12593,6 @@ dependencies = [
  "tari_ootle_transaction",
  "tari_ootle_wallet_sdk",
  "tari_ootle_walletd_client",
- "tari_template_abi",
  "tari_template_lib",
  "tari_transaction_manifest",
  "tari_utilities",

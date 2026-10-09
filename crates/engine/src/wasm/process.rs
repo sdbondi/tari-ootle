@@ -22,7 +22,7 @@
 
 use log::*;
 use tari_bor::{BorError, ByteCounter, decode_exact_with_max_depth, encode_into_writer, encoded_len};
-use tari_engine_types::{indexed_value::IndexedValue, instruction_result::InstructionResult, limits};
+use tari_engine_types::{indexed_value::IndexedValue, limits};
 use tari_template_abi::{
     CallInfo,
     EngineOp,
@@ -123,7 +123,7 @@ impl WasmProcess {
         state: Runtime,
         func_def: &FunctionDef,
         args: &[tari_bor::Value],
-    ) -> Result<InstructionResult, WasmExecutionError> {
+    ) -> Result<IndexedValue, WasmExecutionError> {
         self.env_mut(store).bind_call(state);
         let result = self.invoke(store, func_def, args);
         self.env_mut(store).unbind_call();
@@ -605,7 +605,7 @@ impl WasmProcess {
         store: &mut Store,
         func_def: &FunctionDef,
         args: &[tari_bor::Value],
-    ) -> Result<InstructionResult, WasmExecutionError> {
+    ) -> Result<IndexedValue, WasmExecutionError> {
         let main_name = format!("{}_main", self.module.template_name());
         let func: MainFunction = self.instance.exports.get_typed_function(store, &main_name)?;
         if func_def.arguments.len() != args.len() {
@@ -682,15 +682,7 @@ impl WasmProcess {
             InvocationOutcome::Returned(raw) => {
                 let value = self.decode_return_value(store, &raw)?;
                 self.env(store).state()?.interface().validate_return_value(&value)?;
-                self.env(store)
-                    .state()?
-                    .interface()
-                    .set_last_instruction_output(value.clone())?;
-
-                Ok(InstructionResult {
-                    indexed: value,
-                    return_type: func_def.output.clone(),
-                })
+                Ok(value)
             },
             InvocationOutcome::Trapped(err) => {
                 if let Some(message) = self.env_mut(store).take_last_panic_message() {
