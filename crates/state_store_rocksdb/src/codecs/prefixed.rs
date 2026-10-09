@@ -13,6 +13,8 @@ use crate::{
 pub enum KeyPrefix {
     Blocks = 0,
     BlockEpochHeightIndex = 1,
+    // 2, 3 and 31 hold the per-change and per-shard tables of schema version 1, read only by the migration to
+    // version 2.
     BlockDiffs = 2,
     BlockDiffsBySubstateId = 3,
     BlockTransactionExecutions = 4,
@@ -66,7 +68,9 @@ pub enum KeyPrefix {
     StateSyncRewindPoint = 51,
     StateVersionProofs = 52,
     SubstateLockSets = 53,
-    BlockCommitProofs = 54,
+    BlockDiffRecords = 54,
+    PendingStateTreeDiffRecords = 55,
+    BlockCommitProofs = 56,
 }
 
 impl KeyPrefix {
