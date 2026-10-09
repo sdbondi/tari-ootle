@@ -1,7 +1,7 @@
 //   Copyright 2022 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::{fmt::Debug, fs::create_dir_all, path::PathBuf, time::Duration};
+use std::{fmt::Debug, fs::create_dir_all, path::PathBuf, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use deadpool_diesel::{
@@ -12,6 +12,7 @@ use diesel::{Connection, RunQueryDsl, SqliteConnection, sql_query};
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness};
 use tari_ootle_storage::StorageError;
 use tari_ootle_storage_sqlite::{SqliteTransaction, error::SqliteStorageError};
+use tokio::sync::Mutex;
 
 #[cfg(feature = "metrics")]
 use crate::storage_sqlite::metrics::{StorageFileStats, StorageMetrics};
@@ -28,6 +29,11 @@ const MIGRATIONS: EmbeddedMigrations = embed_migrations!("./src/storage_sqlite/m
 #[derive(Clone)]
 pub struct SqliteIndexerStore {
     pool: Pool,
+    /// Admits one writer at a time, in arrival order. SQLite allows a single writer, and its busy
+    /// handler retries on a sleep-and-poll backoff with no queue, so under a burst of writers some
+    /// lose every retry until `BUSY_TIMEOUT` expires. Queuing here leaves `BUSY_TIMEOUT` to cover
+    /// only locks taken outside this store, such as a WAL checkpoint.
+    write_lock: Arc<Mutex<()>>,
     path: PathBuf,
     #[cfg(feature = "metrics")]
     metrics: Option<StorageMetrics>,
@@ -71,6 +77,7 @@ impl SqliteIndexerStore {
 
         Ok(Self {
             pool,
+            write_lock: Arc::new(Mutex::new(())),
             path: db_path,
             #[cfg(feature = "metrics")]
             metrics: None,
@@ -195,13 +202,18 @@ impl IndexerStore for SqliteIndexerStore {
         R: Send + 'static,
         E: From<StorageError> + Send + 'static,
     {
+        #[cfg(feature = "metrics")]
+        let lock_requested = std::time::Instant::now();
+        // Taken before a pooled connection so that queued writers do not hold connections readers
+        // need. The guard moves into the closure because `interact` keeps running on its blocking
+        // thread if this future is dropped, and the lock must be held until the transaction ends.
+        let write_guard = self.write_lock.clone().lock_owned().await;
         let conn = self.acquire().await?;
         #[cfg(feature = "metrics")]
         let metrics = self.metrics.clone();
         let result: Result<R, E> = conn
             .interact(move |c| -> Result<R, E> {
-                #[cfg(feature = "metrics")]
-                let lock_requested = std::time::Instant::now();
+                let _write_guard = write_guard;
                 let inner = match SqliteTransaction::begin_immediate(c) {
                     Ok(inner) => inner,
                     Err(err) => {
@@ -1550,6 +1562,51 @@ mod tests {
             .err()
             .expect("lock is held");
         assert!(is_busy(&err), "{err}");
+    }
+
+    #[tokio::test]
+    async fn queued_writers_leave_pooled_connections_for_readers() {
+        let (_dir, store) = temp_store().await;
+
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let holder = tokio::spawn({
+            let store = store.clone();
+            async move {
+                store
+                    .with_write_tx(move |_| {
+                        entered_tx.send(()).unwrap();
+                        std::thread::sleep(Duration::from_millis(500));
+                        Ok::<_, StorageError>(())
+                    })
+                    .await
+            }
+        });
+        entered_rx.await.unwrap();
+
+        // More writers than the pool has connections, all waiting on the holder.
+        let writers = (0..POOL_MAX_SIZE * 2)
+            .map(|_| {
+                let store = store.clone();
+                tokio::spawn(async move { store.with_write_tx(|_| Ok::<_, StorageError>(())).await })
+            })
+            .collect::<Vec<_>>();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let started = std::time::Instant::now();
+        store
+            .with_read_tx(|tx| tx.get_transaction_rejection_status(TransactionId::default()))
+            .await
+            .unwrap();
+        let read_wait = started.elapsed();
+
+        holder.await.unwrap().unwrap();
+        for writer in writers {
+            writer.await.unwrap().unwrap();
+        }
+        assert!(
+            read_wait < Duration::from_millis(250),
+            "reader waited {read_wait:?} for a connection"
+        );
     }
 
     // -------------------------------- Substate Cache -------------------------------- //

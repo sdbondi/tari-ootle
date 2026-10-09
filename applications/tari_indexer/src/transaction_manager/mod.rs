@@ -150,10 +150,18 @@ where
         match self.network_client.submit_transaction(transaction).await {
             Ok(id) => {
                 // A previously rejected transaction may be accepted on resubmission (e.g. after a
-                // missing template is published), so a stale rejection must not shadow it.
-                self.store
-                    .with_write_tx(move |tx| tx.clear_transaction_rejection(id))
+                // missing template is published), so a stale rejection must not shadow it. Only a
+                // recorded rejection takes the write lock, which every submission would otherwise
+                // contend for.
+                let status = self
+                    .store
+                    .with_read_tx(move |tx| tx.get_transaction_rejection_status(id))
                     .await?;
+                if matches!(status, TransactionRejectionStatus::Rejected { .. }) {
+                    self.store
+                        .with_write_tx(move |tx| tx.clear_transaction_rejection(id))
+                        .await?;
+                }
                 Ok(id)
             },
             Err(err) => {
