@@ -37,7 +37,7 @@ const publicKey = publicKeyFromSecretKey(secretKey);
 
 ### `hashUnsignedTransaction(unsignedTxJson, sealSignerPublicKey)`
 
-Hash a transaction for an authorization signature. Returns a 64-byte `Uint8Array` that should be passed to `schnorrSign`. The hash excludes attached signatures, so it is the same before and after `attachTransactionSignature`.
+Hash a transaction for an authorization signature. Returns a 64-byte `Uint8Array` that should be passed to `sr25519Sign`, or to any sr25519 signer. The hash excludes attached signatures, so it is the same before and after `attachTransactionSignature`.
 
 - `unsignedTxJson` — JSON-serialised `UnsignedTransactionV1` or `UnsealedTransactionV1`
 - `sealSignerPublicKey` — raw public key bytes of the account owner (seal signer)
@@ -51,23 +51,22 @@ const hash = hashUnsignedTransaction(
 );
 ```
 
-### `schnorrSign(secretKey, message)`
+### `sr25519Sign(secretKey, message)`
 
-Schnorr-sign a message (typically the hash from `hashUnsignedTransaction`).
+sr25519-sign a message (typically the hash from `hashUnsignedTransaction`). Returns the standard 64-byte sr25519 signature, which the transaction carries as is.
 
 ```typescript
-import { schnorrSign } from "@tari-project/ootle-wasm";
+import { sr25519Sign } from "@tari-project/ootle-wasm";
 
-const { public_nonce, signature } = schnorrSign(secretKey, hash);
-// public_nonce: Uint8Array (32 bytes)
-// signature:    Uint8Array (32 bytes)
+const signature = sr25519Sign(secretKey, hash);
+// signature: Uint8Array (64 bytes)
 ```
 
 ## External signers (HSM, MPC)
 
-These functions sign a transaction without passing a secret key to the binding. The external signer signs a 64-byte hash and returns a raw 64-byte signature (`R ‖ s`); the binding verifies it and attaches it.
+These functions sign a transaction without passing a secret key to the binding. The external signer signs a 64-byte hash and returns its 64-byte signature; the binding verifies it and attaches it.
 
-The signature must be Ristretto255 Schnorr as produced by `tari_crypto`'s `RistrettoSchnorr`: `R = k·G`, `s = k + e·x`, where `e` is the 64-byte Blake2b digest of the chain `"com.tari.schnorr_signature.v1.challenge" ‖ R ‖ P ‖ hash` (each item prefixed with its length as a little-endian u64), reduced mod ℓ. `R` is a compressed Ristretto point and `s` a canonical little-endian scalar. Ed25519 or sr25519 signatures have the same length but do not verify.
+The signature must be a standard sr25519 (schnorrkel) signature under the default `substrate` signing context, with the sr25519 marker bit set in its last byte. Any sr25519 signer, such as a Polkadot signing library, produces this form.
 
 ### `hashUnsealedTransaction(txJson)`
 
@@ -138,7 +137,7 @@ import {
   generateKeypair,
   publicKeyFromSecretKey,
   hashUnsignedTransaction,
-  schnorrSign,
+  sr25519Sign,
   borEncodeTransaction,
 } from "@tari-project/ootle-wasm";
 
@@ -154,7 +153,7 @@ const unsignedTx = {
 const hash = hashUnsignedTransaction(JSON.stringify(unsignedTx), public_key);
 
 // 4. Sign
-const { public_nonce, signature } = schnorrSign(secret_key, hash);
+const signature = sr25519Sign(secret_key, hash);
 
 // 5. Assemble the signed transaction and BOR-encode
 const signedTx = {

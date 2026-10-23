@@ -68,7 +68,7 @@ wasm-pack build crates/ootle_wasm/wasm --target bundler --dev --out-dir ../../..
 | `hashUnsealedTransaction`    | `(txJson: string) → Uint8Array`                                                                            | Hash a transaction for sealing (64 bytes)       |
 | `attachSealSignature`        | `(txJson: string, sealSignerPubKey: Uint8Array, signature: Uint8Array) → string`                           | Seal with an external signer's signature        |
 | `attachTransactionSignature` | `(txJson: string, signerPubKey: Uint8Array, signature: Uint8Array, sealSignerPubKey: Uint8Array) → string` | Append an external signer's authorization       |
-| `schnorrSign`                | `(secretKey: Uint8Array, message: Uint8Array) → { public_nonce, signature }`                               | Schnorr-sign a message                          |
+| `sr25519Sign`                | `(secretKey: Uint8Array, message: Uint8Array) → Uint8Array`                                                | sr25519-sign a message (64-byte signature)      |
 | `generateKeypair`            | `() → { secret_key, public_key }`                                                                          | Generate a random Ristretto keypair             |
 | `publicKeyFromSecretKey`     | `(secretKey: Uint8Array) → Uint8Array`                                                                     | Derive public key from secret key               |
 
@@ -79,7 +79,7 @@ All keys and signatures are raw `Uint8Array` bytes.
 ```typescript
 import init, {
   generateKeypair,
-  schnorrSign,
+  sr25519Sign,
   hashUnsignedTransaction,
   borEncodeTransaction,
   publicKeyFromSecretKey,
@@ -96,5 +96,5 @@ const unsignedTxJson = JSON.stringify(unsignedTransaction);
 const hash = hashUnsignedTransaction(unsignedTxJson, sealSignerPublicKey);
 
 // Sign the hash
-const { public_nonce, signature } = schnorrSign(secret_key, hash);
+const signature = sr25519Sign(secret_key, hash);
 ```
