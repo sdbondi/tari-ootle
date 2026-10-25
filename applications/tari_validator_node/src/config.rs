@@ -38,6 +38,7 @@ use tari_crypto::ristretto::RistrettoPublicKey;
 use tari_ootle_app_utilities::{
     epoch_oracle_config::EpochOracleConfig,
     genesis_governance::{GenesisCouncil, GenesisCouncilError},
+    logging::LoggingConfig,
     p2p_config::{P2pConfig, PeerSeedsConfig, RpcConfig},
 };
 use tari_ootle_common_types::diagnostics::DiagnosticLevel;
@@ -186,6 +187,9 @@ pub struct ValidatorNodeConfig {
     /// Local diagnostic event log
     #[serde(default)]
     pub diagnostics: DiagnosticsConfig,
+    /// Log sinks and the events each receives
+    #[serde(default = "crate::logging::default_logging_config")]
+    pub logging: LoggingConfig,
 }
 
 fn default_max_transaction_gossip_queue_bytes() -> usize {
@@ -350,6 +354,7 @@ impl Default for ValidatorNodeConfig {
             max_consensus_messaging_queue_bytes: default_max_consensus_messaging_queue_bytes(),
             state_store_memory_budget_bytes: default_state_store_memory_budget_bytes(),
             diagnostics: DiagnosticsConfig::default(),
+            logging: crate::logging::default_logging_config(),
         }
     }
 }

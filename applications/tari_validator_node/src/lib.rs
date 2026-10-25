@@ -31,6 +31,7 @@ mod file_l1_submitter;
 mod genesis_state;
 mod http_ui;
 mod json_rpc;
+pub mod logging;
 mod memory_budget;
 #[cfg(feature = "metrics")]
 mod metrics;
@@ -128,6 +129,8 @@ pub async fn run_validator_node(
 
     #[cfg(feature = "metrics")]
     let metrics_registry = create_metrics_registry(keypair.public_key(), &mut base_registry);
+    #[cfg(feature = "metrics")]
+    metrics::LogSinkCollector.register(metrics_registry);
 
     let consensus_constants = load_consensus_constants(
         config.network,
@@ -144,6 +147,12 @@ pub async fn run_validator_node(
         metrics_registry,
     )
     .await?;
+    let report_signal = shutdown.to_signal();
+    services.handles.push(task::spawn(async move {
+        logging::report_dropped_lines(report_signal).await;
+        Ok(())
+    }));
+
     let info = services.networking.get_local_peer_info().await?;
     info!(target: LOG_TARGET, "🚀 Node started: {}", info);
 

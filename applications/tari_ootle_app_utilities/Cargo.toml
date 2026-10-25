@@ -33,6 +33,7 @@ ootle_byte_type = { workspace = true, features = ["crypto"] }
 anyhow = { workspace = true }
 axum = { workspace = true, optional = true }
 blake2 = { workspace = true }
+chrono = { workspace = true, optional = true, features = ["clock"] }
 bounded-vec = { workspace = true }
 borsh = { workspace = true, features = ["std"] }
 clap = { workspace = true, features = ["derive", "env"] }
@@ -44,6 +45,10 @@ rand = { workspace = true }
 serde = { workspace = true, features = ["default", "derive", "rc"] }
 serde_json5 = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true, optional = true }
+tracing-appender = { workspace = true, optional = true }
+tracing-log = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["default", "macros", "time", "sync", "rt-multi-thread", "fs", "net"] }
 url = { workspace = true, features = ["serde"] }
 toml = { workspace = true }
@@ -69,3 +74,5 @@ epoch_oracle = ["tari_epoch_oracles"]
 consensus_constants = ["tari_consensus"]
 # The host allow-list middleware, for the applications that serve operator HTTP endpoints.
 allowed_hosts = ["dep:axum"]
+# Process logging through `tracing`, with a background writer per sink.
+logging = ["dep:chrono", "dep:tracing", "dep:tracing-appender", "dep:tracing-log", "dep:tracing-subscriber"]
