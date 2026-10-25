@@ -457,6 +457,9 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
 
     /// The execution speculated for `transaction`, if it was speculated with the inputs at `versions` that `store`
     /// holds and may execute in `block`.
+    ///
+    /// A hit is taken without consulting `fetch_execution`: an execution stored for `block` ran the same transaction
+    /// on the same inputs, and execution is deterministic, so the two are equal.
     fn take_speculated<TTx: StateStoreReadTransaction>(
         &self,
         store: &PendingSubstateStore<TTx>,
