@@ -34,6 +34,7 @@ use tari_ootle_storage::{
 use tari_ootle_transaction::TransactionId;
 
 use super::{
+    BlockChanges,
     SubstateOverlay,
     SubstateVersionReader,
     chain_view::ChainView,
@@ -152,6 +153,12 @@ impl<TTx: StateStoreReadTransaction> SubstateVersionReader for PendingSubstateSt
 
     fn lock_assert_is_up(&self, id: VersionedSubstateIdRef<'_>) -> Result<(), SubstateStoreError> {
         PendingSubstateStore::lock_assert_is_up(self, id)
+    }
+}
+
+impl<TTx: StateStoreReadTransaction> BlockChanges for PendingSubstateStore<'_, TTx> {
+    fn block_change(&self, id: VersionedSubstateIdRef<'_>) -> Option<&SubstateChange> {
+        self.log.get_pending(&id.to_substate_address())
     }
 }
 

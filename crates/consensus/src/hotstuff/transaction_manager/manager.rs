@@ -205,7 +205,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         is_proposing: bool,
     ) -> Result<PreparedTransaction, BlockTransactionExecutorError> {
         let _timer = TraceTimer::info(LOG_TARGET, "prepare");
-        let transaction = pool_tx.get_transaction(store.read_transaction())?;
+        let transaction = memo.take_record(store.read_transaction(), pool_tx.id())?;
         let transaction_id = *transaction.id();
 
         if let Some(reason) = pool_tx.current_decision().abort_reason() {
@@ -264,7 +264,6 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
                     block,
                     change_set,
                     execution_epoch.clone(),
-                    memo,
                 ),
             ResolvedTransactionInputs::OnlyTombstones => {
                 // Because we have only local inputs, this shard group unilaterally decides the locked epoch (though
@@ -414,7 +413,6 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         resolved_inputs: &HashMap<SubstateRequirement, Substate>,
         block: &LeafBlock,
         execution_locked_epoch: LockedEpoch,
-        memo: &mut ExecutionMemo,
     ) -> Result<TransactionExecution, BlockTransactionExecutorError> {
         if let Some(reason) =
             self.execution_abort_reason(transaction.transaction(), execution_locked_epoch.epoch(), block.epoch)
@@ -443,20 +441,6 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
             // Artifacts are stored alongside the execution
             return Ok(execution);
         }
-        if let Some(execution) = memo.take(
-            store.parent_block().block_id(),
-            transaction.id(),
-            resolved_inputs,
-            &execution_locked_epoch,
-        ) {
-            debug!(
-                target: LOG_TARGET,
-                "👨‍🔧 PREPARE: Using speculated execution for transaction {}: {}",
-                transaction.id(),
-                execution
-            );
-            return Ok(execution);
-        }
         info!(
             target: LOG_TARGET,
             "👨‍🔧 PREPARE: Executing transaction {}",
@@ -469,6 +453,39 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
             resolved_inputs,
             &self.uncommitted_templates.templates_for(store)?,
         )
+    }
+
+    /// The execution speculated for `transaction`, if it was speculated with the inputs at `versions` that `store`
+    /// holds and may execute in `block`.
+    fn take_speculated<TTx: StateStoreReadTransaction>(
+        &self,
+        store: &PendingSubstateStore<TTx>,
+        transaction: &TransactionRecord,
+        versions: &[(SubstateRequirement, SubstateVersion)],
+        block: &LeafBlock,
+        execution_locked_epoch: &LockedEpoch,
+        memo: &mut ExecutionMemo,
+    ) -> Option<TransactionExecution> {
+        if self
+            .execution_abort_reason(transaction.transaction(), execution_locked_epoch.epoch(), block.epoch)
+            .is_some()
+        {
+            return None;
+        }
+        let execution = memo.take(
+            store,
+            store.parent_block().block_id(),
+            transaction.id(),
+            versions,
+            execution_locked_epoch,
+        )?;
+        debug!(
+            target: LOG_TARGET,
+            "👨‍🔧 PREPARE: Using speculated execution for transaction {}: {}",
+            transaction.id(),
+            execution
+        );
+        Some(execution)
     }
 
     pub fn fetch_execution<TTx: StateStoreReadTransaction>(
@@ -588,20 +605,25 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
             }
         }
 
-        let local_inputs = store.get_many(
-            local_versions
-                .iter()
-                .map(|(req, v)| (req.to_substate_requirement_ref().to_owned(), *v)),
-        )?;
-        let execution = self.execute_or_fetch(
-            store,
-            local_committee_info,
-            transaction,
-            &local_inputs,
-            &block,
-            execution_locked_epoch,
-            memo,
-        )?;
+        let versions = local_versions
+            .iter()
+            .map(|(req, v)| (req.to_substate_requirement_ref().to_owned(), *v))
+            .collect::<Vec<_>>();
+        let speculated = self.take_speculated(store, transaction, &versions, &block, &execution_locked_epoch, memo);
+        let execution = match speculated {
+            Some(execution) => execution,
+            None => {
+                let local_inputs = store.get_many(versions.into_iter())?;
+                self.execute_or_fetch(
+                    store,
+                    local_committee_info,
+                    transaction,
+                    &local_inputs,
+                    &block,
+                    execution_locked_epoch,
+                )?
+            },
+        };
 
         let is_outputs_local_only = local_committee_info.is_all_local(execution.resulting_outputs());
         if is_outputs_local_only {
@@ -630,7 +652,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
             return Ok(PreparedTransaction::new_local_accept(execution, lock_status));
         }
 
-        info!(target: LOG_TARGET, "👨‍🔧 PREPARE: transaction {} has {} local input(s) and foreign outputs (Local decision: {})", transaction_id, local_inputs.len(), execution.decision());
+        info!(target: LOG_TARGET, "👨‍🔧 PREPARE: transaction {} has {} local input(s) and foreign outputs (Local decision: {})", transaction_id, local_versions.len(), execution.decision());
         match execution.decision() {
             Decision::Commit => {
                 // CASE: Multishard transaction, all inputs are local, consensus with output shard groups
@@ -828,7 +850,6 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         block: LeafBlock,
         change_set: &ProposedBlockChangeSet,
         execution_locked_epoch: LockedEpoch,
-        memo: &mut ExecutionMemo,
     ) -> Result<PreparedTransaction, BlockTransactionExecutorError> {
         let transaction_id = *transaction.id();
         // We're output-only, so only need to gather foreign pledges
@@ -868,7 +889,6 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
             &resolved_inputs,
             &block,
             execution_locked_epoch,
-            memo,
         )?;
         info!(
             target: LOG_TARGET,
@@ -1131,7 +1151,6 @@ mod tests {
                     &HashMap::new(),
                     &block,
                     pinned_to(5),
-                    &mut ExecutionMemo::new(block.block_id),
                 )
             })
             .expect("aborts before reaching the engine");

@@ -65,7 +65,8 @@ const LOG_TARGET: &str = "tari::ootle::consensus::hotstuff::on_ready_to_vote_on_
 pub(super) struct LocalCommandValidator<'a, TExecutor, TStateStore> {
     transaction_manager: &'a ConsensusTransactionManager<TExecutor, TStateStore>,
     local_validator_pk: &'a RistrettoPublicKey,
-    /// Executions speculated for the block, which a command takes when it resolves to the same inputs.
+    /// The block's transaction records and the executions speculated for it, which a command takes when it resolves
+    /// to the same inputs.
     memo: ExecutionMemo,
 }
 
@@ -74,14 +75,16 @@ where
     TStateStore: StateStore,
     TExecutor: BlockTransactionExecutor<TStateStore>,
 {
+    /// A validator of the block `memo` was made for.
     pub fn new(
         transaction_manager: &'a ConsensusTransactionManager<TExecutor, TStateStore>,
         local_validator_pk: &'a RistrettoPublicKey,
+        memo: ExecutionMemo,
     ) -> Self {
         Self {
             transaction_manager,
             local_validator_pk,
-            memo: ExecutionMemo::empty(),
+            memo,
         }
     }
 
@@ -123,7 +126,8 @@ where
                 })
             })
             .collect::<Vec<_>>();
-        self.memo = self.transaction_manager.speculate(
+        self.transaction_manager.speculate(
+            &mut self.memo,
             substate_store,
             local_committee_info,
             block.epoch(),
@@ -505,7 +509,7 @@ where
                 return Ok(Some(reason));
             }
 
-            let transaction = tx_rec.get_transaction(tx)?;
+            let transaction = self.memo.take_record(tx, tx_rec.id())?;
             if !transaction.has_all_required_input_pledges(tx, &block.as_leaf(), local_committee_info)? {
                 warn!(
                     target: LOG_TARGET,

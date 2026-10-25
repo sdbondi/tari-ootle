@@ -124,8 +124,8 @@ where
     TExecutor: BlockTransactionExecutor<TStateStore> + Sync,
 {
     /// Executes those of `candidates` that a block of `block_epoch` executes against its local inputs alone, against
-    /// the state `store` holds, and returns the executions for the block's evaluation to take. `candidates` are in the
-    /// order the block evaluates them.
+    /// the state `store` holds, into `memo` for the block's evaluation to take. `candidates` are in the order the block
+    /// evaluates them, and a candidate is speculated only if `memo` holds its record.
     ///
     /// The state is read from a snapshot of the store's chain, with the changes `store` already holds applied on top.
     /// A snapshot that lags the transaction `store` reads in only makes speculations miss.
@@ -134,18 +134,18 @@ where
     /// execute is left for the evaluation to execute.
     pub fn speculate<TTx: StateStoreReadTransaction>(
         &self,
+        memo: &mut ExecutionMemo,
         store: &PendingSubstateStore<TTx>,
         local_committee_info: &CommitteeInfo,
         block_epoch: Epoch,
         candidates: &[SpeculationCandidate],
         budget: SpeculationBudget,
-    ) -> ExecutionMemo {
-        let mut memo = ExecutionMemo::new(*store.parent_block().block_id());
+    ) {
         let Some(speculation) = self.speculation() else {
-            return memo;
+            return;
         };
         if candidates.is_empty() {
-            return memo;
+            return;
         }
         let started_at = Instant::now();
 
@@ -154,37 +154,36 @@ where
             Ok(templates) => templates,
             Err(err) => {
                 warn!(target: LOG_TARGET, "⚠️ Not speculating: the templates of the chain could not be read: {err}");
-                return memo;
+                return;
             },
         };
         let snapshot = match speculation.state_store.create_read_tx() {
             Ok(snapshot) => snapshot,
             Err(err) => {
                 warn!(target: LOG_TARGET, "⚠️ Not speculating: no snapshot of the store: {err}");
-                return memo;
+                return;
             },
         };
         let base = match snapshot_of(&snapshot, store, local_committee_info) {
             Ok(base) => base,
             Err(err) => {
                 warn!(target: LOG_TARGET, "⚠️ Not speculating: the block's state could not be read from a snapshot: {err}");
-                return memo;
+                return;
             },
         };
 
         let transactions = candidates
             .iter()
             .filter_map(|candidate| {
-                TransactionRecord::get(&snapshot, &candidate.transaction_id)
-                    .inspect_err(|err| {
-                        debug!(
-                            target: LOG_TARGET,
-                            "Not speculating transaction {}: {err}",
-                            candidate.transaction_id
-                        )
-                    })
-                    .ok()
-                    .map(|record| (record, candidate.locked_epoch.clone()))
+                let record = memo.record(&candidate.transaction_id);
+                if record.is_none() {
+                    debug!(
+                        target: LOG_TARGET,
+                        "Not speculating transaction {}, whose record was not read",
+                        candidate.transaction_id
+                    );
+                }
+                record.map(|record| (record, &candidate.locked_epoch))
             })
             .collect::<Vec<_>>();
         let plan = ExecutionPlan::new(
@@ -202,7 +201,7 @@ where
                 block_epoch,
                 &templates,
                 &spending,
-                unit.members().iter().map(|idx| &transactions[*idx]),
+                unit.members().iter().map(|idx| transactions[*idx]),
             )
         });
         for Speculated {
@@ -226,7 +225,6 @@ where
             is_budget_spent: spending.is_spent.load(Ordering::Relaxed),
         });
         debug!(target: LOG_TARGET, "⚡ {memo}");
-        memo
     }
 
     /// Speculates `transactions` one after another, each against the changes of those before it, until `spending`
@@ -239,7 +237,7 @@ where
         block_epoch: Epoch,
         templates: &UncommittedChainTemplates,
         spending: &Spending,
-        transactions: impl Iterator<Item = &'a (TransactionRecord, LockedEpoch)>,
+        transactions: impl Iterator<Item = (&'a TransactionRecord, &'a LockedEpoch)>,
     ) -> Vec<Speculated> {
         let mut overlay = store.overlay();
         let mut speculated = Vec::new();
@@ -281,6 +279,10 @@ where
                     break;
                 },
             };
+            // Read before this transaction's changes are applied, which take its inputs down in the overlay
+            let Some(speculated_inputs) = SpeculatedInputs::read(&overlay, &inputs) else {
+                continue;
+            };
             let execution = match self.executor().execute(
                 transaction,
                 locked_epoch.clone(),
@@ -310,12 +312,9 @@ where
                 break;
             }
 
-            let Some(inputs) = SpeculatedInputs::encode(&inputs) else {
-                continue;
-            };
             speculated.push(Speculated {
                 transaction_id: *record.id(),
-                inputs,
+                inputs: speculated_inputs,
                 locked_epoch: locked_epoch.clone(),
                 execution,
             });

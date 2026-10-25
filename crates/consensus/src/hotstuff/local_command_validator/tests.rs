@@ -480,12 +480,26 @@ impl Replica {
     fn evaluate_after<F>(&self, commands: &[Command], before: F) -> Evaluation
     where F: FnOnce(&mut <TestStore as StateStore>::WriteTransaction<'_>) -> Result<(), StorageError> {
         let block = &self.candidate;
-        let mut validator = LocalCommandValidator::new(&self.manager, &self.public_key);
         self.store
             .with_write_tx(|tx| {
                 before(tx)?;
                 let tx = &**tx;
                 let mut substate_store = PendingSubstateStore::init(tx, block.as_leaf(), NUM_PRESHARDS)?;
+                let (records, _) = TransactionRecord::get_any(
+                    tx,
+                    commands
+                        .iter()
+                        .filter_map(|cmd| cmd.transaction())
+                        .map(|atom| atom.id()),
+                )?;
+                let mut validator = LocalCommandValidator::new(
+                    &self.manager,
+                    &self.public_key,
+                    ExecutionMemo::new(
+                        *substate_store.parent_block().block_id(),
+                        records.into_iter().map(|record| (*record.id(), record)).collect(),
+                    ),
+                );
                 let mut change_set = ProposedBlockChangeSet::new(block.as_leaf());
                 validator.speculate(
                     tx,
@@ -588,7 +602,7 @@ impl Replica {
                         &rec,
                         block.as_leaf(),
                         &change_set,
-                        &mut ExecutionMemo::empty(),
+                        &mut ExecutionMemo::new(*block.id(), HashMap::new()),
                     )
                     .unwrap();
                 let PreparedTransaction::MultiShard(multishard) = prepared else {

@@ -1,6 +1,8 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
+use std::collections::HashMap;
+
 use log::*;
 use ootle_byte_type::ToByteType;
 use tari_consensus_types::{BlockId, LastVoted, PcId, ProposalCertificate};
@@ -37,6 +39,7 @@ use tari_ootle_storage::{
         index_substate_down_proofs,
     },
 };
+use tari_ootle_transaction::TransactionId;
 use tari_sidechain::{FixedHash, QuorumDecision};
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 use tokio::sync::broadcast;
@@ -59,6 +62,7 @@ use crate::{
         substate_store::{PendingSubstateStore, ShardedStateTree},
         transaction_manager::{
             ConsensusTransactionManager,
+            ExecutionMemo,
             SpeculationBudget,
             TransactionLockConflicts,
             UncommittedTemplateStore,
@@ -286,6 +290,7 @@ where TConsensusSpec: ConsensusSpec
         // so an individually-heavy transaction stays committable (its static weight also over-estimates
         // its execution). CONSENSUS RULE: `max_block_validation_weight` must be uniform network-wide.
         let max_validation_weight = self.config.consensus_constants.max_block_validation_weight;
+        let records = read_transaction_records(tx, block)?;
         let mut block_execution_weight = 0u64;
         let mut num_transaction_commands = 0usize;
         for cmd in block.commands() {
@@ -293,11 +298,7 @@ where TConsensusSpec: ConsensusSpec
                 continue;
             };
             num_transaction_commands += 1;
-            let weight = atom
-                .get_transaction(tx)?
-                .transaction()
-                .calculate_transaction_weight()
-                .as_u64();
+            let weight = records[atom.id()].transaction().calculate_transaction_weight().as_u64();
             block_execution_weight =
                 block_execution_weight.saturating_add(weight.saturating_mul(cmd.execution_weight_percent()) / 100);
         }
@@ -322,7 +323,11 @@ where TConsensusSpec: ConsensusSpec
         let num_foreign_proposals = block.all_foreign_proposals().count();
         let mut foreign_proposal_bytes = 0usize;
 
-        let mut command_validator = LocalCommandValidator::new(&self.transaction_manager, &self.local_validator_pk);
+        let mut command_validator = LocalCommandValidator::new(
+            &self.transaction_manager,
+            &self.local_validator_pk,
+            ExecutionMemo::new(*substate_store.parent_block().block_id(), records),
+        );
         // This node already holds the executions of a block it proposed
         let is_own_block = *block.proposed_by() == self.local_validator_pk.to_byte_type();
         let mut has_speculated = false;
@@ -980,6 +985,29 @@ fn justify_signers<'a, TAddr: PartialEq>(
                 })
         })
         .collect()
+}
+
+/// The records of every transaction `block` commands, read at once.
+fn read_transaction_records<TTx: StateStoreReadTransaction>(
+    tx: &TTx,
+    block: &Block,
+) -> Result<HashMap<TransactionId, TransactionRecord>, HotStuffError> {
+    let (records, missing) = TransactionRecord::get_any(
+        tx,
+        block
+            .commands()
+            .iter()
+            .filter_map(|cmd| cmd.transaction())
+            .map(|atom| atom.id()),
+    )?;
+    if let Some(id) = missing.iter().next() {
+        return Err(StorageError::NotFound {
+            item: "TransactionRecord",
+            key: id.to_string(),
+        }
+        .into());
+    }
+    Ok(records.into_iter().map(|record| (*record.id(), record)).collect())
 }
 
 /// Consensus rule: a block is rejected (no-vote) when its total transaction execution weight exceeds

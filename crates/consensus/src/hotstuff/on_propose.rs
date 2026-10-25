@@ -349,6 +349,7 @@ where TConsensusSpec: ConsensusSpec
                 change_set,
                 pool_tx,
                 substate_store,
+                memo,
                 executed_transactions,
             ),
 
@@ -574,7 +575,7 @@ where TConsensusSpec: ConsensusSpec
                 deadline: Some(propose_started_at + propose_exec_deadline / 2),
                 max_execution_points: self.config.consensus_constants.max_block_execution_points,
             },
-        );
+        )?;
         // Accumulated to log observed execution throughput (weight/s) for calibrating `max_block_weight`
         // against the block time. See the calibration log emitted after the loop.
         let mut executed_weight = 0u64;
@@ -829,8 +830,9 @@ where TConsensusSpec: ConsensusSpec
         })
     }
 
-    /// Speculates the batch's transactions that are New, as the commands generated for them will see them once the
-    /// block's foreign proposals are applied.
+    /// Reads the records of the batch's transactions, and speculates those that are New, as the commands generated for
+    /// them will see them once the block's foreign proposals are applied.
+    #[allow(clippy::too_many_arguments)]
     fn speculate_batch<TTx: StateStoreReadTransaction>(
         &self,
         substate_store: &PendingSubstateStore<TTx>,
@@ -840,7 +842,13 @@ where TConsensusSpec: ConsensusSpec
         transactions: &[TransactionPoolRecord],
         change_set: &ProposedBlockChangeSet,
         budget: SpeculationBudget,
-    ) -> ExecutionMemo {
+    ) -> Result<ExecutionMemo, HotStuffError> {
+        let (records, _) =
+            TransactionRecord::get_any(substate_store.read_transaction(), transactions.iter().map(|tx| tx.id()))?;
+        let mut memo = ExecutionMemo::new(
+            *substate_store.parent_block().block_id(),
+            records.into_iter().map(|record| (*record.id(), record)).collect(),
+        );
         let candidates = transactions
             .iter()
             .filter_map(|pool_tx| {
@@ -857,12 +865,14 @@ where TConsensusSpec: ConsensusSpec
             })
             .collect::<Vec<_>>();
         self.transaction_manager.speculate(
+            &mut memo,
             substate_store,
             local_committee_info,
             state_anchor.epoch,
             &candidates,
             budget,
-        )
+        );
+        Ok(memo)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1089,6 +1099,7 @@ where TConsensusSpec: ConsensusSpec
         change_set: &ProposedBlockChangeSet,
         mut tx_rec: TransactionPoolRecord,
         substate_store: &mut PendingSubstateStore<TTx>,
+        memo: &mut ExecutionMemo,
         executed_transactions: &mut HashMap<TransactionId, TransactionExecution>,
     ) -> Result<Option<Command>, HotStuffError> {
         // Only set to abort if either the local or one or more foreign shards decided to ABORT
@@ -1103,8 +1114,7 @@ where TConsensusSpec: ConsensusSpec
             ))
         })?;
 
-        let tx = substate_store.read_transaction();
-        let transaction = tx_rec.get_transaction(tx)?;
+        let transaction = memo.take_record(substate_store.read_transaction(), tx_rec.id())?;
         let execution = self.execute_transaction(
             substate_store,
             local_committee_info,
