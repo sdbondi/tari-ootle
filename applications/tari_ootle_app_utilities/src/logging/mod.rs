@@ -29,13 +29,7 @@ use serde::{Deserialize, Serialize};
 use tracing::Subscriber;
 use tracing_appender::non_blocking::{ErrorCounter, NonBlockingBuilder, WorkerGuard};
 pub use tracing_subscriber::Registry;
-use tracing_subscriber::{
-    Layer,
-    filter::{LevelFilter, Targets},
-    fmt,
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
-};
+use tracing_subscriber::{Layer, filter::Targets, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 pub use self::format::LineFormat;
 use self::rolling_file::RollingFile;
@@ -144,10 +138,8 @@ pub fn init(
         .filter(|filter| !filter.trim().is_empty())
         .unwrap_or_else(|| config.console.clone());
     let (subscriber, writers) = build(config, &console_filter, base_path, extra_layers)?;
+    // Also installs the `log` bridge, with `log`'s maximum level set to the most verbose level any sink accepts.
     subscriber.try_init()?;
-    // The bridge passes every `log` record up to `tracing` before filtering it, so `log`'s own maximum is lowered to
-    // what some sink accepts, letting the `log` macros skip the rest outright.
-    log::set_max_level(as_log_level(LevelFilter::current()));
 
     let LogWriters { guards, dropped } = writers;
     *WRITER_GUARDS.lock().unwrap_or_else(|e| e.into_inner()) = guards;
@@ -157,9 +149,11 @@ pub fn init(
 
 /// Drains every queued line to its sink and closes the sinks; lines logged afterwards are dropped. Waits up to about a
 /// second per sink.
+///
+/// The guards drop with the lock held, so a concurrent caller (a second panicking thread) returns only after the drain
+/// has finished.
 pub fn flush_and_close() {
-    let guards = std::mem::take(&mut *WRITER_GUARDS.lock().unwrap_or_else(|e| e.into_inner()));
-    drop(guards);
+    WRITER_GUARDS.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
 /// The number of lines each sink has dropped because its queue was full, by sink name.
@@ -246,17 +240,6 @@ fn parse_filter(sink: &str, filter: &str) -> Result<Targets, LoggingError> {
         filter: filter.to_string(),
         source,
     })
-}
-
-fn as_log_level(level: LevelFilter) -> log::LevelFilter {
-    match level {
-        LevelFilter::OFF => log::LevelFilter::Off,
-        LevelFilter::ERROR => log::LevelFilter::Error,
-        LevelFilter::WARN => log::LevelFilter::Warn,
-        LevelFilter::INFO => log::LevelFilter::Info,
-        LevelFilter::DEBUG => log::LevelFilter::Debug,
-        LevelFilter::TRACE => log::LevelFilter::Trace,
-    }
 }
 
 #[cfg(test)]

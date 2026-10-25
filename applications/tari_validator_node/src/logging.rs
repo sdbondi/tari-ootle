@@ -45,6 +45,8 @@ pub fn default_logging_config() -> LoggingConfig {
         (
             "libp2p",
             LogFileConfig::new(directives(&[
+                // Takes the warnings of the libp2p crates listed nowhere else, which the console leaves out.
+                "libp2p=warn",
                 "libp2p_core=info",
                 "libp2p_gossipsub=info",
                 "libp2p_identify=debug",
@@ -156,6 +158,20 @@ mod tests {
         assert_eq!(logging.files["consensus"].filter, defaults.files["consensus"].filter);
         assert_eq!(logging.files["audit"].filter, "tari::audit=info");
         assert_eq!(logging.files.len(), defaults.files.len() + 1);
+    }
+
+    #[test]
+    fn a_warning_from_an_unlisted_libp2p_crate_reaches_the_libp2p_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = default_logging_config();
+        let (subscriber, writers) = build(&config, &config.console, dir.path(), Vec::new()).unwrap();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(target: "libp2p_relay::priv_client", "relay reservation failed");
+        });
+        drop(writers);
+
+        let libp2p = std::fs::read_to_string(dir.path().join("log/validator-node/libp2p.log")).unwrap();
+        assert!(libp2p.contains("relay reservation failed"), "{libp2p}");
     }
 
     #[test]

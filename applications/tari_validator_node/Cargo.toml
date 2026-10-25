@@ -85,6 +85,7 @@ tari_common = { workspace = true, features = ["build"] }
 tempfile = { workspace = true }
 tari_template_lib_types = { workspace = true }
 tower = { workspace = true, features = ["util"] }
+tracing = { workspace = true }
 
 [package.metadata.cargo-machete]
 ignored = [
