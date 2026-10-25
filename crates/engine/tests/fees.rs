@@ -302,6 +302,88 @@ fn a_fee_intent_commit_is_not_charged_for_the_state_it_abandons() {
     );
 }
 
+/// A transaction that commits in full also settles what committing its fee intent alone would
+/// persist, for consensus to commit if the full result cannot be. It is billed for all of the work
+/// the transaction did, but charged storage only for the fee checkpoint's state.
+#[test]
+fn a_full_commit_settles_its_fee_intent_commit_beside_it() {
+    let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
+    let (account, owner_token, private_key) = test.create_funded_account();
+    test.enable_fees();
+
+    let state_template = test.get_template_address("State");
+    let mut builder = test.transaction().pay_fee_from_component(account, 100_000u64);
+    for _ in 0..5 {
+        builder = builder.call_function(state_template, "new", args![]);
+    }
+    let (result, fallback) = test
+        .try_execute_with_fee_intent_fallback(builder.build_and_seal(&private_key), vec![owner_token])
+        .unwrap();
+    let diff = result.expect_success();
+    let fallback = fallback.expect("a full commit settles a fee-intent fallback");
+
+    let created_components = diff
+        .up_iter()
+        .filter(|(_, s)| s.substate_value().as_component().is_some())
+        .map(|(id, _)| id)
+        .filter(|id| id.as_component_address() != Some(account))
+        .collect::<Vec<_>>();
+    assert_eq!(created_components.len(), 5);
+    for id in created_components {
+        assert!(
+            !fallback.diff.up_iter().any(|(up, _)| up == id),
+            "{id} is a main-intent output"
+        );
+    }
+
+    let receipt = fallback
+        .diff
+        .up_iter()
+        .find_map(|(_, s)| s.substate_value().as_transaction_receipt())
+        .expect("the fallback carries a transaction receipt");
+    assert!(receipt.outcome.is_fee_intent_commit());
+
+    let full_fees = result.finalize.fee_receipt.fee_breakdown();
+    let fallback_fees = fallback.fee_receipt.fee_breakdown();
+    for source in [
+        FeeSource::WasmExecution,
+        FeeSource::RuntimeCall,
+        FeeSource::TransactionWeight,
+    ] {
+        assert_eq!(fallback_fees.get(source), full_fees.get(source), "{source:?}");
+    }
+    assert!(fallback_fees.get(FeeSource::Storage) < full_fees.get(FeeSource::Storage));
+    assert!(fallback.fee_receipt.is_paid_in_full());
+    assert_eq!(
+        fallback.fee_receipt.total_fees_paid(),
+        fallback.fee_receipt.total_fees_charged()
+    );
+
+    let rejected = fallback.into_finalize_result(&result.finalize, RejectReason::FailedToLockOutputs("x".to_string()));
+    assert!(rejected.is_fee_only());
+    assert_eq!(rejected.charged_fees(), result.finalize.charged_fees());
+}
+
+/// A main intent that fails already commits only its fee intent, so there is nothing to fall back to.
+#[test]
+fn a_fee_intent_commit_has_no_fallback() {
+    let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
+    let (account, owner_token, private_key) = test.create_funded_account();
+    test.enable_fees();
+
+    let (result, fallback) = test
+        .try_execute_with_fee_intent_fallback(
+            Transaction::builder_localnet(Epoch(1))
+                .pay_fee_from_component(account, 1000u64)
+                .call_function(test.get_template_address("State"), "this_doesnt_exist", args![])
+                .build_and_seal(&private_key),
+            vec![owner_token],
+        )
+        .unwrap();
+    assert!(result.finalize.is_fee_only());
+    assert!(fallback.is_none());
+}
+
 /// Compute is funded by what the payment has left after the state the transaction falls back to
 /// committing, not by the whole payment.
 ///

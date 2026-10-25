@@ -6,8 +6,8 @@ use std::{fmt::Display, time::Duration};
 use minicbor::{CborLen, Decode, Encode};
 use serde::{Deserialize, Serialize};
 use tari_consensus_types::{BlockId, Decision, LeafBlock};
-use tari_engine_types::commit_result::{ExecuteResult, RejectReason};
-use tari_ootle_common_types::{Epoch, NodeHeight, NumPreshards};
+use tari_engine_types::commit_result::{ExecuteResult, FeeIntentFallback, RejectReason};
+use tari_ootle_common_types::{Epoch, NodeHeight, NumPreshards, VersionedSubstateId};
 use tari_ootle_transaction::TransactionId;
 use time::PrimitiveDateTime;
 
@@ -27,6 +27,12 @@ pub struct TransactionExecution {
     pub resolved_inputs: Vec<VersionedSubstateIdLockIntent>,
     #[n(2)]
     pub resulting_outputs: Vec<VersionedSubstateIdLockIntent>,
+    /// What the transaction commits instead if its outputs cannot be created. Settled by the executing node and
+    /// never sent to clients.
+    #[n(3)]
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub fee_intent_fallback: Option<Box<FeeIntentFallback>>,
 }
 
 impl TransactionExecution {
@@ -39,7 +45,39 @@ impl TransactionExecution {
             result,
             resolved_inputs,
             resulting_outputs,
+            fee_intent_fallback: None,
         }
+    }
+
+    pub fn with_fee_intent_fallback(mut self, fallback: Option<FeeIntentFallback>) -> Self {
+        self.fee_intent_fallback = fallback.map(Box::new);
+        self
+    }
+
+    /// The execution committing only this execution's fee intent, rejecting the rest for `reason`, or `None` if
+    /// there is no fee intent to commit. Inputs keep the locks this execution resolved, which cover every input the
+    /// fee intent touches.
+    pub fn take_fee_intent_commit(&mut self, reason: RejectReason) -> Option<Self> {
+        let fallback = self.fee_intent_fallback.take()?;
+        let resulting_outputs = fallback
+            .diff
+            .up_iter()
+            .map(|(id, substate)| {
+                VersionedSubstateIdLockIntent::output(VersionedSubstateId::new(id.clone(), substate.version()))
+            })
+            .collect();
+        Some(Self {
+            result: ExecuteResult {
+                finalize: fallback.into_finalize_result(&self.result.finalize, reason),
+                execution_time: self.result.execution_time,
+                execute_epoch: self.result.execute_epoch,
+                wasm_execution_points: self.result.wasm_execution_points,
+                native_execution_points: self.result.native_execution_points,
+            },
+            resolved_inputs: self.resolved_inputs.clone(),
+            resulting_outputs,
+            fee_intent_fallback: None,
+        })
     }
 
     pub fn abort(transaction_id: &TransactionId, reject_reason: RejectReason) -> Self {
@@ -47,6 +85,7 @@ impl TransactionExecution {
             result: ExecuteResult::new_rejected(transaction_id.as_hash(), reject_reason, None),
             resolved_inputs: Vec::new(),
             resulting_outputs: Vec::new(),
+            fee_intent_fallback: None,
         }
     }
 

@@ -157,7 +157,8 @@ where
             })
             .unwrap_or_default();
 
-        let exec = TransactionExecution::new(exec_output.result, resolved_inputs, resulting_outputs);
+        let exec = TransactionExecution::new(exec_output.result, resolved_inputs, resulting_outputs)
+            .with_fee_intent_fallback(exec_output.fee_intent_fallback);
 
         info!(target: LOG_TARGET, "Transaction {} executed in {:.2?}. {}", id, exec.result().execution_time, exec.result().finalize.result);
         Ok(exec)
@@ -225,6 +226,7 @@ mod tests {
                     wasm_execution_points: 0,
                     native_execution_points: 0,
                 },
+                fee_intent_fallback: None,
             })
         }
     }

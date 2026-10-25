@@ -29,7 +29,7 @@ use tari_engine_types::{
     Utxo,
     UtxoOutput,
     bucket::Bucket,
-    commit_result::{FinalizeResult, RejectReason},
+    commit_result::{FeeIntentFallback, FinalizeResult, RejectReason},
     confidential::{ClaimBurnOutputData, ClaimedOutputTombstone, MinotariBurnClaimProof},
     crypto,
     crypto::OutputBody,
@@ -334,7 +334,11 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
     /// which on a fee-intent commit holds only what the fee intent touched. A transaction is
     /// therefore gated on the cost of the state it asked to commit, but pays for the state that is
     /// really persisted.
-    fn finalize_with(&self, failure: Option<RejectReason>) -> Result<FinalizeResult, RuntimeError> {
+    fn finalize_with(
+        &self,
+        failure: Option<RejectReason>,
+        with_fee_intent_fallback: bool,
+    ) -> Result<(FinalizeResult, Option<FeeIntentFallback>), RuntimeError> {
         self.invoke_modules_on_before_finalize()?;
         let mut finalized = self.tracker.select_finalized_state(failure)?;
         // A commit persists the very state the first pass charged against, so charging it again
@@ -343,7 +347,26 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         if !finalized.outcome().is_commit() {
             self.invoke_modules_on_before_persist(&mut finalized)?;
         }
-        self.tracker.finalize(finalized)
+        let fallback = if with_fee_intent_fallback {
+            self.finalize_fee_intent_fallback(&finalized)?
+        } else {
+            None
+        };
+        Ok((self.tracker.finalize(finalized)?, fallback))
+    }
+
+    /// Settles the fee-intent commit of `committed` the way [`Self::finalize_with`] settles a main-intent failure, so
+    /// that it is charged identically to one.
+    fn finalize_fee_intent_fallback(
+        &self,
+        committed: &FinalizedState<TStore>,
+    ) -> Result<Option<FeeIntentFallback>, RuntimeError> {
+        let Some(mut fallback) = self.tracker.select_fee_intent_fallback(committed) else {
+            return Ok(None);
+        };
+        self.invoke_modules_on_before_persist(&mut fallback)?;
+        let result = self.tracker.finalize(fallback)?;
+        Ok(FeeIntentFallback::from_fee_intent_finalization(result))
     }
 
     fn invoke_modules_on_fee_checkpoint(&self) -> Result<(), RuntimeError> {
@@ -3946,11 +3969,15 @@ where
         // Finalization adds no fee charge of its own. The template never invoked it, and the compute
         // allowance is sized against the charges standing when it is computed, so anything charged
         // afterwards puts the total past what that allowance was sized to fit inside.
-        self.finalize_with(None)
+        self.finalize_with(None, false).map(|(result, _)| result)
+    }
+
+    fn finalize_with_fee_intent_fallback(&self) -> Result<(FinalizeResult, Option<FeeIntentFallback>), RuntimeError> {
+        self.finalize_with(None, true)
     }
 
     fn finalize_failure(&self, reason: RejectReason) -> Result<FinalizeResult, RuntimeError> {
-        self.finalize_with(Some(reason))
+        self.finalize_with(Some(reason), false).map(|(result, _)| result)
     }
 
     fn validate_finalized(&self) -> Result<(), RuntimeError> {

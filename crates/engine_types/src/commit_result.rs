@@ -311,6 +311,52 @@ impl FinalizeResult {
     }
 }
 
+/// What a fully executed transaction commits instead when consensus cannot commit its full result:
+/// the fee intent's state, billed for the whole execution, exactly as a failure of the main intent
+/// would have committed it.
+///
+/// Consensus discovers some failures only after execution — an output version that already exists
+/// is the one it acts on — and the engine cannot re-run the transaction then, so it settles this
+/// beside the full result. The transaction receipt does not record why the main intent was
+/// rejected, so the fallback is complete without knowing the reason it will be committed for.
+#[derive(Debug, Clone, minicbor::Encode, minicbor::Decode, minicbor::CborLen)]
+pub struct FeeIntentFallback {
+    #[n(0)]
+    pub diff: SubstateDiff,
+    #[n(1)]
+    pub events: Vec<Event>,
+    #[n(2)]
+    pub logs: Vec<LogEntry>,
+    #[n(3)]
+    pub fee_receipt: FeeReceipt,
+}
+
+impl FeeIntentFallback {
+    /// The fallback a fee-intent finalization produced, or `None` if the fee intent could not pay for
+    /// the state it persists.
+    pub fn from_fee_intent_finalization(result: FinalizeResult) -> Option<Self> {
+        let diff = result.result.into_any_accept()?;
+        Some(Self {
+            diff,
+            events: result.events,
+            logs: result.logs,
+            fee_receipt: result.fee_receipt,
+        })
+    }
+
+    /// The result of committing the fee intent of `committed` alone, rejecting the rest for `reason`.
+    pub fn into_finalize_result(self, committed: &FinalizeResult, reason: RejectReason) -> FinalizeResult {
+        FinalizeResult::new(
+            committed.transaction_hash,
+            self.logs,
+            self.events,
+            TransactionResult::AcceptFeeRejectRest(self.diff, reason),
+            self.fee_receipt,
+        )
+        .with_total_fees_required(committed.charged_fees())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, minicbor::Encode, minicbor::Decode, minicbor::CborLen)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum TransactionResult {

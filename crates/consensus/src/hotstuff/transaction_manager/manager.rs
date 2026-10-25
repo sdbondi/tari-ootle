@@ -43,7 +43,7 @@ use super::{PledgedTransaction, PreparedTransaction, UncommittedTemplateStore};
 use crate::{
     hotstuff::{
         block_change_set::ProposedBlockChangeSet,
-        substate_store::{InputPledge, LockStatus, PendingSubstateStore, SubstateStoreError},
+        substate_store::{InputPledge, LockFailedError, LockStatus, PendingSubstateStore, SubstateStoreError},
     },
     tracing::TraceTimer,
     traits::{BlockTransactionExecutor, BlockTransactionExecutorError, ReadableSubstateStore},
@@ -578,8 +578,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
                 return Ok(PreparedTransaction::new_local_early_abort(execution));
             }
 
-            let requested_locks = execution.resolved_inputs().iter().chain(execution.resulting_outputs());
-            let lock_status = store.try_lock_all(transaction_id, requested_locks, true)?;
+            let (execution, lock_status) = lock_local_only_execution(store, transaction_id, execution)?;
             if let Some(err) = lock_status.hard_conflict() {
                 warn!(target: LOG_TARGET, "⚠️ PREPARE: Hard conflict when locking inputs: {err}");
                 let execution =
@@ -864,6 +863,36 @@ struct ResolvedInputs<'a> {
     pub num_local_tombstones: usize,
 }
 
+/// Locks the inputs and outputs of `execution`, a transaction whose inputs and outputs are all local. An output
+/// version that already exists can never be created by a later block, so the transaction cannot commit in full;
+/// its execution is still paid for by committing its fee intent, which is what is locked and returned instead.
+fn lock_local_only_execution<TTx: StateStoreReadTransaction>(
+    store: &mut PendingSubstateStore<TTx>,
+    transaction_id: TransactionId,
+    mut execution: TransactionExecution,
+) -> Result<(TransactionExecution, LockStatus), BlockTransactionExecutorError> {
+    let requested_locks = execution.resolved_inputs().iter().chain(execution.resulting_outputs());
+    let lock_status = store.try_lock_all(transaction_id, requested_locks, true)?;
+    let Some(err @ LockFailedError::SubstateExists { .. }) = lock_status.hard_conflict() else {
+        return Ok((execution, lock_status));
+    };
+    let reason = RejectReason::FailedToLockOutputs(err.to_string());
+    let Some(fee_intent_commit) = execution.take_fee_intent_commit(reason) else {
+        return Ok((execution, lock_status));
+    };
+    warn!(
+        target: LOG_TARGET,
+        "⚠️ PREPARE: Transaction {transaction_id} creates an output that already exists. Committing its fee intent only",
+    );
+    store.release_new_locks(&transaction_id);
+    let requested_locks = fee_intent_commit
+        .resolved_inputs()
+        .iter()
+        .chain(fee_intent_commit.resulting_outputs());
+    let lock_status = store.try_lock_all(transaction_id, requested_locks, true)?;
+    Ok((fee_intent_commit, lock_status))
+}
+
 /// Collects the input pledges among `pledges` into the inputs a transaction executes against, excluding output
 /// pledges. Every pledge for a substate must be at the same version. A pledge's value is authenticated against its
 /// evidence's value hash when the foreign proposal is accepted (`BlockPledge::get_committed_pledge`), so only the
@@ -944,8 +973,10 @@ mod tests {
     use tari_common_types::types::PrivateKey;
     use tari_consensus_types::BlockId;
     use tari_engine_types::{
+        commit_result::{ExecuteResult, FeeIntentFallback, FinalizeResult, TransactionResult},
+        fees::FeeReceipt,
         non_fungible::NonFungibleContainer,
-        substate::{SubstateId, SubstateValue},
+        substate::{SubstateDiff, SubstateId, SubstateValue},
     };
     use tari_ootle_common_types::{
         InputDeclarationRef,
@@ -958,7 +989,14 @@ mod tests {
         VotePower,
         shard::Shard,
     };
-    use tari_ootle_storage::consensus_models::{Block, LockedEpoch, SubstateChange, SubstatePledge, TransactionRecord};
+    use tari_ootle_storage::consensus_models::{
+        Block,
+        LockedEpoch,
+        SubstateChange,
+        SubstatePledge,
+        TransactionRecord,
+        VersionedSubstateIdLockIntent,
+    };
     use tari_ootle_transaction::{Network, Transaction, TransactionId};
     use tari_state_store_rocksdb::RocksDbStateStore;
     use tari_template_lib_types::{
@@ -973,7 +1011,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        hotstuff::transaction_manager::EvidenceOrExecution,
+        hotstuff::transaction_manager::{EvidenceOrExecution, LocalPreparedTransaction},
         traits::{UncommittedChainTemplates, WriteableSubstateStore},
     };
 
@@ -1278,5 +1316,183 @@ mod tests {
         let (decision, is_locked) = prepare_cross_shard(Epoch(2));
         assert!(decision.is_commit());
         assert!(is_locked);
+    }
+
+    /// Stands in for the engine: every transaction executes to the execution it holds.
+    #[derive(Clone)]
+    struct FixedExecutor(TransactionExecution);
+
+    impl BlockTransactionExecutor<RocksDbStateStore<String>> for FixedExecutor {
+        fn execute(
+            &self,
+            _transaction: &Transaction,
+            _locked_epoch: LockedEpoch,
+            _input_fanout: u32,
+            _resolved_inputs: &HashMap<SubstateRequirement, Substate>,
+            _templates: &UncommittedChainTemplates,
+        ) -> Result<TransactionExecution, BlockTransactionExecutorError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn versioned(id: &SubstateId, version: u64) -> VersionedSubstateId {
+        VersionedSubstateId::new(id.clone(), SubstateVersion::new(version))
+    }
+
+    fn substate(version: u64) -> Substate {
+        Substate::new(SubstateVersion::new(version), NonFungibleContainer::no_data())
+    }
+
+    /// The execution of `transaction` that writes `vault` and creates `created`, settling a fee-intent fallback that
+    /// writes `vault` alone if `with_fallback`.
+    fn executing_to(
+        transaction: &TransactionRecord,
+        vault: &SubstateId,
+        created: &[&SubstateId],
+        with_fallback: bool,
+    ) -> TransactionExecution {
+        let receipt = SubstateId::TransactionReceipt(transaction.id().as_hash().into());
+        let mut fee_diff = SubstateDiff::new();
+        fee_diff.down(vault.clone(), SubstateVersion::ZERO);
+        fee_diff.up(vault.clone(), substate(1));
+        fee_diff.up(receipt.clone(), substate(0));
+        let mut full_diff = fee_diff.clone();
+        for id in created {
+            full_diff.up((*id).clone(), substate(0));
+        }
+        let resulting_outputs = full_diff
+            .up_iter()
+            .map(|(id, substate)| {
+                VersionedSubstateIdLockIntent::output(VersionedSubstateId::new(id.clone(), substate.version()))
+            })
+            .collect();
+
+        TransactionExecution::new(
+            ExecuteResult {
+                finalize: FinalizeResult::new(
+                    transaction.id().as_hash(),
+                    vec![],
+                    vec![],
+                    TransactionResult::Accept(full_diff),
+                    FeeReceipt::default(),
+                ),
+                execution_time: Default::default(),
+                execute_epoch: Some(Epoch(1)),
+                wasm_execution_points: 0,
+                native_execution_points: 0,
+            },
+            vec![VersionedSubstateIdLockIntent::write(versioned(vault, 0), false)],
+            resulting_outputs,
+        )
+        .with_fee_intent_fallback(with_fallback.then(|| FeeIntentFallback {
+            diff: fee_diff,
+            events: vec![],
+            logs: vec![],
+            fee_receipt: FeeReceipt::default(),
+        }))
+    }
+
+    /// Prepares, in a network of one shard group, a local-only transaction that writes `vault` and creates `created`
+    /// and then `output`, where `output` already exists. Returns the execution it was prepared to, whether it locked
+    /// without a hard conflict, and the substates it locked.
+    fn prepare_creating_an_existing_output(
+        with_fallback: bool,
+    ) -> (TransactionExecution, bool, Vec<(SubstateId, SubstateLockType)>) {
+        let vault = component_id(1);
+        let output = component_id(2);
+        let created = component_id(3);
+        let transaction = TransactionRecord::new(
+            Transaction::builder_localnet(Epoch(100))
+                .add_input(SubstateRequirement::unversioned(vault.clone()))
+                .build_and_seal(&PrivateKey::from(1u64)),
+        );
+        let full = executing_to(&transaction, &vault, &[&created, &output], with_fallback);
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = RocksDbStateStore::<String>::open(dir.path().join("db"), Default::default()).unwrap();
+        let zero = Block::zero_block(Network::LocalNet, NumPreshards::P256);
+        db.with_write_tx(|tx| zero.insert(tx)).unwrap();
+        let block = zero.as_leaf();
+        let committee = single_committee(Epoch(1));
+        db.with_read_tx(|tx| {
+            let mut store = PendingSubstateStore::init(tx, block, NumPreshards::P256)?;
+            // The builder also declares the fee resource
+            let inputs = transaction
+                .transaction()
+                .all_inputs_iter()
+                .map(|input| input.substate_id().clone())
+                .collect::<Vec<_>>();
+            for id in inputs.iter().chain([&output]) {
+                store.put(SubstateChange::Up {
+                    id: id.clone(),
+                    shard: shard_of(id),
+                    substate: Box::new(substate(0)),
+                })?;
+            }
+            let manager =
+                ConsensusTransactionManager::<_, RocksDbStateStore<String>>::new(FixedExecutor(full), 2160, usize::MAX);
+            let ResolvedTransactionInputs::OnlyLocalInputs { local_versions } =
+                manager.resolve_inputs(&mut store, &transaction, &committee)?
+            else {
+                panic!("expected only local inputs");
+            };
+            let PreparedTransaction::LocalOnly(prepared) = manager.prepare_local_input_transaction(
+                &mut store,
+                &committee,
+                &transaction,
+                local_versions,
+                block,
+                pinned_to(1),
+                false,
+            )?
+            else {
+                panic!("expected a local-only preparation");
+            };
+            let (execution, is_locked) = match *prepared {
+                LocalPreparedTransaction::Accept { execution, lock_status } => {
+                    (execution, !lock_status.is_hard_conflict())
+                },
+                LocalPreparedTransaction::EarlyAbort { execution } => (execution, false),
+            };
+            let locks = store
+                .new_locks()
+                .iter()
+                .flat_map(|(id, locks)| locks.iter().map(|lock| (id.clone(), lock.lock_type())))
+                .collect();
+            Ok::<_, BlockTransactionExecutorError>((execution, is_locked, locks))
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn creating_an_output_that_already_exists_commits_the_fee_intent() {
+        let (execution, is_locked, locks) = prepare_creating_an_existing_output(true);
+
+        assert!(execution.decision().is_commit());
+        let (diff, reason) = execution
+            .result()
+            .finalize
+            .fee_accept_transaction_reject()
+            .expect("a fee-intent commit");
+        assert!(matches!(reason, RejectReason::FailedToLockOutputs(_)));
+        assert!(
+            !diff
+                .up_iter()
+                .any(|(id, _)| [component_id(2), component_id(3)].contains(id))
+        );
+        assert!(is_locked);
+        // The failed attempt's locks are released, so nothing only the main intent creates stays locked
+        for id in [component_id(2), component_id(3)] {
+            assert!(!locks.iter().any(|(locked, _)| *locked == id), "{id} in {locks:?}");
+        }
+        assert!(locks.contains(&(component_id(1), SubstateLockType::Write)));
+        assert!(locks.contains(&(component_id(1), SubstateLockType::Output)));
+    }
+
+    #[test]
+    fn creating_an_output_that_already_exists_without_a_fee_intent_aborts() {
+        let (execution, is_locked, _) = prepare_creating_an_existing_output(false);
+        assert!(execution.decision().is_abort());
+        assert!(!is_locked);
     }
 }

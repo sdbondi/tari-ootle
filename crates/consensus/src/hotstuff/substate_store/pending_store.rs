@@ -600,6 +600,15 @@ impl<'store, TTx: StateStoreReadTransaction> PendingSubstateStore<'store, TTx> {
         Ok(())
     }
 
+    /// Drops every lock `transaction_id` was granted while preparing the block, as though it had never requested
+    /// them. Locks it holds from earlier blocks are untouched.
+    pub fn release_new_locks(&mut self, transaction_id: &TransactionId) {
+        self.new_locks.retain(|_, locks| {
+            locks.retain(|lock| lock.transaction_id() != transaction_id);
+            !locks.is_empty()
+        });
+    }
+
     fn add_new_lock(&mut self, substate_id: SubstateId, lock: SubstateLock) {
         debug!(
             target: LOG_TARGET,

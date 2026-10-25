@@ -14,7 +14,7 @@ use tari_engine::{
     transaction::{ModulesCollection, TransactionError, TransactionProcessor},
 };
 use tari_engine_types::{
-    commit_result::ExecuteResult,
+    commit_result::{ExecuteResult, FeeIntentFallback},
     fees::{ExhaustBurnRate, FeeScale, FeeScaleSchedule},
     substate::Substate,
     virtual_substate::VirtualSubstates,
@@ -53,6 +53,9 @@ pub trait TransactionExecutor<TStore> {
 #[derive(Debug, Clone)]
 pub struct ExecutionOutput {
     pub result: ExecuteResult,
+    /// What committing only the fee intent would persist, settled for transactions that commit in full outside a
+    /// dry run.
+    pub fee_intent_fallback: Option<FeeIntentFallback>,
 }
 
 impl ExecutionOutput {
@@ -174,9 +177,18 @@ impl<TStore: StateReader + Clone + 'static> TransactionExecutor<TStore> for Tari
             self.network,
             self.dry_run,
         );
-        let result = processor.execute(transaction.clone())?;
-
-        Ok(ExecutionOutput { result })
+        if self.dry_run {
+            let result = processor.execute(transaction.clone())?;
+            return Ok(ExecutionOutput {
+                result,
+                fee_intent_fallback: None,
+            });
+        }
+        let (result, fee_intent_fallback) = processor.execute_with_fee_intent_fallback(transaction.clone())?;
+        Ok(ExecutionOutput {
+            result,
+            fee_intent_fallback,
+        })
     }
 }
 
@@ -219,6 +231,7 @@ mod tests {
                 wasm_execution_points: 0,
                 native_execution_points: 0,
             },
+            fee_intent_fallback: None,
         }
     }
 

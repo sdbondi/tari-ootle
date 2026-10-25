@@ -549,6 +549,26 @@ impl<TStore: StateReader> StateTracker<TStore> {
         })
     }
 
+    /// The state a fee-intent commit of `committed` would persist: the fee checkpoint, billed with
+    /// the whole transaction's fee state, as [`Self::select_finalized_state`] chooses it when the main
+    /// intent fails. `None` unless `committed` is a full commit, since any other outcome has already
+    /// consumed the checkpoint or has no main intent to fall back from.
+    pub fn select_fee_intent_fallback(&self, committed: &FinalizedState<TStore>) -> Option<FinalizedState<TStore>> {
+        if !committed.outcome.is_commit() {
+            return None;
+        }
+        let mut checkpoint_state = self.take_fee_checkpoint()?;
+        let fee_intent_fees = std::mem::replace(checkpoint_state.fee_state_mut(), committed.state.fee_state().clone());
+        Some(FinalizedState {
+            state: checkpoint_state,
+            outcome: FinalizeOutcome::FeeIntentCommit,
+            // Only consensus learns why the full result cannot commit, and the receipt does not record it.
+            reason: None,
+            total_fees_required: committed.total_fees_required,
+            fee_intent_fees: Some(fee_intent_fees),
+        })
+    }
+
     pub fn finalize(&self, finalized: FinalizedState<TStore>) -> Result<FinalizeResult, RuntimeError> {
         let FinalizedState {
             mut state,
