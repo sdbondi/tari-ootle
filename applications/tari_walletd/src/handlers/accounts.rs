@@ -113,6 +113,9 @@ use tari_ootle_walletd_client::{
 use tari_template_builtin::ACCOUNT_TEMPLATE_ADDRESS;
 use tari_template_lib_types::{
     Amount,
+    ComponentAddress,
+    NonFungibleAddress,
+    NonFungibleId,
     ResourceType,
     constants::{
         STEALTH_TARI_RESOURCE_ADDRESS,
@@ -1077,9 +1080,11 @@ pub async fn handle_create_free_test_coins(
     if let Some(reason) = finalized.finalize.any_reject() {
         return match reason {
             RejectReason::ExecutionFailure { code, message } => {
-                // Every substate this transaction creates is fresh for an unclaimed account: the account is
-                // created idempotently, so the only one that can already exist is the faucet's claim receipt.
-                if *code == ExecutionFailureCode::Conflict {
+                // The account component also conflicts when it exists on chain but this wallet has not seen it
+                // yet, so only a conflict on the claim receipt means the account has claimed.
+                if *code == ExecutionFailureCode::Conflict &&
+                    message.contains(&faucet_claim_receipt_address(account.component_address()).to_string())
+                {
                     return Err(faucet_already_claimed());
                 }
                 // The faucet records the claim before it withdraws, so an account that already claimed is
@@ -1130,6 +1135,14 @@ pub async fn handle_create_free_test_coins(
         result: finalized.finalize,
         address: account.address,
     })
+}
+
+/// The receipt NFT the faucet template mints, and burns, the first time `account` claims.
+fn faucet_claim_receipt_address(account: &ComponentAddress) -> NonFungibleAddress {
+    NonFungibleAddress::new(
+        XTR_FAUCET_CLAIM_RESOURCE_ADDRESS,
+        NonFungibleId::from_u256(account.as_object_key().into_array()),
+    )
 }
 
 #[allow(clippy::too_many_lines)]

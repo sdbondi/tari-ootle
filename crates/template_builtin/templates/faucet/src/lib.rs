@@ -15,7 +15,7 @@ mod template {
 
     impl XtrFaucet {
         /// Mints a claim-receipt NFT keyed to the caller's public key, then immediately burns it.
-        /// The burned substate key persists on-chain, so a second attempt panics with DuplicateNonFungibleId.
+        /// The burned substate key persists on-chain, so a second attempt fails with a `Conflict` on the receipt.
         fn record_claim(&self, address: ComponentAddress) {
             let receipt = ResourceManager::get(XTR_FAUCET_CLAIM_RESOURCE_ADDRESS).mint_non_fungible(
                 NonFungibleId::from_u256(address.as_object_key().into_array()),

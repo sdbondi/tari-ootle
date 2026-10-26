@@ -514,11 +514,8 @@ impl RuntimeError {
             Self::ProofNotFound { .. } |
             Self::ItemNotOnWorkspace { .. } |
             Self::NoLastInstructionOutput |
-            Self::DuplicateNonFungibleId { .. } |
             Self::SpendContextUnavailable |
-            Self::ConfidentialOutputAlreadyClaimed { .. } |
             Self::NoFeesPaid { .. } |
-            Self::ComponentAlreadyExists { .. } |
             Self::InvalidOpLockedBucket { .. } |
             Self::DuplicateReference { .. } |
             Self::ArgumentValidationError(_) |
@@ -571,7 +568,10 @@ impl RuntimeError {
 
             Self::ClaimProofNotYetValid { .. } => C::NotYetValid,
 
-            Self::SubstateAlreadyExists { .. } => C::Conflict,
+            Self::SubstateAlreadyExists { .. } |
+            Self::DuplicateNonFungibleId { .. } |
+            Self::ComponentAlreadyExists { .. } |
+            Self::ConfidentialOutputAlreadyClaimed { .. } => C::Conflict,
 
             Self::BucketNotEmpty { .. } |
             Self::OrphanedSubstate { .. } |
