@@ -130,7 +130,7 @@ pub async fn run_validator_node(
     #[cfg(feature = "metrics")]
     let metrics_registry = create_metrics_registry(keypair.public_key(), &mut base_registry);
     #[cfg(feature = "metrics")]
-    metrics::LogSinkCollector.register(metrics_registry);
+    tari_logging::LogSinkCollector.register(metrics_registry);
 
     let consensus_constants = load_consensus_constants(
         config.network,
@@ -149,7 +149,7 @@ pub async fn run_validator_node(
     .await?;
     let report_signal = shutdown.to_signal();
     services.handles.push(task::spawn(async move {
-        logging::report_dropped_lines(report_signal).await;
+        tari_logging::report_dropped_lines(report_signal).await;
         Ok(())
     }));
 

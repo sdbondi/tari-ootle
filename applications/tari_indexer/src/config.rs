@@ -33,6 +33,7 @@ use tari_common::{
 };
 use tari_crypto::ristretto::RistrettoPublicKey;
 use tari_indexer_lib::cached_substate_manager::DEFAULT_NEGATIVE_CACHE_TTL;
+use tari_logging::LoggingConfig;
 use tari_ootle_app_utilities::{
     epoch_oracle_config::EpochOracleConfig,
     p2p_config::{P2pConfig, PeerSeedsConfig},
@@ -289,6 +290,9 @@ pub struct IndexerConfig {
     pub verify_substate_proofs: bool,
     /// Rate-limiting configuration for the REST API endpoints
     pub rate_limits: IndexerRateLimitsConfig,
+    /// Where log events go: the console and one file per named sink.
+    #[serde(default = "crate::logging::default_logging_config")]
+    pub logging: LoggingConfig,
 }
 
 fn default_verify_substate_proofs() -> bool {
@@ -489,6 +493,7 @@ impl Default for IndexerConfig {
             watched_templates: default_watched_templates(),
             verify_substate_proofs: default_verify_substate_proofs(),
             rate_limits: IndexerRateLimitsConfig::default(),
+            logging: crate::logging::default_logging_config(),
         }
     }
 }

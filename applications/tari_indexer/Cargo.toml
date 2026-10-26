@@ -34,6 +34,7 @@ tari_indexer_client = { workspace = true, default-features = false, features = [
 tari_indexer_lib = { workspace = true }
 tari_networking = { workspace = true }
 tari_ootle_app_utilities = { workspace = true, features = ["consensus_constants", "epoch_oracle", "execution", "p2p"] }
+tari_logging = { workspace = true }
 tari_ootle_common_types = { workspace = true }
 tari_ootle_p2p = { workspace = true }
 tari_ootle_storage = { workspace = true }
@@ -91,10 +92,6 @@ tower-http = { workspace = true, features = ["default", "cors", "limit", "trace"
 url = { workspace = true, features = ["serde"] }
 prometheus-client = { workspace = true, optional = true }
 prost = { workspace = true }
-tracing = "0.1.41"
-tracing-subscriber = { workspace = true }
-tracing-appender = { workspace = true }
-logroller = "0.1"
 utoipa = { workspace = true }
 utoipa-swagger-ui = { workspace = true, features = ["axum"] }
 
@@ -107,4 +104,4 @@ toml = { workspace = true }
 [features]
 default = ["web_ui", "metrics"]
 web_ui = ["include_dir"]
-metrics = ["prometheus-client", "tari_networking/metrics", "tari_indexer_lib/metrics"]
+metrics = ["prometheus-client", "tari_logging/metrics", "tari_networking/metrics", "tari_indexer_lib/metrics"]

@@ -10,7 +10,7 @@ license.workspace = true
 
 [features]
 default = ["metrics", "web_ui"]
-metrics = ["prometheus-client", "tari_networking/metrics"]
+metrics = ["prometheus-client", "tari_logging/metrics", "tari_networking/metrics"]
 # Note: must be compiled with RUSTFLAGS='--cfg rust_unstable' to use
 tokio_debug = ["console-subscriber"]
 web_ui = []

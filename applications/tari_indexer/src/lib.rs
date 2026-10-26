@@ -37,6 +37,7 @@ mod base_layer;
 mod event_query_limits;
 mod exhaust_burn_rate;
 pub mod ipc;
+pub mod logging;
 #[cfg(feature = "metrics")]
 mod metrics;
 mod network_client;
@@ -95,6 +96,9 @@ where
 
     #[cfg(feature = "metrics")]
     let mut registry = create_metrics_registry(keypair.public_key());
+    #[cfg(feature = "metrics")]
+    tari_logging::LogSinkCollector.register(&mut registry);
+    tokio::spawn(tari_logging::report_dropped_lines(shutdown_signal.clone()));
 
     let consensus_constants = load_consensus_constants(
         config.network,

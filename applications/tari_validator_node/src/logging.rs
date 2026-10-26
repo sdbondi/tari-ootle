@@ -1,16 +1,9 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf};
 
-use log::*;
-use tari_logging::{ConsoleFormat, LogFileConfig, LoggingConfig, dropped_lines};
-use tari_shutdown::ShutdownSignal;
-
-const LOG_TARGET: &str = "tari::validator_node::logging";
-
-/// How often dropped log lines are reported.
-const DROPPED_LINES_REPORT_INTERVAL: Duration = Duration::from_secs(30);
+use tari_logging::{ConsoleFormat, LogFileConfig, LoggingConfig};
 
 /// The validator node's sinks: one file per subsystem, so that the busiest (engine, consensus) can be read, rotated
 /// and silenced on their own.
@@ -20,6 +13,7 @@ pub fn default_logging_config() -> LoggingConfig {
             "ootle",
             LogFileConfig::new(directives(&[
                 "tari::application=info",
+                "tari::logging=warn",
                 "tari::validator_node=debug",
                 "tari::ootle::epoch_manager=debug",
                 "tari::ootle::epoch_oracles=debug",
@@ -105,30 +99,6 @@ pub fn default_logging_config() -> LoggingConfig {
 
 fn directives(directives: &[&str]) -> String {
     directives.join(",")
-}
-
-/// Warns, every [`DROPPED_LINES_REPORT_INTERVAL`], about each sink that dropped lines since the last report.
-pub async fn report_dropped_lines(mut shutdown: ShutdownSignal) {
-    let mut reported = BTreeMap::new();
-    let mut interval = tokio::time::interval(DROPPED_LINES_REPORT_INTERVAL);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        tokio::select! {
-            _ = interval.tick() => {},
-            _ = shutdown.wait() => return,
-        }
-        for (sink, dropped) in dropped_lines() {
-            let previous = reported.insert(sink, dropped).unwrap_or(0);
-            if dropped > previous {
-                warn!(
-                    target: LOG_TARGET,
-                    "Dropped {} {sink} log lines in the last {}s because the {sink} log writer fell behind",
-                    dropped - previous,
-                    DROPPED_LINES_REPORT_INTERVAL.as_secs(),
-                );
-            }
-        }
-    }
 }
 
 #[cfg(test)]

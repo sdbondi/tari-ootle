@@ -6712,18 +6712,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "logroller"
-version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83db12bbf439ebe64c0b0e4402f435b6f866db498fc1ae17e1b5d1a01625e2be"
-dependencies = [
- "chrono",
- "flate2",
- "regex",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "lru-cache"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11993,7 +11981,6 @@ dependencies = [
  "indexmap 2.14.2",
  "libp2p",
  "log",
- "logroller",
  "mediatype",
  "mime_guess",
  "mini-moka",
@@ -12016,6 +12003,7 @@ dependencies = [
  "tari_epoch_oracles",
  "tari_indexer_client",
  "tari_indexer_lib",
+ "tari_logging",
  "tari_networking",
  "tari_ootle_app_utilities",
  "tari_ootle_common_types",
@@ -12040,9 +12028,6 @@ dependencies = [
  "tokio-util",
  "toml 0.9.11+spec-1.1.0",
  "tower-http",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
  "url",
  "utoipa",
  "utoipa-swagger-ui",
@@ -12153,10 +12138,12 @@ name = "tari_logging"
 version = "0.47.0"
 dependencies = [
  "log",
+ "prometheus-client",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "tracing-appender",
  "tracing-log",

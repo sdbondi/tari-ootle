@@ -70,6 +70,27 @@
 # Only used when a retention window is set. (default = 3600)
 #prune_interval = 3600
 
+#[indexer.logging]
+## A filter is a comma-separated list of `target=level` directives plus an optional bare level for every other target.
+## A directive matches every target it prefixes and the longest match decides; `off` silences a target. A sink whose
+## writer falls behind drops lines, so logging never slows the node, and warns about it.
+## The directory log files are written to, relative to the base path (default = "log/indexer")
+#directory = "log/indexer"
+## The events printed to stdout. RUST_LOG, when set, replaces it. (default = "tari::application=info,...")
+#console = "tari::application=info,tari::indexer=info,tari::ootle=info"
+## How events are printed to stdout: "text", or "json" (one object per event, for log shippers) (default = "text")
+#console_format = "text"
+#
+## Each [indexer.logging.files.<name>] table configures <directory>/<name>.log. The default is indexer. A table changes
+## only the keys it sets, and a new name adds a file.
+#[indexer.logging.files.indexer]
+## The events written to this file; "off" disables it (default = "tari::application=debug,tari::indexer=debug,...")
+#filter = "tari::indexer=debug,tari::ootle=info"
+## Rotate the file at this size: indexer.log becomes indexer.1.log, and so on (default = 200)
+#max_file_size_mb = 200
+## The number of rotated files kept (default = 4)
+#max_rotated_files = 4
+
 [indexer.p2p]
 #enable_mdns = true
 # Run a rendezvous server on this node so other nodes can use it for peer discovery. This is the SERVER side only - the

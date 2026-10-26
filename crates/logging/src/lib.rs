@@ -12,6 +12,8 @@
 //! Queued lines reach their files when the [`LoggingGuard`] drops or [`flush_and_close`] runs. A process that aborts
 //! on panic runs no destructors, so its panic hook must call [`flush_and_close`] itself.
 
+#[cfg(feature = "metrics")]
+mod metrics;
 mod rolling_file;
 
 use std::{
@@ -22,6 +24,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::{Mutex, OnceLock},
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -30,6 +33,8 @@ use tracing_appender::non_blocking::{ErrorCounter, NonBlockingBuilder, WorkerGua
 pub use tracing_subscriber::Registry;
 use tracing_subscriber::{Layer, filter::Targets, fmt, fmt::MakeWriter, layer::SubscriberExt, util::SubscriberInitExt};
 
+#[cfg(feature = "metrics")]
+pub use self::metrics::LogSinkCollector;
 use self::rolling_file::RollingFile;
 
 /// A layer in the process subscriber, beside the configured sinks.
@@ -88,6 +93,11 @@ impl LogFileConfig {
 
     pub fn with_max_file_size_mb(mut self, max_file_size_mb: u64) -> Self {
         self.max_file_size_mb = max_file_size_mb;
+        self
+    }
+
+    pub fn with_max_rotated_files(mut self, max_rotated_files: usize) -> Self {
+        self.max_rotated_files = max_rotated_files;
         self
     }
 }
@@ -167,6 +177,37 @@ pub fn init(
 /// has finished.
 pub fn flush_and_close() {
     WRITER_GUARDS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+const LOG_TARGET: &str = "tari::logging";
+
+/// How often [`report_dropped_lines`] reports.
+const DROPPED_LINES_REPORT_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Warns, every [`DROPPED_LINES_REPORT_INTERVAL`], about each sink that dropped lines since the last report, until
+/// `shutdown` completes. The warnings use the `tari::logging` target.
+pub async fn report_dropped_lines<F: Future<Output = ()>>(shutdown: F) {
+    let mut reported = BTreeMap::new();
+    let mut interval = tokio::time::interval(DROPPED_LINES_REPORT_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    tokio::pin!(shutdown);
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {},
+            _ = &mut shutdown => return,
+        }
+        for (sink, dropped) in dropped_lines() {
+            let previous = reported.insert(sink, dropped).unwrap_or(0);
+            if dropped > previous {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    "Dropped {} {sink} log lines in the last {}s because the {sink} log writer fell behind",
+                    dropped - previous,
+                    DROPPED_LINES_REPORT_INTERVAL.as_secs(),
+                );
+            }
+        }
+    }
 }
 
 /// The number of lines each sink has dropped because its queue was full, by sink name.

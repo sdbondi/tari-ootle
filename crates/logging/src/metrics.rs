@@ -9,7 +9,8 @@ use prometheus_client::{
     metrics::counter::ConstCounter,
     registry::Registry,
 };
-use tari_logging::dropped_lines;
+
+use crate::dropped_lines;
 
 /// Reports the lines each log sink dropped because its writer fell behind, labelled by `sink`, read from the sinks
 /// on each scrape.

@@ -7,7 +7,6 @@ mod epoch_metrics;
 mod execution_metrics;
 mod handler;
 mod inbound_queue_metrics;
-mod log_metrics;
 mod server;
 mod state_store_metrics;
 
@@ -16,6 +15,5 @@ pub use consensus_metrics::*;
 pub use epoch_metrics::*;
 pub use execution_metrics::*;
 pub use inbound_queue_metrics::*;
-pub use log_metrics::*;
 pub use server::*;
 pub use state_store_metrics::*;
