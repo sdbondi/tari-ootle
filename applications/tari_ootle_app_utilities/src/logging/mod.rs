@@ -320,7 +320,6 @@ mod tests {
         assert_eq!(file, file!(), "{line}");
         assert!(line_number.parse::<u32>().is_ok(), "{line}");
         assert_eq!(message, "⏲️ prepare took 1.5ms", "{line}");
-        println!("{line}");
     }
 
     #[test]
