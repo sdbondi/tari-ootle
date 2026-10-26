@@ -28,7 +28,7 @@ import { Box, Collapse, Table, TableBody, TableCell, TableContainer, TableRow, T
 import { useTheme } from "@mui/material/styles";
 import type { Blobs, Instruction, InstructionArg, WorkspaceOffsetId } from "@tari-project/ootle-ts-bindings";
 import { TariTypeTag } from "@tari-project/ootle-ts-bindings";
-import { toHexString } from "@utils/helpers";
+import { blobBytes, toHexString } from "@utils/helpers";
 import { decode } from "cbor2";
 import { useState } from "react";
 
@@ -80,19 +80,6 @@ export function formatBlobSize(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
   return `${(n / (1024 * 1024)).toFixed(2)} MiB`;
-}
-
-/// The bytes of blob `index`, or `undefined` when the transaction does not carry it.
-function blobBytes(blobs: Blobs | undefined, index: number): Uint8Array | undefined {
-  const encoded = blobs?.[index];
-  if (encoded == null) {
-    return undefined;
-  }
-  try {
-    return Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0));
-  } catch {
-    return undefined;
-  }
 }
 
 /// The value a blob holds, decoded the way a literal argument is, or its raw
@@ -364,9 +351,7 @@ export default function Instructions({ data, blobs }: { data: Array<Instruction>
         <TableBody>
           {data?.length ? (
             data.map((item: Instruction, index) => {
-              return (
-                <RowData key={index} index={index} title={summarize(item, blobs)} data={item} blobs={blobs} />
-              );
+              return <RowData key={index} index={index} title={summarize(item, blobs)} data={item} blobs={blobs} />;
             })
           ) : (
             <Box sx={{ p: 3, textAlign: "center" }}>

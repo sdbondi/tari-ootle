@@ -25,6 +25,7 @@ import type {
   TransactionRequestInfo,
   TransactionRequestMainSigner,
 } from "@tari-project/ootle-ts-bindings";
+import { TARI_TOKEN } from "@tari-project/ootle-ts-bindings";
 import { useEffect, useState } from "react";
 import Inputs from "../Transactions/Inputs";
 import Instructions, { BlobContents } from "../Transactions/Instructions";
@@ -90,19 +91,23 @@ function ValueSummaries({ request }: { request: TransactionRequestInfo }) {
   // instructions are read from the instruction list itself.
   return (
     <>
-      {request.value_summaries.map(({ amount_leaving, inputs_total, change_total, resource_address }) => (
-        <Alert key={resource_address} severity="warning" icon={false} sx={{ mb: 2 }}>
-          <Typography variant="h6" sx={{ fontWeight: 600 }}>
-            {amount_leaving.toLocaleString()} µT of stealth funds leaves this wallet
-          </Typography>
-          <Typography variant="body2" sx={{ opacity: 0.85 }}>
-            {inputs_total.toLocaleString()} µT spent, {change_total.toLocaleString()} µT returned as change
-          </Typography>
-          <Typography variant="body2" sx={{ opacity: 0.7, wordBreak: "break-all" }}>
-            {resource_address}
-          </Typography>
-        </Alert>
-      ))}
+      {request.value_summaries.map(({ amount_leaving, inputs_total, change_total, resource_address }) => {
+        // Amounts are in the resource's smallest unit, which is µT only for TARI.
+        const unit = resource_address === TARI_TOKEN ? "µT" : "base units";
+        return (
+          <Alert key={resource_address} severity="warning" icon={false} sx={{ mb: 2 }}>
+            <Typography variant="h6" sx={{ fontWeight: 600 }}>
+              {amount_leaving.toLocaleString()} {unit} of stealth funds leaves this wallet
+            </Typography>
+            <Typography variant="body2" sx={{ opacity: 0.85 }}>
+              {inputs_total.toLocaleString()} {unit} spent, {change_total.toLocaleString()} {unit} returned as change
+            </Typography>
+            <Typography variant="body2" sx={{ opacity: 0.7, wordBreak: "break-all" }}>
+              {resource_address}
+            </Typography>
+          </Alert>
+        );
+      })}
     </>
   );
 }

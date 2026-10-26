@@ -100,7 +100,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function Summary({ request }: { request: SigningRequestInfo }) {
   const v1 = request.transaction.V1;
   const instructions = v1?.instructions ?? [];
-  const governance = instructions.map(describeGovernanceCall);
+  const blobs = v1?.blobs ?? [];
+  const governance = instructions.map((instruction) => describeGovernanceCall(instruction, blobs));
   const described = governance.filter((d) => d !== null);
   const undescribed = governance.length - described.length;
 
@@ -148,7 +149,9 @@ function RequestCard({ request }: { request: SigningRequestInfo }) {
   const feeInstructions = v1?.fee_instructions ?? [];
   const inputs = v1?.inputs ?? [];
   const blobs = v1?.blobs ?? [];
-  const fees =feeInstructions.map(describeFee).filter((f) => f !== null);
+  const feeDescriptions = feeInstructions.map((instruction) => describeFee(instruction, blobs));
+  const fees = feeDescriptions.filter((f) => f !== null);
+  const undescribedFees = feeDescriptions.length - fees.length;
   const isMainnet = v1?.network === 0x00;
 
   const togglePanel = (panel: string) => (_event: React.SyntheticEvent, isExpanded: boolean) =>
@@ -228,7 +231,14 @@ function RequestCard({ request }: { request: SigningRequestInfo }) {
           {v1?.min_epoch != null ? `${v1.min_epoch} to ${v1.max_epoch}` : `until ${v1?.max_epoch}`}
         </Field>
         <Field label="Max fee">
-          {fees.length > 0 ? fees.map((f) => <div key={f}>{f}</div>) : `${feeInstructions.length} fee instruction(s)`}
+          {fees.length > 0 ? (
+            <>
+              {fees.map((f) => <div key={f}>{f}</div>)}
+              {undescribedFees > 0 && <div>Plus {undescribedFees} other fee instruction(s); review them below.</div>}
+            </>
+          ) : (
+            `${feeInstructions.length} fee instruction(s)`
+          )}
         </Field>
       </Grid>
 
