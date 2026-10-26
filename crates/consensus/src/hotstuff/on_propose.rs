@@ -325,25 +325,16 @@ where TConsensusSpec: ConsensusSpec
         lock_conflicts: &mut TransactionLockConflicts,
     ) -> Result<Option<Command>, HotStuffError> {
         match pool_tx.current_stage() {
-            TransactionPoolStage::New => {
-                let transaction_id = *pool_tx.id();
-                let command = self.prepare_transaction(
-                    state_anchor,
-                    locked_epoch,
-                    pool_tx,
-                    local_committee_info,
-                    change_set,
-                    substate_store,
-                    executed_transactions,
-                    lock_conflicts,
-                )?;
-                // A transaction left out of the block holds no locks in it, as on every replica, which never
-                // prepares it. Later transactions read local-only locks as held by transactions the block commits.
-                if command.is_none() {
-                    substate_store.release_new_locks(&transaction_id);
-                }
-                Ok(command)
-            },
+            TransactionPoolStage::New => self.prepare_transaction(
+                state_anchor,
+                locked_epoch,
+                pool_tx,
+                local_committee_info,
+                change_set,
+                substate_store,
+                executed_transactions,
+                lock_conflicts,
+            ),
             // Leader thinks all foreign PREPARE pledges have been received (condition for LocalPrepared stage to be
             // ready)
             TransactionPoolStage::LocalPrepared => self.local_accept_transaction(
@@ -908,8 +899,39 @@ where TConsensusSpec: ConsensusSpec
         })
     }
 
-    #[allow(clippy::too_many_lines)]
+    /// Prepares a New transaction for the block being proposed, or leaves it out. A transaction left out holds no locks
+    /// in the block, as on every replica, which never prepares it: later transactions read a local-only lock as held by
+    /// a transaction the block commits.
     fn prepare_transaction<TTx: StateStoreReadTransaction>(
+        &self,
+        state_anchor: &LeafBlock,
+        locked_epoch: &LockedEpoch,
+        pool_tx: TransactionPoolRecord,
+        local_committee_info: &CommitteeInfo,
+        change_set: &ProposedBlockChangeSet,
+        substate_store: &mut PendingSubstateStore<TTx>,
+        executed_transactions: &mut HashMap<TransactionId, TransactionExecution>,
+        lock_conflicts: &mut TransactionLockConflicts,
+    ) -> Result<Option<Command>, HotStuffError> {
+        let transaction_id = *pool_tx.id();
+        let command = self.derive_prepare_command(
+            state_anchor,
+            locked_epoch,
+            pool_tx,
+            local_committee_info,
+            change_set,
+            substate_store,
+            executed_transactions,
+            lock_conflicts,
+        )?;
+        if command.is_none() {
+            substate_store.release_new_locks(&transaction_id);
+        }
+        Ok(command)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn derive_prepare_command<TTx: StateStoreReadTransaction>(
         &self,
         state_anchor: &LeafBlock,
         locked_epoch: &LockedEpoch,
