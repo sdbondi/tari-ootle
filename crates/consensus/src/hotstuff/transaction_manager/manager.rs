@@ -1049,10 +1049,8 @@ pub fn lock_multishard_execution<TTx: StateStoreReadTransaction>(
     // The execution the proposer stored for the block may already be the fee-intent commit
     let fee_intent_only = fee_intent_only || execution.is_fee_intent_commit;
     let lock_status = store.try_lock_all(transaction_id, scope.locks(&execution, local_committee_info), false)?;
-    let reason = match lock_status.hard_conflict() {
-        Some(err) if !fee_intent_only && is_output_never_creatable(store, err)? => {
-            RejectReason::FailedToLockOutputs(err.to_string())
-        },
+    let conflict = match lock_status.hard_conflict() {
+        Some(err) if !fee_intent_only && is_output_never_creatable(store, err)? => err.to_string(),
         _ => {
             return Ok(LockedMultishardExecution {
                 execution,
@@ -1061,7 +1059,7 @@ pub fn lock_multishard_execution<TTx: StateStoreReadTransaction>(
             });
         },
     };
-    let Some(fee_intent_commit) = take_multishard_fee_intent_commit(&mut execution, reason) else {
+    let Some(fee_intent_commit) = take_multishard_fee_intent_commit(&mut execution) else {
         return Ok(LockedMultishardExecution {
             execution,
             lock_status,
@@ -1071,7 +1069,7 @@ pub fn lock_multishard_execution<TTx: StateStoreReadTransaction>(
     warn!(
         target: LOG_TARGET,
         "⚠️ Multishard transaction {transaction_id} creates an output that exists or is being created by another \
-         transaction. Every shard group commits its fee intent only",
+         transaction ({conflict}). Every shard group commits its fee intent only",
     );
     store.release_new_locks(&transaction_id);
     let lock_status = store.try_lock_all(
@@ -1096,10 +1094,7 @@ pub fn adopt_fee_intent_commit(
     if execution.decision().is_abort() || execution.result().finalize.is_fee_only() {
         return Ok(execution);
     }
-    let reason = RejectReason::FailedToLockOutputs(
-        "another shard group cannot create one of the transaction's outputs".to_string(),
-    );
-    take_multishard_fee_intent_commit(&mut execution, reason).ok_or_else(|| {
+    take_multishard_fee_intent_commit(&mut execution).ok_or_else(|| {
         BlockTransactionExecutorError::InvariantError(format!(
             "Transaction {transaction_id} has no fee intent to commit, but another shard group committed only its fee \
              intent"
@@ -1107,14 +1102,15 @@ pub fn adopt_fee_intent_commit(
     })
 }
 
-/// The fee-intent commit of the multishard `execution`, rejecting the rest for `reason`. `None` if there is no fee
-/// intent to commit, or if the fee intent creates a substate that the full execution does not: a shard group that
-/// adopts the fee-intent commit after accepting the full execution holds locks only for the full execution's outputs.
-/// Every shard group executes the transaction alike, so each one reaches the same answer.
-fn take_multishard_fee_intent_commit(
-    execution: &mut TransactionExecution,
-    reason: RejectReason,
-) -> Option<TransactionExecution> {
+/// The fee-intent commit of the multishard `execution`. `None` if there is no fee intent to commit, or if the fee
+/// intent creates a substate that the full execution does not: a shard group that adopts the fee-intent commit after
+/// accepting the full execution holds locks only for the full execution's outputs. Every shard group executes the
+/// transaction alike, so each one reaches the same answer. The reject reason names no substate, because only the
+/// shard group holding the output knows which one it is, and every shard group must report the same result.
+fn take_multishard_fee_intent_commit(execution: &mut TransactionExecution) -> Option<TransactionExecution> {
+    let reason = RejectReason::FailedToLockOutputs(
+        "one of the transaction's outputs exists or is being created by another transaction".to_string(),
+    );
     let fee_intent_commit = execution.take_fee_intent_commit(reason)?;
     let full_outputs = execution
         .resulting_outputs()
@@ -2040,8 +2036,7 @@ mod tests {
             .diff
             .up(component_id(4), substate(0));
 
-        let fee_intent_commit =
-            take_multishard_fee_intent_commit(&mut execution, RejectReason::FailedToLockOutputs("exists".to_string()));
+        let fee_intent_commit = take_multishard_fee_intent_commit(&mut execution);
 
         assert!(fee_intent_commit.is_none());
     }

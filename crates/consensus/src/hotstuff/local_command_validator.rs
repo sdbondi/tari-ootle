@@ -466,14 +466,19 @@ where
                     tx_rec.id()
                 ))
             })?;
-            let execution = self.execute_transaction(
-                substate_store,
-                local_committee_info,
-                block.as_leaf(),
-                locked_epoch.clone(),
-                transaction,
-                proposed_block_change_set,
-            )?;
+            // A foreign proposal in this block may already have replaced the transaction's execution with its
+            // fee-intent commit
+            let execution = match proposed_block_change_set.take_transaction_execution(tx_rec.id()) {
+                Some(execution) => execution,
+                None => self.execute_transaction(
+                    substate_store,
+                    local_committee_info,
+                    block.as_leaf(),
+                    locked_epoch.clone(),
+                    transaction,
+                    proposed_block_change_set,
+                )?,
+            };
             let execution = execution.into_transaction_execution();
 
             if execution.decision().is_commit() {

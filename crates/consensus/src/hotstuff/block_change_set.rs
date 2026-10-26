@@ -685,6 +685,27 @@ mod tests {
         );
     }
 
+    /// A proposer derives the commands of a block from batched records brought up to date with the block's change set,
+    /// so a foreign proposal in the block that makes the transaction commit only its fee intent must reach them.
+    #[test]
+    fn a_batched_record_commits_only_the_fee_intent_a_foreign_proposal_in_the_block_switched_it_to() {
+        let leaf = LeafBlock {
+            block_id: BlockId::zero(),
+            height: NodeHeight(1),
+            epoch: Epoch(1),
+            shard_group: ShardGroup::all_shards(NumPreshards::P256),
+        };
+        let mut change_set = ProposedBlockChangeSet::new(leaf);
+        let mut switched = local_prepared_record();
+        switched.set_fee_intent_only(true);
+        change_set.set_next_transaction_update(switched).unwrap();
+
+        let mut batched = local_prepared_record();
+        change_set.apply_transaction_update(&mut batched);
+
+        assert!(batched.is_fee_intent_only());
+    }
+
     fn local_prepared_record() -> TransactionPoolRecord {
         TransactionPoolRecord::load(
             TransactionId::new([1; 32]),

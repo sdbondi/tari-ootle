@@ -85,6 +85,9 @@ impl TransactionPoolStatusUpdate {
         if let Some(decision) = self.transaction().remote_decision() {
             tx_rec_mut.set_remote_decision(decision);
         }
+        if self.is_fee_intent_only() {
+            tx_rec_mut.set_fee_intent_only(true);
+        }
     }
 }
 

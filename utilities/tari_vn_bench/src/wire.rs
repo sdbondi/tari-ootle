@@ -155,6 +155,7 @@ fn command_for(transaction: &Transaction, num_committees: u32) -> Command {
             fee: 100,
             exhaust_burn: 5,
         }),
+        fee_intent_only: false,
     })
 }
 

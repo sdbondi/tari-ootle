@@ -4,7 +4,7 @@
 //! Tests for transactions that cannot create one of their outputs, because the output exists or another
 //! transaction creates it first.
 
-use std::iter;
+use std::{collections::HashSet, iter};
 
 use tari_common_types::types::PrivateKey;
 use tari_consensus_types::Decision;
@@ -243,6 +243,14 @@ async fn assert_a_multishard_collision_commits_the_fee_intent_everywhere(collidi
     test.assert_all_validators_have_decision(duplicate.id(), Decision::Commit)
         .await;
     assert!(is_fee_intent_commit_everywhere(&test, &duplicate));
+    let reject_reasons = test
+        .validators_iter()
+        .map(|validator| {
+            let execution = validator.get_transaction_execution(duplicate.id());
+            execution.result().finalize.result.any_reject().map(ToString::to_string)
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(reject_reasons.len(), 1, "{reject_reasons:?}");
 
     test.assert_clean_shutdown().await;
 }

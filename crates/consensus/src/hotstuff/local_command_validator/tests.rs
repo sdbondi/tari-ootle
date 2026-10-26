@@ -46,6 +46,7 @@ use tari_ootle_storage::{
         Block,
         BlockCommands,
         BlockHeader,
+        BlockTransactionExecution,
         Command,
         Evidence,
         InvalidEvidenceReason,
@@ -405,12 +406,19 @@ impl Replica {
 
     /// Evaluates `commands` in order as the transaction commands of one block, stopping at the first refusal.
     fn evaluate(&self, commands: &[Command]) -> Evaluation {
+        self.evaluate_after(commands, |_| {})
+    }
+
+    /// Evaluates `commands` like [`Self::evaluate`], in a block whose change set `before` has already updated, as
+    /// the block's foreign proposals do.
+    fn evaluate_after(&self, commands: &[Command], before: impl FnOnce(&mut ProposedBlockChangeSet)) -> Evaluation {
         let block = &self.candidate;
         let validator = LocalCommandValidator::new(&self.manager, &self.public_key);
         self.store
             .with_read_tx(|tx| {
                 let mut substate_store = PendingSubstateStore::init(tx, block.as_leaf(), NUM_PRESHARDS)?;
                 let mut change_set = ProposedBlockChangeSet::new(block.as_leaf());
+                before(&mut change_set);
                 let mut evaluation = Evaluation::default();
                 for command in commands {
                     evaluation.no_vote = match command {
@@ -457,6 +465,50 @@ impl Replica {
                 Ok::<_, StorageError>(evaluation)
             })
             .unwrap()
+    }
+
+    /// Evaluates the LocalPrepare `atom` in the parent block and stores what it changes, with the parent justified.
+    fn prepare_in_parent(&self, atom: &MultiShardAtom) {
+        let block = &self.parent;
+        let validator = LocalCommandValidator::new(&self.manager, &self.public_key);
+        self.store
+            .with_write_tx(|tx| {
+                // Reading what a block left pending walks back to the commit block
+                tx.blocks_set_qcs(block.parent(), Some(&PcId::zero()), None)?;
+                let mut change_set = ProposedBlockChangeSet::new(block.as_leaf());
+                let mut substate_store = PendingSubstateStore::init(&**tx, block.as_leaf(), NUM_PRESHARDS)?;
+                let no_vote = validator
+                    .evaluate_local_prepare_command(
+                        &**tx,
+                        block,
+                        atom,
+                        &self.committee,
+                        &mut substate_store,
+                        &mut change_set,
+                    )
+                    .unwrap();
+                assert!(no_vote.is_none(), "{no_vote:?}");
+                let mut rec = change_set
+                    .get_transaction_pool_record(&**tx, substate_store.parent_chain(), &atom.id)
+                    .unwrap();
+                let (_, locks) = substate_store.into_parts();
+                change_set.set_substate_locks(locks);
+                rec.evidence_mut()
+                    .add_shard_group(self.committee.shard_group())
+                    .set_prepare_qc(PcId::zero());
+                rec.set_ready(rec.is_ready_for_pending_stage(self.committee.shard_group()));
+                change_set.set_next_transaction_update(rec).unwrap();
+                change_set.save(tx)
+            })
+            .unwrap();
+    }
+
+    /// The execution of transaction `id` pending in the parent block.
+    fn pending_execution(&self, id: &TransactionId) -> TransactionExecution {
+        self.store
+            .with_read_tx(|tx| BlockTransactionExecution::get_pending_for_block(tx, id, &self.candidate.as_leaf()))
+            .unwrap()
+            .into_transaction_execution()
     }
 
     /// Stores pledges of version zero of each of `inputs` from `shard_group` for transaction `id`.
@@ -1438,5 +1490,30 @@ mod new_multishard_rules {
             "{:?}",
             evaluation.no_vote
         );
+    }
+}
+
+mod local_accept_from_local_prepared {
+    use super::*;
+
+    /// The execution a foreign proposal in the block left for the transaction, such as the fee-intent commit another
+    /// shard group switched it to, is the one the transaction's LocalAccept locks.
+    #[test]
+    fn an_accept_after_a_foreign_proposal_in_the_block_replaced_the_execution_is_voted_for() {
+        let (replica, id) = executing_cross_shard();
+        let prepare = multishard_atom(&replica.honest_new_multishard_command(&id));
+        replica.prepare_in_parent(&prepare);
+        let execution = replica.pending_execution(&id);
+        let involved = NonZeroU64::new(prepare.evidence.num_shard_groups() as u64).unwrap();
+        let accept = MultiShardAtom {
+            leader_fee: Some(calculate_leader_fee(FEE, exhaust_burn(), involved)),
+            ..prepare
+        };
+
+        let evaluation = replica.evaluate_after(&[Command::LocalAccept(accept)], |change_set| {
+            change_set.add_transaction_execution(id, execution).unwrap();
+        });
+
+        assert_voted(&evaluation, TransactionPoolStage::LocalAccepted, true);
     }
 }
