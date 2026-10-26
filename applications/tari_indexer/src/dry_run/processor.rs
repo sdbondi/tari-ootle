@@ -27,7 +27,7 @@ use ootle_network::Network;
 use tari_engine::{fees::FeeTable, state_store::new_memory_store, traits::ClaimProofVerifier, wasm::WasmModuleCache};
 use tari_engine_types::{
     commit_result::ExecuteResult,
-    external_substates::NoExternalSubstates,
+    creation_check::NoCreationCheck,
     substate::{Substate, SubstateId},
     virtual_substate::{VirtualSubstate, VirtualSubstateId, VirtualSubstates},
 };
@@ -165,7 +165,7 @@ impl DryRunTransactionProcessor {
                 virtual_substates,
                 burn_rate,
                 input_fanout,
-                &NoExternalSubstates,
+                &NoCreationCheck,
             )
         })
         .await??;

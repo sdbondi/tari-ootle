@@ -11,7 +11,7 @@ use log::*;
 use tari_consensus_types::{Decision, LeafBlock};
 use tari_engine_types::{
     commit_result::{AbortReason, RejectReason},
-    external_substates::{ExternalSubstates, ExternalSubstatesError},
+    creation_check::{CreationCheck, CreationCheckError},
     substate::{Substate, SubstateId},
 };
 use tari_ootle_common_types::{
@@ -382,7 +382,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
             input_fanout(transaction, local_committee_info),
             &resolved_inputs,
             &self.uncommitted_templates.templates_for(store)?,
-            &LocalExternalSubstates::new(store, local_committee_info, pledged_transaction.transaction.id()),
+            &LocalCreationCheck::new(store, local_committee_info, pledged_transaction.transaction.id()),
         )
     }
 
@@ -433,7 +433,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
             input_fanout(transaction.transaction(), local_committee_info),
             resolved_inputs,
             &self.uncommitted_templates.templates_for(store)?,
-            &LocalExternalSubstates::new(store, local_committee_info, transaction.id()),
+            &LocalCreationCheck::new(store, local_committee_info, transaction.id()),
         )
     }
 
@@ -871,13 +871,13 @@ struct ResolvedInputs<'a> {
 /// the same order against the same store, so every node gets the same answers. A substate held by another shard group
 /// is reported as not taken, since this store does not hold it: the group holding it rejects the transaction, and an
 /// abort from any shard group aborts it everywhere.
-struct LocalExternalSubstates<'a, 'tx, TTx: StateStoreReadTransaction> {
+struct LocalCreationCheck<'a, 'tx, TTx: StateStoreReadTransaction> {
     store: &'a PendingSubstateStore<'tx, TTx>,
     local_committee_info: &'a CommitteeInfo,
     transaction_id: &'a TransactionId,
 }
 
-impl<'a, 'tx, TTx: StateStoreReadTransaction> LocalExternalSubstates<'a, 'tx, TTx> {
+impl<'a, 'tx, TTx: StateStoreReadTransaction> LocalCreationCheck<'a, 'tx, TTx> {
     fn new(
         store: &'a PendingSubstateStore<'tx, TTx>,
         local_committee_info: &'a CommitteeInfo,
@@ -891,14 +891,14 @@ impl<'a, 'tx, TTx: StateStoreReadTransaction> LocalExternalSubstates<'a, 'tx, TT
     }
 }
 
-impl<TTx: StateStoreReadTransaction> ExternalSubstates for LocalExternalSubstates<'_, '_, TTx> {
-    fn is_taken(&self, id: &SubstateId) -> Result<bool, ExternalSubstatesError> {
+impl<TTx: StateStoreReadTransaction> CreationCheck for LocalCreationCheck<'_, '_, TTx> {
+    fn is_creation_taken(&self, id: &SubstateId) -> Result<bool, CreationCheckError> {
         if !self.local_committee_info.includes_substate_id(id) {
             return Ok(false);
         }
         self.store
             .is_creation_taken(self.transaction_id, id)
-            .map_err(|err| ExternalSubstatesError {
+            .map_err(|err| CreationCheckError {
                 id: id.clone(),
                 details: err.to_string(),
             })
@@ -1102,7 +1102,7 @@ mod tests {
             _input_fanout: u32,
             _resolved_inputs: &HashMap<SubstateRequirement, Substate>,
             _templates: &UncommittedChainTemplates,
-            _external: &dyn ExternalSubstates,
+            _creation_check: &dyn CreationCheck,
         ) -> Result<TransactionExecution, BlockTransactionExecutorError> {
             Err(BlockTransactionExecutorError::ExecutionThreadFailure(
                 "reached the engine".to_string(),
@@ -1406,7 +1406,7 @@ mod tests {
             _input_fanout: u32,
             _resolved_inputs: &HashMap<SubstateRequirement, Substate>,
             _templates: &UncommittedChainTemplates,
-            _external: &dyn ExternalSubstates,
+            _creation_check: &dyn CreationCheck,
         ) -> Result<TransactionExecution, BlockTransactionExecutorError> {
             Ok(self.0.clone())
         }
@@ -1719,8 +1719,8 @@ mod tests {
             )?;
 
             let taken = |transaction_id: &TransactionId, id: &SubstateId| {
-                LocalExternalSubstates::new(&store, &committee, transaction_id)
-                    .is_taken(id)
+                LocalCreationCheck::new(&store, &committee, transaction_id)
+                    .is_creation_taken(id)
                     .unwrap()
             };
             assert!(taken(&other, &existing));

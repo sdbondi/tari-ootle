@@ -17,7 +17,7 @@ use tari_consensus_types::Decision;
 use tari_engine::state_store::{StateWriter, memory::MemoryStateStore, new_memory_store};
 use tari_engine_types::{
     commit_result::{AbortReason, FeeIntentFallback},
-    external_substates::ExternalSubstates,
+    creation_check::CreationCheck,
     substate::{Substate, SubstateId},
 };
 use tari_ootle_common_types::{
@@ -145,7 +145,7 @@ impl<TStateStore: StateStore> BlockTransactionExecutor<TStateStore> for TestBloc
         _input_fanout: u32,
         resolved_inputs: &HashMap<SubstateRequirement, Substate>,
         templates: &UncommittedChainTemplates,
-        _external: &dyn ExternalSubstates,
+        _creation_check: &dyn CreationCheck,
     ) -> Result<TransactionExecution, BlockTransactionExecutorError> {
         let id = transaction.calculate_id();
 

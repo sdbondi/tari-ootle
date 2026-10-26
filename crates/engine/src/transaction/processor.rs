@@ -27,8 +27,8 @@ use ootle_network::Network;
 use tari_engine_types::{
     commit_result::{ExecuteResult, FeeIntentFallback, FinalizeResult},
     component::derive_component_address_from_public_key,
+    creation_check::{CreationCheck, NoCreationCheck},
     entity_id_provider::EntityIdProvider,
-    external_substates::{ExternalSubstates, NoExternalSubstates},
     fees::{ExhaustBurnRate, FeeScale},
     indexed_value::{IndexedValue, IndexedWellKnownTypes},
     limits,
@@ -178,26 +178,26 @@ where
     }
 
     pub fn execute<E: Executable + WeightedExecutable>(self, executable: E) -> Result<ExecuteResult, TransactionError> {
-        self.execute_inner(executable, &NoExternalSubstates, false)
+        self.execute_inner(executable, &NoCreationCheck, false)
             .map(|(result, _)| result)
     }
 
-    /// Executes `executable` as consensus does. A fee intent that creates a substate `external` reports as taken can
-    /// never commit, so the transaction is rejected before its main intent runs. A transaction that commits in full
-    /// also settles what committing its fee intent alone would persist; see [`FeeIntentFallback`].
+    /// Executes `executable` as consensus does. A fee intent that creates a substate `fee_intent_creations` reports as
+    /// taken can never commit, so the transaction is rejected before its main intent runs. A transaction that
+    /// commits in full also settles what committing its fee intent alone would persist; see [`FeeIntentFallback`].
     pub fn execute_with_fee_intent_fallback<E: Executable + WeightedExecutable>(
         self,
         executable: E,
-        external: &dyn ExternalSubstates,
+        fee_intent_creations: &dyn CreationCheck,
     ) -> Result<(ExecuteResult, Option<FeeIntentFallback>), TransactionError> {
-        self.execute_inner(executable, external, true)
+        self.execute_inner(executable, fee_intent_creations, true)
     }
 
     #[expect(clippy::too_many_lines)]
     fn execute_inner<E: Executable + WeightedExecutable>(
         self,
         executable: E,
-        external: &dyn ExternalSubstates,
+        fee_intent_creations: &dyn CreationCheck,
         with_fee_intent_fallback: bool,
     ) -> Result<(ExecuteResult, Option<FeeIntentFallback>), TransactionError> {
         let (id, intent_commitment) = executable.to_id_and_intent_commitment();
@@ -305,7 +305,7 @@ where
             Ok(()) => {
                 // Checkpoint the tracker state after the fee instructions have been executed in case of transaction
                 // failure.
-                let checkpoint = match Self::find_taken_creation(&runtime, external)? {
+                let checkpoint = match Self::find_taken_creation(&runtime, fee_intent_creations)? {
                     Some(address) => Err(RuntimeError::DuplicateSubstate { address }),
                     None => runtime.interface().checkpoint_fee_intent(),
                 };
@@ -395,14 +395,18 @@ where
         }
     }
 
-    /// The first substate the fee intent created that `external` reports as taken. Nothing the fee intent created can
-    /// be committed then, so stopping before the main intent leaves only the fee intent's flat compute credit unpaid.
+    /// The first substate the fee intent created that `fee_intent_creations` reports as taken. Nothing the fee intent
+    /// created can be committed then, so stopping before the main intent leaves only the fee intent's flat compute
+    /// credit unpaid.
     fn find_taken_creation(
         runtime: &Runtime,
-        external: &dyn ExternalSubstates,
+        fee_intent_creations: &dyn CreationCheck,
     ) -> Result<Option<SubstateId>, TransactionError> {
         for id in runtime.interface().created_substates()? {
-            if external.is_taken(&id).map_err(TransactionErrorKind::from)? {
+            if fee_intent_creations
+                .is_creation_taken(&id)
+                .map_err(TransactionErrorKind::from)?
+            {
                 return Ok(Some(id));
             }
         }

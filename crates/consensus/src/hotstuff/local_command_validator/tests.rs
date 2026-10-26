@@ -17,7 +17,7 @@ use tari_crypto::{ristretto::RistrettoPublicKey, tari_utilities::epoch_time::Epo
 use tari_engine_types::{
     commit_result::{AbortReason, ExecuteResult, FinalizeResult, RejectReason, TransactionResult},
     component::{Component, ComponentBody, ComponentHeader},
-    external_substates::ExternalSubstates,
+    creation_check::CreationCheck,
     fees::{FeeBreakdown, FeeReceipt, FeeSource},
     substate::{Substate, SubstateDiff, SubstateId, SubstateValue},
     transaction_receipt::{FinalizeOutcome, TransactionReceipt},
@@ -129,7 +129,7 @@ impl BlockTransactionExecutor<TestStore> for ScriptedExecutor {
         _input_fanout: u32,
         resolved_inputs: &HashMap<SubstateRequirement, Substate>,
         _templates: &UncommittedChainTemplates,
-        _external: &dyn ExternalSubstates,
+        _creation_check: &dyn CreationCheck,
     ) -> Result<TransactionExecution, BlockTransactionExecutorError> {
         let id = transaction.calculate_id();
         let script = self

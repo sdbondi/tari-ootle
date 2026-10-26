@@ -5,7 +5,7 @@ use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_engine::fees::FeeTable;
 use tari_engine_types::{
     commit_result::{ExecutionFailureCode, RejectReason, TransactionResult},
-    external_substates::NoExternalSubstates,
+    creation_check::NoCreationCheck,
     fees::{FeeReceipt, FeeScale, FeeSource},
     limits::ENGINE_LIMITS,
     substate::SubstateId,
@@ -322,7 +322,7 @@ fn a_full_commit_settles_its_fee_intent_commit_beside_it() {
         .try_execute_with_fee_intent_fallback(
             builder.build_and_seal(&private_key),
             vec![owner_token],
-            &NoExternalSubstates,
+            &NoCreationCheck,
         )
         .unwrap();
     let diff = result.expect_success();
@@ -384,7 +384,7 @@ fn a_fee_intent_commit_has_no_fallback() {
                 .call_function(test.get_template_address("State"), "this_doesnt_exist", args![])
                 .build_and_seal(&private_key),
             vec![owner_token],
-            &NoExternalSubstates,
+            &NoCreationCheck,
         )
         .unwrap();
     assert!(result.finalize.is_fee_only());

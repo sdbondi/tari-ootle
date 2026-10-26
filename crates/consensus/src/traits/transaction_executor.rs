@@ -3,11 +3,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use tari_engine_types::{
-    external_substates::ExternalSubstates,
-    published_template::PublishedTemplate,
-    substate::Substate,
-};
+use tari_engine_types::{creation_check::CreationCheck, published_template::PublishedTemplate, substate::Substate};
 use tari_ootle_common_types::{SubstateRequirement, optional::IsNotFoundError};
 use tari_ootle_storage::{
     StateStore,
@@ -74,7 +70,7 @@ pub trait BlockTransactionExecutor<TStateStore: StateStore> {
     /// group involved shares: a cross-shard transaction is drained before an epoch that changes the number of
     /// committees.
     ///
-    /// `external` answers for substates the transaction creates outside its inputs, as the block being evaluated
+    /// `creation_check` answers for substates the transaction creates outside its inputs, as the block being evaluated
     /// sees them.
     fn execute(
         &self,
@@ -83,6 +79,6 @@ pub trait BlockTransactionExecutor<TStateStore: StateStore> {
         input_fanout: u32,
         resolved_inputs: &HashMap<SubstateRequirement, Substate>,
         templates: &UncommittedChainTemplates,
-        external: &dyn ExternalSubstates,
+        creation_check: &dyn CreationCheck,
     ) -> Result<TransactionExecution, BlockTransactionExecutorError>;
 }
