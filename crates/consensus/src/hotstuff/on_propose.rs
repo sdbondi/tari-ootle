@@ -325,16 +325,25 @@ where TConsensusSpec: ConsensusSpec
         lock_conflicts: &mut TransactionLockConflicts,
     ) -> Result<Option<Command>, HotStuffError> {
         match pool_tx.current_stage() {
-            TransactionPoolStage::New => self.prepare_transaction(
-                state_anchor,
-                locked_epoch,
-                pool_tx,
-                local_committee_info,
-                change_set,
-                substate_store,
-                executed_transactions,
-                lock_conflicts,
-            ),
+            TransactionPoolStage::New => {
+                let transaction_id = *pool_tx.id();
+                let command = self.prepare_transaction(
+                    state_anchor,
+                    locked_epoch,
+                    pool_tx,
+                    local_committee_info,
+                    change_set,
+                    substate_store,
+                    executed_transactions,
+                    lock_conflicts,
+                )?;
+                // A transaction left out of the block holds no locks in it, as on every replica, which never
+                // prepares it. Later transactions read local-only locks as held by transactions the block commits.
+                if command.is_none() {
+                    substate_store.release_new_locks(&transaction_id);
+                }
+                Ok(command)
+            },
             // Leader thinks all foreign PREPARE pledges have been received (condition for LocalPrepared stage to be
             // ready)
             TransactionPoolStage::LocalPrepared => self.local_accept_transaction(
