@@ -409,7 +409,7 @@ where
                 .flatten()
         });
         if let Some(execution) = forced_abort {
-            proposed_block_change_set.add_transaction_execution(*tx_rec.id(), execution)?;
+            proposed_block_change_set.add_abort_execution(*tx_rec.id(), execution);
         }
 
         if tx_rec.current_stage().is_new() {

@@ -175,7 +175,7 @@ pub fn process_foreign_block<TTx: StateStoreReadTransaction>(
                             abort_reason,
                         });
                     tx_rec.set_local_decision(exec.decision());
-                    proposed_block_change_set.add_transaction_execution(*tx_rec.id(), exec)?;
+                    proposed_block_change_set.add_abort_execution(*tx_rec.id(), exec);
                 }
 
                 // Update the transaction record with any new information provided by this foreign block
@@ -276,7 +276,7 @@ pub fn process_foreign_block<TTx: StateStoreReadTransaction>(
                         // Add an abort execution since we previously decided to commit
                         let exec = TransactionExecution::abort(tx_rec.id(), RejectReason::ForeignPledgeInputConflict);
                         tx_rec.set_local_decision(exec.decision());
-                        proposed_block_change_set.add_transaction_execution(*tx_rec.id(), exec)?;
+                        proposed_block_change_set.add_abort_execution(*tx_rec.id(), exec);
                     } else {
                         info!(
                             target: LOG_TARGET,
@@ -447,7 +447,7 @@ pub fn process_foreign_block<TTx: StateStoreReadTransaction>(
                             abort_reason,
                         });
                     tx_rec.set_local_decision(exec.decision());
-                    proposed_block_change_set.add_transaction_execution(*tx_rec.id(), exec)?;
+                    proposed_block_change_set.add_abort_execution(*tx_rec.id(), exec);
                 }
 
                 // Update the transaction record with any new information provided by this foreign block
