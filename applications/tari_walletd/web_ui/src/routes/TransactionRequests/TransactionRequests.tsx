@@ -27,7 +27,7 @@ import type {
 } from "@tari-project/ootle-ts-bindings";
 import { useEffect, useState } from "react";
 import Inputs from "../Transactions/Inputs";
-import Instructions from "../Transactions/Instructions";
+import Instructions, { BlobContents } from "../Transactions/Instructions";
 
 function formatKeyId(keyId: KeyId): string {
   if ("Derived" in keyId) {
@@ -83,27 +83,27 @@ function Countdown({ expiresAt }: { expiresAt: bigint }) {
   return <Chip label={`expires in ${mins}:${secs.toString().padStart(2, "0")}`} size="small" variant="outlined" />;
 }
 
-function ValueSummary({ request }: { request: TransactionRequestInfo }) {
+function ValueSummaries({ request }: { request: TransactionRequestInfo }) {
   // A stealth transfer's instructions are commitments and range proofs, so a
   // person cannot read an amount out of them. The wallet owns the masks and is
-  // the only party that can say what leaves. Without this the approver is
-  // authorising an opaque blob.
-  if (!request.value_summary) {
-    return null;
-  }
-  const { amount_leaving, inputs_total, change_total, resource_address } = request.value_summary;
+  // the only party that can say what of its stealth outputs leaves. Other
+  // instructions are read from the instruction list itself.
   return (
-    <Alert severity="warning" icon={false} sx={{ mb: 2 }}>
-      <Typography variant="h6" sx={{ fontWeight: 600 }}>
-        {amount_leaving.toLocaleString()} µT leaves this wallet
-      </Typography>
-      <Typography variant="body2" sx={{ opacity: 0.85 }}>
-        {inputs_total.toLocaleString()} µT spent, {change_total.toLocaleString()} µT returned as change
-      </Typography>
-      <Typography variant="body2" sx={{ opacity: 0.7, wordBreak: "break-all" }}>
-        {resource_address}
-      </Typography>
-    </Alert>
+    <>
+      {request.value_summaries.map(({ amount_leaving, inputs_total, change_total, resource_address }) => (
+        <Alert key={resource_address} severity="warning" icon={false} sx={{ mb: 2 }}>
+          <Typography variant="h6" sx={{ fontWeight: 600 }}>
+            {amount_leaving.toLocaleString()} µT of stealth funds leaves this wallet
+          </Typography>
+          <Typography variant="body2" sx={{ opacity: 0.85 }}>
+            {inputs_total.toLocaleString()} µT spent, {change_total.toLocaleString()} µT returned as change
+          </Typography>
+          <Typography variant="body2" sx={{ opacity: 0.7, wordBreak: "break-all" }}>
+            {resource_address}
+          </Typography>
+        </Alert>
+      ))}
+    </>
   );
 }
 
@@ -131,6 +131,7 @@ function RequestCard({ request }: { request: TransactionRequestInfo }) {
   const instructions = v1?.instructions ?? [];
   const feeInstructions = v1?.fee_instructions ?? [];
   const inputs = v1?.inputs ?? [];
+  const blobs = v1?.blobs ?? [];
   const isSealSignerAuthorized = v1?.main_signer === "SealSigner";
   const mainSigner = describeMainSigner(request.main_signer);
 
@@ -149,7 +150,7 @@ function RequestCard({ request }: { request: TransactionRequestInfo }) {
         </Stack>
       </Stack>
 
-      <ValueSummary request={request} />
+      <ValueSummaries request={request} />
 
       <Grid container spacing={2} sx={{ mb: 1 }}>
         <Grid size={12}>
@@ -204,7 +205,7 @@ function RequestCard({ request }: { request: TransactionRequestInfo }) {
           <Typography variant="h6">Instructions ({instructions.length})</Typography>
         </AccordionSummary>
         <AccordionDetails>
-          <Instructions data={instructions} />
+          <Instructions data={instructions} blobs={blobs} />
         </AccordionDetails>
       </Accordion>
       <Accordion expanded={expanded === "fees"} onChange={togglePanel("fees")}>
@@ -212,7 +213,15 @@ function RequestCard({ request }: { request: TransactionRequestInfo }) {
           <Typography variant="h6">Fee Instructions ({feeInstructions.length})</Typography>
         </AccordionSummary>
         <AccordionDetails>
-          <Instructions data={feeInstructions} />
+          <Instructions data={feeInstructions} blobs={blobs} />
+        </AccordionDetails>
+      </Accordion>
+      <Accordion expanded={expanded === "blobs"} onChange={togglePanel("blobs")}>
+        <AccordionSummary aria-controls="request-blobs-content">
+          <Typography variant="h6">Blobs ({blobs.length})</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <BlobContents blobs={blobs} />
         </AccordionDetails>
       </Accordion>
       <Accordion expanded={expanded === "inputs"} onChange={togglePanel("inputs")}>

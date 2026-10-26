@@ -1,0 +1,1 @@
+DROP INDEX stealth_outputs_idx_commitment;

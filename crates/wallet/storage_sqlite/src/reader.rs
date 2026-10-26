@@ -1390,6 +1390,36 @@ impl WalletStoreReader for ReadTransaction<'_> {
         row.try_convert(account_address)
     }
 
+    fn stealth_outputs_get_by_commitments(
+        &mut self,
+        commitments: &[PedersenCommitmentBytes],
+    ) -> Result<Vec<StealthOutputModel>, WalletStorageError> {
+        const OPERATION: &str = "stealth_outputs_get_by_commitments";
+        // Stays well under SQLite's bound-parameter limit however many commitments the caller passes.
+        const CHUNK_SIZE: usize = 500;
+        use crate::schema::{accounts, stealth_outputs};
+
+        let mut outputs = Vec::new();
+        for chunk in commitments.chunks(CHUNK_SIZE) {
+            let rows = stealth_outputs::table
+                .inner_join(accounts::table.on(accounts::id.eq(stealth_outputs::owner_account_id)))
+                .select((stealth_outputs::all_columns, accounts::address))
+                .filter(stealth_outputs::commitment.eq_any(chunk.iter().map(serialize_hex)))
+                .get_results::<(models::StealthOutput, String)>(self.connection())
+                .map_err(|e| WalletStorageError::general(OPERATION, e))?;
+
+            for (row, address) in rows {
+                let address = address.parse().map_err(|e| WalletStorageError::DecodingError {
+                    operation: OPERATION,
+                    item: "account",
+                    details: format!("Corrupt db: invalid owner account address '{address}': {e}"),
+                })?;
+                outputs.push(row.try_convert(address)?);
+            }
+        }
+        Ok(outputs)
+    }
+
     fn confidential_outputs_get_many(
         &mut self,
         resource_address: &ResourceAddress,

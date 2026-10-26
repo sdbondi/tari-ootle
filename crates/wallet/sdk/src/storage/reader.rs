@@ -215,6 +215,11 @@ pub trait WalletStoreReader {
         resource_address: &ResourceAddress,
         commitment: &PedersenCommitmentBytes,
     ) -> Result<StealthOutputModel, WalletStorageError>;
+    /// Every stored stealth output, of any resource and status, whose commitment is one of `commitments`.
+    fn stealth_outputs_get_by_commitments(
+        &mut self,
+        commitments: &[PedersenCommitmentBytes],
+    ) -> Result<Vec<StealthOutputModel>, WalletStorageError>;
 
     fn stealth_outputs_get_many(
         &mut self,

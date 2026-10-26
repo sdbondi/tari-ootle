@@ -24,9 +24,10 @@ export type TransactionRequestInfo = {
   status: EffectiveStatus;
   transaction_id: TransactionId | null;
   /**
-   * `None` for an ordinary transaction, whose instructions are readable.
+   * One entry per resource whose stealth outputs in this wallet the
+   * transaction spends; empty when it spends none.
    */
-  value_summary: TransactionRequestValueSummary | null;
+  value_summaries: Array<TransactionRequestValueSummary>;
   /**
    * Who the transaction acts as wherever the engine needs a single signer.
    */

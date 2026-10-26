@@ -27,7 +27,7 @@ import type {
 } from "@tari-project/ootle-ts-bindings";
 import { useEffect, useState } from "react";
 import Inputs from "../Transactions/Inputs";
-import Instructions from "../Transactions/Instructions";
+import Instructions, { BlobContents } from "../Transactions/Instructions";
 import { describeFee, describeGovernanceCall, fingerprint, networkName } from "./describe";
 
 function formatKeyId(keyId: KeyId): string {
@@ -147,7 +147,8 @@ function RequestCard({ request }: { request: SigningRequestInfo }) {
   const instructions = v1?.instructions ?? [];
   const feeInstructions = v1?.fee_instructions ?? [];
   const inputs = v1?.inputs ?? [];
-  const fees = feeInstructions.map(describeFee).filter((f) => f !== null);
+  const blobs = v1?.blobs ?? [];
+  const fees =feeInstructions.map(describeFee).filter((f) => f !== null);
   const isMainnet = v1?.network === 0x00;
 
   const togglePanel = (panel: string) => (_event: React.SyntheticEvent, isExpanded: boolean) =>
@@ -236,7 +237,7 @@ function RequestCard({ request }: { request: SigningRequestInfo }) {
           <Typography variant="h6">Instructions ({instructions.length})</Typography>
         </AccordionSummary>
         <AccordionDetails>
-          <Instructions data={instructions} />
+          <Instructions data={instructions} blobs={blobs} />
         </AccordionDetails>
       </Accordion>
       <Accordion expanded={expanded === "fees"} onChange={togglePanel("fees")}>
@@ -244,7 +245,15 @@ function RequestCard({ request }: { request: SigningRequestInfo }) {
           <Typography variant="h6">Fee Instructions ({feeInstructions.length})</Typography>
         </AccordionSummary>
         <AccordionDetails>
-          <Instructions data={feeInstructions} />
+          <Instructions data={feeInstructions} blobs={blobs} />
+        </AccordionDetails>
+      </Accordion>
+      <Accordion expanded={expanded === "blobs"} onChange={togglePanel("blobs")}>
+        <AccordionSummary aria-controls="signing-request-blobs-content">
+          <Typography variant="h6">Blobs ({blobs.length})</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <BlobContents blobs={blobs} />
         </AccordionDetails>
       </Accordion>
       <Accordion expanded={expanded === "inputs"} onChange={togglePanel("inputs")}>

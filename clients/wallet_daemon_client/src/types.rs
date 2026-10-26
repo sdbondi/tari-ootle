@@ -217,8 +217,9 @@ pub struct TransactionRequestCreateResponse {
     pub expires_at: i64,
 }
 
-/// Net value movement for a stealth or confidential transfer, computed by the
-/// wallet from the request's locks.
+/// Net value of one resource that the transaction's stealth transfers move out
+/// of this wallet, computed by the wallet from the transaction's own
+/// statements.
 ///
 /// A stealth transfer's instructions are commitments and range proofs, so a
 /// human cannot read the amount out of them. The wallet owns the masks and is
@@ -227,9 +228,10 @@ pub struct TransactionRequestCreateResponse {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct TransactionRequestValueSummary {
     pub resource_address: ResourceAddress,
-    /// Total value of the inputs this request spends.
+    /// Total value of this wallet's stealth outputs that the transaction spends.
     pub inputs_total: u64,
-    /// Total value returning to this wallet as change.
+    /// Total value of the outputs the transaction creates that return to this
+    /// wallet as change.
     pub change_total: u64,
     /// `inputs_total - change_total`: what actually leaves, before fees.
     pub amount_leaving: u64,
@@ -265,8 +267,9 @@ pub struct TransactionRequestInfo {
     pub requested_by: Option<String>,
     pub status: EffectiveStatus,
     pub transaction_id: Option<TransactionId>,
-    /// `None` for an ordinary transaction, whose instructions are readable.
-    pub value_summary: Option<TransactionRequestValueSummary>,
+    /// One entry per resource whose stealth outputs in this wallet the
+    /// transaction spends; empty when it spends none.
+    pub value_summaries: Vec<TransactionRequestValueSummary>,
     /// Who the transaction acts as wherever the engine needs a single signer.
     pub main_signer: TransactionRequestMainSigner,
     /// Public keys of the signatures the request's creator supplied out of band. Each one authorizes the
