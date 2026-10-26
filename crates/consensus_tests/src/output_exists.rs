@@ -4,40 +4,52 @@
 //! Tests for transactions that cannot create one of their outputs, because the output exists or another
 //! transaction creates it first.
 
+use std::iter;
+
 use tari_common_types::types::PrivateKey;
 use tari_consensus_types::Decision;
-use tari_crypto::tari_utilities::ByteArray;
 use tari_engine_types::substate::SubstateId;
-use tari_ootle_common_types::{Epoch, InputDeclaration, NodeHeight, SubstateLockType, VersionedSubstateId};
+use tari_ootle_common_types::{
+    Epoch,
+    InputDeclaration,
+    NodeHeight,
+    ShardGroup,
+    SubstateLockType,
+    SubstateVersion,
+    VersionedSubstateId,
+    VersionedSubstateIdRef,
+};
 use tari_ootle_storage::consensus_models::TransactionRecord;
 use tari_ootle_transaction::Transaction;
 
 use crate::support::{
     ExecuteSpec,
+    TEST_NUM_PRESHARDS,
     Test,
     TestAddress,
     TestVnDestination,
     build_substate_id_for_committee,
+    helpers::random_substate_in_shard_group,
     logging::setup_logger,
 };
 
 const FULL_FEE: u64 = 38;
 const FEE_INTENT_FEE: u64 = 19;
 
-/// A local-only transaction that writes `vault` and creates `output`, settling a fee-intent fallback.
-fn creating(test: &Test, signer: u8, vault: &VersionedSubstateId, output: &SubstateId) -> TransactionRecord {
+/// A local-only transaction that writes `vault` and creates `outputs`, settling a fee-intent fallback.
+fn creating(test: &Test, signer: u8, vault: &VersionedSubstateId, outputs: &[SubstateId]) -> TransactionRecord {
     let transaction = Transaction::builder_localnet(Epoch(1))
         .add_input(InputDeclaration::write_versioned(
             vault.substate_id().clone(),
             vault.version(),
         ))
-        .build_and_seal(&PrivateKey::from_canonical_bytes(&[signer; 32]).unwrap());
+        .build_and_seal(&PrivateKey::from(u64::from(signer)));
     test.add_execution_at_destination(TestVnDestination::All, ExecuteSpec {
         transaction: transaction.clone(),
         decision: Decision::Commit,
         fee: FULL_FEE,
         input_locks: vec![(vault.substate_id().clone(), SubstateLockType::Write)],
-        new_outputs: vec![output.clone()],
+        new_outputs: outputs.to_vec(),
         validator_fee_withdrawals: vec![],
         calls_template: None,
         fee_intent_fallback_fee: Some(FEE_INTENT_FEE),
@@ -77,8 +89,8 @@ async fn a_transaction_creating_an_output_that_exists_commits_its_fee_intent() {
     let mut test = Test::builder().add_committee(0, vec!["1", "2", "3", "4"]).start().await;
     let vaults = test.create_substates_on_vns(TestVnDestination::All, 2);
     let output = build_substate_id_for_committee(0, 1);
-    let creator = creating(&test, 1, &vaults[0], &output);
-    let duplicate = creating(&test, 2, &vaults[1], &output);
+    let creator = creating(&test, 1, &vaults[0], std::slice::from_ref(&output));
+    let duplicate = creating(&test, 2, &vaults[1], std::slice::from_ref(&output));
 
     test.send_transaction_to_destination(TestVnDestination::All, creator.clone())
         .await;
@@ -105,8 +117,8 @@ async fn of_two_transactions_creating_one_output_together_the_second_commits_its
     let mut test = Test::builder().add_committee(0, vec!["1", "2", "3", "4"]).start().await;
     let vaults = test.create_substates_on_vns(TestVnDestination::All, 2);
     let output = build_substate_id_for_committee(0, 1);
-    let first = creating(&test, 1, &vaults[0], &output);
-    let second = creating(&test, 2, &vaults[1], &output);
+    let first = creating(&test, 1, &vaults[0], std::slice::from_ref(&output));
+    let second = creating(&test, 2, &vaults[1], std::slice::from_ref(&output));
 
     test.send_transaction_to_destination(TestVnDestination::All, first.clone())
         .await;
@@ -128,4 +140,72 @@ async fn of_two_transactions_creating_one_output_together_the_second_commits_its
     assert_eq!(fee_intent_only, 1);
 
     test.assert_clean_shutdown().await;
+}
+
+/// A transaction the proposer leaves out of a block holds no locks in it, as on replicas, which never prepare it.
+/// Otherwise its OUTPUT lock would make the proposer derive a fee-intent commit for a later transaction creating the
+/// same output, which replicas commit in full, and the block would get no votes.
+///
+/// A proposal prepares its transactions in a random order, so each pair only exercises this when the oversized one
+/// comes first. With enough pairs, nearly every proposal has one that does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transaction_the_proposer_defers_does_not_take_its_outputs_from_the_block() {
+    const NUM_PAIRS: usize = 10;
+    setup_logger();
+    let mut test = Test::builder()
+        .add_committee(0, vec!["1", "2", "3", "4"])
+        .with_max_block_shard_output_bytes(1_000)
+        .start()
+        .await;
+    let vaults = test.create_substates_on_vns(TestVnDestination::All, 2 * NUM_PAIRS);
+    let mut creators = Vec::with_capacity(NUM_PAIRS);
+    for (pair, vaults) in vaults.chunks(2).enumerate() {
+        let output = build_substate_id_for_committee(0, 1);
+        // Every output of the oversized transaction lands in the shard of `output`, so its diff never fits the budget
+        let shard = VersionedSubstateIdRef::new(&output, SubstateVersion::ZERO).to_shard(TEST_NUM_PRESHARDS);
+        let oversized_outputs = iter::once(output.clone())
+            .chain(
+                iter::repeat_with(|| random_substate_in_shard_group(ShardGroup::new(shard, shard), TEST_NUM_PRESHARDS))
+                    .take(40),
+            )
+            .collect::<Vec<_>>();
+        let signer = u8::try_from(2 * pair + 1).unwrap();
+        let oversized = creating(&test, signer, &vaults[0], &oversized_outputs);
+        let creator = creating(&test, signer + 1, &vaults[1], std::slice::from_ref(&output));
+        test.send_transaction_to_destination(TestVnDestination::All, oversized)
+            .await;
+        test.send_transaction_to_destination(TestVnDestination::All, creator.clone())
+            .await;
+        creators.push(creator);
+    }
+
+    test.start_epoch(Epoch(1)).await;
+    loop {
+        test.on_block_committed().await;
+        if creators.iter().all(|creator| {
+            test.validators_iter()
+                .all(|validator| validator.has_finalized(creator.id()))
+        }) {
+            break;
+        }
+        let leaf = test.get_validator(&TestAddress::new("1")).get_leaf_block();
+        assert!(
+            leaf.height <= NodeHeight(40),
+            "the creators did not commit after {} blocks",
+            leaf.height
+        );
+    }
+    test.stop();
+
+    for creator in &creators {
+        for validator in test.validators_iter() {
+            let execution = validator.get_transaction_execution(creator.id());
+            assert!(
+                execution.result().finalize.is_full_accept(),
+                "{}: {}",
+                validator.address,
+                execution.result().finalize.result
+            );
+        }
+    }
 }

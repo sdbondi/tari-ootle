@@ -773,6 +773,12 @@ impl TestBuilder {
         self
     }
 
+    /// Sets the per-shard output budget a proposer fills a block to.
+    pub fn with_max_block_shard_output_bytes(mut self, max_bytes: usize) -> Self {
+        self.config.consensus_constants.max_block_shard_output_bytes = max_bytes;
+        self
+    }
+
     pub fn with_test_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self

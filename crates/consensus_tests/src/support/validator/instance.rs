@@ -137,6 +137,14 @@ impl Validator {
         false
     }
 
+    pub fn has_finalized(&self, transaction_id: &TransactionId) -> bool {
+        self.state_store
+            .with_read_tx(|tx| TransactionExecution::get_finalized(tx, transaction_id))
+            .optional()
+            .unwrap()
+            .is_some()
+    }
+
     pub fn get_transaction_execution(&self, transaction_id: &TransactionId) -> TransactionExecution {
         self.state_store
             .with_read_tx(|tx| TransactionExecution::get_finalized(tx, transaction_id))
