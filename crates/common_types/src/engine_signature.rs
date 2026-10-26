@@ -85,11 +85,20 @@ impl Verifier for RistrettoSchnorrBlake2bVerifier {
     }
 }
 
+/// The signing context of every libp2p signature a validator or indexer node makes with its identity key.
+const LIBP2P_SIGNING_CONTEXT: &[u8] = b"libp2p";
+
 /// A verifier for standard sr25519 signatures, with the signature domain as the signing context.
+///
+/// The `libp2p` domain verifies nothing. Node identity keys sign gossip and handshakes under that context
+/// automatically, so a template accepting it would accept anything a node broadcasts as that node's signature.
 pub struct Sr25519Verifier;
 
 impl Verifier for Sr25519Verifier {
     fn verify(&self, domain: &[u8], message: &[u8], public_key: &PublicKey, signature: &SignaturePayload) -> bool {
+        if domain == LIBP2P_SIGNING_CONTEXT {
+            return false;
+        }
         let Some(sig) = signature.sr25519() else {
             return false;
         };
@@ -155,5 +164,19 @@ mod tests {
                 .verify(domain, b"Another message", &public_key, &payload)
         );
         assert!(!RistrettoSchnorrBlake2bVerifier.verify(domain, message, &public_key, &payload));
+    }
+    #[test]
+    fn it_rejects_an_sr25519_signature_under_the_libp2p_domain() {
+        let (secret_key, public_key) = RistrettoPublicKey::random_keypair(&mut rand::rng());
+        let message = b"Hello, world!";
+
+        let payload = SignaturePayload::Sr25519(SigningContext::new(LIBP2P_SIGNING_CONTEXT).sign(&secret_key, message));
+        let public_key = PublicKey::Ristretto25519(public_key.to_byte_type());
+
+        assert!(
+            !payload
+                .get_verifier()
+                .verify(LIBP2P_SIGNING_CONTEXT, message, &public_key, &payload)
+        );
     }
 }

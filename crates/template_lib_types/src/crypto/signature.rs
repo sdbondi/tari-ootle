@@ -76,6 +76,7 @@ pub enum SignaturePayload {
     RistrettoSchnorrBlake2b(#[n(0)] SchnorrSignatureBytes),
     /// A standard sr25519 (schnorrkel) signature, signed under the signature domain as its signing
     /// context. Any sr25519 signer that lets the caller set the context can produce one.
+    /// The engine verifies none under the `libp2p` domain, the context node identity keys sign under.
     #[n(1)]
     Sr25519(#[n(0)] Sr25519SignatureBytes),
 }
