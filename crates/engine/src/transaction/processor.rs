@@ -306,7 +306,7 @@ where
                 // Checkpoint the tracker state after the fee instructions have been executed in case of transaction
                 // failure.
                 let checkpoint = match Self::find_taken_creation(&runtime, fee_intent_creations)? {
-                    Some(address) => Err(RuntimeError::DuplicateSubstate { address }),
+                    Some(address) => Err(RuntimeError::SubstateAlreadyExists { address }),
                     None => runtime.interface().checkpoint_fee_intent(),
                 };
                 if let Err(err) = checkpoint {

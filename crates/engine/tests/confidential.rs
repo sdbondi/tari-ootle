@@ -802,7 +802,7 @@ fn minting_a_duplicate_commitment_is_rejected() {
         vec![owner],
     );
 
-    assert_reject_reason(reason, RuntimeError::DuplicateSubstate {
+    assert_reject_reason(reason, RuntimeError::SubstateAlreadyExists {
         address: address.into(),
     });
 }

@@ -639,6 +639,10 @@ pub enum ExecutionFailureCode {
     /// than reporting a failure. Nothing the caller sends differently would help now.
     #[n(13)]
     NotYetValid,
+    /// The transaction creates a substate that chain state already holds, such as an NFT id that was minted
+    /// before. The same transaction can never succeed; the conflicting substate is named in the message.
+    #[n(14)]
+    Conflict,
     /// No code has been assigned to this failure yet. Consumers fall back to the message.
     ///
     /// Not a resting place: the engine emits a `warn!` whenever it produces one, so the tail can be

@@ -15,7 +15,7 @@ use log::*;
 use ootle_byte_type::{FromByteType, ToByteType};
 use tari_crypto::{keys::PublicKey as _, ristretto::RistrettoPublicKey};
 use tari_engine_types::{
-    commit_result::RejectReason,
+    commit_result::{ExecutionFailureCode, RejectReason},
     component::derive_component_address_from_public_key,
     confidential::ClaimBurnOutputData,
     fees::FEE_ESTIMATE_ALLOWANCE,
@@ -1076,8 +1076,10 @@ pub async fn handle_create_free_test_coins(
     let (finalized, _) = wait_for_result_and_account(&mut events, &tx_id, account.component_address()).await?;
     if let Some(reason) = finalized.finalize.any_reject() {
         return match reason {
-            RejectReason::ExecutionFailure { message, .. } => {
-                if message.contains("Duplicate NFT token id") {
+            RejectReason::ExecutionFailure { code, message } => {
+                // Every substate this transaction creates is fresh for an unclaimed account: the account is
+                // created idempotently, so the only one that can already exist is the faucet's claim receipt.
+                if *code == ExecutionFailureCode::Conflict {
                     return Err(faucet_already_claimed());
                 }
                 // The faucet records the claim before it withdraws, so an account that already claimed is

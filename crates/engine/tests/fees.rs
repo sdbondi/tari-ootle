@@ -416,7 +416,11 @@ fn a_fee_intent_creating_a_taken_substate_is_rejected_before_the_main_intent() {
         .unwrap();
 
     let reason = result.finalize.reject().expect("the fee intent is rejected");
-    assert!(reason.to_string().contains("Duplicate substate"), "{reason}");
+    assert_eq!(
+        reason.execution_failure_code(),
+        Some(ExecutionFailureCode::Conflict),
+        "{reason}"
+    );
     assert!(fallback.is_none());
     // The main intent's call never ran, so the transaction metered what its fee intent alone meters
     let with_main_intent = test.last_execution_points().wasm;

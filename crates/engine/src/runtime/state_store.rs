@@ -204,7 +204,7 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
             return Err(RuntimeError::SubstateAlreadySpent { id });
         }
         if self.exists(&id)? {
-            return Err(RuntimeError::DuplicateSubstate { address: id });
+            return Err(RuntimeError::SubstateAlreadyExists { address: id });
         }
         self.new_substates.insert(id, value);
         Ok(())

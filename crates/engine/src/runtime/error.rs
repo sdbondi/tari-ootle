@@ -355,6 +355,8 @@ pub enum RuntimeError {
     },
     #[error("Duplicate substate {address}")]
     DuplicateSubstate { address: SubstateId },
+    #[error("Substate {address} already exists, so this transaction cannot create it")]
+    SubstateAlreadyExists { address: SubstateId },
     #[error("Substate {id} is orphaned")]
     OrphanedSubstate { id: SubstateId },
     #[error("{} orphaned substate(s) detected: {}", .substates.len(), .substates.join(", "))]
@@ -568,6 +570,8 @@ impl RuntimeError {
             Self::ClaimNotSignedByClaimKey { .. } => C::AccessDenied,
 
             Self::ClaimProofNotYetValid { .. } => C::NotYetValid,
+
+            Self::SubstateAlreadyExists { .. } => C::Conflict,
 
             Self::BucketNotEmpty { .. } |
             Self::OrphanedSubstate { .. } |
