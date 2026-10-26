@@ -789,8 +789,6 @@ passed.**
 | Status | Meaning | Final / succeeded? |
 |---|---|---|
 | `New` | Created, not yet submitted. It may be queued for automatic submission, so don't resubmit it | ❌ No |
-| `DryRun` | Dry run only, never submitted | ❌ No |
-| `DryRunFailed` | Dry run failed | ❌ No |
 | `Pending` | Submitted, waiting for consensus | ⚠️ Not yet |
 | `Accepted` | Committed. Funds have moved | ✅ Yes |
 | `OnlyFeeAccepted` | Committed, but only the fee intent's changes were kept and the rest was reverted. The fee was spent. The payment may or may not have been made, see below | ⚠️ Unknown. Review manually |

@@ -321,11 +321,11 @@ export function SendMoneyDialog(props: SendMoneyDialogProps) {
         swap_input_amount: dryRunSwapInputAmount,
       };
 
-      const result = await sendIt?.({ ...currentTransfer, dry_run: true, max_fee: 1 });
-      const resp = await transactionsWaitResult({ transaction_id: result.transaction_id, timeout_secs: null });
-      const transactionResult = resp.result?.result;
+      const resp = await sendIt?.({ ...currentTransfer, dry_run: true, max_fee: 1 });
+      const transactionResult = resp?.dry_run_result?.finalize.result;
+      const estimatedFee = resp?.required_fees;
 
-      if (!transactionResult) {
+      if (!transactionResult || estimatedFee == null) {
         throw new Error("Fee estimation failed");
       }
       if ("Reject" in transactionResult) {
@@ -334,8 +334,6 @@ export function SendMoneyDialog(props: SendMoneyDialogProps) {
       if ("AcceptFeeRejectRest" in transactionResult) {
         throw new Error(`Transaction rejected: ${rejectReasonToString(transactionResult.AcceptFeeRejectRest[1])}`);
       }
-
-      const estimatedFee = resp.final_fee;
 
       // Ask the server to calculate the precise swap input from the actual fee estimate
       let swapInputAmount = "";

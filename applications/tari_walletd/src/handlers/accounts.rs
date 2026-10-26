@@ -1288,11 +1288,15 @@ pub async fn handle_transfer(
     // If dry run we can return the result immediately
     if req.dry_run {
         let transaction_id = transaction.calculate_id();
-        let _execute_result = context
+        let result = context
             .transaction_service()
             .submit_dry_run_transaction(transaction)
             .await?;
-        return Ok(AccountsTransferResponse { transaction_id });
+        return Ok(AccountsTransferResponse {
+            transaction_id,
+            required_fees: Some(result.finalize.required_fees()),
+            dry_run_result: Some(result),
+        });
     }
 
     // Otherwise submit and wait for a result. Link the source account, and the destination too if it
@@ -1334,7 +1338,11 @@ pub async fn handle_transfer(
         finalized.final_fee
     );
 
-    Ok(AccountsTransferResponse { transaction_id: tx_id })
+    Ok(AccountsTransferResponse {
+        transaction_id: tx_id,
+        required_fees: None,
+        dry_run_result: None,
+    })
 }
 
 pub async fn handle_confidential_transfer(
@@ -1392,10 +1400,14 @@ pub async fn handle_confidential_transfer(
 
         if req.dry_run {
             let transaction_id = transfer.transaction.calculate_id();
-            let _exec_result = transaction_service
+            let result = transaction_service
                 .submit_dry_run_transaction(transfer.transaction)
                 .await?;
-            return Ok(ConfidentialTransferResponse { transaction_id });
+            return Ok(ConfidentialTransferResponse {
+                transaction_id,
+                required_fees: Some(result.finalize.required_fees()),
+                dry_run_result: Some(result),
+            });
         }
 
         let mut linked_accounts = vec![source_account_address];
@@ -1413,7 +1425,11 @@ pub async fn handle_confidential_transfer(
             context: None,
         });
 
-        Ok(ConfidentialTransferResponse { transaction_id: tx_id })
+        Ok(ConfidentialTransferResponse {
+            transaction_id: tx_id,
+            required_fees: None,
+            dry_run_result: None,
+        })
     })
     .await?
 }
@@ -1662,14 +1678,8 @@ pub async fn handle_stealth_transfer(
                 // Release the lock immediately as dry run does not submit the transaction
                 // TODO: maybe transfer() should not lock the outputs if it's a dry run
                 lock.release();
-                // A statically settled fee is the figure to report, not the lower one the run turns
-                // out to need: input selection targets `amount + max_fee`, so a submission at
-                // anything other than a fee some build was made at picks a different set of UTXOs
-                // and prices a different transaction. The difference is the estimate's own margin,
-                // single-digit microtari, and it is what buys the settlement in a single round trip.
-                let settled_fee = settled_statically.then_some(params.max_fee);
                 let result = transaction_service
-                    .submit_dry_run_transaction_settled_at(transaction, settled_fee)
+                    .submit_dry_run_transaction(transaction)
                     .await
                     .map_err(|e| {
                         anyhow::anyhow!(
@@ -1685,14 +1695,25 @@ pub async fn handle_stealth_transfer(
                 // metering drift a wider `max_fee` causes; testing against it here would treat a fee
                 // that pays in full as insufficient and spend another round chasing it.
                 let charged = result.finalize.charged_fees();
+                // A statically settled fee is the figure to report, not the lower one the run turns
+                // out to need: input selection targets `amount + max_fee`, so a submission at
+                // anything other than a fee some build was made at picks a different set of UTXOs
+                // and prices a different transaction. The difference is the estimate's own margin,
+                // single-digit microtari, and it is what buys the settlement in a single round trip.
                 let response = StealthTransferResponse {
                     transaction_id: result.finalize.transaction_hash.into(),
+                    required_fees: Some(if settled_statically {
+                        params.max_fee
+                    } else {
+                        required_fees
+                    }),
+                    dry_run_result: Some(result),
                 };
                 rounds += 1;
 
                 // The estimator priced under the engine — the one thing `stealth_fee_estimate.rs`
-                // exists to prevent. This round's row records the fee it was built at, which the run
-                // has just shown insufficient, so that row must not become the answer: drop the
+                // exists to prevent. This round's response names the fee it was built at, which the run
+                // has just shown insufficient, so that response must not become the answer: drop the
                 // static estimate for the rest of the request and let the wire rounds settle, as
                 // they did before there was an estimate.
                 if settled_statically && charged > params.max_fee {
@@ -1732,7 +1753,7 @@ pub async fn handle_stealth_transfer(
                             params.max_fee
                         );
                         // A statically settled round either settles or is diverted above, so this
-                        // response records `required_fees` — a figure above what the round cost —
+                        // response carries `required_fees` — a figure above what the round cost —
                         // rather than a settled fee the run disagreed with.
                         return Ok(response);
                     },
@@ -1762,7 +1783,11 @@ pub async fn handle_stealth_transfer(
                 context: None,
             });
 
-            return Ok(StealthTransferResponse { transaction_id: tx_id });
+            return Ok(StealthTransferResponse {
+                transaction_id: tx_id,
+                required_fees: None,
+                dry_run_result: None,
+            });
         }
     })
     .await?

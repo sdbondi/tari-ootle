@@ -342,7 +342,7 @@ fn build_dry_run_transaction() -> Transaction {
         .allocate_component_address("component")
         .put_last_instruction_output_on_workspace("bucket")
         .call_method("component", "new", args!["bucket"])
-        .build_and_seal(&RistrettoSecretKey::from(1))
+        .build_and_seal(&RistrettoSecretKey::from(1u64))
 }
 
 fn assert_not_stored(test: &TestWithNetwork<CannedTransactionResultInterface>, transaction_id: TransactionId) {
@@ -366,7 +366,7 @@ async fn a_dry_run_returns_its_result_without_storing_the_transaction() {
     let dry_run = test
         .sdk()
         .transaction_api()
-        .submit_dry_run_transaction(transaction, None)
+        .submit_dry_run_transaction(transaction)
         .await
         .unwrap();
 
@@ -396,7 +396,7 @@ async fn a_rejected_dry_run_does_not_store_the_transaction() {
     let err = test
         .sdk()
         .transaction_api()
-        .submit_dry_run_transaction(transaction, None)
+        .submit_dry_run_transaction(transaction)
         .await
         .unwrap_err();
 

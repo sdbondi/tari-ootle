@@ -693,11 +693,8 @@ pub async fn handle_wait_result(
         .ok_or_else(|| not_found(format!("Transaction {}", req.transaction_id)))?;
 
     // A transaction rejected before consensus has no finalize result and emits no further events.
-    let has_outcome = transaction.finalize.is_some() ||
-        matches!(
-            transaction.status,
-            TransactionStatus::InvalidTransaction | TransactionStatus::DryRunFailed
-        );
+    let has_outcome =
+        transaction.finalize.is_some() || matches!(transaction.status, TransactionStatus::InvalidTransaction);
     if has_outcome {
         return Ok(TransactionWaitResultResponse {
             transaction_id: req.transaction_id,
@@ -958,37 +955,34 @@ mod tests {
     async fn waiting_on_a_transaction_rejected_before_consensus_returns_at_once() {
         let daemon = TestDaemon::start().await;
         let sdk = daemon.context.wallet_sdk();
-        for (seed, status) in [
-            (1u64, TransactionStatus::InvalidTransaction),
-            (2, TransactionStatus::DryRunFailed),
-        ] {
-            let transaction = Transaction::builder_localnet(Epoch(1))
-                .allocate_component_address("component")
-                .put_last_instruction_output_on_workspace("bucket")
-                .call_method("component", "new", args!["bucket"])
-                .build_and_seal(&RistrettoSecretKey::from(seed));
-            let transaction_id = sdk
-                .transaction_api()
-                .insert_new_transaction(transaction, None, &[], false)
-                .unwrap();
-            sdk.store()
-                .with_write_tx(|tx| {
-                    tx.transactions_update(WalletTransactionUpdate::new(transaction_id).with_new_status(status))
-                })
-                .unwrap();
+        let transaction = Transaction::builder_localnet(Epoch(1))
+            .allocate_component_address("component")
+            .put_last_instruction_output_on_workspace("bucket")
+            .call_method("component", "new", args!["bucket"])
+            .build_and_seal(&RistrettoSecretKey::from(1u64));
+        let transaction_id = sdk
+            .transaction_api()
+            .insert_new_transaction(transaction, None, &[], false)
+            .unwrap();
+        sdk.store()
+            .with_write_tx(|tx| {
+                tx.transactions_update(
+                    WalletTransactionUpdate::new(transaction_id).with_new_status(TransactionStatus::InvalidTransaction),
+                )
+            })
+            .unwrap();
 
-            let wait = handle_wait_result(&daemon.context, Some(&daemon.session), TransactionWaitResultRequest {
-                transaction_id,
-                timeout_secs: None,
-            });
-            let resp = time::timeout(Duration::from_secs(5), wait)
-                .await
-                .expect("wait_result kept waiting on a transaction that already has its outcome")
-                .unwrap();
+        let wait = handle_wait_result(&daemon.context, Some(&daemon.session), TransactionWaitResultRequest {
+            transaction_id,
+            timeout_secs: None,
+        });
+        let resp = time::timeout(Duration::from_secs(5), wait)
+            .await
+            .expect("wait_result kept waiting on a transaction that already has its outcome")
+            .unwrap();
 
-            assert!(!resp.timed_out);
-            assert_eq!(resp.status, status);
-        }
+        assert!(!resp.timed_out);
+        assert_eq!(resp.status, TransactionStatus::InvalidTransaction);
     }
 
     fn component(byte: u8) -> SubstateId {

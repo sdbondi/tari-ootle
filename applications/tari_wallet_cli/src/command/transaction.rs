@@ -304,6 +304,7 @@ pub async fn handle_submit(args: SubmitArgs, client: &mut WalletDaemonClient) ->
     if common.dry_run {
         println!("NOTE: Dry run is enabled. This transaction will not be processed by the network.");
         println!();
+        let timer = Instant::now();
         let resp = client
             .submit_transaction_dry_run(TransactionSubmitDryRunRequest {
                 transaction,
@@ -315,7 +316,7 @@ pub async fn handle_submit(args: SubmitArgs, client: &mut WalletDaemonClient) ->
                 lock_ids: vec![],
             })
             .await?;
-        wait_transaction_result(resp.transaction_id, client).await?;
+        summarize(&resp.result.finalize, timer.elapsed());
     } else {
         let request = TransactionSubmitRequest {
             transaction,

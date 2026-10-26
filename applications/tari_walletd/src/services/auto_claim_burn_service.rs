@@ -592,7 +592,7 @@ fn stored_outcome(transaction: &WalletTransaction) -> Option<ClaimOutcome> {
                 None => ClaimOutcome::Failed(transaction.status.to_string()),
             })
         },
-        TransactionStatus::InvalidTransaction | TransactionStatus::DryRunFailed => Some(ClaimOutcome::Failed(
+        TransactionStatus::InvalidTransaction => Some(ClaimOutcome::Failed(
             transaction
                 .invalid_reason
                 .clone()

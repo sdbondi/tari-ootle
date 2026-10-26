@@ -974,6 +974,11 @@ pub struct AccountsTransferRequest {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct AccountsTransferResponse {
     pub transaction_id: TransactionId,
+    /// The fee to submit this transfer with. Only present for dry runs.
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub required_fees: Option<u64>,
+    /// The result of the dry run. The wallet does not keep a dry run, so this is the only place it is reported.
+    pub dry_run_result: Option<ExecuteResult>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1055,6 +1060,11 @@ pub struct ConfidentialTransferRequest {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct ConfidentialTransferResponse {
     pub transaction_id: TransactionId,
+    /// The fee to submit this transfer with. Only present for dry runs.
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub required_fees: Option<u64>,
+    /// The result of the dry run. The wallet does not keep a dry run, so this is the only place it is reported.
+    pub dry_run_result: Option<ExecuteResult>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1991,6 +2001,12 @@ pub struct StealthTransfer {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 pub struct StealthTransferResponse {
     pub transaction_id: TransactionId,
+    /// The fee to submit this transfer with: one a build of the transfer was made at, so a submission at it selects
+    /// the inputs the dry run priced. Only present for dry runs.
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub required_fees: Option<u64>,
+    /// The result of the dry run. The wallet does not keep a dry run, so this is the only place it is reported.
+    pub dry_run_result: Option<ExecuteResult>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
