@@ -15,13 +15,13 @@ use tari_engine_types::{
     fees::{FeeBreakdown, FeeReceipt, FeeSource},
     substate::{SubstateDiff, SubstateId},
 };
-use tari_ootle_common_types::SubstateVersion;
+use tari_ootle_common_types::{SubstateVersion, optional::IsNotFoundError};
 use tari_ootle_transaction::{Transaction, TransactionId, args};
 use tari_ootle_wallet_sdk::{
     apis::transaction::{Submission, TRANSACTION_EXPIRY_GRACE_EPOCHS},
     models::{TransactionStatus, WalletTransactionUpdate},
     network::{TransactionFinalizedResult, TransactionQueryResult},
-    storage::{WalletStoreWriter, WriteableWalletStore},
+    storage::{ReadableWalletStore, WalletStoreReader, WalletStoreWriter, WriteableWalletStore},
 };
 use tari_template_lib::types::{ConfidentialOutputAddress, constants::STEALTH_TARI_RESOURCE_ADDRESS};
 use time::{OffsetDateTime, PrimitiveDateTime};
@@ -334,4 +334,72 @@ async fn a_rejected_submission_releases_its_inputs() {
     let stored = test.sdk().transaction_api().get(transaction_id).unwrap();
     assert_eq!(stored.status, TransactionStatus::InvalidTransaction);
     assert_eq!(test.get_unspent_balance(), 74, "both outputs are released");
+}
+
+fn build_dry_run_transaction() -> Transaction {
+    Transaction::builder_localnet(Epoch(100))
+        .with_dry_run(true)
+        .allocate_component_address("component")
+        .put_last_instruction_output_on_workspace("bucket")
+        .call_method("component", "new", args!["bucket"])
+        .build_and_seal(&RistrettoSecretKey::from(1))
+}
+
+fn assert_not_stored(test: &TestWithNetwork<CannedTransactionResultInterface>, transaction_id: TransactionId) {
+    let stored = test.store().with_read_tx(|tx| tx.transactions_get(transaction_id));
+    assert!(
+        stored.as_ref().is_err_and(|e| e.is_not_found_error()),
+        "dry run {transaction_id} left a stored transaction: {stored:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_dry_run_returns_its_result_without_storing_the_transaction() {
+    let transaction = build_dry_run_transaction();
+    let transaction_id = transaction.calculate_id();
+    let fee_receipt = underpaid_fee_receipt();
+    let test = TestWithNetwork::with_network(CannedTransactionResultInterface::new(finalized_result(
+        transaction_id,
+        fee_receipt.clone(),
+    )));
+
+    let dry_run = test
+        .sdk()
+        .transaction_api()
+        .submit_dry_run_transaction(transaction, None)
+        .await
+        .unwrap();
+
+    assert_eq!(dry_run.id, transaction_id);
+    assert_eq!(dry_run.status, TransactionStatus::DryRun);
+    assert!(dry_run.is_dry_run);
+    assert!(dry_run.finalize.is_some());
+    assert_eq!(dry_run.final_fee, Some(fee_receipt.required_fees()));
+    assert_eq!(dry_run.execution_time, Some(Duration::from_secs(1)));
+    assert_not_stored(&test, transaction_id);
+}
+
+#[tokio::test]
+async fn a_rejected_dry_run_does_not_store_the_transaction() {
+    let transaction = build_dry_run_transaction();
+    let transaction_id = transaction.calculate_id();
+    let test = TestWithNetwork::with_network(CannedTransactionResultInterface::new(TransactionQueryResult {
+        transaction_id,
+        result: TransactionFinalizedResult::Rejected {
+            details: "too big".to_string(),
+            rejected_time: now(),
+        },
+        receipt: None,
+        encoded_execution_result: None,
+    }));
+
+    let err = test
+        .sdk()
+        .transaction_api()
+        .submit_dry_run_transaction(transaction, None)
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("too big"), "{err}");
+    assert_not_stored(&test, transaction_id);
 }

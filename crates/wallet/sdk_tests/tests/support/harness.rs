@@ -348,12 +348,11 @@ impl WalletNetworkInterface for CannedTransactionResultInterface {
         panic!("CannedTransactionResultInterface called")
     }
 
-    #[allow(clippy::diverging_sub_expression)]
     async fn submit_dry_run_transaction(
         &self,
         _transaction: Transaction,
     ) -> Result<TransactionQueryResult, Self::Error> {
-        panic!("CannedTransactionResultInterface called")
+        self.result.clone().ok_or(PanicError::NotFound)
     }
 
     async fn query_transaction_result(

@@ -1,7 +1,10 @@
 //   Copyright 2023 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use log::*;
 use tari_engine_types::{
@@ -19,8 +22,9 @@ use tari_ootle_common_types::{
     substate_type::check_diff_substate_types,
 };
 use tari_ootle_light_client::LightClientError;
-use tari_ootle_transaction::{Transaction, TransactionId};
+use tari_ootle_transaction::{PrunedTransaction, Transaction, TransactionId};
 use tari_template_lib::types::{ComponentAddress, constants::TARI_TOKEN};
+use time::{OffsetDateTime, PrimitiveDateTime};
 
 use crate::{
     apis::validator_set::{ValidatorSetApi, ValidatorSetApiError},
@@ -38,6 +42,11 @@ const LOG_TARGET: &str = "tari::ootle::wallet_sdk::apis::transaction";
 /// can finalize it as COMMIT up to two of its own epochs past its `max_epoch`. The third leaves the indexer time to
 /// serve that result. An ABORT can finalize an epoch later, and releases the inputs whenever it does.
 pub const TRANSACTION_EXPIRY_GRACE_EPOCHS: u64 = 3;
+
+fn now_utc() -> PrimitiveDateTime {
+    let now = OffsetDateTime::now_utc();
+    PrimitiveDateTime::new(now.date(), now.time())
+}
 
 pub struct TransactionApi<'a, TStore, TNetworkInterface> {
     store: &'a TStore,
@@ -157,7 +166,9 @@ where
         Ok(Submission::Submitted)
     }
 
-    /// Executes `transaction` as a dry run and records what it cost.
+    /// Executes `transaction` as a dry run and returns what it cost.
+    ///
+    /// A dry run is transient: the wallet does not store the transaction or its result, whatever the outcome.
     ///
     /// `settled_fee` is the fee to record as the one to submit with, for a caller that chose a
     /// figure and is only having the run confirm it. `None` records `required_fees` — what the run
@@ -176,71 +187,50 @@ where
             });
         }
 
-        self.store
-            .with_write_tx(|tx| tx.transactions_insert(&transaction, None, &[], true))?;
-
         let tx_id = transaction.calculate_id();
-        let result = self.network_interface.submit_dry_run_transaction(transaction).await;
+        let pruned = PrunedTransaction::from(transaction.clone());
+        let submitted_at = now_utc();
+        let query = self.network_interface.submit_dry_run_transaction(transaction).await?;
 
-        match result {
-            Ok(query) => match &query.result {
-                TransactionFinalizedResult::Pending => {
-                    return Err(TransactionApiError::InvalidTransactionQueryResponse {
-                        details: "Pending execution result returned from dry run".to_string(),
-                    });
-                },
-                TransactionFinalizedResult::Rejected { details, .. } => {
-                    self.store.with_write_tx(|tx| {
-                        tx.transactions_update(
-                            WalletTransactionUpdate::new(tx_id)
-                                .with_new_status(TransactionStatus::DryRunFailed)
-                                .with_invalid_reason(details),
-                        )
-                    })?;
-                    return Err(TransactionApiError::InvalidTransactionQueryResponse {
-                        details: format!("Transaction rejected by dry run: {details}"),
-                    });
-                },
-                TransactionFinalizedResult::Finalized {
-                    execution_result,
-                    finalized_time,
-                    execution_time,
-                    ..
-                } => {
-                    if query.transaction_id != tx_id {
-                        // This could indicate that there has been some breaking change that caused the indexer to
-                        // calculate a different transaction ID
-                        warn!(target: LOG_TARGET, "⚠️ Transaction ID mismatch in dry run response. Expected {}, got {}. Updating transaction status to DryRunFailed.", tx_id, query.transaction_id);
-                    }
-
-                    let final_fee =
-                        settled_fee.or_else(|| execution_result.as_ref().map(|e| e.finalize.required_fees()));
-
-                    self.store.with_write_tx(|tx| {
-                        tx.transactions_update(
-                            WalletTransactionUpdate::new(tx_id)
-                                .with_result(execution_result.as_ref().map(|e| &e.finalize))
-                                .with_final_fee(final_fee)
-                                .with_new_status(TransactionStatus::DryRun)
-                                .with_execution_time(*execution_time)
-                                .with_finalized_time(*finalized_time),
-                        )
-                    })?;
-                },
+        match query.result {
+            TransactionFinalizedResult::Pending => Err(TransactionApiError::InvalidTransactionQueryResponse {
+                details: "Pending execution result returned from dry run".to_string(),
+            }),
+            TransactionFinalizedResult::Rejected { details, .. } => {
+                Err(TransactionApiError::InvalidTransactionQueryResponse {
+                    details: format!("Transaction rejected by dry run: {details}"),
+                })
             },
-            Err(err) => {
-                self.store.with_write_tx(|tx| {
-                    tx.transactions_update(
-                        WalletTransactionUpdate::new(tx_id).with_new_status(TransactionStatus::DryRunFailed),
-                    )
-                })?;
-                return Err(err.into());
+            TransactionFinalizedResult::Finalized {
+                execution_result,
+                finalized_time,
+                execution_time,
+                ..
+            } => {
+                if query.transaction_id != tx_id {
+                    // This could indicate that there has been some breaking change that caused the indexer to
+                    // calculate a different transaction ID
+                    warn!(target: LOG_TARGET, "⚠️ Transaction ID mismatch in dry run response. Expected {}, got {}.", tx_id, query.transaction_id);
+                }
+
+                let final_fee = settled_fee.or_else(|| execution_result.as_ref().map(|e| e.finalize.required_fees()));
+
+                Ok(WalletTransaction {
+                    id: tx_id,
+                    transaction: pruned,
+                    status: TransactionStatus::DryRun,
+                    finalize: execution_result.map(|e| e.finalize),
+                    final_fee,
+                    qcs: vec![],
+                    invalid_reason: None,
+                    execution_time: Some(execution_time),
+                    finalized_time: Some(Duration::try_from(finalized_time - submitted_at).unwrap_or(Duration::ZERO)),
+                    new_account_info: None,
+                    is_dry_run: true,
+                    last_update_time: now_utc(),
+                })
             },
         }
-
-        let transaction = self.store.with_read_tx(|tx| tx.transactions_get(tx_id))?;
-
-        Ok(transaction)
     }
 
     pub fn fetch_all(
