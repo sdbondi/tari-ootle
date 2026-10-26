@@ -233,7 +233,9 @@ function RequestCard({ request }: { request: SigningRequestInfo }) {
         <Field label="Max fee">
           {fees.length > 0 ? (
             <>
-              {fees.map((f) => <div key={f}>{f}</div>)}
+              {fees.map((f) => (
+                <div key={f}>{f}</div>
+              ))}
               {undescribedFees > 0 && <div>Plus {undescribedFees} other fee instruction(s); review them below.</div>}
             </>
           ) : (
