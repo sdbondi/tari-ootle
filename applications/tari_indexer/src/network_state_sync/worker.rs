@@ -159,6 +159,7 @@ impl NetworkWideStateSync {
 
     pub fn spawn(mut self, shutdown_signal: ShutdownSignal) -> tokio::task::JoinHandle<()> {
         let mut epoch_events = self.epoch_manager.subscribe();
+        tokio::spawn(self.clone().report(shutdown_signal.clone()));
         tokio::spawn(async move {
             loop {
                 let config = self.config.clone();
@@ -188,15 +189,6 @@ impl NetworkWideStateSync {
     ) -> Result<(), NetworkStateSyncError> {
         self.epoch_manager.wait_for_initial_scanning_to_complete().await?;
 
-        // Publish last-known totals immediately so a freshly restarted indexer reports them before its
-        // first sync round completes.
-        #[cfg(feature = "metrics")]
-        self.update_metrics().await;
-
-        let mut report_interval = time::interval(self.config.work_interval);
-        report_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-        report_interval.reset();
-
         loop {
             let sync_plan = self.initialize_sync_plan().await?;
             let plan_epoch = sync_plan.network_description().epoch();
@@ -222,6 +214,10 @@ impl NetworkWideStateSync {
             let cancel = CancellationToken::new();
             let mut sync = pin!(self.clone().sync_plan(sync_plan, cancel.clone(), epoch_rx));
             loop {
+                // While `sync` is pending, a branch body awaits only `sync` itself or work that is
+                // independent of the indexer store. `sync` goes unpolled while a body runs, so a write
+                // lock handed to it then is never taken, and every writer queues behind it. The epoch
+                // manager keeps its state outside the indexer store.
                 tokio::select! {
                     event = epoch_events.recv() => {
                         // Every way out of here winds the plan down first, for the reason above.
@@ -269,19 +265,46 @@ impl NetworkWideStateSync {
                         time::sleep(self.config.work_interval).await;
                         break;
                     },
-                    _ = report_interval.tick() => {
-                        self.stats.log_stats();
-                        self.stats.reset();
-                        #[cfg(feature = "metrics")]
-                        self.update_metrics().await;
-                    },
                 }
             }
         }
     }
 
+    /// Logs and resets the sync stats, and publishes the metrics, every work interval until shutdown.
+    ///
+    /// Reporting runs on a task of its own: a metrics refresh can write the substate cache, which
+    /// queues on the store's write lock behind the sync's own commits.
+    async fn report(self, mut shutdown_signal: ShutdownSignal) {
+        let reporting = async {
+            if let Err(err) = self.epoch_manager.wait_for_initial_scanning_to_complete().await {
+                warn!(target: LOG_TARGET, "⚠️ State sync stats are not reported: the epoch manager failed its initial scan: {err}");
+                return;
+            }
+
+            // Publish last-known totals immediately so a freshly restarted indexer reports them before
+            // its first sync round completes.
+            #[cfg(feature = "metrics")]
+            self.update_metrics().await;
+
+            let mut report_interval = time::interval(self.config.work_interval);
+            report_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+            report_interval.reset();
+            loop {
+                report_interval.tick().await;
+                self.stats.log_stats();
+                self.stats.reset();
+                #[cfg(feature = "metrics")]
+                self.update_metrics().await;
+            }
+        };
+        tokio::select! {
+            _ = shutdown_signal.wait() => {},
+            _ = reporting => {},
+        }
+    }
+
     /// Reads the persisted economic totals and publishes them to the Prometheus gauges. Metrics are
-    /// observability only, so a read failure is logged rather than propagated into the sync loop.
+    /// observability only, so a read failure is logged and the next report tries again.
     #[cfg(feature = "metrics")]
     async fn update_metrics(&self) {
         match ReadOnlyStore::new(self.store.clone()).get_tari_economics().await {
@@ -2574,6 +2597,46 @@ mod tests {
                 check_validator_set(Epoch(4), local, committed),
                 Err(NetworkStateSyncError::ValidatorSetDiverged { epoch, .. }) if epoch == Epoch(4)
             ));
+        }
+    }
+
+    mod sync_loop {
+        use super::*;
+        use crate::{storage_sqlite::temp_store, store::IndexerStoreWriteTransaction};
+
+        async fn write(store: &SqliteIndexerStore, value: u64) -> Result<(), StorageError> {
+            store
+                .with_write_tx(move |tx| tx.key_value_set(Key::TariAccumulatedFees, value))
+                .await
+        }
+
+        /// The shape the sync loop's `select!` keeps out: `sync` queued on the store's write lock while a
+        /// branch body awaits a write of its own. The lock is handed to `sync`, which goes unpolled until the
+        /// body ends, so the body's write waits on a lock nothing takes and only the write lock timeout
+        /// ends the wait.
+        #[tokio::test(start_paused = true)]
+        async fn a_branch_writing_while_the_pinned_sync_is_queued_waits_out_the_write_lock_timeout() {
+            let (_dir, store) = temp_store().await;
+            let held = store.hold_write_lock().await;
+            let sync_store = store.clone();
+            let mut sync = pin!(async move { write(&sync_store, 1).await });
+            assert!(futures::poll!(sync.as_mut()).is_pending());
+            drop(held);
+
+            let started = time::Instant::now();
+            let mut branch_write = pin!(write(&store, 2));
+            assert!(
+                time::timeout(Duration::from_secs(10), &mut branch_write).await.is_err(),
+                "the branch's write completed though the lock was handed to an unpolled waiter"
+            );
+            let err = branch_write.await.unwrap_err();
+            assert_eq!(started.elapsed(), Duration::from_secs(30));
+            assert!(
+                err.to_string().contains("waiting for the indexer store's write lock"),
+                "{err}"
+            );
+
+            sync.await.unwrap();
         }
     }
 }
