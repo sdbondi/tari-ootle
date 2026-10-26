@@ -274,6 +274,9 @@ CREATE TABLE stealth_outputs
 
 CREATE UNIQUE INDEX stealth_outputs_uniq_resource_addr_commitment ON stealth_outputs (resource_address, commitment);
 CREATE INDEX stealth_outputs_idx_resource_status ON stealth_outputs (resource_address, status);
+-- Looks up a transaction's stealth inputs and outputs by commitment alone: a
+-- stealth transfer may take its resource address from the workspace.
+CREATE INDEX stealth_outputs_idx_commitment ON stealth_outputs (commitment);
 
 -- Shard State Versions
 CREATE TABLE shard_state_versions
