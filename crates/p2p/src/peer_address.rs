@@ -97,7 +97,7 @@ pub trait ToPeerId {
 
 #[cfg(test)]
 mod tests {
-    use tari_crypto::keys::PublicKey;
+    use tari_crypto::{keys::PublicKey, ristretto::RistrettoSecretKey, tari_utilities::hex::Hex};
 
     use super::*;
 
@@ -115,5 +115,33 @@ mod tests {
         assert_eq!(peer_address, peer_address2);
         let peer_id2 = peer_address.as_peer_id();
         assert_eq!(peer_id2, peer_id);
+    }
+
+    /// A node's own PeerId comes from its secret key (`Keypair::sr25519_from_bytes` in the VN and indexer
+    /// bootstrap); everyone else derives it from the registered public key. Peers are only reachable if both
+    /// agree.
+    #[test]
+    fn peer_id_from_public_key_matches_the_keypair() {
+        let (secret_key, public_key) = RistrettoPublicKey::random_keypair(&mut rand::rng());
+        let keypair = identity::Keypair::sr25519_from_bytes(secret_key.as_bytes().to_vec()).unwrap();
+
+        assert_eq!(public_key_to_peer_id(public_key), keypair.public().to_peer_id());
+    }
+
+    /// The PeerId of secret key `[7; 32]` under the libp2p fork at a85a6e3. PeerIds are what nodes dial, so a
+    /// fork bump must not change them.
+    #[test]
+    fn peer_id_is_stable_across_fork_bumps() {
+        const PEER_ID: &str = "12D3L7AV8JP9JBpTTRD5iyBTxZiBxoQioGJSCSEsC1UCh2eGfmM9";
+        let secret_key = RistrettoSecretKey::from_canonical_bytes(&[7u8; 32]).unwrap();
+        let public_key = RistrettoPublicKey::from_secret_key(&secret_key);
+        assert_eq!(
+            public_key.to_hex(),
+            "aaf82404e5f7bfa7352ce093e4aabe82435385d64aa870090a56d1aa36169800"
+        );
+
+        assert_eq!(public_key_to_peer_id(public_key).to_string(), PEER_ID);
+        let keypair = identity::Keypair::sr25519_from_bytes([7u8; 32].to_vec()).unwrap();
+        assert_eq!(keypair.public().to_peer_id().to_string(), PEER_ID);
     }
 }
