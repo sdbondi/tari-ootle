@@ -73,7 +73,7 @@ pub fn sign_message(secret: &Scalar, message: &[u8; 64]) -> Result<([u8; 32], [u
     let public_key = public_key_from_scalar(secret).compress().0;
 
     // Deterministic (synthetic) nonce: immune to a weak RNG, never reused for a given (key, message).
-    let nonce = Zeroizing::new(deterministic_nonce(secret, message).map_err(hash_err)?);
+    let nonce = Zeroizing::new(deterministic_nonce(secret, &public_key, message).map_err(hash_err)?);
     let public_nonce = public_key_from_scalar(&nonce).compress().0;
 
     // e = sr25519 challenge(R, P, m); s = e*k + r
@@ -136,9 +136,14 @@ fn schnorr_challenge(public_nonce: &[u8; 32], public_key: &[u8; 32], message: &[
     Scalar::from_bytes_mod_order_wide(&out)
 }
 
-fn deterministic_nonce(secret: &Scalar, message: &[u8; 64]) -> Result<Scalar, HashError> {
+/// `H(NONCE_DOMAIN || u64_le(len(ctx)) || ctx || P || k || m)`: the nonce commits to everything the
+/// challenge does, so no other scheme, context or key reaches the same nonce for this message.
+fn deterministic_nonce(secret: &Scalar, public_key: &[u8; 32], message: &[u8; 64]) -> Result<Scalar, HashError> {
     let mut hasher = Blake2b_512::new();
     hasher.update(NONCE_DOMAIN)?;
+    hasher.update(&(SIGNING_CONTEXT.len() as u64).to_le_bytes())?;
+    hasher.update(SIGNING_CONTEXT)?;
+    hasher.update(public_key)?;
     hasher.update(secret.as_bytes())?;
     hasher.update(message)?;
     let mut out = Zeroizing::new([0u8; 64]);

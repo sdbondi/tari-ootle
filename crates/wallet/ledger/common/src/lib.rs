@@ -44,9 +44,11 @@ pub mod signing {
     /// appends `.n{network_byte}`, matching `wallet_hasher64`.
     pub const STEALTH_OWNER_LABEL: &str = "stealth_owner";
 
-    /// Device-internal domain tag for deterministic (synthetic) nonce derivation. Not part of any
-    /// network format — only the resulting signature must verify — so this is chosen freely.
-    pub const NONCE_DOMAIN: &[u8] = b"com.tari.ootle.ledger.schnorr_nonce.v1";
+    /// Device-internal domain tag for deterministic (synthetic) nonce derivation. Only the resulting
+    /// signature must verify, so this is chosen freely, but it must change with any change to the
+    /// signature scheme: two schemes that share a nonce for the same key and message but hash
+    /// different challenges leak the key from one signature of each.
+    pub const NONCE_DOMAIN: &[u8] = b"com.tari.ootle.ledger.sr25519_nonce.v1";
 }
 
 /// APDU instruction set for the Ootle Ledger app.

@@ -103,9 +103,12 @@ fn schnorr_challenge(r: &[u8; 32], p: &[u8; 32], m: &[u8; 64]) -> Scalar {
     Scalar::from_bytes_mod_order_wide(&out)
 }
 
-fn deterministic_nonce(secret: &Scalar, m: &[u8; 64]) -> Scalar {
+fn deterministic_nonce(secret: &Scalar, pk: &[u8; 32], m: &[u8; 64]) -> Scalar {
     let mut h = Blake2b512::new();
     h.update(NONCE_DOMAIN);
+    h.update((SIGNING_CONTEXT.len() as u64).to_le_bytes());
+    h.update(SIGNING_CONTEXT);
+    h.update(pk);
     h.update(secret.as_bytes());
     h.update(m);
     let mut out = [0u8; 64];
@@ -119,7 +122,7 @@ fn public_key(s: &Scalar) -> [u8; 32] {
 
 fn sign(secret: &Scalar, m: &[u8; 64]) -> ([u8; 32], [u8; 64]) {
     let pk = public_key(secret);
-    let nonce = deterministic_nonce(secret, m);
+    let nonce = deterministic_nonce(secret, &pk, m);
     let r = public_key(&nonce);
     let e = schnorr_challenge(&r, &pk, m);
     let s = e * secret + nonce;
@@ -397,4 +400,24 @@ fn stealth_recipe_matches_and_verifies() {
         )),
         "stealth key is not bound to the public nonce"
     );
+}
+
+/// Apps up to 0.3 sign Tari Schnorr signatures over the same 64-byte messages with the nonce
+/// `H("com.tari.ootle.ledger.schnorr_nonce.v1" || k || m)`. A nonce shared with that app hashes a
+/// different challenge, so one signature from each over the same message solves for `k`.
+#[test]
+fn nonce_differs_from_the_tari_schnorr_app() {
+    let secret = random_scalar();
+    let pk = public_key(&secret);
+    let m = TransactionSignature::create_message_v1(&pk_bytes(&random_scalar()), &sample_unsigned());
+
+    let mut h = Blake2b512::new();
+    h.update(b"com.tari.ootle.ledger.schnorr_nonce.v1");
+    h.update(secret.as_bytes());
+    h.update(m);
+    let mut out = [0u8; 64];
+    out.copy_from_slice(&h.finalize());
+    let tari_schnorr_nonce = Scalar::from_bytes_mod_order_wide(&out);
+
+    assert_ne!(deterministic_nonce(&secret, &pk, &m), tari_schnorr_nonce);
 }

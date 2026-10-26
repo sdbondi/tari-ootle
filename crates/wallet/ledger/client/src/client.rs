@@ -214,7 +214,7 @@ mod tests {
         let client = LedgerClient::new(speculos_transport());
 
         let version = client.get_app_version().await.unwrap();
-        assert_eq!(version, "0.3.0");
+        assert_eq!(version, "0.4.0");
 
         let app_name = client.get_app_name().await.unwrap();
         assert_eq!(app_name, "Tari Ootle");
