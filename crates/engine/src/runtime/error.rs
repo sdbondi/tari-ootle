@@ -274,8 +274,6 @@ pub enum RuntimeError {
     ClaimNotSignedByClaimKey { claim_public_key: RistrettoPublicKeyBytes },
     #[error("Burn claim proof verifier failed on this node: {details}")]
     ClaimProofVerifierFault { details: String },
-    #[error("Layer one commitment already claimed with address '{address}'")]
-    ConfidentialOutputAlreadyClaimed { address: ClaimedOutputTombstoneAddress },
     #[error("Template {template_address} not found")]
     TemplateNotFound { template_address: TemplateAddress },
     #[error("Insufficient fees paid: required {required_fee}, paid {fees_paid}")]
@@ -570,8 +568,7 @@ impl RuntimeError {
 
             Self::SubstateAlreadyExists { .. } |
             Self::DuplicateNonFungibleId { .. } |
-            Self::ComponentAlreadyExists { .. } |
-            Self::ConfidentialOutputAlreadyClaimed { .. } => C::Conflict,
+            Self::ComponentAlreadyExists { .. } => C::Conflict,
 
             Self::BucketNotEmpty { .. } |
             Self::OrphanedSubstate { .. } |
