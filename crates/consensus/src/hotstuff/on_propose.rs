@@ -71,9 +71,11 @@ use crate::{
         substate_store::{InputPledge, PendingSubstateStore},
         transaction_manager::{
             ConsensusTransactionManager,
+            MultishardLockScope,
             PledgedTransaction,
             PreparedTransaction,
             TransactionLockConflicts,
+            lock_multishard_execution,
         },
     },
     messages::{HotstuffMessage, ProposalMessage},
@@ -1101,12 +1103,16 @@ where TConsensusSpec: ConsensusSpec
         }
 
         // Try to lock all local outputs
-        let local_outputs = execution
-            .resulting_outputs()
-            .iter()
-            .filter(|o| local_committee_info.includes_substate_id(o.substate_id()));
-        let lock_status = substate_store.try_lock_all(*tx_rec.id(), local_outputs, false)?;
-        if let Some(err) = lock_status.failures().first() {
+        let locked = lock_multishard_execution(
+            substate_store,
+            local_committee_info,
+            *tx_rec.id(),
+            execution,
+            MultishardLockScope::LocalOutputs,
+            tx_rec.is_fee_intent_only(),
+        )
+        .map_err(|e| HotStuffError::TransactionExecutorError(e.to_string()))?;
+        if let Some(err) = locked.lock_status.failures().first() {
             warn!(
                 target: LOG_TARGET,
                 "⚠️ Failed to lock outputs for transaction {}: {}",
@@ -1129,9 +1135,12 @@ where TConsensusSpec: ConsensusSpec
         tx_rec.update_from_execution(
             local_committee_info.num_preshards(),
             local_committee_info.num_committees(),
-            &execution,
+            &locked.execution,
         );
-        executed_transactions.insert(*tx_rec.id(), execution);
+        if locked.fee_intent_only {
+            tx_rec.set_fee_intent_only(true);
+        }
+        executed_transactions.insert(*tx_rec.id(), locked.execution);
         // If we locally decided to ABORT, we are still saying that we think all prepared and, after execution decide to
         // ABORT. When we enter the acceptance phase, we will propose SomeAccept for this case.
         let atom = self.get_multi_shard_atom_with_leader_fee(&tx_rec)?;

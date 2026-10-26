@@ -1001,6 +1001,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
             None,
             transaction_weight,
             0,
+            false,
         );
 
         self.db()
@@ -1025,6 +1026,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
             evidence: update.evidence().clone(),
             transaction_fee: update.transaction_fee(),
             exhaust_burn: update.exhaust_burn(),
+            fee_intent_only: update.is_fee_intent_only(),
             leader_fee: update.leader_fee().cloned(),
             stage: update.stage(),
             local_decision: update.decision(),
@@ -1094,6 +1096,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
             pool.set_local_decision(update.local_decision);
             pool.set_transaction_fee(update.transaction_fee);
             pool.set_exhaust_burn(update.exhaust_burn);
+            pool.set_fee_intent_only(update.fee_intent_only);
             if let Some(leader_fee) = update.leader_fee {
                 pool.set_leader_fee(leader_fee);
             }

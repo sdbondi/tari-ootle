@@ -184,7 +184,10 @@ pub(super) fn derive_new_multishard_command(
 ) -> Result<DerivedCommand<NewMultiShardCommand>, HotStuffError> {
     let local_shard_group = local_committee_info.shard_group();
     let execution = match prepared.into_evidence_or_execution() {
-        EvidenceOrExecution::Execution { execution } => {
+        EvidenceOrExecution::Execution {
+            execution,
+            fee_intent_only,
+        } => {
             // CASE: All inputs are local and outputs are foreign (i.e. the transaction is executed), or all inputs are
             // foreign, this shard group is output-only and has received every pledge.
             pool_record.update_from_execution(
@@ -192,6 +195,9 @@ pub(super) fn derive_new_multishard_command(
                 local_committee_info.num_committees(),
                 &execution,
             );
+            if fee_intent_only {
+                pool_record.set_fee_intent_only(true);
+            }
 
             // TODO: this is kinda hacky - we may not be involved in the transaction after ABORT execution, but this
             // would be invalid so we ensure that we are added to evidence. Ideally, we wouldn't sequence this
@@ -271,6 +277,9 @@ pub(super) fn new_multishard_disagreement(
             remote: proposed.decision,
         });
     }
+    if let Some(reason) = fee_intent_only_disagreement(derived.fee_intent_only, proposed) {
+        return Some(reason);
+    }
     if *derived_kind != proposed_kind {
         return Some(NoVoteReason::CommandDisagreement {
             transaction_id: proposed.id,
@@ -290,6 +299,18 @@ pub(super) fn new_multishard_disagreement(
         });
     }
     None
+}
+
+/// The reason a replica refuses `proposed` when it commits a different part of the transaction than the leader.
+pub(super) fn fee_intent_only_disagreement(
+    local_fee_intent_only: bool,
+    proposed: &MultiShardAtom,
+) -> Option<NoVoteReason> {
+    (local_fee_intent_only != proposed.fee_intent_only).then_some(NoVoteReason::FeeIntentOnlyDisagreement {
+        transaction_id: proposed.id,
+        local_fee_intent_only,
+        proposed_fee_intent_only: proposed.fee_intent_only,
+    })
 }
 
 fn leader_fee_disagreement(derived: Option<&LeaderFee>, proposed: Option<&LeaderFee>) -> Option<NoVoteReason> {

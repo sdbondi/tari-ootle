@@ -46,6 +46,16 @@ pub enum NoVoteReason {
     },
     #[error("Fee disagreement")]
     FeeDisagreement,
+    #[error(
+        "The leader proposed that transaction {transaction_id} commits {}, but this node commits {}",
+        commit_scope(*proposed_fee_intent_only),
+        commit_scope(*local_fee_intent_only)
+    )]
+    FeeIntentOnlyDisagreement {
+        transaction_id: TransactionId,
+        local_fee_intent_only: bool,
+        proposed_fee_intent_only: bool,
+    },
     #[error("Leader fee disagreement")]
     LeaderFeeDisagreement,
     #[error("Total leader fee disagreement")]
@@ -167,6 +177,7 @@ impl NoVoteReason {
             Self::SomeAcceptAtomMustBeAbort { .. } => "SomeAcceptAtomMustBeAbort",
             Self::AllAcceptMustBeCommit { .. } => "AllAcceptMustBeCommit",
             Self::FeeDisagreement => "FeeDisagreement",
+            Self::FeeIntentOnlyDisagreement { .. } => "FeeIntentOnlyDisagreement",
             Self::LeaderFeeDisagreement => "LeaderFeeDisagreement",
             Self::TotalExhaustBurnDisagreement => "TotalExhaustBurnDisagreement",
             Self::NoLeaderFee => "NoLeaderFee",
@@ -200,5 +211,13 @@ impl NoVoteReason {
             Self::BlockForeignProposalBytesExceeded { .. } => "BlockForeignProposalBytesExceeded",
             Self::ConflictingTransactionProposed { .. } => "ConflictingTransactionProposed",
         }
+    }
+}
+
+fn commit_scope(fee_intent_only: bool) -> &'static str {
+    if fee_intent_only {
+        "only its fee intent"
+    } else {
+        "in full"
     }
 }

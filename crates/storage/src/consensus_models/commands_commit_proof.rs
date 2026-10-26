@@ -390,6 +390,7 @@ mod tests {
             evidence,
             transaction_fee: 0,
             leader_fee: None,
+            fee_intent_only: false,
         }
     }
 

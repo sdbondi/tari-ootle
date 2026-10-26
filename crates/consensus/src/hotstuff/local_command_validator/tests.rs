@@ -495,7 +495,7 @@ impl Replica {
                 };
                 let local = self.committee.shard_group();
                 match multishard.into_evidence_or_execution() {
-                    EvidenceOrExecution::Execution { execution } => {
+                    EvidenceOrExecution::Execution { execution, .. } => {
                         rec.update_from_execution(NUM_PRESHARDS, self.committee.num_committees(), &execution);
                         rec.evidence_mut().add_shard_group(local);
                         if execution.decision().is_commit() && !rec.evidence().has_inputs(local) {
@@ -1081,6 +1081,7 @@ mod local_prepare {
             evidence: Evidence::empty(),
             transaction_fee: FEE,
             leader_fee: None,
+            fee_intent_only: false,
         })]);
 
         assert!(

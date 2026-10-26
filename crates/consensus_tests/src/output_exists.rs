@@ -59,10 +59,16 @@ fn creating(test: &Test, signer: u8, vault: &VersionedSubstateId, outputs: &[Sub
 
 /// Waits until every validator has finalized every one of `transactions`.
 async fn wait_for_finalized(test: &mut Test, transactions: &[&TransactionRecord]) {
+    wait_for_finalized_at(test, TestVnDestination::All, transactions).await;
+}
+
+/// Waits until every validator at `destination` has finalized every one of `transactions`.
+async fn wait_for_finalized_at(test: &mut Test, destination: TestVnDestination, transactions: &[&TransactionRecord]) {
     loop {
         test.on_block_committed().await;
         if transactions.iter().all(|transaction| {
             test.validators_iter()
+                .filter(|validator| destination.is_for_vn(validator))
                 .all(|validator| validator.has_finalized(transaction.id()))
         }) {
             return;
@@ -200,4 +206,57 @@ async fn a_transaction_the_proposer_defers_does_not_take_its_outputs_from_the_bl
     }
 
     test.assert_clean_shutdown().await;
+}
+
+/// A shard group that finds a transaction's output already exists commits its fee intent, and so does every other
+/// shard group involved, including one that accepted the full transaction first.
+async fn assert_a_multishard_collision_commits_the_fee_intent_everywhere(colliding_committee: u32) {
+    setup_logger();
+    let mut test = Test::builder()
+        .add_committee(0, vec!["1", "2"])
+        .add_committee(1, vec!["3", "4"])
+        .start()
+        .await;
+    let creator_vault = test
+        .create_substates_on_vns(TestVnDestination::Committee(colliding_committee), 1)
+        .remove(0);
+    let vault = test
+        .create_substates_on_vns(TestVnDestination::Committee(0), 1)
+        .remove(0);
+    let output = test.build_outputs_for_committee(colliding_committee, 1).remove(0);
+    let fresh_output = test.build_outputs_for_committee(1, 1).remove(0);
+    let creator = creating(&test, 1, &creator_vault, std::slice::from_ref(&output));
+    let duplicate = creating(&test, 2, &vault, &[output, fresh_output]);
+
+    test.send_transaction_to_destination(TestVnDestination::All, creator.clone())
+        .await;
+    test.start_epoch(Epoch(1)).await;
+    wait_for_finalized_at(&mut test, TestVnDestination::Committee(colliding_committee), &[
+        &creator,
+    ])
+    .await;
+    test.send_transaction_to_destination(TestVnDestination::All, duplicate.clone())
+        .await;
+    wait_for_finalized(&mut test, &[&duplicate]).await;
+    test.stop();
+
+    test.assert_all_validators_have_decision(duplicate.id(), Decision::Commit)
+        .await;
+    assert!(is_fee_intent_commit_everywhere(&test, &duplicate));
+
+    test.assert_clean_shutdown().await;
+}
+
+/// The output-only shard group finds the collision when it prepares, after the input shard group prepared the full
+/// transaction.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_output_only_shard_group_creating_an_output_that_exists_commits_the_fee_intent_everywhere() {
+    assert_a_multishard_collision_commits_the_fee_intent_everywhere(1).await;
+}
+
+/// The input shard group finds the collision at LocalAccept, which the output-only shard group may already have sent
+/// for the full transaction.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_input_shard_group_creating_an_output_that_exists_commits_the_fee_intent_everywhere() {
+    assert_a_multishard_collision_commits_the_fee_intent_everywhere(0).await;
 }

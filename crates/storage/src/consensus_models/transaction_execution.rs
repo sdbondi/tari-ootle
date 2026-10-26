@@ -33,6 +33,12 @@ pub struct TransactionExecution {
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
     pub fee_intent_fallback: Option<Box<FeeIntentFallback>>,
+    /// This execution commits only the fee intent of a transaction that cannot create one of its outputs. Set by
+    /// [`Self::take_fee_intent_commit`] and node-internal.
+    #[n(4)]
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub is_fee_intent_commit: bool,
 }
 
 impl TransactionExecution {
@@ -46,6 +52,7 @@ impl TransactionExecution {
             resolved_inputs,
             resulting_outputs,
             fee_intent_fallback: None,
+            is_fee_intent_commit: false,
         }
     }
 
@@ -77,6 +84,7 @@ impl TransactionExecution {
             resolved_inputs: self.resolved_inputs.clone(),
             resulting_outputs,
             fee_intent_fallback: None,
+            is_fee_intent_commit: true,
         })
     }
 
@@ -86,6 +94,7 @@ impl TransactionExecution {
             resolved_inputs: Vec::new(),
             resulting_outputs: Vec::new(),
             fee_intent_fallback: None,
+            is_fee_intent_commit: false,
         }
     }
 

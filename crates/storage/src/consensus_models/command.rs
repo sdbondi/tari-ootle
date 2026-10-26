@@ -42,6 +42,10 @@ pub struct MultiShardAtom {
     pub transaction_fee: u64,
     #[n(4)]
     pub leader_fee: Option<LeaderFee>,
+    /// The transaction commits only its fee intent, because a shard group involved in it cannot create one of its
+    /// outputs. That shard group sets it, and every other shard group adopts it.
+    #[n(5)]
+    pub fee_intent_only: bool,
 }
 
 impl MultiShardAtom {
@@ -58,8 +62,11 @@ impl Display for MultiShardAtom {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "MultiShardAtom({}, {}, {}, ",
-            self.id, self.decision, self.transaction_fee,
+            "MultiShardAtom({}, {}{}, {}, ",
+            self.id,
+            self.decision,
+            if self.fee_intent_only { " (fee intent only)" } else { "" },
+            self.transaction_fee,
         )?;
         match self.leader_fee {
             Some(ref leader_fee) => write!(f, "{}", leader_fee)?,
@@ -546,6 +553,7 @@ mod tests {
                 evidence: Evidence::default(),
                 transaction_fee: 0,
                 leader_fee: None,
+                fee_intent_only: false,
             }),
             Command::ForeignProposal(ForeignProposalAtom {
                 block_id: BlockId::zero(),
@@ -557,6 +565,7 @@ mod tests {
                 evidence: Evidence::default(),
                 transaction_fee: 0,
                 leader_fee: None,
+                fee_intent_only: false,
             }),
         ];
         let expected = [cmds[2].clone(), cmds[3].clone(), cmds[1].clone(), cmds[0].clone()];
@@ -577,6 +586,7 @@ mod tests {
             evidence: Evidence::default(),
             transaction_fee: 0,
             leader_fee: None,
+            fee_intent_only: false,
         };
         let local_only_atom = LocalOnlyAtom {
             id: TransactionId::default(),
@@ -623,6 +633,7 @@ mod borsh_discriminant_tests {
             evidence: Evidence::default(),
             transaction_fee: 0,
             leader_fee: None,
+            fee_intent_only: false,
         }
     }
 
@@ -729,6 +740,7 @@ mod pledged_value_hash_tests {
             evidence,
             transaction_fee: 0,
             leader_fee: None,
+            fee_intent_only: false,
         })
     }
 

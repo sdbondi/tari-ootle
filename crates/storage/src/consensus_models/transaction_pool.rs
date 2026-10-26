@@ -634,6 +634,9 @@ pub struct TransactionPoolRecord {
     /// execution alongside `transaction_fee`.
     #[n(16)]
     exhaust_burn: u64,
+    /// Whether the transaction commits only its fee intent. See [`MultiShardAtom::fee_intent_only`].
+    #[n(17)]
+    fee_intent_only: bool,
 }
 
 impl TransactionPoolRecord {
@@ -656,6 +659,7 @@ impl TransactionPoolRecord {
             last_updated_in_block: None,
             transaction_weight: transaction.calculate_transaction_weight().as_u64(),
             exhaust_burn: 0,
+            fee_intent_only: false,
         }
     }
 
@@ -678,6 +682,7 @@ impl TransactionPoolRecord {
         last_updated_in_block: Option<BlockId>,
         transaction_weight: u64,
         exhaust_burn: u64,
+        fee_intent_only: bool,
     ) -> Self {
         Self {
             transaction_id: id,
@@ -697,6 +702,7 @@ impl TransactionPoolRecord {
             last_updated_in_block,
             transaction_weight,
             exhaust_burn,
+            fee_intent_only,
         }
     }
 
@@ -852,6 +858,7 @@ impl TransactionPoolRecord {
             evidence: self.evidence.clone(),
             transaction_fee: self.transaction_fee,
             leader_fee: self.leader_fee().cloned(),
+            fee_intent_only: self.is_fee_intent_only(),
         }
     }
 
@@ -871,6 +878,7 @@ impl TransactionPoolRecord {
             evidence: self.evidence.clone(),
             transaction_fee: self.transaction_fee,
             leader_fee: self.leader_fee().cloned(),
+            fee_intent_only: self.is_fee_intent_only(),
         }
     }
 
@@ -879,6 +887,7 @@ impl TransactionPoolRecord {
             id: self.transaction_id,
             decision: self.current_decision(),
             leader_fee: self.leader_fee().cloned(),
+            fee_intent_only: self.is_fee_intent_only(),
             evidence: self.evidence,
             transaction_fee: self.transaction_fee,
         }
@@ -918,6 +927,16 @@ impl TransactionPoolRecord {
 
     pub fn exhaust_burn(&self) -> u64 {
         self.exhaust_burn
+    }
+
+    /// Whether the transaction commits only its fee intent. An aborting transaction commits nothing.
+    pub fn is_fee_intent_only(&self) -> bool {
+        self.fee_intent_only && self.current_decision().is_commit()
+    }
+
+    pub fn set_fee_intent_only(&mut self, fee_intent_only: bool) -> &mut Self {
+        self.fee_intent_only = fee_intent_only;
+        self
     }
 
     pub fn set_exhaust_burn(&mut self, exhaust_burn: u64) -> &mut Self {
@@ -1332,6 +1351,7 @@ mod tests {
                 last_updated_in_block: None,
                 transaction_weight: weight,
                 exhaust_burn: 0,
+                fee_intent_only: false,
             }
         }
 
@@ -1638,6 +1658,7 @@ mod tests {
                 last_updated_in_block: None,
                 transaction_weight: 0,
                 exhaust_burn: 0,
+                fee_intent_only: false,
             }
         }
 
@@ -1715,6 +1736,7 @@ mod tests {
                 last_updated_in_block: None,
                 transaction_weight: 0,
                 exhaust_burn,
+                fee_intent_only: false,
             }
         }
 

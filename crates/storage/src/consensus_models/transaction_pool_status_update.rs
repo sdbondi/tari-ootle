@@ -65,6 +65,10 @@ impl TransactionPoolStatusUpdate {
         self.transaction.exhaust_burn()
     }
 
+    pub fn is_fee_intent_only(&self) -> bool {
+        self.transaction.is_fee_intent_only()
+    }
+
     pub fn leader_fee(&self) -> Option<&LeaderFee> {
         self.transaction.leader_fee()
     }

@@ -143,6 +143,7 @@ message MultiShardAtom {
   Evidence evidence = 4;
   uint64 fee = 5;
   LeaderFee leader_fee = 6;
+  bool fee_intent_only = 7;
 }
 
 message LocalOnlyAtom {

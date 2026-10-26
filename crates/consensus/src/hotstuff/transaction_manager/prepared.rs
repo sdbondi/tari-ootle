@@ -3,7 +3,7 @@
 
 use tari_ootle_storage::consensus_models::{Evidence, TransactionExecution};
 
-use crate::hotstuff::substate_store::LockStatus;
+use crate::hotstuff::{substate_store::LockStatus, transaction_manager::LockedMultishardExecution};
 
 #[derive(Debug)]
 pub enum PreparedTransaction {
@@ -61,11 +61,20 @@ impl PreparedTransaction {
     }
 
     pub fn new_multishard_executed(execution: TransactionExecution, lock_status: LockStatus) -> Self {
+        Self::new_multishard_locked(LockedMultishardExecution {
+            execution,
+            lock_status,
+            fee_intent_only: false,
+        })
+    }
+
+    pub fn new_multishard_locked(locked: LockedMultishardExecution) -> Self {
         Self::MultiShard(MultiShardPreparedTransaction {
             execution_or_evidence: EvidenceOrExecution::Execution {
-                execution: Box::new(execution),
+                execution: Box::new(locked.execution),
+                fee_intent_only: locked.fee_intent_only,
             },
-            lock_status,
+            lock_status: locked.lock_status,
         })
     }
 
@@ -92,8 +101,15 @@ pub enum LocalPreparedTransaction {
 
 #[derive(Debug)]
 pub enum EvidenceOrExecution {
-    Evidence { evidence: Evidence },
-    Execution { execution: Box<TransactionExecution> },
+    Evidence {
+        evidence: Evidence,
+    },
+    Execution {
+        execution: Box<TransactionExecution>,
+        /// The execution commits only the transaction's fee intent. See
+        /// [`MultiShardAtom::fee_intent_only`](tari_ootle_storage::consensus_models::MultiShardAtom::fee_intent_only).
+        fee_intent_only: bool,
+    },
 }
 
 #[derive(Debug)]

@@ -1,6 +1,8 @@
 //   Copyright 2024 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
+use std::num::NonZeroU64;
+
 use log::*;
 use tari_consensus_types::{BlockId, Decision, LeafBlock, PcId};
 use tari_engine_types::commit_result::RejectReason;
@@ -19,6 +21,7 @@ use tari_ootle_storage::{
     StateStoreReadTransaction,
     consensus_models::{
         BlockPledge,
+        BlockTransactionExecution,
         Command,
         Evidence,
         ForeignProposal,
@@ -39,6 +42,7 @@ use crate::{
         block_change_set::ProposedBlockChangeSet,
         error::HotStuffError,
         substate_store::PendingSubstateStore,
+        transaction_manager::adopt_fee_intent_commit,
     },
     tracing::TraceTimer,
 };
@@ -470,6 +474,14 @@ pub fn process_foreign_block<TTx: StateStoreReadTransaction>(
                     .update(foreign_evidence)
                     .set_accept_qc(justify_qc_id);
                 tx_rec.set_remote_decision(remote_decision);
+                if atom.fee_intent_only && tx_rec.current_decision().is_commit() && !tx_rec.is_fee_intent_only() {
+                    info!(
+                        target: LOG_TARGET,
+                        "⚠️ Foreign {foreign_shard_group} commits only the fee intent of {}. Local stage: {}, Leaf: {}",
+                        tx_rec.id(), tx_rec.current_stage(), local_leaf
+                    );
+                    adopt_fee_intent_only(tx, &mut tx_rec, local_leaf, proposed_block_change_set)?;
+                }
 
                 add_pledges(
                     &tx_rec,
@@ -589,6 +601,39 @@ pub fn process_foreign_block<TTx: StateStoreReadTransaction>(
         );
     }
 
+    Ok(())
+}
+
+/// Commits only the fee intent of `tx_rec`, which another shard group found cannot create one of its outputs. An
+/// execution this shard group already holds is replaced by its fee-intent commit and the fees are recalculated from
+/// it. One executed later is replaced where it is locked.
+fn adopt_fee_intent_only<TTx: StateStoreReadTransaction>(
+    tx: &TTx,
+    tx_rec: &mut TransactionPoolRecord,
+    local_leaf: &LeafBlock,
+    proposed_block_change_set: &mut ProposedBlockChangeSet,
+) -> Result<(), HotStuffError> {
+    tx_rec.set_fee_intent_only(true);
+    let execution = match proposed_block_change_set.take_transaction_execution(tx_rec.id()) {
+        Some(execution) => Some(execution),
+        None => BlockTransactionExecution::get_pending_for_block(tx, tx_rec.id(), local_leaf).optional()?,
+    };
+    let Some(execution) = execution else {
+        return Ok(());
+    };
+    let execution = adopt_fee_intent_commit(tx_rec.id(), execution.into_transaction_execution())
+        .map_err(|e| HotStuffError::TransactionExecutorError(e.to_string()))?;
+    tx_rec
+        .set_transaction_fee(execution.transaction_fee())
+        .set_exhaust_burn(execution.exhaust_burn());
+    if tx_rec.leader_fee().is_some() {
+        let involved = NonZeroU64::new(tx_rec.evidence().num_shard_groups() as u64).ok_or_else(|| {
+            HotStuffError::InvariantError(format!("Transaction {} involves zero shard groups", tx_rec.id()))
+        })?;
+        let leader_fee = tx_rec.calculate_leader_fee(involved);
+        tx_rec.set_leader_fee(leader_fee);
+    }
+    proposed_block_change_set.add_transaction_execution(*tx_rec.id(), execution)?;
     Ok(())
 }
 

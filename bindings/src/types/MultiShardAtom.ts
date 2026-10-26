@@ -9,4 +9,9 @@ export type MultiShardAtom = {
   evidence: Evidence;
   transaction_fee: bigint;
   leader_fee: LeaderFee | null;
+  /**
+   * The transaction commits only its fee intent, because a shard group involved in it cannot create one of its
+   * outputs. That shard group sets it, and every other shard group adopts it.
+   */
+  fee_intent_only: boolean;
 };

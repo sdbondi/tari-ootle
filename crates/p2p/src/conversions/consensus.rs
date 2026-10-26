@@ -816,6 +816,7 @@ impl From<&MultiShardAtom> for proto::consensus::MultiShardAtom {
             evidence: Some((&value.evidence).into()),
             fee: value.transaction_fee,
             leader_fee: value.leader_fee.as_ref().map(|a| a.into()),
+            fee_intent_only: value.fee_intent_only,
         }
     }
 }
@@ -834,6 +835,7 @@ impl TryFrom<proto::consensus::MultiShardAtom> for MultiShardAtom {
                 .try_into()?,
             transaction_fee: value.fee,
             leader_fee: value.leader_fee.map(TryInto::try_into).transpose()?,
+            fee_intent_only: value.fee_intent_only,
         })
     }
 }
@@ -1427,6 +1429,7 @@ mod tests {
                 evidence: Evidence::default(),
                 transaction_fee: 0,
                 leader_fee: None,
+                fee_intent_only: false,
             })
         }
 

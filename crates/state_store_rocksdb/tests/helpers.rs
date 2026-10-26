@@ -89,6 +89,7 @@ pub fn create_tx_atom() -> MultiShardAtom {
         evidence: Default::default(),
         transaction_fee: 0,
         leader_fee: None,
+        fee_intent_only: false,
     }
 }
 

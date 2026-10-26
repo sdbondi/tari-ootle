@@ -2,7 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::{HashMap, HashSet, hash_map::Entry},
     marker::PhantomData,
 };
 
@@ -36,6 +36,7 @@ use tari_ootle_storage::{
         TransactionExecution,
         TransactionPoolRecord,
         TransactionRecord,
+        VersionedSubstateIdLockIntent,
     },
 };
 use tari_ootle_transaction::{Transaction, TransactionId};
@@ -236,6 +237,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
                 non_local_inputs,
                 block,
                 execution_epoch.clone(),
+                pool_tx.is_fee_intent_only(),
             ),
             ResolvedTransactionInputs::OnlyForeignInputs { non_local_inputs } => self
                 .prepare_multishard_output_only_transaction(
@@ -246,6 +248,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
                     block,
                     change_set,
                     execution_epoch.clone(),
+                    pool_tx.is_fee_intent_only(),
                 ),
             ResolvedTransactionInputs::OnlyTombstones => {
                 // Because we have only local inputs, this shard group unilaterally decides the locked epoch (though
@@ -629,6 +632,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn prepare_multishard_involved_transaction<TTx: StateStoreReadTransaction>(
         &self,
         store: &mut PendingSubstateStore<TTx>,
@@ -638,6 +642,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         non_local_inputs: IndexSet<InputDeclarationRef<'_>>,
         block: LeafBlock,
         execution_locked_epoch: LockedEpoch,
+        fee_intent_only: bool,
     ) -> Result<PreparedTransaction, BlockTransactionExecutorError> {
         // CASE: Multishard transaction, some inputs are local, some are foreign
 
@@ -673,7 +678,13 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         }
 
         match self.fetch_execution(store, transaction.id(), &block)? {
-            Some(exec) => self.prepare_multishard_from_execution(store, local_committee_info, *transaction.id(), exec),
+            Some(exec) => self.prepare_multishard_from_execution(
+                store,
+                local_committee_info,
+                *transaction.id(),
+                exec,
+                fee_intent_only,
+            ),
             None => self.prepare_multishard_no_execution(
                 store,
                 local_committee_info,
@@ -684,12 +695,15 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         }
     }
 
+    /// Locks the inputs and local outputs of the multishard `execution`. `fee_intent_only` is set if another shard
+    /// group has found that the transaction commits only its fee intent.
     fn prepare_multishard_from_execution<TTx: StateStoreReadTransaction>(
         &self,
         store: &mut PendingSubstateStore<TTx>,
         local_committee_info: &CommitteeInfo,
         transaction_id: TransactionId,
         execution: TransactionExecution,
+        fee_intent_only: bool,
     ) -> Result<PreparedTransaction, BlockTransactionExecutorError> {
         if let Some(reason) = execution.decision().abort_reason() {
             warn!(target: LOG_TARGET, "⚠️ PREPARE: Transaction {transaction_id} is ABORTED before prepare: {reason}");
@@ -710,24 +724,26 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
             return Ok(prepared);
         }
 
-        let requested_locks = execution
-            .resolved_inputs()
-            .iter()
-            .chain(execution.resulting_outputs())
-            .filter(|o| {
-                o.substate_id().is_transaction_receipt() || local_committee_info.includes_substate_id(o.substate_id())
-            });
-
-        let lock_status = store.try_lock_all(transaction_id, requested_locks, false)?;
-        if let Some(err) = lock_status.hard_conflict() {
+        let locked = lock_multishard_execution(
+            store,
+            local_committee_info,
+            transaction_id,
+            execution,
+            MultishardLockScope::Execution,
+            fee_intent_only,
+        )?;
+        if let Some(err) = locked.lock_status.hard_conflict() {
             // CASE: Multishard transaction, will abort due to hard lock conflict
             warn!(target: LOG_TARGET, "⚠️ PREPARE: Hard conflict when locking inputs: {err}");
             let execution =
                 TransactionExecution::abort(&transaction_id, RejectReason::FailedToLockInputs(err.to_string()));
-            Ok(PreparedTransaction::new_multishard_executed(execution, lock_status))
+            Ok(PreparedTransaction::new_multishard_executed(
+                execution,
+                locked.lock_status,
+            ))
         } else {
             // CASE: Multishard transaction, executed, no or "soft" (unversioned) lock conflict
-            Ok(PreparedTransaction::new_multishard_executed(execution, lock_status))
+            Ok(PreparedTransaction::new_multishard_locked(locked))
         }
     }
 
@@ -780,6 +796,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         Ok(PreparedTransaction::new_multishard_evidence(evidence, lock_status))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn prepare_multishard_output_only_transaction<TTx: StateStoreReadTransaction>(
         &self,
         store: &mut PendingSubstateStore<TTx>,
@@ -789,6 +806,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
         block: LeafBlock,
         change_set: &ProposedBlockChangeSet,
         execution_locked_epoch: LockedEpoch,
+        fee_intent_only: bool,
     ) -> Result<PreparedTransaction, BlockTransactionExecutorError> {
         let transaction_id = *transaction.id();
         // We're output-only, so only need to gather foreign pledges
@@ -836,7 +854,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
             execution.decision()
         );
 
-        self.prepare_multishard_from_execution(store, local_committee_info, transaction_id, execution)
+        self.prepare_multishard_from_execution(store, local_committee_info, transaction_id, execution, fee_intent_only)
     }
 }
 
@@ -958,14 +976,156 @@ fn is_output_never_creatable<TTx: StateStoreReadTransaction>(
     match err {
         LockFailedError::SubstateExists { .. } => Ok(true),
         LockFailedError::LockConflict { substate_id, conflict } => {
-            if !conflict.is_local_only || !conflict.requested_lock.is_output() || !conflict.existing_lock.is_output() {
+            if !conflict.requested_lock.is_output() || !conflict.existing_lock.is_output() {
                 return Ok(false);
             }
             let existing = store.get_latest_lock_by_id(substate_id.substate_id())?;
-            Ok(existing.is_some_and(|lock| lock.version() >= substate_id.version()))
+            Ok(existing.is_some_and(|lock| lock.is_local_only() && lock.version() >= substate_id.version()))
         },
         LockFailedError::SubstateNotFound { .. } => Ok(false),
     }
+}
+
+/// The locks a shard group takes for a multishard execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MultishardLockScope {
+    /// The local inputs, the local outputs and the receipt, taken by a shard group that executes at the New stage.
+    Execution,
+    /// The local outputs, taken at LocalAccept by a shard group that locked its inputs when it prepared.
+    LocalOutputs,
+}
+
+impl MultishardLockScope {
+    fn locks<'a>(
+        self,
+        execution: &'a TransactionExecution,
+        local_committee_info: &CommitteeInfo,
+    ) -> Vec<&'a VersionedSubstateIdLockIntent> {
+        match self {
+            Self::Execution => execution
+                .resolved_inputs()
+                .iter()
+                .chain(execution.resulting_outputs())
+                .filter(|lock| {
+                    lock.substate_id().is_transaction_receipt() ||
+                        local_committee_info.includes_substate_id(lock.substate_id())
+                })
+                .collect(),
+            Self::LocalOutputs => execution
+                .resulting_outputs()
+                .iter()
+                .filter(|lock| local_committee_info.includes_substate_id(lock.substate_id()))
+                .collect(),
+        }
+    }
+}
+
+/// A multishard execution and the locks taken for it in the local shard group.
+#[derive(Debug)]
+pub struct LockedMultishardExecution {
+    pub execution: TransactionExecution,
+    pub lock_status: LockStatus,
+    /// The execution commits only the transaction's fee intent. See [`MultiShardAtom::fee_intent_only`].
+    pub fee_intent_only: bool,
+}
+
+/// Takes the `scope` locks for the multishard `execution`. A transaction that cannot create one of its local outputs
+/// in this or any later block commits only its fee intent in every shard group, so its fee-intent commit is locked and
+/// returned instead. If another shard group has already found that (`fee_intent_only`), or `execution` is the
+/// fee-intent commit already, the fee-intent commit is locked from the start.
+pub fn lock_multishard_execution<TTx: StateStoreReadTransaction>(
+    store: &mut PendingSubstateStore<TTx>,
+    local_committee_info: &CommitteeInfo,
+    transaction_id: TransactionId,
+    execution: TransactionExecution,
+    scope: MultishardLockScope,
+    fee_intent_only: bool,
+) -> Result<LockedMultishardExecution, BlockTransactionExecutorError> {
+    let mut execution = if fee_intent_only {
+        adopt_fee_intent_commit(&transaction_id, execution)?
+    } else {
+        execution
+    };
+    // The execution the proposer stored for the block may already be the fee-intent commit
+    let fee_intent_only = fee_intent_only || execution.is_fee_intent_commit;
+    let lock_status = store.try_lock_all(transaction_id, scope.locks(&execution, local_committee_info), false)?;
+    let reason = match lock_status.hard_conflict() {
+        Some(err) if !fee_intent_only && is_output_never_creatable(store, err)? => {
+            RejectReason::FailedToLockOutputs(err.to_string())
+        },
+        _ => {
+            return Ok(LockedMultishardExecution {
+                execution,
+                lock_status,
+                fee_intent_only,
+            });
+        },
+    };
+    let Some(fee_intent_commit) = take_multishard_fee_intent_commit(&mut execution, reason) else {
+        return Ok(LockedMultishardExecution {
+            execution,
+            lock_status,
+            fee_intent_only,
+        });
+    };
+    warn!(
+        target: LOG_TARGET,
+        "⚠️ Multishard transaction {transaction_id} creates an output that exists or is being created by another \
+         transaction. Every shard group commits its fee intent only",
+    );
+    store.release_new_locks(&transaction_id);
+    let lock_status = store.try_lock_all(
+        transaction_id,
+        scope.locks(&fee_intent_commit, local_committee_info),
+        false,
+    )?;
+    Ok(LockedMultishardExecution {
+        execution: fee_intent_commit,
+        lock_status,
+        fee_intent_only: true,
+    })
+}
+
+/// The execution this shard group commits once another shard group has found that the transaction commits only its
+/// fee intent: the fee-intent commit of `execution`. An execution that already commits only its fee intent is kept,
+/// and so is an aborting one, since an abort from any shard group aborts the transaction everywhere.
+pub fn adopt_fee_intent_commit(
+    transaction_id: &TransactionId,
+    mut execution: TransactionExecution,
+) -> Result<TransactionExecution, BlockTransactionExecutorError> {
+    if execution.decision().is_abort() || execution.result().finalize.is_fee_only() {
+        return Ok(execution);
+    }
+    let reason = RejectReason::FailedToLockOutputs(
+        "another shard group cannot create one of the transaction's outputs".to_string(),
+    );
+    take_multishard_fee_intent_commit(&mut execution, reason).ok_or_else(|| {
+        BlockTransactionExecutorError::InvariantError(format!(
+            "Transaction {transaction_id} has no fee intent to commit, but another shard group committed only its fee \
+             intent"
+        ))
+    })
+}
+
+/// The fee-intent commit of the multishard `execution`, rejecting the rest for `reason`. `None` if there is no fee
+/// intent to commit, or if the fee intent creates a substate that the full execution does not: a shard group that
+/// adopts the fee-intent commit after accepting the full execution holds locks only for the full execution's outputs.
+/// Every shard group executes the transaction alike, so each one reaches the same answer.
+fn take_multishard_fee_intent_commit(
+    execution: &mut TransactionExecution,
+    reason: RejectReason,
+) -> Option<TransactionExecution> {
+    let fee_intent_commit = execution.take_fee_intent_commit(reason)?;
+    let full_outputs = execution
+        .resulting_outputs()
+        .iter()
+        .map(|output| output.to_versioned_substate_id_ref())
+        .collect::<HashSet<_>>();
+    fee_intent_commit
+        .resulting_outputs()
+        .iter()
+        .all(|output| full_outputs.contains(&output.to_versioned_substate_id_ref()))
+        .then_some(fee_intent_commit)
 }
 
 /// Collects the input pledges among `pledges` into the inputs a transaction executes against, excluding output
@@ -1360,12 +1520,13 @@ mod tests {
                 non_local_inputs,
                 block,
                 pinned_to(1),
+                false,
             )?
             else {
                 panic!("expected a multishard preparation");
             };
             let decision = match prepared.into_evidence_or_execution() {
-                EvidenceOrExecution::Execution { execution } => execution.decision(),
+                EvidenceOrExecution::Execution { execution, .. } => execution.decision(),
                 EvidenceOrExecution::Evidence { .. } => Decision::Commit,
             };
             Ok::<_, BlockTransactionExecutorError>((decision, store.new_locks().contains_key(&local)))
@@ -1731,5 +1892,157 @@ mod tests {
             Ok::<_, SubstateStoreError>(())
         })
         .unwrap();
+    }
+
+    fn multishard_transaction(signer: u64) -> TransactionRecord {
+        TransactionRecord::new(
+            Transaction::builder_localnet(Epoch(100))
+                .add_input(SubstateRequirement::unversioned(component_id(1)))
+                .build_and_seal(&PrivateKey::from(signer)),
+        )
+    }
+
+    /// Locks the local outputs of `execution` at LocalAccept in a block of a network of one shard group in which
+    /// `existing` already exist. Returns the locked execution and the substates the block holds a lock on.
+    fn lock_local_accept_outputs(
+        existing: &[SubstateId],
+        transaction: &TransactionRecord,
+        execution: TransactionExecution,
+        fee_intent_only: bool,
+    ) -> (LockedMultishardExecution, Vec<SubstateId>) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = RocksDbStateStore::<String>::open(dir.path().join("db"), Default::default()).unwrap();
+        let zero = Block::zero_block(Network::LocalNet, NumPreshards::P256);
+        db.with_write_tx(|tx| zero.insert(tx)).unwrap();
+        db.with_read_tx(|tx| {
+            let mut store = PendingSubstateStore::init(tx, zero.as_leaf(), NumPreshards::P256)?;
+            for id in existing {
+                store.put(SubstateChange::Up {
+                    shard: shard_of(id),
+                    id: id.clone(),
+                    substate: Box::new(substate(0)),
+                })?;
+            }
+            let locked = lock_multishard_execution(
+                &mut store,
+                &single_committee(Epoch(1)),
+                *transaction.id(),
+                execution,
+                MultishardLockScope::LocalOutputs,
+                fee_intent_only,
+            )?;
+            let locked_ids = store.new_locks().keys().cloned().collect();
+            Ok::<_, BlockTransactionExecutorError>((locked, locked_ids))
+        })
+        .unwrap()
+    }
+
+    fn assert_locks_only_the_fee_intent(locked: &LockedMultishardExecution, locked_ids: &[SubstateId]) {
+        assert!(locked.fee_intent_only);
+        assert!(locked.execution.is_fee_intent_commit);
+        assert!(!locked.lock_status.is_any_failed(), "{:?}", locked.lock_status);
+        assert!(locked.execution.result().finalize.is_fee_only());
+        assert!(locked_ids.contains(&component_id(1)), "{locked_ids:?}");
+        for id in [component_id(2), component_id(3)] {
+            assert!(!locked_ids.contains(&id), "{id} in {locked_ids:?}");
+        }
+    }
+
+    #[test]
+    fn a_shard_group_creating_a_multishard_output_that_exists_commits_the_fee_intent() {
+        let transaction = multishard_transaction(1);
+        let execution = executing_to(
+            &transaction,
+            &component_id(1),
+            &[&component_id(3), &component_id(2)],
+            true,
+        );
+
+        let (locked, locked_ids) = lock_local_accept_outputs(&[component_id(2)], &transaction, execution, false);
+
+        assert_locks_only_the_fee_intent(&locked, &locked_ids);
+    }
+
+    #[test]
+    fn a_shard_group_another_found_commits_the_fee_intent_locks_only_the_fee_intent() {
+        let transaction = multishard_transaction(1);
+        let execution = executing_to(
+            &transaction,
+            &component_id(1),
+            &[&component_id(3), &component_id(2)],
+            true,
+        );
+
+        let (locked, locked_ids) = lock_local_accept_outputs(&[], &transaction, execution, true);
+
+        assert_locks_only_the_fee_intent(&locked, &locked_ids);
+    }
+
+    #[test]
+    fn a_stored_fee_intent_commit_is_locked_as_committing_only_the_fee_intent() {
+        let transaction = multishard_transaction(1);
+        let mut execution = executing_to(
+            &transaction,
+            &component_id(1),
+            &[&component_id(3), &component_id(2)],
+            true,
+        );
+        let fee_intent_commit = execution
+            .take_fee_intent_commit(RejectReason::FailedToLockOutputs("exists".to_string()))
+            .unwrap();
+
+        let (locked, locked_ids) = lock_local_accept_outputs(&[], &transaction, fee_intent_commit, false);
+
+        assert_locks_only_the_fee_intent(&locked, &locked_ids);
+    }
+
+    #[test]
+    fn a_multishard_output_that_exists_without_a_fee_intent_fails_to_lock() {
+        let transaction = multishard_transaction(1);
+        let execution = executing_to(&transaction, &component_id(1), &[&component_id(2)], false);
+
+        let (locked, _) = lock_local_accept_outputs(&[component_id(2)], &transaction, execution, false);
+
+        assert!(!locked.fee_intent_only);
+        assert!(locked.lock_status.is_hard_conflict());
+        assert!(locked.execution.result().finalize.is_full_accept());
+    }
+
+    #[test]
+    fn adopting_the_fee_intent_commit_keeps_an_aborting_execution() {
+        let transaction = multishard_transaction(1);
+        let abort = TransactionExecution::abort(transaction.id(), RejectReason::ForeignPledgeInputConflict);
+
+        let adopted = adopt_fee_intent_commit(transaction.id(), abort).unwrap();
+
+        assert!(adopted.decision().is_abort());
+    }
+
+    #[test]
+    fn adopting_the_fee_intent_commit_of_an_execution_without_one_is_an_invariant_error() {
+        let transaction = multishard_transaction(1);
+        let execution = executing_to(&transaction, &component_id(1), &[&component_id(2)], false);
+
+        let err = adopt_fee_intent_commit(transaction.id(), execution).unwrap_err();
+
+        assert!(matches!(err, BlockTransactionExecutorError::InvariantError(_)), "{err}");
+    }
+
+    /// A shard group that accepted the full execution holds no lock on what only the fee intent writes
+    #[test]
+    fn a_fee_intent_writing_what_the_full_execution_does_not_is_not_committed_alone() {
+        let transaction = multishard_transaction(1);
+        let mut execution = executing_to(&transaction, &component_id(1), &[&component_id(2)], true);
+        execution
+            .fee_intent_fallback
+            .as_mut()
+            .unwrap()
+            .diff
+            .up(component_id(4), substate(0));
+
+        let fee_intent_commit =
+            take_multishard_fee_intent_commit(&mut execution, RejectReason::FailedToLockOutputs("exists".to_string()));
+
+        assert!(fee_intent_commit.is_none());
     }
 }
