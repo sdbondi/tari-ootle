@@ -22,6 +22,7 @@ use tari_crypto::{
 use tari_ootle_common_types::signature::{
     Sr25519SignatureBytes,
     TRANSACTION_SIGNING_CONTEXT,
+    TransactionMessage,
     components,
     from_components,
 };
@@ -65,7 +66,7 @@ fn is_identity(point: &RistrettoPublicKey) -> bool {
 pub fn sign(
     secret: &RistrettoSecretKey,
     adaptor_point: &RistrettoPublicKey,
-    message: &[u8],
+    message: &TransactionMessage,
 ) -> RistrettoAdaptorSignature {
     let nonce = RistrettoSecretKey::random(&mut rand::rng());
     let public_key = RistrettoPublicKey::from_secret_key(secret);
@@ -88,7 +89,7 @@ pub fn verify(
     pre: &RistrettoAdaptorSignature,
     public_key: &RistrettoPublicKey,
     adaptor_point: &RistrettoPublicKey,
-    message: &[u8],
+    message: &TransactionMessage,
 ) -> bool {
     // Reject identity points: a zero public key, nonce, or adaptor point yields a degenerate or
     // malformed signature. These are public values, so compare the encoding, not the constant-time
@@ -136,7 +137,7 @@ mod tests {
         (secret, public)
     }
 
-    const MESSAGE: &[u8] = b"adaptor signature test message";
+    const MESSAGE: &TransactionMessage = &[7; 64];
 
     #[test]
     fn complete_yields_a_valid_transaction_signature() {
@@ -176,7 +177,7 @@ mod tests {
         let (_t, big_t) = keypair();
         let (_, other_p) = keypair();
         let pre = sign(&x, &big_t, MESSAGE);
-        assert!(!verify(&pre, &p, &big_t, b"different message"));
+        assert!(!verify(&pre, &p, &big_t, &[8; 64]));
         assert!(!verify(&pre, &other_p, &big_t, MESSAGE));
     }
 

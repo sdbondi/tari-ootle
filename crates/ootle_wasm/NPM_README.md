@@ -53,7 +53,7 @@ const hash = hashUnsignedTransaction(
 
 ### `sr25519Sign(secretKey, message)`
 
-sr25519-sign a message (typically the hash from `hashUnsignedTransaction`). Returns the standard 64-byte sr25519 signature, which the transaction carries as is.
+sr25519-sign a 64-byte transaction message (the hash from `hashUnsignedTransaction` or `hashUnsealedTransaction`). Returns the standard 64-byte sr25519 signature, which the transaction carries as is. Throws if the message is not 64 bytes, so the key never signs a Substrate signing payload.
 
 ```typescript
 import { sr25519Sign } from "@tari-project/ootle-wasm";

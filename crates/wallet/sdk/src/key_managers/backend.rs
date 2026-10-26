@@ -27,7 +27,7 @@ pub trait WalletKeyStore {
         message: &M,
     ) -> Result<SignatureOutput, Self::Error> {
         let secret = self.derive_secret(key_branch, index)?;
-        let signature = TRANSACTION_SIGNING_CONTEXT.sign(&secret, message.to_signing_message(context).as_ref());
+        let signature = TRANSACTION_SIGNING_CONTEXT.sign(&secret, &message.to_signing_message(context));
         Ok(SignatureOutput {
             signature,
             public_key: RistrettoPublicKey::from_secret_key(&secret),

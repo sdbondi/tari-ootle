@@ -69,19 +69,17 @@ impl From<UnsealedTransactionV1> for UnsealedTransaction {
 }
 
 impl Signable for UnsealedTransaction {
-    type MessageOutput = [u8; 64];
     type Signature = TransactionSealSignature;
 
-    fn to_signing_message(&self, _context: ()) -> Self::MessageOutput {
+    fn to_signing_message(&self, _context: ()) -> [u8; 64] {
         TransactionSealSignature::create_message(self)
     }
 }
 
 impl Signable<&RistrettoPublicKeyBytes> for UnsealedTransaction {
-    type MessageOutput = [u8; 64];
     type Signature = TransactionSignature;
 
-    fn to_signing_message(&self, context: &RistrettoPublicKeyBytes) -> Self::MessageOutput {
+    fn to_signing_message(&self, context: &RistrettoPublicKeyBytes) -> [u8; 64] {
         match self {
             Self::V1(t) => t.to_signing_message(context),
         }

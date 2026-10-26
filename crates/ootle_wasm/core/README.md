@@ -35,7 +35,7 @@ Externally produced signatures are standard sr25519 signatures under the `substr
 
 sr25519 transaction signatures and Ristretto255 keypair operations.
 
-- `sr25519_sign(secret_key: &[u8], message: &[u8]) → Result<Vec<u8>>`
+- `sr25519_sign(secret_key: &[u8], message: &[u8]) → Result<Vec<u8>>`: rejects a message that is not 64 bytes
 - `public_key_from_secret_key(secret_key_hex: &str) → Result<String>`
 - `generate_keypair() → KeypairResult`
 

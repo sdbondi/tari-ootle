@@ -2,10 +2,9 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 pub trait Signable<Ctx = ()> {
-    type MessageOutput: AsRef<[u8]>;
     type Signature;
 
-    fn to_signing_message(&self, context: Ctx) -> Self::MessageOutput;
+    fn to_signing_message(&self, context: Ctx) -> [u8; 64];
 }
 
 pub trait IntoSigned<Ctx = ()>: Signable<Ctx> {

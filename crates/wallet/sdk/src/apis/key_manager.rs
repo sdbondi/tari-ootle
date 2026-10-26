@@ -485,7 +485,7 @@ impl<'a, TSpec: WalletSdkSpec> KeyManagerApi<'a, TSpec> {
         T: Signable<C>,
         T::Signature: From<SignatureOutput>,
     {
-        let signature = TRANSACTION_SIGNING_CONTEXT.sign(secret_key, item.to_signing_message(context).as_ref());
+        let signature = TRANSACTION_SIGNING_CONTEXT.sign(secret_key, &item.to_signing_message(context));
         let public_key = RistrettoPublicKey::from_secret_key(secret_key);
         Ok(SignatureOutput { public_key, signature }.into())
     }

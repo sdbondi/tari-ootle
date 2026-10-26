@@ -6,7 +6,7 @@ use tari_crypto::{
     ristretto::{RistrettoPublicKey, RistrettoSecretKey},
     tari_utilities::ByteArray,
 };
-use tari_ootle_common_types::signature::TRANSACTION_SIGNING_CONTEXT;
+use tari_ootle_common_types::signature::{TRANSACTION_SIGNING_CONTEXT, TransactionMessage};
 
 use crate::error::OotleWasmError;
 
@@ -37,8 +37,13 @@ pub fn generate_keypair() -> KeypairResult {
 }
 
 /// Sign a transaction signing message (the 64-byte transaction hash) with a Ristretto secret key,
-/// both as raw bytes. Returns the 64-byte sr25519 signature.
+/// both as raw bytes. Returns the 64-byte sr25519 signature. A message of any other length is rejected.
 pub fn sr25519_sign(secret_key: &[u8], message: &[u8]) -> Result<Vec<u8>, OotleWasmError> {
+    let message: &TransactionMessage = message.try_into().map_err(|_| OotleWasmError::InvalidByteLength {
+        field: "message",
+        expected: 64,
+        got: message.len(),
+    })?;
     let secret_key = RistrettoSecretKey::from_canonical_bytes(secret_key)
         .map_err(|e| OotleWasmError::InvalidSecretKey(e.to_string()))?;
     Ok(TRANSACTION_SIGNING_CONTEXT
@@ -74,6 +79,19 @@ mod tests {
             &public_key.to_byte_type(),
             &message
         ));
+    }
+
+    #[test]
+    fn sign_rejects_a_message_that_is_not_64_bytes() {
+        let secret = RistrettoSecretKey::random(&mut rand::rng());
+        for len in [0, 32, 63, 65, 128] {
+            let err = sr25519_sign(secret.as_bytes(), &vec![1u8; len]).unwrap_err();
+            assert!(matches!(err, OotleWasmError::InvalidByteLength {
+                field: "message",
+                expected: 64,
+                got
+            } if got == len));
+        }
     }
 
     #[test]

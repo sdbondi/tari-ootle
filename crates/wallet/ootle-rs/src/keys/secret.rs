@@ -12,7 +12,7 @@ use tari_ootle_address::{Network, OotleAddress};
 use tari_ootle_common_types::{
     base_layer_hashing::encrypted_data_hasher,
     engine_types::crypto::OutputBody,
-    signature::{Sr25519SignatureBytes, TRANSACTION_SIGNING_CONTEXT},
+    signature::{Sr25519SignatureBytes, TRANSACTION_SIGNING_CONTEXT, TransactionMessage},
 };
 use tari_ootle_wallet_crypto::{
     DecryptedData,
@@ -95,7 +95,9 @@ impl OotleSecretKey {
 }
 
 impl PrehashSigner<(Sr25519SignatureBytes, RistrettoPublicKey)> for OotleSecretKey {
+    /// Signs a 64-byte transaction message; any other length is an error.
     fn sign_prehash(&self, prehash: &[u8]) -> signature::Result<(Sr25519SignatureBytes, RistrettoPublicKey)> {
+        let prehash: &TransactionMessage = prehash.try_into().map_err(|_| signature::Error::new())?;
         let signature = TRANSACTION_SIGNING_CONTEXT.sign(&self.account_secret, prehash);
         let public_key = self.verifying_key();
         Ok((signature, public_key))
@@ -106,7 +108,7 @@ impl StealthKeyPrehashSigner<(Sr25519SignatureBytes, RistrettoPublicKey)> for Oo
     async fn sign_prehash_with_stealth_key(
         &self,
         public_nonce: &RistrettoPublicKey,
-        prehash: &[u8],
+        prehash: &TransactionMessage,
     ) -> signer::Result<(Sr25519SignatureBytes, RistrettoPublicKey)> {
         let secret = kdfs::owner_stealth_dh_secret(
             self.network(),

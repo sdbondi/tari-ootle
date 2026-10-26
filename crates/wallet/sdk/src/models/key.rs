@@ -190,7 +190,7 @@ impl WalletSecretKey {
 
     pub fn sign<T: Signable<C>, C>(&self, context: C, item: &T) -> Sr25519SignatureBytes {
         let message = item.to_signing_message(context);
-        TRANSACTION_SIGNING_CONTEXT.sign(&self.secret, message.as_ref())
+        TRANSACTION_SIGNING_CONTEXT.sign(&self.secret, &message)
     }
 }
 

@@ -21,7 +21,7 @@ use tari_crypto::{
     keys::PublicKey,
     ristretto::{RistrettoPublicKey, RistrettoSecretKey},
 };
-use tari_ootle_common_types::signature::{Sr25519SignatureBytes, TRANSACTION_SIGNING_CONTEXT};
+use tari_ootle_common_types::signature::{Sr25519SignatureBytes, TRANSACTION_SIGNING_CONTEXT, TransactionMessage};
 use tari_ootle_transaction::TransactionSignature;
 pub use tari_ootle_wallet_crypto::adaptor::{RistrettoAdaptorSignature, extract, verify};
 use tari_ootle_wallet_crypto::adaptor::{complete, sign};
@@ -30,7 +30,7 @@ use crate::wallet::TransactionAuthorization;
 
 /// Signs `message` with `secret`, producing an authorization ready to attach for the signer's public key. Use for a
 /// key-path or `AccessRule` co-signer whose secret this party holds outright (e.g. our own side of a 2-of-2).
-pub fn sign_authorization(secret: &RistrettoSecretKey, message: &[u8]) -> TransactionAuthorization {
+pub fn sign_authorization(secret: &RistrettoSecretKey, message: &TransactionMessage) -> TransactionAuthorization {
     let public_key = RistrettoPublicKey::from_secret_key(secret);
     let signature = TRANSACTION_SIGNING_CONTEXT.sign(secret, message);
     authorization_from_parts(&public_key, signature)
@@ -42,7 +42,7 @@ pub fn sign_authorization(secret: &RistrettoSecretKey, message: &[u8]) -> Transa
 pub fn pre_sign_authorization(
     secret: &RistrettoSecretKey,
     adaptor_point: &RistrettoPublicKey,
-    message: &[u8],
+    message: &TransactionMessage,
 ) -> RistrettoAdaptorSignature {
     sign(secret, adaptor_point, message)
 }

@@ -68,7 +68,7 @@ wasm-pack build crates/ootle_wasm/wasm --target bundler --dev --out-dir ../../..
 | `hashUnsealedTransaction`    | `(txJson: string) → Uint8Array`                                                                            | Hash a transaction for sealing (64 bytes)       |
 | `attachSealSignature`        | `(txJson: string, sealSignerPubKey: Uint8Array, signature: Uint8Array) → string`                           | Seal with an external signer's signature        |
 | `attachTransactionSignature` | `(txJson: string, signerPubKey: Uint8Array, signature: Uint8Array, sealSignerPubKey: Uint8Array) → string` | Append an external signer's authorization       |
-| `sr25519Sign`                | `(secretKey: Uint8Array, message: Uint8Array) → Uint8Array`                                                | sr25519-sign a message (64-byte signature)      |
+| `sr25519Sign`                | `(secretKey: Uint8Array, message: Uint8Array) → Uint8Array`                                                | sr25519-sign a 64-byte transaction message      |
 | `generateKeypair`            | `() → { secret_key, public_key }`                                                                          | Generate a random Ristretto keypair             |
 | `publicKeyFromSecretKey`     | `(secretKey: Uint8Array) → Uint8Array`                                                                     | Derive public key from secret key               |
 
