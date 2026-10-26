@@ -4,7 +4,7 @@
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 use log::*;
-use tari_ootle_app_utilities::logging::{ConsoleFormat, LogFileConfig, LoggingConfig, dropped_lines};
+use tari_logging::{ConsoleFormat, LogFileConfig, LoggingConfig, dropped_lines};
 use tari_shutdown::ShutdownSignal;
 
 const LOG_TARGET: &str = "tari::validator_node::logging";
@@ -133,7 +133,7 @@ pub async fn report_dropped_lines(mut shutdown: ShutdownSignal) {
 
 #[cfg(test)]
 mod tests {
-    use tari_ootle_app_utilities::logging::build;
+    use tari_logging::build;
 
     use super::*;
 

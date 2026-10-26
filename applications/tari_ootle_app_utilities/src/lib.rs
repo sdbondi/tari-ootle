@@ -36,8 +36,6 @@ pub mod genesis_governance;
 pub mod genesis_resources;
 pub mod identity_management;
 pub mod keypair;
-#[cfg(feature = "logging")]
-pub mod logging;
 #[cfg(feature = "p2p")]
 pub mod p2p_config;
 pub mod protocol_activation;

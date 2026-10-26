@@ -26,7 +26,7 @@ use std::{fs, fs::OpenOptions, io::Write, panic, time::SystemTime};
 
 use clap::Parser;
 use log::*;
-use tari_ootle_app_utilities::{configuration::load_configuration, keypair::setup_keypair_prompt, logging};
+use tari_ootle_app_utilities::{configuration::load_configuration, keypair::setup_keypair_prompt};
 use tari_shutdown::Shutdown;
 use tari_validator_node::{ApplicationConfig, node, run_validator_node};
 
@@ -60,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
             );
         }
     });
-    let _logging = logging::init(
+    let _logging = tari_logging::init(
         &config.validator_node.logging,
         config.common.base_path(),
         extra_log_layers(&cli),
@@ -137,25 +137,25 @@ fn install_panic_hook(abort_follows: bool) {
         default_hook(info);
         node::trigger_panic_notifier();
         if abort_follows {
-            logging::flush_and_close();
+            tari_logging::flush_and_close();
         }
     }));
 }
 
 #[cfg(feature = "tokio_debug")]
-fn extra_log_layers(cli: &Cli) -> Vec<logging::BoxedLayer> {
+fn extra_log_layers(cli: &Cli) -> Vec<tari_logging::BoxedLayer> {
     vec![Box::new(
         console_subscriber::ConsoleLayer::builder()
             .server_addr((
                 std::net::Ipv4Addr::LOCALHOST,
                 cli.tokio_console_port.unwrap_or(DEBUG_PORT),
             ))
-            .spawn::<logging::Registry>(),
+            .spawn::<tari_logging::Registry>(),
     )]
 }
 
 #[cfg(not(feature = "tokio_debug"))]
-fn extra_log_layers(_cli: &Cli) -> Vec<logging::BoxedLayer> {
+fn extra_log_layers(_cli: &Cli) -> Vec<tari_logging::BoxedLayer> {
     Vec::new()
 }
 
@@ -245,7 +245,7 @@ mod tests {
         let dir = std::path::PathBuf::from(dir);
         // The panic hook also writes a panic file into the working directory.
         env::set_current_dir(&dir).unwrap();
-        let _logging = logging::init(&default_logging_config(), &dir, Vec::new()).unwrap();
+        let _logging = tari_logging::init(&default_logging_config(), &dir, Vec::new()).unwrap();
         // A line large enough to keep the writer busy while the hook runs, so the panic line is still queued behind it
         // when the hook returns.
         debug!(target: LOG_TARGET, "{}", "x".repeat(BACKLOG_BYTES));

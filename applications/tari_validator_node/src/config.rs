@@ -35,10 +35,10 @@ use tari_common::{
     configuration::{CommonConfig, ConfigList, StringList},
 };
 use tari_crypto::ristretto::RistrettoPublicKey;
+use tari_logging::LoggingConfig;
 use tari_ootle_app_utilities::{
     epoch_oracle_config::EpochOracleConfig,
     genesis_governance::{GenesisCouncil, GenesisCouncilError},
-    logging::LoggingConfig,
     p2p_config::{P2pConfig, PeerSeedsConfig, RpcConfig},
 };
 use tari_ootle_common_types::diagnostics::DiagnosticLevel;

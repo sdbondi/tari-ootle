@@ -12149,6 +12149,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tari_logging"
+version = "0.47.0"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "tracing-appender",
+ "tracing-log",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tari_max_size"
 version = "6.3.0-pre.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12300,10 +12315,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml 0.9.11+spec-1.1.0",
- "tracing",
- "tracing-appender",
- "tracing-log",
- "tracing-subscriber",
  "url",
 ]
 
@@ -13391,6 +13402,7 @@ dependencies = [
  "tari_engine_types",
  "tari_epoch_manager",
  "tari_epoch_oracles",
+ "tari_logging",
  "tari_networking",
  "tari_ootle_app_utilities",
  "tari_ootle_common_types",
