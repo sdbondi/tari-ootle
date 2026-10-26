@@ -4,7 +4,7 @@
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 use log::*;
-use tari_ootle_app_utilities::logging::{LogFileConfig, LoggingConfig, dropped_lines};
+use tari_ootle_app_utilities::logging::{ConsoleFormat, LogFileConfig, LoggingConfig, dropped_lines};
 use tari_shutdown::ShutdownSignal;
 
 const LOG_TARGET: &str = "tari::validator_node::logging";
@@ -95,6 +95,7 @@ pub fn default_logging_config() -> LoggingConfig {
             "hickory_proto=off",
             "multistream_select=off",
         ]),
+        console_format: ConsoleFormat::Text,
         files: files
             .into_iter()
             .map(|(name, file)| (name.to_string(), file))
@@ -147,6 +148,8 @@ mod tests {
             .unwrap()
             .set_override("validator_node.logging.files.audit.filter", "tari::audit=info")
             .unwrap()
+            .set_override("validator_node.logging.console_format", "json")
+            .unwrap()
             .build()
             .unwrap();
         let logging = ValidatorNodeConfig::load_from(&config).unwrap().logging;
@@ -158,6 +161,8 @@ mod tests {
         assert_eq!(logging.files["consensus"].filter, defaults.files["consensus"].filter);
         assert_eq!(logging.files["audit"].filter, "tari::audit=info");
         assert_eq!(logging.files.len(), defaults.files.len() + 1);
+        assert_eq!(logging.console_format, ConsoleFormat::Json);
+        assert_eq!(logging.console, defaults.console);
     }
 
     #[test]

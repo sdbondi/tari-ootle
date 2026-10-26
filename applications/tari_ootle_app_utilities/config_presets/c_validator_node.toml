@@ -57,6 +57,8 @@
 #directory = "log/validator-node"
 ## The events printed to stdout. RUST_LOG, when set, replaces it. (default = "warn,tari=info,...")
 #console = "warn,tari=info"
+## How events are printed to stdout: "text", or "json" (one object per event, for log shippers) (default = "text")
+#console_format = "text"
 #
 ## Each [validator_node.logging.files.<name>] table configures <directory>/<name>.log. The defaults are ootle,
 ## consensus, engine, network, libp2p and other. A table changes only the keys it sets, and a new name adds a file.

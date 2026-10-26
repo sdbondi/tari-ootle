@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use tracing::Subscriber;
 use tracing_appender::non_blocking::{ErrorCounter, NonBlockingBuilder, WorkerGuard};
 pub use tracing_subscriber::Registry;
-use tracing_subscriber::{Layer, filter::Targets, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{Layer, filter::Targets, fmt, fmt::MakeWriter, layer::SubscriberExt, util::SubscriberInitExt};
 
 use self::rolling_file::RollingFile;
 
@@ -45,8 +45,23 @@ pub struct LoggingConfig {
     pub directory: PathBuf,
     /// The events printed to stdout. `RUST_LOG`, when set, replaces it.
     pub console: String,
+    /// How events are printed to stdout.
+    #[serde(default)]
+    pub console_format: ConsoleFormat,
     /// File sinks by name. The sink named `<name>` writes `<directory>/<name>.log`.
     pub files: BTreeMap<String, LogFileConfig>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConsoleFormat {
+    /// `<timestamp> LEVEL message`, coloured when stdout is a terminal.
+    #[default]
+    Text,
+    /// One JSON object per event, for log shippers: `timestamp`, `level`, `target`, `filename`, `line_number`,
+    /// `threadName` and the event's fields under `fields`, the message as `fields.message`. An event from the `log`
+    /// crate also carries `fields."log.module_path"` and the `log.target`, `log.file` and `log.line` it came with.
+    Json,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,16 +236,35 @@ pub fn build(
         .finish(io::stdout());
     writers.dropped.push((CONSOLE_SINK.to_string(), writer.error_counter()));
     writers.guards.push(guard);
-    layers.push(
-        fmt::Layer::new()
+    layers.push(console_layer(
+        config.console_format,
+        writer,
+        io::stdout().is_terminal(),
+        filter,
+    ));
+
+    Ok((tracing_subscriber::registry().with(layers), writers))
+}
+
+fn console_layer<W>(format: ConsoleFormat, writer: W, ansi: bool, filter: Targets) -> BoxedLayer
+where W: for<'a> MakeWriter<'a> + Send + Sync + 'static {
+    match format {
+        ConsoleFormat::Text => fmt::Layer::new()
             .with_writer(writer)
-            .with_ansi(io::stdout().is_terminal())
+            .with_ansi(ansi)
             .with_target(false)
             .with_filter(filter)
             .boxed(),
-    );
-
-    Ok((tracing_subscriber::registry().with(layers), writers))
+        ConsoleFormat::Json => fmt::Layer::new()
+            .json()
+            .with_writer(writer)
+            .with_ansi(false)
+            .with_file(true)
+            .with_line_number(true)
+            .with_thread_names(true)
+            .with_filter(filter)
+            .boxed(),
+    }
 }
 
 fn parse_filter(sink: &str, filter: &str) -> Result<Targets, LoggingError> {
@@ -243,7 +277,7 @@ fn parse_filter(sink: &str, filter: &str) -> Result<Targets, LoggingError> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, sync::Arc};
 
     use super::*;
 
@@ -251,6 +285,7 @@ mod tests {
         LoggingConfig {
             directory: PathBuf::from("log"),
             console: "off".to_string(),
+            console_format: ConsoleFormat::Text,
             files: files
                 .iter()
                 .map(|(name, filter)| (name.to_string(), LogFileConfig::new(*filter)))
@@ -320,6 +355,63 @@ mod tests {
         assert_eq!(file, file!(), "{line}");
         assert!(line_number.parse::<u32>().is_ok(), "{line}");
         assert_eq!(message, "⏲️ prepare took 1.5ms", "{line}");
+    }
+
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for Buffer {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for Buffer {
+        type Writer = Buffer;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Log shippers read these keys, so a change to any of them must change the shippers too.
+    #[test]
+    fn json_console_lines_carry_the_fields_log_shippers_read() {
+        let buffer = Buffer::default();
+        let filter = parse_filter(CONSOLE_SINK, "info").unwrap();
+        let subscriber =
+            tracing_subscriber::registry().with(console_layer(ConsoleFormat::Json, buffer.clone(), false, filter));
+        // Most of the node logs through the `log` crate, so the line is sent through the bridge.
+        log::set_max_level(log::LevelFilter::Info);
+        tracing::subscriber::with_default(subscriber, || {
+            log::Log::log(
+                &tracing_log::LogTracer::new(),
+                &log::Record::builder()
+                    .target("tari::ootle::consensus")
+                    .level(log::Level::Info)
+                    .file(Some("consensus/src/hotstuff.rs"))
+                    .line(Some(42))
+                    .module_path(Some("tari_consensus::hotstuff"))
+                    .args(format_args!("leader failed"))
+                    .build(),
+            );
+        });
+
+        let output = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+        let line: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert!(line["timestamp"].as_str().is_some_and(|ts| ts.ends_with('Z')), "{line}");
+        assert_eq!(line["level"], "INFO", "{line}");
+        assert_eq!(line["target"], "tari::ootle::consensus", "{line}");
+        assert_eq!(line["fields"]["message"], "leader failed", "{line}");
+        assert_eq!(line["filename"], "consensus/src/hotstuff.rs", "{line}");
+        assert_eq!(line["line_number"], 42, "{line}");
+        assert!(line["threadName"].is_string(), "{line}");
+        assert_eq!(line["fields"]["log.module_path"], "tari_consensus::hotstuff", "{line}");
     }
 
     #[test]
