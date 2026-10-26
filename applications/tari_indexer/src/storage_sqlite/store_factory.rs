@@ -28,7 +28,7 @@ const LOG_TARGET: &str = "tari::indexer::storage_sqlite";
 const POOL_MAX_SIZE: usize = 16;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a writer queues for `write_lock` before the wait is logged. Writes hold the lock for
-/// milliseconds, so a queue this slow means a writer at its front is not progressing.
+/// milliseconds, so a queue this slow is either long or held up by a writer at its front.
 const WRITE_LOCK_WARN_AFTER: Duration = Duration::from_secs(5);
 /// How long a writer queues for `write_lock` before it gives up with an error. A writer handed the
 /// lock but never polled again holds every writer behind it, and this bound turns that into errors
@@ -109,7 +109,7 @@ impl SqliteIndexerStore {
         }
         log::warn!(
             target: LOG_TARGET,
-            "Still waiting for the indexer store's write lock after {}s: the writer ahead of this one is not progressing",
+            "Still waiting for the indexer store's write lock after {}s: the write lock queue has not reached this writer",
             WRITE_LOCK_WARN_AFTER.as_secs()
         );
         time::timeout(WRITE_LOCK_TIMEOUT.saturating_sub(WRITE_LOCK_WARN_AFTER), lock)

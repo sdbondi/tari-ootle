@@ -779,7 +779,7 @@ pub(crate) mod tests {
         finalized(TransactionResult::Accept(Default::default()), tag)
     }
 
-    fn aborted() -> Answer {
+    pub(crate) fn aborted() -> Answer {
         finalized(TransactionResult::Reject(RejectReason::ForeignPledgeInputConflict), 0)
     }
 

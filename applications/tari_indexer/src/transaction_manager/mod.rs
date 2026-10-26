@@ -54,9 +54,10 @@ const LOG_TARGET: &str = "tari::indexer::transaction_manager";
 /// later poll of the same result from taking the write lock again.
 const RETIRED_RESULTS_CAPACITY: usize = 4096;
 
-/// How long a submission waits to record itself locally before answering. The record serves the
-/// recent-transactions listing and rejection reporting, and the submission itself never reads it.
-const SUBMISSION_RECORD_TIMEOUT: Duration = Duration::from_secs(1);
+/// How long a request waits to record a transaction's submission or abort locally before answering.
+/// The record serves the recent-transactions listing and rejection reporting, and the request
+/// recording it never reads it back.
+const LOCAL_RECORD_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone)]
 pub struct TransactionManager<TEpochManager, TClientFactory, TStore> {
@@ -173,13 +174,13 @@ where
                 None => Ok::<_, StorageError>(()),
             }
         });
-        match time::timeout(SUBMISSION_RECORD_TIMEOUT, record).await {
+        match time::timeout(LOCAL_RECORD_TIMEOUT, record).await {
             Ok(Ok(())) => {},
             Ok(Err(e)) => warn!(target: LOG_TARGET, "Failed to record submitted transaction {transaction_id}: {e}"),
             Err(_) => warn!(
                 target: LOG_TARGET,
                 "Answered the submission of {transaction_id} without recording it: the write did not complete within {}ms",
-                SUBMISSION_RECORD_TIMEOUT.as_millis()
+                LOCAL_RECORD_TIMEOUT.as_millis()
             ),
         }
 
@@ -220,9 +221,21 @@ where
                             .clone()
                             .or_else(|| finalized.final_decision.abort_reason().map(|r| r.to_string()))
                             .unwrap_or_else(|| "Transaction aborted".to_string());
-                        self.store
-                            .with_write_tx(move |tx| tx.set_transaction_rejected(transaction_id, &details))
-                            .await?;
+                        // A record that does not land is retried on the next read of the result.
+                        let record = self
+                            .store
+                            .with_write_tx(move |tx| tx.set_transaction_rejected(transaction_id, &details));
+                        match time::timeout(LOCAL_RECORD_TIMEOUT, record).await {
+                            Ok(Ok(())) => {},
+                            Ok(Err(e)) => {
+                                warn!(target: LOG_TARGET, "Failed to record the abort of {transaction_id}: {e}")
+                            },
+                            Err(_) => warn!(
+                                target: LOG_TARGET,
+                                "Answered the result of {transaction_id} without recording its abort: the write did not complete within {}ms",
+                                LOCAL_RECORD_TIMEOUT.as_millis()
+                            ),
+                        }
                     }
                 }
 
@@ -321,14 +334,21 @@ mod tests {
 
     use super::*;
     use crate::{
-        network_client::tests::{Answer, FakeCommittee, FakeEpochManager, network},
+        network_client::tests::{Answer, FakeCommittee, FakeEpochManager, aborted, network},
         network_state_sync::ShardWatermarks,
         storage_sqlite::{SqliteIndexerStore, temp_store},
         store::IndexerStoreReader,
     };
 
     fn manager(store: SqliteIndexerStore) -> TransactionManager<FakeEpochManager, FakeCommittee, SqliteIndexerStore> {
-        let (network_client, _) = network(vec![Answer::Pending]);
+        manager_answering(store, Answer::Pending)
+    }
+
+    fn manager_answering(
+        store: SqliteIndexerStore,
+        answer: Answer,
+    ) -> TransactionManager<FakeEpochManager, FakeCommittee, SqliteIndexerStore> {
+        let (network_client, _) = network(vec![answer]);
         let substate_cache = SqliteSubstateCache::new(
             store.clone(),
             Arc::new(ShardWatermarks::new()),
@@ -366,7 +386,28 @@ mod tests {
         let id = manager.submit_transaction(transaction.clone()).await.unwrap();
 
         assert_eq!(id, transaction.calculate_id());
-        assert_eq!(started.elapsed(), SUBMISSION_RECORD_TIMEOUT);
+        assert_eq!(started.elapsed(), LOCAL_RECORD_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_abort_is_answered_while_the_store_cannot_write() {
+        let (_dir, store) = temp_store().await;
+        let manager = manager_answering(store.clone(), aborted());
+        let transaction = transaction(7);
+        let id = transaction.calculate_id();
+        store
+            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction, Epoch(100)))
+            .await
+            .unwrap();
+        let _held = store.hold_write_lock().await;
+
+        let started = time::Instant::now();
+        let result = manager.get_transaction_result(id).await.unwrap();
+
+        assert!(
+            matches!(&result, IndexerTransactionFinalizedResult::Finalized { final_decision, .. } if final_decision.is_abort())
+        );
+        assert_eq!(started.elapsed(), LOCAL_RECORD_TIMEOUT);
     }
 
     #[tokio::test]

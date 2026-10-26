@@ -395,8 +395,8 @@ where
                     verified: lookup_result.verified,
                     proof: lookup_result.proof.as_ref(),
                 };
-                // A write given up on here still lands or is vetoed whole: the cache checks the
-                // watermark inside the write itself.
+                // A write given up on here either never starts or runs whole, and the cache checks
+                // the watermark inside the write, so a late one cannot land stale.
                 match tokio::time::timeout(
                     WARMING_WRITE_TIMEOUT,
                     self.substate_cache.write(substate_id, entry, watermark),
