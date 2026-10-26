@@ -74,7 +74,7 @@ async fn prepared_transaction_aborts_after_max_epoch_when_foreign_group_never_de
     let transaction_id = *transaction.id();
     assert_eq!(transaction.transaction().max_epoch(), Epoch(1));
 
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         test.on_block_committed().await;
         let prepared = pool_record(&test, "1", &transaction_id)

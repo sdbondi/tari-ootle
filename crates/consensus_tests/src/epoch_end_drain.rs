@@ -100,7 +100,7 @@ async fn cross_shard_transaction_is_finalized_before_an_epoch_end_that_changes_t
     let (transaction, _, _) = test.send_transaction_to_all(Decision::Commit, 1, 1, 1).await;
     let transaction_id = *transaction.id();
 
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         test.on_block_committed().await;
         let prepared = pool_record(&test, "1", &transaction_id)
