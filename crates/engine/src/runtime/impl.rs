@@ -347,8 +347,13 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         if !finalized.outcome().is_commit() {
             self.invoke_modules_on_before_persist(&mut finalized)?;
         }
+        // The fallback is optional, so failing to settle it leaves the transaction to commit in full or abort as
+        // it would without one, rather than failing a result that is already settled.
         let fallback = if with_fee_intent_fallback {
-            self.finalize_fee_intent_fallback(&finalized)?
+            self.finalize_fee_intent_fallback(&finalized).unwrap_or_else(|err| {
+                warn!(target: LOG_TARGET, "Failed to settle the fee-intent fallback: {err}");
+                None
+            })
         } else {
             None
         };
