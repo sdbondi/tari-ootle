@@ -14,6 +14,7 @@ use tari_engine::{
     template::LoadedTemplate,
 };
 use tari_engine_types::{
+    external_substates::ExternalSubstates,
     substate::Substate,
     virtual_substate::{VirtualSubstate, VirtualSubstateId, VirtualSubstates},
 };
@@ -92,6 +93,7 @@ where
         input_fanout: u32,
         resolved_inputs: &HashMap<SubstateRequirement, Substate>,
         templates: &UncommittedChainTemplates,
+        external: &dyn ExternalSubstates,
     ) -> Result<TransactionExecution, BlockTransactionExecutorError> {
         let id = transaction.calculate_id();
 
@@ -129,6 +131,7 @@ where
                 virtual_substates,
                 burn_rate,
                 input_fanout,
+                external,
             )
             .map_err(|e| BlockTransactionExecutorError::ExecutionThreadFailure(e.to_string()))?;
 
@@ -173,6 +176,7 @@ mod tests {
     use tari_engine::wasm::DiskCachedWasmTemplateProvider;
     use tari_engine_types::{
         commit_result::{ExecuteResult, FinalizeResult, RejectReason, TransactionResult},
+        external_substates::NoExternalSubstates,
         fees::{ExhaustBurnRate, FeeReceipt},
         published_template::PublishedTemplate,
         substate::SubstateDiff,
@@ -206,6 +210,7 @@ mod tests {
             _virtual_substates: VirtualSubstates,
             _burn_rate: ExhaustBurnRate,
             _input_fanout: u32,
+            _external: &dyn ExternalSubstates,
         ) -> Result<ExecutionOutput, Self::Error> {
             let finalize = if template_provider.get_template(&CALLED).unwrap().is_some() {
                 FinalizeResult::new(
@@ -278,6 +283,7 @@ mod tests {
             0,
             &HashMap::new(),
             &chain(publishes),
+            &NoExternalSubstates,
         )
         .unwrap()
     }

@@ -64,6 +64,7 @@ use tari_engine_types::{
     limits::{CompileCounts, ModuleShape},
     lock::LockFlag,
     published_template::TemplateBlob,
+    substate::SubstateId,
 };
 use tari_ootle_transaction::{
     AllocatableAddressType,
@@ -207,6 +208,8 @@ pub trait RuntimeInterface {
     ) -> Result<BucketId, RuntimeError>;
 
     fn checkpoint_fee_intent(&self) -> Result<(), RuntimeError>;
+    /// The substates the transaction has created so far, excluding new versions of substates it was given.
+    fn created_substates(&self) -> Result<Vec<SubstateId>, RuntimeError>;
     fn finalize(&self) -> Result<FinalizeResult, RuntimeError>;
     /// [`Self::finalize`], also settling what committing the fee intent alone would persist, for
     /// consensus to commit if it cannot commit the full result. The fallback is `None` unless the

@@ -11,6 +11,7 @@ use log::*;
 use tari_consensus_types::{Decision, LeafBlock};
 use tari_engine_types::{
     commit_result::{AbortReason, RejectReason},
+    external_substates::{ExternalSubstates, ExternalSubstatesError},
     substate::{Substate, SubstateId},
 };
 use tari_ootle_common_types::{
@@ -381,6 +382,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
             input_fanout(transaction, local_committee_info),
             &resolved_inputs,
             &self.uncommitted_templates.templates_for(store)?,
+            &LocalExternalSubstates::new(store, local_committee_info, pledged_transaction.transaction.id()),
         )
     }
 
@@ -431,6 +433,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
             input_fanout(transaction.transaction(), local_committee_info),
             resolved_inputs,
             &self.uncommitted_templates.templates_for(store)?,
+            &LocalExternalSubstates::new(store, local_committee_info, transaction.id()),
         )
     }
 
@@ -863,6 +866,45 @@ struct ResolvedInputs<'a> {
     pub num_local_tombstones: usize,
 }
 
+/// Answers for the substates in the local shard group as the block being evaluated sees them, with the same rules
+/// [`is_output_never_creatable`] applies when locking. Every node evaluating the block evaluates its transactions in
+/// the same order against the same store, so every node gets the same answers. A substate held by another shard group
+/// is reported as not taken, since this store does not hold it: the group holding it rejects the transaction, and an
+/// abort from any shard group aborts it everywhere.
+struct LocalExternalSubstates<'a, 'tx, TTx: StateStoreReadTransaction> {
+    store: &'a PendingSubstateStore<'tx, TTx>,
+    local_committee_info: &'a CommitteeInfo,
+    transaction_id: &'a TransactionId,
+}
+
+impl<'a, 'tx, TTx: StateStoreReadTransaction> LocalExternalSubstates<'a, 'tx, TTx> {
+    fn new(
+        store: &'a PendingSubstateStore<'tx, TTx>,
+        local_committee_info: &'a CommitteeInfo,
+        transaction_id: &'a TransactionId,
+    ) -> Self {
+        Self {
+            store,
+            local_committee_info,
+            transaction_id,
+        }
+    }
+}
+
+impl<TTx: StateStoreReadTransaction> ExternalSubstates for LocalExternalSubstates<'_, '_, TTx> {
+    fn is_taken(&self, id: &SubstateId) -> Result<bool, ExternalSubstatesError> {
+        if !self.local_committee_info.includes_substate_id(id) {
+            return Ok(false);
+        }
+        self.store
+            .is_creation_taken(self.transaction_id, id)
+            .map_err(|err| ExternalSubstatesError {
+                id: id.clone(),
+                details: err.to_string(),
+            })
+    }
+}
+
 /// Locks the inputs and outputs of `execution`, a transaction whose inputs and outputs are all local. A transaction
 /// that cannot create one of its outputs in this or any later block still commits its fee intent, which pays for its
 /// execution, and that is what is locked and returned instead.
@@ -1060,6 +1102,7 @@ mod tests {
             _input_fanout: u32,
             _resolved_inputs: &HashMap<SubstateRequirement, Substate>,
             _templates: &UncommittedChainTemplates,
+            _external: &dyn ExternalSubstates,
         ) -> Result<TransactionExecution, BlockTransactionExecutorError> {
             Err(BlockTransactionExecutorError::ExecutionThreadFailure(
                 "reached the engine".to_string(),
@@ -1363,6 +1406,7 @@ mod tests {
             _input_fanout: u32,
             _resolved_inputs: &HashMap<SubstateRequirement, Substate>,
             _templates: &UncommittedChainTemplates,
+            _external: &dyn ExternalSubstates,
         ) -> Result<TransactionExecution, BlockTransactionExecutorError> {
             Ok(self.0.clone())
         }
@@ -1636,5 +1680,56 @@ mod tests {
         assert!(prepared[0].execution.decision().is_abort());
         assert!(prepared[1].execution.result().finalize.is_full_accept());
         assert!(prepared[1].is_locked);
+    }
+
+    #[test]
+    fn a_substate_is_taken_if_it_exists_or_another_local_only_transaction_creates_it() {
+        // Shard group 0 of 2 holds the first half of the shards
+        let committee = CommitteeInfo::new(
+            NumPreshards::P256,
+            1,
+            2,
+            ShardGroup::new(0u32, 127u32),
+            Epoch(1),
+            VotePower::of(1),
+        );
+        let (local, foreign): (Vec<_>, Vec<_>) = (1..=u8::MAX)
+            .map(component_id)
+            .partition(|id| committee.includes_substate_id(id));
+        let [existing, created, fresh] = [0, 1, 2].map(|i| local[i].clone());
+        let foreign = foreign[0].clone();
+        let creator = TransactionId::new([1; 32]);
+        let other = TransactionId::new([2; 32]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = RocksDbStateStore::<String>::open(dir.path().join("db"), Default::default()).unwrap();
+        let zero = Block::zero_block(Network::LocalNet, NumPreshards::P256);
+        db.with_write_tx(|tx| zero.insert(tx)).unwrap();
+        db.with_read_tx(|tx| {
+            let mut store = PendingSubstateStore::init(tx, zero.as_leaf(), NumPreshards::P256)?;
+            store.put(SubstateChange::Up {
+                id: existing.clone(),
+                shard: shard_of(&existing),
+                substate: Box::new(substate(0)),
+            })?;
+            store.try_lock(
+                creator,
+                &VersionedSubstateIdLockIntent::output(versioned(&created, 0)),
+                true,
+            )?;
+
+            let taken = |transaction_id: &TransactionId, id: &SubstateId| {
+                LocalExternalSubstates::new(&store, &committee, transaction_id)
+                    .is_taken(id)
+                    .unwrap()
+            };
+            assert!(taken(&other, &existing));
+            assert!(taken(&other, &created));
+            assert!(!taken(&creator, &created));
+            assert!(!taken(&other, &fresh));
+            assert!(!taken(&other, &foreign));
+            Ok::<_, SubstateStoreError>(())
+        })
+        .unwrap();
     }
 }

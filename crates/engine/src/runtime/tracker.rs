@@ -738,6 +738,10 @@ impl<TStore: StateReader> StateTracker<TStore> {
             .expect("BUG: write_with called after finalize consumed working state"))
     }
 
+    pub fn created_substate_ids(&self) -> Result<Vec<SubstateId>, RuntimeError> {
+        self.read_with(|state| state.store().created_substate_ids())
+    }
+
     pub(super) fn is_fee_intent_checkpointed(&self) -> bool {
         self.fee_checkpoint.borrow().is_some()
     }

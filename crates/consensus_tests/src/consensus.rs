@@ -1232,6 +1232,7 @@ async fn single_shard_input_conflict() {
         new_outputs: vec![],
         validator_fee_withdrawals: vec![],
         calls_template: None,
+        fee_intent_fallback_fee: None,
     })
     .add_execution_at_destination(TestVnDestination::All, ExecuteSpec {
         transaction: tx2.transaction().clone(),
@@ -1241,6 +1242,7 @@ async fn single_shard_input_conflict() {
         new_outputs: vec![],
         validator_fee_withdrawals: vec![],
         calls_template: None,
+        fee_intent_fallback_fee: None,
     });
 
     test.network()
@@ -1369,6 +1371,7 @@ async fn single_shard_unversioned_inputs() {
         new_outputs: vec![],
         validator_fee_withdrawals: vec![],
         calls_template: None,
+        fee_intent_fallback_fee: None,
     });
 
     test.start_epoch(Epoch(1)).await;
@@ -1457,6 +1460,7 @@ async fn multishard_unversioned_input_conflict() {
         new_outputs: vec![],
         validator_fee_withdrawals: vec![],
         calls_template: None,
+        fee_intent_fallback_fee: None,
     })
     .add_execution_at_destination(TestVnDestination::All, ExecuteSpec {
         transaction: tx2.transaction().clone(),
@@ -1469,6 +1473,7 @@ async fn multishard_unversioned_input_conflict() {
         new_outputs: vec![],
         validator_fee_withdrawals: vec![],
         calls_template: None,
+        fee_intent_fallback_fee: None,
     });
 
     // NOTE: we send tx1 to committee 0 and tx2 to committee 1 to loosely ensure that we create the situation this test
@@ -1563,6 +1568,7 @@ async fn multishard_unversioned_input_conflict_delay_prepare() {
         new_outputs: vec![],
         validator_fee_withdrawals: vec![],
         calls_template: None,
+        fee_intent_fallback_fee: None,
     })
     .add_execution_at_destination(TestVnDestination::All, ExecuteSpec {
         transaction: tx2.transaction().clone(),
@@ -1575,6 +1581,7 @@ async fn multishard_unversioned_input_conflict_delay_prepare() {
         new_outputs: vec![],
         validator_fee_withdrawals: vec![],
         calls_template: None,
+        fee_intent_fallback_fee: None,
     });
 
     test.network()
@@ -1653,6 +1660,7 @@ async fn multishard_publish_template() {
         new_outputs: vec![SubstateId::Template(template_id)],
         validator_fee_withdrawals: vec![],
         calls_template: None,
+        fee_intent_fallback_fee: None,
     });
 
     test.start_epoch(Epoch(1)).await;
@@ -1718,6 +1726,7 @@ async fn multishard_validator_fee_claim() {
         new_outputs: vec![],
         validator_fee_withdrawals: vec![ValidatorFeeWithdrawal { address, amount: 500 }],
         calls_template: None,
+        fee_intent_fallback_fee: None,
     });
 
     // Get some fees

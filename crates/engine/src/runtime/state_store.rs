@@ -241,6 +241,17 @@ impl<TStore: StateReader> WorkingStateStore<TStore> {
         mem::take(&mut self.downed)
     }
 
+    /// The substates the transaction has created so far, excluding new versions of substates it was given.
+    pub fn created_substate_ids(&self) -> Result<Vec<SubstateId>, RuntimeError> {
+        let mut created = Vec::new();
+        for id in self.new_substates.keys() {
+            if !self.loaded_substates.contains_key(id) && !self.state_store.exists(id)? {
+                created.push(id.clone());
+            }
+        }
+        Ok(created)
+    }
+
     pub fn mutated_substates(&self) -> &IndexMap<SubstateId, SubstateValue> {
         &self.new_substates
     }

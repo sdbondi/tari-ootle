@@ -15,6 +15,7 @@ use tari_engine::{
 };
 use tari_engine_types::{
     commit_result::{ExecuteResult, FeeIntentFallback},
+    external_substates::ExternalSubstates,
     fees::{ExhaustBurnRate, FeeScale, FeeScaleSchedule},
     substate::Substate,
     virtual_substate::VirtualSubstates,
@@ -38,7 +39,7 @@ pub trait TransactionExecutor<TStore> {
     /// Executes `transaction`, resolving every template it calls from `template_provider`.
     ///
     /// `input_fanout` is [`Transaction::input_fanout`] for the shard layout the transaction executes
-    /// under.
+    /// under. `external` answers for substates the transaction creates outside its inputs.
     fn execute<TTemplateProvider: TemplateProvider<Template = LoadedTemplate>>(
         &self,
         transaction: &Transaction,
@@ -47,6 +48,7 @@ pub trait TransactionExecutor<TStore> {
         virtual_substates: VirtualSubstates,
         burn_rate: ExhaustBurnRate,
         input_fanout: u32,
+        external: &dyn ExternalSubstates,
     ) -> Result<ExecutionOutput, Self::Error>;
 }
 
@@ -147,6 +149,7 @@ impl<TStore: StateReader + Clone + 'static> TransactionExecutor<TStore> for Tari
         virtual_substates: VirtualSubstates,
         burn_rate: ExhaustBurnRate,
         input_fanout: u32,
+        external: &dyn ExternalSubstates,
     ) -> Result<ExecutionOutput, Self::Error> {
         // Include signature public key badges for all transaction signers in the initial auth scope
         // NOTE: we assume all signatures have already been validated.
@@ -184,7 +187,8 @@ impl<TStore: StateReader + Clone + 'static> TransactionExecutor<TStore> for Tari
                 fee_intent_fallback: None,
             });
         }
-        let (result, fee_intent_fallback) = processor.execute_with_fee_intent_fallback(transaction.clone())?;
+        let (result, fee_intent_fallback) =
+            processor.execute_with_fee_intent_fallback(transaction.clone(), external)?;
         Ok(ExecutionOutput {
             result,
             fee_intent_fallback,

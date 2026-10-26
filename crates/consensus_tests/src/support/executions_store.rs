@@ -49,4 +49,7 @@ pub struct ExecuteSpec {
     /// A template the transaction calls. Execution aborts unless the template resolves, from the uncommitted
     /// ancestors of the block it executes in or from durably committed state.
     pub calls_template: Option<PublishedTemplateAddress>,
+    /// When set, a commit also settles a fee-intent fallback charging this fee, which writes the transaction's
+    /// write-locked inputs and its receipt but none of `new_outputs`.
+    pub fee_intent_fallback_fee: Option<u64>,
 }

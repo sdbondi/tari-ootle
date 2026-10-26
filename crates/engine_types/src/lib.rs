@@ -9,6 +9,7 @@ pub mod confidential_output;
 pub mod crypto;
 pub mod encoded;
 pub mod events;
+pub mod external_substates;
 pub mod fees;
 pub mod hashing;
 pub mod indexed_value;

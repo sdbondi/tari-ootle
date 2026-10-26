@@ -3954,6 +3954,10 @@ where
         self.tracker.required_fee_payment()
     }
 
+    fn created_substates(&self) -> Result<Vec<SubstateId>, RuntimeError> {
+        self.tracker.created_substate_ids()
+    }
+
     fn checkpoint_fee_intent(&self) -> Result<(), RuntimeError> {
         // Price the state the fee intent ended on before testing what was paid against it. This is
         // the state a transaction that cannot afford its main intent falls back to committing, so a

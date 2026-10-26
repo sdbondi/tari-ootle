@@ -16,7 +16,8 @@ use tari_consensus::traits::{
 use tari_consensus_types::Decision;
 use tari_engine::state_store::{StateWriter, memory::MemoryStateStore, new_memory_store};
 use tari_engine_types::{
-    commit_result::AbortReason,
+    commit_result::{AbortReason, FeeIntentFallback},
+    external_substates::ExternalSubstates,
     substate::{Substate, SubstateId},
 };
 use tari_ootle_common_types::{
@@ -144,6 +145,7 @@ impl<TStateStore: StateStore> BlockTransactionExecutor<TStateStore> for TestBloc
         _input_fanout: u32,
         resolved_inputs: &HashMap<SubstateRequirement, Substate>,
         templates: &UncommittedChainTemplates,
+        _external: &dyn ExternalSubstates,
     ) -> Result<TransactionExecution, BlockTransactionExecutorError> {
         let id = transaction.calculate_id();
 
@@ -192,6 +194,7 @@ impl<TStateStore: StateStore> BlockTransactionExecutor<TStateStore> for TestBloc
             })
             .collect::<Vec<_>>();
 
+        let new_outputs = spec.new_outputs.clone();
         let resulting_outputs = spec
             .new_outputs
             .into_iter()
@@ -232,6 +235,27 @@ impl<TStateStore: StateStore> BlockTransactionExecutor<TStateStore> for TestBloc
             spec.validator_fee_withdrawals,
         );
 
+        let fee_intent_fallback = spec
+            .fee_intent_fallback_fee
+            .filter(|_| decision.is_commit())
+            .map(|fee| {
+                let fee_intent_outputs = resulting_outputs
+                    .iter()
+                    .filter(|output| !new_outputs.contains(output.substate_id()))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let fee_intent_result = create_execution_result_for_transaction(
+                    transaction,
+                    Decision::Commit,
+                    fee,
+                    &resolved_inputs,
+                    &fee_intent_outputs,
+                    vec![],
+                );
+                FeeIntentFallback::from_fee_intent_finalization(fee_intent_result.finalize)
+                    .expect("a committed result settles a fallback")
+            });
+
         let resulting_outputs = result
             .finalize
             .result
@@ -248,7 +272,8 @@ impl<TStateStore: StateStore> BlockTransactionExecutor<TStateStore> for TestBloc
             })
             .unwrap_or_default();
 
-        let executed = TransactionExecution::new(result, resolved_inputs, resulting_outputs);
+        let executed = TransactionExecution::new(result, resolved_inputs, resulting_outputs)
+            .with_fee_intent_fallback(fee_intent_fallback);
         log::info!(
             "[{}] Transaction {} executed in {:.2?}. {}",
             self.address,

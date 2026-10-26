@@ -61,6 +61,7 @@ async fn a_transaction_deferred_for_a_lock_conflict_is_executed_once() {
         new_outputs: vec![],
         validator_fee_withdrawals: vec![],
         calls_template: None,
+        fee_intent_fallback_fee: None,
     })
     .add_execution_at_destination(TestVnDestination::All, ExecuteSpec {
         transaction: blocked.transaction().clone(),
@@ -70,6 +71,7 @@ async fn a_transaction_deferred_for_a_lock_conflict_is_executed_once() {
         new_outputs: vec![],
         validator_fee_withdrawals: vec![],
         calls_template: None,
+        fee_intent_fallback_fee: None,
     });
 
     test.send_transaction_to_destination(TestVnDestination::All, blocker.clone())

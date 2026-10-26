@@ -172,6 +172,7 @@ fn publish_and_call(test: &Test) -> TemplateCall {
         new_outputs: vec![SubstateId::Template(template)],
         validator_fee_withdrawals: vec![],
         calls_template: None,
+        fee_intent_fallback_fee: None,
     })
     .add_execution_at_destination(TestVnDestination::All, ExecuteSpec {
         transaction: call.transaction().clone(),
@@ -181,6 +182,7 @@ fn publish_and_call(test: &Test) -> TemplateCall {
         new_outputs: vec![],
         validator_fee_withdrawals: vec![],
         calls_template: Some(template),
+        fee_intent_fallback_fee: None,
     });
 
     TemplateCall { publish, call }

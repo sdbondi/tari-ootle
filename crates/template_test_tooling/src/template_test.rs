@@ -36,6 +36,7 @@ use tari_engine::{
 };
 use tari_engine_types::{
     commit_result::{ExecuteResult, FeeIntentFallback, RejectReason},
+    external_substates::ExternalSubstates,
     fees::{ExhaustBurnRate, FeeScale},
     indexed_value::IndexedValue,
     substate::{Substate, SubstateDiff, SubstateId},
@@ -866,19 +867,20 @@ impl TemplateTest {
         transaction: Transaction,
         proofs: Vec<NonFungibleAddress>,
     ) -> Result<ExecuteResult, TransactionError> {
-        self.try_execute_inner(transaction, proofs, false)
+        self.try_execute_inner(transaction, proofs, None)
             .map(|(result, _)| result)
     }
 
-    /// [`Self::try_execute`], also returning what committing only the fee intent would persist, as consensus
-    /// executes it.
+    /// [`Self::try_execute`] as consensus executes it, with `external` answering for the substates the transaction
+    /// creates. Also returns what committing only the fee intent would persist.
     #[track_caller]
     pub fn try_execute_with_fee_intent_fallback(
         &mut self,
         transaction: Transaction,
         proofs: Vec<NonFungibleAddress>,
+        external: &dyn ExternalSubstates,
     ) -> Result<(ExecuteResult, Option<FeeIntentFallback>), TransactionError> {
-        self.try_execute_inner(transaction, proofs, true)
+        self.try_execute_inner(transaction, proofs, Some(external))
     }
 
     #[track_caller]
@@ -886,7 +888,7 @@ impl TemplateTest {
         &mut self,
         transaction: Transaction,
         mut proofs: Vec<NonFungibleAddress>,
-        with_fee_intent_fallback: bool,
+        consensus_external: Option<&dyn ExternalSubstates>,
     ) -> Result<(ExecuteResult, Option<FeeIntentFallback>), TransactionError> {
         let mut modules: Vec<Box<dyn RuntimeModule<ReadOnlyMemoryStateStore>>> = Vec::with_capacity(3);
 
@@ -942,10 +944,9 @@ impl TemplateTest {
         let tx_id = wrapped_transaction.to_id();
         eprintln!("START Transaction id = \"{}\"", tx_id);
 
-        let execution = if with_fee_intent_fallback {
-            processor.execute_with_fee_intent_fallback(wrapped_transaction)
-        } else {
-            processor.execute(wrapped_transaction).map(|result| (result, None))
+        let execution = match consensus_external {
+            Some(external) => processor.execute_with_fee_intent_fallback(wrapped_transaction, external),
+            None => processor.execute(wrapped_transaction).map(|result| (result, None)),
         };
         let (result, fee_intent_fallback) = execution.inspect_err(|_| {
             self.last_execution_points = ExecutionPoints::default();

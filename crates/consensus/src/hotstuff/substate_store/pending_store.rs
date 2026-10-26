@@ -600,6 +600,24 @@ impl<'store, TTx: StateStoreReadTransaction> PendingSubstateStore<'store, TTx> {
         Ok(())
     }
 
+    /// Whether `transaction_id` cannot create `id`: a version of it has existed in this chain, or a local-only
+    /// transaction this chain commits holds an OUTPUT lock on it.
+    pub fn is_creation_taken(
+        &self,
+        transaction_id: &TransactionId,
+        id: &SubstateId,
+    ) -> Result<bool, SubstateStoreError> {
+        match self.lock_assert_not_exist(VersionedSubstateIdRef::new(id, SubstateVersion::ZERO)) {
+            Ok(()) => {},
+            Err(SubstateStoreError::LockFailed(LockFailedError::SubstateExists { .. })) => return Ok(true),
+            Err(err) => return Err(err),
+        }
+        let Some(lock) = self.get_latest_lock_by_id(id)? else {
+            return Ok(false);
+        };
+        Ok(lock.is_output() && lock.is_local_only() && lock.transaction_id() != transaction_id)
+    }
+
     /// Drops every lock `transaction_id` was granted while preparing the block, as though it had never requested
     /// them. Locks it holds from earlier blocks are untouched.
     pub fn release_new_locks(&mut self, transaction_id: &TransactionId) {

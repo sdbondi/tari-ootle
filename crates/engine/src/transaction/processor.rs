@@ -28,6 +28,7 @@ use tari_engine_types::{
     commit_result::{ExecuteResult, FeeIntentFallback, FinalizeResult},
     component::derive_component_address_from_public_key,
     entity_id_provider::EntityIdProvider,
+    external_substates::{ExternalSubstates, NoExternalSubstates},
     fees::{ExhaustBurnRate, FeeScale},
     indexed_value::{IndexedValue, IndexedWellKnownTypes},
     limits,
@@ -177,22 +178,26 @@ where
     }
 
     pub fn execute<E: Executable + WeightedExecutable>(self, executable: E) -> Result<ExecuteResult, TransactionError> {
-        self.execute_inner(executable, false).map(|(result, _)| result)
+        self.execute_inner(executable, &NoExternalSubstates, false)
+            .map(|(result, _)| result)
     }
 
-    /// Executes `executable`, also settling what committing its fee intent alone would persist when it commits in
-    /// full. See [`FeeIntentFallback`].
+    /// Executes `executable` as consensus does. A fee intent that creates a substate `external` reports as taken can
+    /// never commit, so the transaction is rejected before its main intent runs. A transaction that commits in full
+    /// also settles what committing its fee intent alone would persist; see [`FeeIntentFallback`].
     pub fn execute_with_fee_intent_fallback<E: Executable + WeightedExecutable>(
         self,
         executable: E,
+        external: &dyn ExternalSubstates,
     ) -> Result<(ExecuteResult, Option<FeeIntentFallback>), TransactionError> {
-        self.execute_inner(executable, true)
+        self.execute_inner(executable, external, true)
     }
 
     #[expect(clippy::too_many_lines)]
     fn execute_inner<E: Executable + WeightedExecutable>(
         self,
         executable: E,
+        external: &dyn ExternalSubstates,
         with_fee_intent_fallback: bool,
     ) -> Result<(ExecuteResult, Option<FeeIntentFallback>), TransactionError> {
         let (id, intent_commitment) = executable.to_id_and_intent_commitment();
@@ -300,7 +305,11 @@ where
             Ok(()) => {
                 // Checkpoint the tracker state after the fee instructions have been executed in case of transaction
                 // failure.
-                if let Err(err) = runtime.interface().checkpoint_fee_intent() {
+                let checkpoint = match Self::find_taken_creation(&runtime, external)? {
+                    Some(address) => Err(RuntimeError::DuplicateSubstate { address }),
+                    None => runtime.interface().checkpoint_fee_intent(),
+                };
+                if let Err(err) = checkpoint {
                     let mut finalize = FinalizeResult::new_rejected(transaction_hash, err.to_reject_reason(None));
                     // Nothing is taken and nothing is written, but what committing would have cost
                     // is the number the payer has to raise their fee to.
@@ -384,6 +393,20 @@ where
                 Ok((result, None))
             },
         }
+    }
+
+    /// The first substate the fee intent created that `external` reports as taken. Nothing the fee intent created can
+    /// be committed then, so stopping before the main intent leaves only the fee intent's flat compute credit unpaid.
+    fn find_taken_creation(
+        runtime: &Runtime,
+        external: &dyn ExternalSubstates,
+    ) -> Result<Option<SubstateId>, TransactionError> {
+        for id in runtime.interface().created_substates()? {
+            if external.is_taken(&id).map_err(TransactionErrorKind::from)? {
+                return Ok(Some(id));
+            }
+        }
+        Ok(None)
     }
 
     fn process_instructions(

@@ -5,8 +5,10 @@ use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_engine::fees::FeeTable;
 use tari_engine_types::{
     commit_result::{ExecutionFailureCode, RejectReason, TransactionResult},
+    external_substates::NoExternalSubstates,
     fees::{FeeReceipt, FeeScale, FeeSource},
     limits::ENGINE_LIMITS,
+    substate::SubstateId,
 };
 use tari_ootle_common_types::InputDeclaration;
 use tari_ootle_transaction::{Epoch, INVOCATION_FLOOR, Transaction, args};
@@ -317,7 +319,11 @@ fn a_full_commit_settles_its_fee_intent_commit_beside_it() {
         builder = builder.call_function(state_template, "new", args![]);
     }
     let (result, fallback) = test
-        .try_execute_with_fee_intent_fallback(builder.build_and_seal(&private_key), vec![owner_token])
+        .try_execute_with_fee_intent_fallback(
+            builder.build_and_seal(&private_key),
+            vec![owner_token],
+            &NoExternalSubstates,
+        )
         .unwrap();
     let diff = result.expect_success();
     let fallback = fallback.expect("a full commit settles a fee-intent fallback");
@@ -378,10 +384,55 @@ fn a_fee_intent_commit_has_no_fallback() {
                 .call_function(test.get_template_address("State"), "this_doesnt_exist", args![])
                 .build_and_seal(&private_key),
             vec![owner_token],
+            &NoExternalSubstates,
         )
         .unwrap();
     assert!(result.finalize.is_fee_only());
     assert!(fallback.is_none());
+}
+
+/// A fee intent that creates a substate the executor reports as taken can never commit, so the
+/// transaction is rejected at the fee checkpoint and its main intent never runs.
+#[test]
+fn a_fee_intent_creating_a_taken_substate_is_rejected_before_the_main_intent() {
+    let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
+    let (account, owner_token, private_key) = test.create_funded_account();
+    test.enable_fees();
+
+    let state_template = test.get_template_address("State");
+    let transaction = Transaction::builder_localnet(Epoch(1))
+        .with_fee_instructions_builder(|builder| {
+            builder
+                .pay_fee_from_component(account, 100_000u64)
+                .call_function(state_template, "new", args![])
+        })
+        .call_function(state_template, "new", args![])
+        .build_and_seal(&private_key);
+    let created_components_are_taken =
+        |id: &SubstateId| id.as_component_address().is_some_and(|address| address != account);
+
+    let (result, fallback) = test
+        .try_execute_with_fee_intent_fallback(transaction, vec![owner_token.clone()], &created_components_are_taken)
+        .unwrap();
+
+    let reason = result.finalize.reject().expect("the fee intent is rejected");
+    assert!(reason.to_string().contains("Duplicate substate"), "{reason}");
+    assert!(fallback.is_none());
+    // The main intent's call never ran, so the transaction metered what its fee intent alone meters
+    let with_main_intent = test.last_execution_points().wasm;
+    test.try_execute_with_fee_intent_fallback(
+        Transaction::builder_localnet(Epoch(1))
+            .with_fee_instructions_builder(|builder| {
+                builder
+                    .pay_fee_from_component(account, 100_000u64)
+                    .call_function(state_template, "new", args![])
+            })
+            .build_and_seal(&private_key),
+        vec![owner_token],
+        &created_components_are_taken,
+    )
+    .unwrap();
+    assert_eq!(with_main_intent, test.last_execution_points().wasm);
 }
 
 /// Compute is funded by what the payment has left after the state the transaction falls back to
