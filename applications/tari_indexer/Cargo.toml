@@ -100,6 +100,8 @@ utoipa-swagger-ui = { workspace = true, features = ["axum"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# test-util drives the clock, so the write lock timeout tests do not wait in real time
+tokio = { workspace = true, features = ["test-util"] }
 toml = { workspace = true }
 
 [features]

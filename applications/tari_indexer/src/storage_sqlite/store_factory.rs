@@ -1,7 +1,7 @@
 //   Copyright 2022 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use std::{fmt::Debug, fs::create_dir_all, path::PathBuf, sync::Arc, time::Duration};
+use std::{fmt::Debug, fs::create_dir_all, path::PathBuf, pin::pin, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use deadpool_diesel::{
@@ -12,7 +12,10 @@ use diesel::{Connection, RunQueryDsl, SqliteConnection, sql_query};
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness};
 use tari_ootle_storage::StorageError;
 use tari_ootle_storage_sqlite::{SqliteTransaction, error::SqliteStorageError};
-use tokio::sync::Mutex;
+use tokio::{
+    sync::{Mutex, OwnedMutexGuard},
+    time,
+};
 
 #[cfg(feature = "metrics")]
 use crate::storage_sqlite::metrics::{StorageFileStats, StorageMetrics};
@@ -24,6 +27,13 @@ use crate::{
 const LOG_TARGET: &str = "tari::indexer::storage_sqlite";
 const POOL_MAX_SIZE: usize = 16;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a writer queues for `write_lock` before the wait is logged. Writes hold the lock for
+/// milliseconds, so a queue this slow means a writer at its front is not progressing.
+const WRITE_LOCK_WARN_AFTER: Duration = Duration::from_secs(5);
+/// How long a writer queues for `write_lock` before it gives up with an error. A writer handed the
+/// lock but never polled again holds every writer behind it, and this bound turns that into errors
+/// on the writers behind it.
+const WRITE_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("./src/storage_sqlite/migrations");
 
 #[derive(Clone)]
@@ -88,6 +98,35 @@ impl SqliteIndexerStore {
     pub fn with_metrics(mut self, metrics: StorageMetrics) -> Self {
         self.metrics = Some(metrics);
         self
+    }
+
+    /// Queues for `write_lock`, giving up after [`WRITE_LOCK_TIMEOUT`]. A waiter that gives up leaves
+    /// the queue without taking the lock.
+    async fn lock_for_write(&self) -> Result<OwnedMutexGuard<()>, StorageError> {
+        let mut lock = pin!(self.write_lock.clone().lock_owned());
+        if let Ok(guard) = time::timeout(WRITE_LOCK_WARN_AFTER, &mut lock).await {
+            return Ok(guard);
+        }
+        log::warn!(
+            target: LOG_TARGET,
+            "Still waiting for the indexer store's write lock after {}s: the writer ahead of this one is not progressing",
+            WRITE_LOCK_WARN_AFTER.as_secs()
+        );
+        time::timeout(WRITE_LOCK_TIMEOUT.saturating_sub(WRITE_LOCK_WARN_AFTER), lock)
+            .await
+            .map_err(|_| StorageError::General {
+                details: format!(
+                    "Timed out after {}s waiting for the indexer store's write lock",
+                    WRITE_LOCK_TIMEOUT.as_secs()
+                ),
+            })
+    }
+
+    /// Takes the write lock and holds it until the guard drops, standing in for a writer that has
+    /// stopped progressing.
+    #[cfg(test)]
+    pub(crate) async fn hold_write_lock(&self) -> OwnedMutexGuard<()> {
+        self.write_lock.clone().lock_owned().await
     }
 
     async fn acquire(&self) -> Result<deadpool_diesel::sqlite::Connection, StorageError> {
@@ -207,7 +246,14 @@ impl IndexerStore for SqliteIndexerStore {
         // Taken before a pooled connection so that queued writers do not hold connections readers
         // need. The guard moves into the closure because `interact` keeps running on its blocking
         // thread if this future is dropped, and the lock must be held until the transaction ends.
-        let write_guard = self.write_lock.clone().lock_owned().await;
+        let write_guard = self.lock_for_write().await;
+        #[cfg(feature = "metrics")]
+        if write_guard.is_err() &&
+            let Some(metrics) = &self.metrics
+        {
+            metrics.observe_write_lock_wait(lock_requested.elapsed());
+        }
+        let write_guard = write_guard?;
         let conn = self.acquire().await?;
         #[cfg(feature = "metrics")]
         let metrics = self.metrics.clone();
@@ -818,6 +864,45 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = SqliteIndexerStore::try_create(dir.path().join("indexer.db")).unwrap();
         (dir, store)
+    }
+
+    async fn write_marker(store: &SqliteIndexerStore, value: u64) -> Result<(), StorageError> {
+        store
+            .with_write_tx(move |tx| tx.key_value_set(Key::TariAccumulatedFees, value))
+            .await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_writer_queued_behind_a_held_write_lock_gives_up_after_the_timeout() {
+        let (_dir, store) = temp_store().await;
+        let held = store.hold_write_lock().await;
+
+        let started = time::Instant::now();
+        let err = write_marker(&store, 1).await.unwrap_err();
+        assert_eq!(started.elapsed(), WRITE_LOCK_TIMEOUT);
+        assert!(
+            err.to_string()
+                .contains("Timed out after 30s waiting for the indexer store's write lock"),
+            "{err}"
+        );
+
+        // The waiter that gave up holds no place in the queue, so the next writer takes the lock as
+        // soon as it is released.
+        drop(held);
+        write_marker(&store, 2).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_writer_queued_behind_a_progressing_writer_takes_the_lock() {
+        let (_dir, store) = temp_store().await;
+        let held = store.hold_write_lock().await;
+        let release = tokio::spawn(async move {
+            time::sleep(WRITE_LOCK_WARN_AFTER + Duration::from_secs(1)).await;
+            drop(held);
+        });
+
+        write_marker(&store, 1).await.unwrap();
+        release.await.unwrap();
     }
 
     #[tokio::test]
