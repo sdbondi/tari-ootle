@@ -530,7 +530,7 @@ impl NetworkClientError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use tari_engine_types::{
@@ -555,7 +555,7 @@ mod tests {
     type Addr = String;
 
     #[derive(Clone)]
-    enum Answer {
+    pub(crate) enum Answer {
         Pending,
         Finalized(Box<FinalizedResult>),
         Unreachable,
@@ -563,9 +563,9 @@ mod tests {
 
     /// Answers for each committee member, by address, and how many requests they have served.
     #[derive(Clone)]
-    struct FakeCommittee(Arc<HashMap<Addr, Answer>>, Arc<AtomicUsize>);
+    pub(crate) struct FakeCommittee(Arc<HashMap<Addr, Answer>>, Arc<AtomicUsize>);
 
-    struct FakeMember {
+    pub(crate) struct FakeMember {
         committee: FakeCommittee,
         address: Addr,
     }
@@ -582,8 +582,11 @@ mod tests {
     }
 
     impl ValidatorNodeRpcClient<Addr> for FakeMember {
-        async fn submit_transaction(&mut self, _: Transaction) -> Result<TransactionId, ValidatorNodeRpcClientError> {
-            unimplemented!()
+        async fn submit_transaction(
+            &mut self,
+            transaction: Transaction,
+        ) -> Result<TransactionId, ValidatorNodeRpcClientError> {
+            Ok(transaction.calculate_id())
         }
 
         async fn get_finalized_transaction_result(
@@ -623,7 +626,7 @@ mod tests {
         }
     }
 
-    struct FakeEpochManager(Arc<Committee<Addr>>);
+    pub(crate) struct FakeEpochManager(Arc<Committee<Addr>>);
 
     impl EpochManagerReader for FakeEpochManager {
         type Addr = Addr;
@@ -805,7 +808,9 @@ mod tests {
 
     /// A committee of equally weighted members, member `n` answering with `answers[n]`, and a count
     /// of the requests it serves.
-    fn network(answers: Vec<Answer>) -> (TariNetworkClient<FakeEpochManager, FakeCommittee>, Arc<AtomicUsize>) {
+    pub(crate) fn network(
+        answers: Vec<Answer>,
+    ) -> (TariNetworkClient<FakeEpochManager, FakeCommittee>, Arc<AtomicUsize>) {
         let members = (0..answers.len())
             .map(|n| CommitteeMember {
                 address: format!("vn{n}"),

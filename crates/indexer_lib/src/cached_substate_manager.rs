@@ -121,6 +121,11 @@ pub const ANCHOR_HEIGHT_TOLERANCE: u64 = 16;
 /// a small memo covers them; when it fills it starts over.
 const VALIDATED_TIP_MEMO_SIZE: usize = 1024;
 
+/// How long a read waits on a local write that only warms later reads: its result going into the
+/// substate cache, or its validated tip into the trusted-root store. Past this the caller is
+/// answered without it.
+const WARMING_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// The most substates a validator will answer for in one batch request.
 const SUBSTATE_BATCH_SIZE: usize = 50;
 
@@ -390,7 +395,22 @@ where
                     verified: lookup_result.verified,
                     proof: lookup_result.proof.as_ref(),
                 };
-                self.substate_cache.write(substate_id, entry, watermark).await?;
+                // A write given up on here still lands or is vetoed whole: the cache checks the
+                // watermark inside the write itself.
+                match tokio::time::timeout(
+                    WARMING_WRITE_TIMEOUT,
+                    self.substate_cache.write(substate_id, entry, watermark),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {},
+                    Ok(Err(e)) => warn!(target: LOG_TARGET, "Failed to cache substate {substate_id}: {e}"),
+                    Err(_) => warn!(
+                        target: LOG_TARGET,
+                        "Answered the lookup of {substate_id} without caching it: the cache write did not complete within {}ms",
+                        WARMING_WRITE_TIMEOUT.as_millis()
+                    ),
+                }
             }
         }
 
@@ -1335,15 +1355,25 @@ where
 
         self.remember_tip(block_id, verified_tip);
 
-        // Warm the store so subsequent reads at this tip hit the fast path. A write failure must not
-        // fail an otherwise-verified read.
+        // Warm the store so subsequent reads at this tip hit the fast path. A write that fails or
+        // stalls must neither fail nor hold up an otherwise-verified read.
         if let Some(store) = &self.trusted_root_store {
             let trusted = store
                 .trusted_root_height(epoch, shard_group, verified_tip.state_merkle_root)
                 .await
                 .is_ok_and(|height| height.is_some());
-            if !trusted && let Err(e) = store.record(verified_tip).await {
-                warn!(target: LOG_TARGET, "Failed to record verified root at epoch {epoch} {shard_group}: {e}");
+            if !trusted {
+                match tokio::time::timeout(WARMING_WRITE_TIMEOUT, store.record(verified_tip)).await {
+                    Ok(Ok(())) => {},
+                    Ok(Err(e)) => {
+                        warn!(target: LOG_TARGET, "Failed to record verified root at epoch {epoch} {shard_group}: {e}")
+                    },
+                    Err(_) => warn!(
+                        target: LOG_TARGET,
+                        "Answered the read without recording the verified root at epoch {epoch} {shard_group}: the write did not complete within {}ms",
+                        WARMING_WRITE_TIMEOUT.as_millis()
+                    ),
+                }
             }
         }
 
@@ -1716,7 +1746,18 @@ mod tests {
     struct FakeCache(
         Mutex<HashMap<SubstateId, SubstateCacheEntry>>,
         Mutex<HashMap<(SubstateId, SubstateVersion), SubstateProofData>>,
+        Mutex<CacheWrites>,
     );
+
+    /// How the fake cache answers a write.
+    #[derive(Default, Clone, Copy)]
+    enum CacheWrites {
+        #[default]
+        Succeed,
+        Fail,
+        /// Pends forever, as a write queued behind a stalled store does.
+        Stall,
+    }
 
     impl SubstateCache for FakeCache {
         async fn watermark(&self, _: &SubstateId) -> Result<Option<FetchWatermark>, SubstateCacheError> {
@@ -1741,6 +1782,12 @@ mod tests {
             entry: SubstateCacheEntryRef<'_>,
             _: FetchWatermark,
         ) -> Result<(), SubstateCacheError> {
+            let writes = *self.2.lock().unwrap();
+            match writes {
+                CacheWrites::Succeed => {},
+                CacheWrites::Fail => return Err(SubstateCacheError("disk full".to_string())),
+                CacheWrites::Stall => std::future::pending().await,
+            }
             self.0.lock().unwrap().insert(id.clone(), SubstateCacheEntry {
                 version: entry.version,
                 substate_result: entry.substate_result.clone(),
@@ -2807,6 +2854,38 @@ mod tests {
         assert_eq!(network.single_requests.load(Ordering::Relaxed), 0);
     }
 
+    /// The cache write only warms the next read, so one that never completes holds the lookup up for
+    /// no longer than its bound.
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_cache_write_holds_up_the_lookup_only_for_its_bound() {
+        let ids = vec![component_id(1)];
+        let (manager, _) = manager(FakeNetwork {
+            live: live(&ids),
+            ..Default::default()
+        });
+        *manager.substate_cache.2.lock().unwrap() = CacheWrites::Stall;
+
+        let started = tokio::time::Instant::now();
+        let lookup = manager.get_substate(&ids[0], None).await.unwrap();
+
+        assert!(lookup.result.into_up().is_some());
+        assert_eq!(started.elapsed(), WARMING_WRITE_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn a_failed_cache_write_still_answers_the_lookup() {
+        let ids = vec![component_id(1)];
+        let (manager, _) = manager(FakeNetwork {
+            live: live(&ids),
+            ..Default::default()
+        });
+        *manager.substate_cache.2.lock().unwrap() = CacheWrites::Fail;
+
+        let lookup = manager.get_substate(&ids[0], None).await.unwrap();
+
+        assert!(lookup.result.into_up().is_some());
+    }
+
     /// A fresh head with no proof held for it cannot answer a read that has to return one.
     #[tokio::test]
     async fn a_cached_head_with_no_proof_held_is_fetched_again() {
@@ -3141,6 +3220,43 @@ mod tests {
     }
 
     const NEWER_ROOT: FixedHash = FixedHash::new([0xee; 32]);
+
+    /// A trusted-root store that holds no roots and whose writes pend forever, as writes queued behind
+    /// a stalled writer do.
+    #[derive(Debug)]
+    struct StalledRecords;
+
+    #[async_trait::async_trait]
+    impl TrustedRootStore for StalledRecords {
+        async fn trusted_root_height(
+            &self,
+            _: Epoch,
+            _: ShardGroup,
+            _: FixedHash,
+        ) -> Result<Option<NodeHeight>, IndexerError> {
+            Ok(None)
+        }
+
+        async fn latest_height(&self, _: Epoch, _: ShardGroup) -> Result<Option<NodeHeight>, IndexerError> {
+            Ok(None)
+        }
+
+        async fn record(&self, _: VerifiedBlockTip) -> Result<(), IndexerError> {
+            std::future::pending().await
+        }
+    }
+
+    /// Recording a validated tip only warms later reads, so one that never completes holds up the
+    /// read that validated it for no longer than its bound.
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_root_record_holds_up_a_verified_read_only_for_its_bound() {
+        let (id, manager) = anchored_up_setup(PROOF_EPOCH, 4, |_| vec![]);
+        let manager = manager.with_trusted_root_store(Arc::new(StalledRecords));
+
+        let started = tokio::time::Instant::now();
+        assert!(proves_read(&manager, &id).await);
+        assert_eq!(started.elapsed(), WARMING_WRITE_TIMEOUT);
+    }
 
     /// A proven read answers with exactly the bytes the member served.
     #[tokio::test]

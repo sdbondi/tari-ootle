@@ -22,7 +22,10 @@
 
 pub(crate) mod error;
 
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use anyhow::anyhow;
 use indexmap::IndexSet;
@@ -30,9 +33,11 @@ use log::*;
 use tari_epoch_manager::EpochManagerReader;
 use tari_indexer_client::types::{IndexerTransactionFinalizedResult, TransactionEntry, TransactionSource};
 use tari_ootle_common_types::{Epoch, NodeAddressable};
+use tari_ootle_storage::StorageError;
 use tari_ootle_transaction::{Network, Transaction, TransactionId};
 use tari_ootle_transaction_validation::{Validator, create_structural_transaction_validator};
 use tari_validator_node_rpc::client::{TransactionResultStatus, ValidatorNodeClientFactory};
+use tokio::time;
 
 use crate::{
     network_client::TariNetworkClient,
@@ -48,6 +53,10 @@ const LOG_TARGET: &str = "tari::indexer::transaction_manager";
 /// fetch can be in flight from before this indexer knew of the commit; remembering it stops every
 /// later poll of the same result from taking the write lock again.
 const RETIRED_RESULTS_CAPACITY: usize = 4096;
+
+/// How long a submission waits to record itself locally before answering. The record serves the
+/// recent-transactions listing and rejection reporting, and the submission itself never reads it.
+const SUBMISSION_RECORD_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone)]
 pub struct TransactionManager<TEpochManager, TClientFactory, TStore> {
@@ -132,11 +141,12 @@ where
                 details: err.to_string(),
             });
         }
-        // The row is written before the committee has accepted anything, so its retention key cannot
-        // be taken on trust from the transaction's own `max_epoch`: that would let any accepted
-        // request claim a row the pruner never reaches. Cap it at the last epoch a transaction
-        // admitted now could still be sequenced in. `current_epoch` waits out the epoch manager's
-        // initial scan, so this cannot cap against the zero the manager reports before then.
+        // The row is recorded whether or not the committee sequences the transaction, so its
+        // retention key cannot be taken on trust from the transaction's own `max_epoch`: that would
+        // let any request passing the structural checks claim a row the pruner never reaches. Cap it
+        // at the last epoch a transaction admitted now could still be sequenced in. `current_epoch`
+        // waits out the epoch manager's initial scan, so this cannot cap against the zero the
+        // manager reports before then.
         let retention_ceiling = Epoch(
             self.network_client
                 .current_epoch()
@@ -145,36 +155,35 @@ where
                 .saturating_add(self.max_transaction_validity_epochs),
         );
         let transaction_for_db = transaction.clone();
-        self.store
-            .with_write_tx(move |tx| tx.upsert_submitted_transaction(&transaction_for_db, retention_ceiling))
-            .await?;
-        match self.network_client.submit_transaction(transaction).await {
-            Ok(id) => {
-                // A previously rejected transaction may be accepted on resubmission (e.g. after a
-                // missing template is published), so a stale rejection must not shadow it. Only a
-                // recorded rejection takes the write lock, which every submission would otherwise
-                // contend for.
-                let status = self
-                    .store
-                    .with_read_tx(move |tx| tx.get_transaction_rejection_status(id))
-                    .await?;
-                if matches!(status, TransactionRejectionStatus::Rejected { .. }) {
-                    self.store
-                        .with_write_tx(move |tx| tx.clear_transaction_rejection(id))
-                        .await?;
-                }
-                Ok(id)
-            },
-            Err(err) => {
-                if let Some(details) = err.validation_rejection_details() {
-                    let details = details.to_string();
-                    self.store
-                        .with_write_tx(move |tx| tx.set_transaction_rejected(transaction_id, &details))
-                        .await?;
-                }
-                Err(err.into())
-            },
+        let submitted = self.network_client.submit_transaction(transaction).await;
+
+        // A previously rejected transaction may be accepted on resubmission (e.g. after a missing
+        // template is published), so a stale rejection must not shadow it.
+        let accepted = submitted.is_ok();
+        let rejection = submitted
+            .as_ref()
+            .err()
+            .and_then(|err| err.validation_rejection_details())
+            .map(str::to_string);
+        let record = self.store.with_write_tx(move |tx| {
+            tx.upsert_submitted_transaction(&transaction_for_db, retention_ceiling)?;
+            match rejection {
+                Some(details) => tx.set_transaction_rejected(transaction_id, &details),
+                None if accepted => tx.clear_transaction_rejection(transaction_id),
+                None => Ok::<_, StorageError>(()),
+            }
+        });
+        match time::timeout(SUBMISSION_RECORD_TIMEOUT, record).await {
+            Ok(Ok(())) => {},
+            Ok(Err(e)) => warn!(target: LOG_TARGET, "Failed to record submitted transaction {transaction_id}: {e}"),
+            Err(_) => warn!(
+                target: LOG_TARGET,
+                "Answered the submission of {transaction_id} without recording it: the write did not complete within {}ms",
+                SUBMISSION_RECORD_TIMEOUT.as_millis()
+            ),
         }
+
+        Ok(submitted?)
     }
 
     pub async fn get_transaction_result(
@@ -302,5 +311,88 @@ where
             .with_read_tx(move |tx| tx.get_transaction(transaction_id))
             .await?;
         Ok(transaction)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tari_common_types::types::PrivateKey;
+    use tari_template_lib_types::{Amount, ComponentAddress};
+
+    use super::*;
+    use crate::{
+        network_client::tests::{Answer, FakeCommittee, FakeEpochManager, network},
+        network_state_sync::ShardWatermarks,
+        storage_sqlite::{SqliteIndexerStore, temp_store},
+        store::IndexerStoreReader,
+    };
+
+    fn manager(store: SqliteIndexerStore) -> TransactionManager<FakeEpochManager, FakeCommittee, SqliteIndexerStore> {
+        let (network_client, _) = network(vec![Answer::Pending]);
+        let substate_cache = SqliteSubstateCache::new(
+            store.clone(),
+            Arc::new(ShardWatermarks::new()),
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+            Duration::from_secs(300),
+            Duration::from_secs(900),
+            1000,
+        );
+        TransactionManager::new(
+            network_client,
+            store,
+            Network::LocalNet,
+            u64::MAX,
+            usize::MAX,
+            10,
+            substate_cache,
+        )
+    }
+
+    fn transaction(seed: u64) -> Transaction {
+        Transaction::builder_localnet(Epoch(1))
+            .pay_fee_from_component(ComponentAddress::from_array([1u8; 32]), Amount::new(1000))
+            .build_and_seal(&PrivateKey::from(seed))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_submission_is_answered_while_the_store_cannot_write() {
+        let (_dir, store) = temp_store().await;
+        let manager = manager(store.clone());
+        let transaction = transaction(5);
+        let _held = store.hold_write_lock().await;
+
+        let started = time::Instant::now();
+        let id = manager.submit_transaction(transaction.clone()).await.unwrap();
+
+        assert_eq!(id, transaction.calculate_id());
+        assert_eq!(started.elapsed(), SUBMISSION_RECORD_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn an_accepted_resubmission_is_recorded_and_clears_its_rejection() {
+        let (_dir, store) = temp_store().await;
+        let manager = manager(store.clone());
+        let transaction = transaction(6);
+        let id = transaction.calculate_id();
+        let stored = transaction.clone();
+        store
+            .with_write_tx(move |tx| {
+                tx.upsert_submitted_transaction(&stored, Epoch(100))?;
+                tx.set_transaction_rejected(id, "template not found")
+            })
+            .await
+            .unwrap();
+
+        manager.submit_transaction(transaction).await.unwrap();
+
+        let (entry, status) = store
+            .with_read_tx(move |tx| {
+                Ok::<_, StorageError>((tx.get_transaction(id)?, tx.get_transaction_rejection_status(id)?))
+            })
+            .await
+            .unwrap();
+        assert!(entry.is_some());
+        assert!(matches!(status, TransactionRejectionStatus::NotRejected), "{status:?}");
     }
 }
