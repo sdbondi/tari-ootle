@@ -12262,7 +12262,6 @@ dependencies = [
  "blake2 0.10.6",
  "borsh",
  "bounded-vec",
- "chrono",
  "clap 3.2.25",
  "config",
  "dirs-next 2.0.0",
@@ -12303,7 +12302,6 @@ dependencies = [
  "toml 0.9.11+spec-1.1.0",
  "tracing",
  "tracing-appender",
- "tracing-log",
  "tracing-subscriber",
  "url",
 ]

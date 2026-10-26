@@ -12,7 +12,6 @@
 //! Queued lines reach their files when the [`LoggingGuard`] drops or [`flush_and_close`] runs. A process that aborts
 //! on panic runs no destructors, so its panic hook must call [`flush_and_close`] itself.
 
-mod format;
 mod rolling_file;
 
 use std::{
@@ -31,7 +30,6 @@ use tracing_appender::non_blocking::{ErrorCounter, NonBlockingBuilder, WorkerGua
 pub use tracing_subscriber::Registry;
 use tracing_subscriber::{Layer, filter::Targets, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-pub use self::format::LineFormat;
 use self::rolling_file::RollingFile;
 
 /// A layer in the process subscriber, beside the configured sinks.
@@ -209,7 +207,8 @@ pub fn build(
             fmt::Layer::new()
                 .with_writer(writer)
                 .with_ansi(false)
-                .event_format(LineFormat::File)
+                .with_file(true)
+                .with_line_number(true)
                 .with_filter(filter)
                 .boxed(),
         );
@@ -226,7 +225,7 @@ pub fn build(
         fmt::Layer::new()
             .with_writer(writer)
             .with_ansi(io::stdout().is_terminal())
-            .event_format(LineFormat::Console)
+            .with_target(false)
             .with_filter(filter)
             .boxed(),
     );
@@ -307,16 +306,21 @@ mod tests {
 
         let contents = read(dir.path(), "consensus");
         let line = contents.lines().next().expect("a line");
-        let (date, rest) = line.split_once(' ').unwrap();
-        let (time, rest) = rest.split_once(' ').unwrap();
+        let (timestamp, rest) = line.split_once(' ').unwrap();
+        assert!(timestamp.ends_with('Z'), "{line}");
+        let (date, time) = timestamp.split_once('T').unwrap();
         assert_eq!(date.len(), "2026-10-25".len(), "{line}");
-        let (hms, nanos) = time.split_once('.').unwrap();
-        assert_eq!(hms.len(), "15:59:22".len(), "{line}");
-        assert_eq!(nanos.len(), 9, "{line}");
-        let expected_prefix = "[tari::consensus] INFO  ⏲️ prepare took 1.5ms // ";
-        assert!(rest.starts_with(expected_prefix), "{line}");
-        let (_, line_number) = rest.rsplit_once(&format!("{}:", file!())).unwrap();
+        assert!(time.starts_with(|c: char| c.is_ascii_digit()), "{line}");
+        let (location, message) = rest
+            .trim_start()
+            .strip_prefix("INFO tari::consensus: ")
+            .and_then(|rest| rest.split_once(": "))
+            .unwrap_or_else(|| panic!("{line}"));
+        let (file, line_number) = location.rsplit_once(':').unwrap();
+        assert_eq!(file, file!(), "{line}");
         assert!(line_number.parse::<u32>().is_ok(), "{line}");
+        assert_eq!(message, "⏲️ prepare took 1.5ms", "{line}");
+        println!("{line}");
     }
 
     #[test]
