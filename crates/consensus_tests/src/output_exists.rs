@@ -57,16 +57,20 @@ fn creating(test: &Test, signer: u8, vault: &VersionedSubstateId, outputs: &[Sub
     TransactionRecord::new(transaction)
 }
 
-async fn commit_pool(test: &mut Test) {
+/// Waits until every validator has finalized every one of `transactions`.
+async fn wait_for_finalized(test: &mut Test, transactions: &[&TransactionRecord]) {
     loop {
         test.on_block_committed().await;
-        if test.is_transaction_pool_empty() {
-            break;
+        if transactions.iter().all(|transaction| {
+            test.validators_iter()
+                .all(|validator| validator.has_finalized(transaction.id()))
+        }) {
+            return;
         }
         let leaf = test.get_validator(&TestAddress::new("1")).get_leaf_block();
         if leaf.height > NodeHeight(40) {
             test.dump_pool_info();
-            panic!("Not all transactions committed after {} blocks", leaf.height);
+            panic!("Not all transactions finalized after {} blocks", leaf.height);
         }
     }
 }
@@ -95,10 +99,10 @@ async fn a_transaction_creating_an_output_that_exists_commits_its_fee_intent() {
     test.send_transaction_to_destination(TestVnDestination::All, creator.clone())
         .await;
     test.start_epoch(Epoch(1)).await;
-    commit_pool(&mut test).await;
+    wait_for_finalized(&mut test, &[&creator]).await;
     test.send_transaction_to_destination(TestVnDestination::All, duplicate.clone())
         .await;
-    commit_pool(&mut test).await;
+    wait_for_finalized(&mut test, &[&duplicate]).await;
     test.stop();
 
     test.assert_all_validators_have_decision(creator.id(), Decision::Commit)
@@ -125,7 +129,7 @@ async fn of_two_transactions_creating_one_output_together_the_second_commits_its
     test.send_transaction_to_destination(TestVnDestination::All, second.clone())
         .await;
     test.start_epoch(Epoch(1)).await;
-    commit_pool(&mut test).await;
+    wait_for_finalized(&mut test, &[&first, &second]).await;
     test.stop();
 
     test.assert_all_validators_have_decision(first.id(), Decision::Commit)
@@ -180,21 +184,7 @@ async fn a_transaction_the_proposer_defers_does_not_take_its_outputs_from_the_bl
     }
 
     test.start_epoch(Epoch(1)).await;
-    loop {
-        test.on_block_committed().await;
-        if creators.iter().all(|creator| {
-            test.validators_iter()
-                .all(|validator| validator.has_finalized(creator.id()))
-        }) {
-            break;
-        }
-        let leaf = test.get_validator(&TestAddress::new("1")).get_leaf_block();
-        assert!(
-            leaf.height <= NodeHeight(40),
-            "the creators did not commit after {} blocks",
-            leaf.height
-        );
-    }
+    wait_for_finalized(&mut test, &creators.iter().collect::<Vec<_>>()).await;
     test.stop();
 
     for creator in &creators {
@@ -208,4 +198,6 @@ async fn a_transaction_the_proposer_defers_does_not_take_its_outputs_from_the_bl
             );
         }
     }
+
+    test.assert_clean_shutdown().await;
 }
