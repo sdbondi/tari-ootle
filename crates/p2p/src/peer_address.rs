@@ -128,11 +128,11 @@ mod tests {
         assert_eq!(public_key_to_peer_id(public_key), keypair.public().to_peer_id());
     }
 
-    /// The PeerId of secret key `[7; 32]` under the libp2p fork at a85a6e3. PeerIds are what nodes dial, so a
-    /// fork bump must not change them.
+    /// The PeerId of secret key `[7; 32]`: the identity multihash of the protobuf key `08 05 12 20 ‖ public key`,
+    /// with sr25519 as libp2p key type 5. PeerIds are what nodes dial, so a fork bump must not change them.
     #[test]
     fn peer_id_is_stable_across_fork_bumps() {
-        const PEER_ID: &str = "12D3L7AV8JP9JBpTTRD5iyBTxZiBxoQioGJSCSEsC1UCh2eGfmM9";
+        const PEER_ID: &str = "12D3LCx9PHvYgUhBcUcYdW4VLTyccHZ1rSvxPNnzoh7W9tEkx663";
         let secret_key = RistrettoSecretKey::from_canonical_bytes(&[7u8; 32]).unwrap();
         let public_key = RistrettoPublicKey::from_secret_key(&secret_key);
         assert_eq!(

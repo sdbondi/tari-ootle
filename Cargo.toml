@@ -249,9 +249,9 @@ dbus-secret-service-keyring-store = "1.0"
 windows-native-keyring-store = "1.1"
 lazy_static = "1.4.0"
 # A libp2p fork that adds sr25519 identities
-libp2p-identity = { git = "https://github.com/tari-project/rust-libp2p.git", rev = "d838ef216886b84154e6df8b1f3018a8b5c34a08" }
-libp2p = { git = "https://github.com/tari-project/rust-libp2p.git", rev = "d838ef216886b84154e6df8b1f3018a8b5c34a08", default-features = false }
-libp2p-peer-store = { git = "https://github.com/tari-project/rust-libp2p.git", rev = "d838ef216886b84154e6df8b1f3018a8b5c34a08", default-features = false }
+libp2p-identity = { git = "https://github.com/tari-project/rust-libp2p.git", rev = "6d357cfd18312aac15232b38d3e3b538129ffdc8" }
+libp2p = { git = "https://github.com/tari-project/rust-libp2p.git", rev = "6d357cfd18312aac15232b38d3e3b538129ffdc8", default-features = false }
+libp2p-peer-store = { git = "https://github.com/tari-project/rust-libp2p.git", rev = "6d357cfd18312aac15232b38d3e3b538129ffdc8", default-features = false }
 #libp2p = "0.53.1"
 #libp2p-identity = "0.2.8"
 libc = "0.2"
@@ -260,7 +260,7 @@ log = "0.4.20"
 log4rs = { version = "1.4", default-features = false, features = ["config_parsing", "threshold_filter"] }
 mime_guess = "2.0.4"
 mini-moka = "0.10.0"
-multiaddr = { git = "https://github.com/tari-project/rust-libp2p.git", rev = "d838ef216886b84154e6df8b1f3018a8b5c34a08" }
+multiaddr = { git = "https://github.com/tari-project/rust-libp2p.git", rev = "6d357cfd18312aac15232b38d3e3b538129ffdc8" }
 #multiaddr = "0.18"
 newtype-ops = "0.1.4"
 num-integer = { version = "0.1.46", default-features = false }
