@@ -77,6 +77,14 @@ pub enum SignaturePayload {
     /// A standard sr25519 (schnorrkel) signature, signed under the signature domain as its signing
     /// context. Any sr25519 signer that lets the caller set the context can produce one.
     /// The engine verifies none under the `libp2p` domain, the context node identity keys sign under.
+    ///
+    /// Transaction authorizations are sr25519 signatures under the `substrate` context over 64-byte
+    /// messages, and `substrate` is the only context many stock signers support. Under the domain
+    /// `b"substrate"`, every authorization on chain is therefore a valid signature over its 64-byte
+    /// transaction message, and a signer asked to sign such a message is authorizing a transaction. A
+    /// template verifying under `b"substrate"` must build the message itself, from a prefix of its own
+    /// and the data the signature attests to, and must never verify a 64-byte message the caller
+    /// supplies.
     #[n(1)]
     Sr25519(#[n(0)] Sr25519SignatureBytes),
 }
