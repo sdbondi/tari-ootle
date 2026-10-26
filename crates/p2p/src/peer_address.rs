@@ -5,7 +5,7 @@ use std::{fmt::Display, hash::Hash};
 
 use libp2p_identity as identity;
 use libp2p_identity::PeerId;
-use tari_crypto::ristretto::RistrettoPublicKey;
+use tari_crypto::{ristretto::RistrettoPublicKey, tari_utilities::ByteArray};
 use tari_ootle_common_types::{DerivableFromPublicKey, NodeAddressable};
 #[cfg(feature = "ts")]
 use ts_rs::TS;
@@ -86,7 +86,9 @@ impl PartialEq<PeerId> for PeerAddress {
 impl DerivableFromPublicKey for PeerAddress {}
 
 pub fn public_key_to_peer_id(public_key: RistrettoPublicKey) -> PeerId {
-    identity::PublicKey::from(identity::sr25519::PublicKey::from(public_key)).to_peer_id()
+    let public_key = identity::sr25519::PublicKey::try_from_bytes(public_key.as_bytes())
+        .expect("a RistrettoPublicKey is a canonically encoded point");
+    identity::PublicKey::from(public_key).to_peer_id()
 }
 
 pub trait ToPeerId {
