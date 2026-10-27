@@ -8,7 +8,7 @@ use std::{
 };
 
 use log::*;
-use tari_engine_types::{UtxoOutput, substate::Substate};
+use tari_engine_types::UtxoOutput;
 use tari_ootle_common_types::{
     optional::{IsNotFoundError, Optional},
     response_status::TransactionStatusResponseError,
@@ -17,9 +17,11 @@ use tari_ootle_transaction::Network;
 use tari_ootle_wallet_sdk::{
     WalletSdk,
     WalletSdkSpec,
-    apis::substate::SubstateApiError,
+    apis::substate::{ReadSubstate, SubstateApiError},
     models::{
         AccountAndViewKeys,
+        OutputStatus,
+        ProvenUp,
         UtxoRecoveredEvent,
         UtxoRecoveryCompletedEvent,
         UtxoRecoveryStartedEvent,
@@ -259,6 +261,9 @@ where
                             output,
                             is_frozen,
                             is_held: false,
+                            held_spent: None,
+                            proven_up: None,
+                            is_readopted: false,
                         })
                     })
                     .collect();
@@ -300,6 +305,11 @@ where
     /// proves the UTXO unfrozen. The output is then held unfrozen. A report that could not be settled for any other
     /// reason stays queued. A report that a held UTXO is unfrozen needs no proof, as it only lets the wallet try a
     /// spend that the network decides. Nor does a report of a freeze the wallet already holds.
+    ///
+    /// A UTXO the wallet holds as spent is reported unspent again when it was re-versioned (frozen or unfrozen) after
+    /// the version the wallet saw go down. It is held unspent again only once the indexer proves it up at a version
+    /// later than the one the wallet holds proven, which a stale proof of a version the wallet has since spent cannot
+    /// show. Without such a proof it stays spent.
     async fn settle_reported_utxos(
         &self,
         resource_address: ResourceAddress,
@@ -317,6 +327,19 @@ where
                 .optional()?;
             if let Some(held) = held {
                 found.is_held = true;
+                if held.status == OutputStatus::Spent {
+                    let Some(proven_up) = held.proven_up else {
+                        found.is_frozen = held.is_frozen;
+                        settled.push(found);
+                        continue;
+                    };
+                    found.held_spent = Some(HeldSpent {
+                        proven_up,
+                        is_frozen: held.is_frozen,
+                    });
+                    to_prove.push(found);
+                    continue;
+                }
                 if !found.is_frozen || held.is_frozen {
                     settled.push(found);
                     continue;
@@ -351,7 +374,9 @@ where
         let mut deferred = Vec::new();
         for (found, (_, read)) in to_prove.into_iter().zip(reads) {
             let pair = found.tag_and_nonce();
-            let settled_utxo = if found.is_held {
+            let settled_utxo = if let Some(held_spent) = found.held_spent {
+                Self::settle_held_spent(resource_address, found, held_spent, read)?
+            } else if found.is_held {
                 Self::settle_held_frozen_claim(resource_address, found, read)?
             } else {
                 Self::settle_new_utxo(resource_address, found, read)?
@@ -369,11 +394,11 @@ where
     fn settle_new_utxo(
         resource_address: ResourceAddress,
         found: FoundUtxo,
-        read: Result<Substate, SubstateApiError>,
+        read: Result<ReadSubstate, SubstateApiError>,
     ) -> Result<Option<FoundUtxo>, StealthScannerApiError> {
         let address = UtxoAddress::new(resource_address, found.id);
-        let substate = match read {
-            Ok(substate) => substate,
+        let ReadSubstate { substate, proven_up } = match read {
+            Ok(read) => read,
             Err(SubstateApiError::StoreError(err)) => return Err(err.into()),
             Err(err) => {
                 warn!(
@@ -413,8 +438,94 @@ where
         Ok(Some(FoundUtxo {
             output,
             is_frozen,
+            proven_up,
             ..found
         }))
+    }
+
+    /// Settles the report that a UTXO the wallet holds as spent is unspent against `read`. Returns the UTXO held
+    /// unspent again when `read` proves it up at a later version than `held_spent`'s, the UTXO left spent when the
+    /// answer refuses the report for good, and `None` when the report could not be settled yet.
+    fn settle_held_spent(
+        resource_address: ResourceAddress,
+        mut found: FoundUtxo,
+        held_spent: HeldSpent,
+        read: Result<ReadSubstate, SubstateApiError>,
+    ) -> Result<Option<FoundUtxo>, StealthScannerApiError> {
+        let address = UtxoAddress::new(resource_address, found.id);
+        found.is_frozen = held_spent.is_frozen;
+        let read = match read {
+            Ok(read) => read,
+            Err(
+                err @ (SubstateApiError::SubstateDoesNotExist { .. } |
+                SubstateApiError::SubstateUnproven { .. } |
+                SubstateApiError::SubstateUnverified { .. } |
+                SubstateApiError::SubstateProvenBeforeAnchor { .. } |
+                SubstateApiError::SubstateProofStale { .. }),
+            ) => {
+                warn!(
+                    target: LOG_TARGET,
+                    "⚠️ The indexer reported spent stealth output {} unspent without proving it ({}). Keeping it spent.",
+                    address,
+                    err
+                );
+                return Ok(Some(found));
+            },
+            Err(SubstateApiError::StoreError(err)) => return Err(err.into()),
+            Err(err) => {
+                warn!(
+                    target: LOG_TARGET,
+                    "⚠️ Could not check the indexer's report that spent stealth output {} is unspent ({}). Retrying later.",
+                    address,
+                    err
+                );
+                return Ok(None);
+            },
+        };
+        let version = read.substate.version();
+        let Some(proven_up) = read
+            .proven_up
+            .filter(|proven_up| proven_up.version > held_spent.proven_up.version)
+        else {
+            warn!(
+                target: LOG_TARGET,
+                "⚠️ The indexer proved spent stealth output {} up at v{}, not past v{} the wallet holds proven. Keeping it spent.",
+                address,
+                version,
+                held_spent.proven_up.version
+            );
+            return Ok(Some(found));
+        };
+        let Some(utxo) = read.substate.into_substate_value().into_utxo() else {
+            warn!(
+                target: LOG_TARGET,
+                "⚠️ The indexer proved substate {} holds no UTXO. Keeping it spent.",
+                address
+            );
+            return Ok(Some(found));
+        };
+        let is_frozen = utxo.is_frozen();
+        match utxo.into_output() {
+            Some(output) if (output.tag, output.output.public_nonce) == found.tag_and_nonce() => {},
+            _ => {
+                warn!(
+                    target: LOG_TARGET,
+                    "⚠️ The indexer proved stealth output {} with an output other than the one the wallet holds. Keeping it spent.",
+                    address
+                );
+                return Ok(Some(found));
+            },
+        }
+        info!(
+            target: LOG_TARGET,
+            "♻️ Stealth output {} is up again at v{}. Holding it unspent.",
+            address,
+            version
+        );
+        found.is_frozen = is_frozen;
+        found.proven_up = Some(proven_up);
+        found.is_readopted = true;
+        Ok(Some(found))
     }
 
     /// Settles the report that a UTXO the wallet holds unfrozen is frozen against `read`. Returns `None` when the
@@ -422,12 +533,13 @@ where
     fn settle_held_frozen_claim(
         resource_address: ResourceAddress,
         mut found: FoundUtxo,
-        read: Result<Substate, SubstateApiError>,
+        read: Result<ReadSubstate, SubstateApiError>,
     ) -> Result<Option<FoundUtxo>, StealthScannerApiError> {
         let address = UtxoAddress::new(resource_address, found.id);
         match read {
-            Ok(substate) => {
+            Ok(ReadSubstate { substate, proven_up }) => {
                 found.is_frozen = substate.substate_value().as_utxo().is_some_and(|utxo| utxo.is_frozen());
+                found.proven_up = proven_up;
                 if !found.is_frozen {
                     warn!(
                         target: LOG_TARGET,
@@ -537,7 +649,27 @@ where
                 found.is_frozen,
             )?
         };
-        let Some(output) = validated else {
+        let Some(mut output) = validated else {
+            if found.is_held &&
+                let Some(proven_up) = found.proven_up
+            {
+                outputs_api.record_proven_up(&address, proven_up)?;
+            }
+            if found.is_readopted {
+                outputs_api.update_utxo_status(&address, None, Some(OutputStatus::Unspent), Some(found.is_frozen))?;
+                self.sdk.store().with_write_tx(|tx| {
+                    tx.utxo_process_queue_remove_item(
+                        resource_address,
+                        found.output.tag,
+                        found.output.output.public_nonce,
+                    )
+                })?;
+                self.notify(UtxoRecoveredEvent {
+                    address,
+                    account_address: found.account_addr,
+                });
+                return Ok(true);
+            }
             // The output could be held already, burnt, frozen, or otherwise invalid. If we already have it in the db,
             // update its frozen flag, if not, do nothing.
             let frozen_changed = outputs_api.set_utxo_frozen(&address, found.is_frozen)?.unwrap_or(false);
@@ -555,6 +687,7 @@ where
             return Ok(false);
         };
 
+        output.proven_up = found.proven_up;
         let changed = outputs_api.upsert_utxo(&output)?;
 
         self.sdk.store().with_write_tx(|tx| {
@@ -582,6 +715,19 @@ struct FoundUtxo {
     /// The wallet holds the output and its contents, so only the settled frozen flag is taken from the report. The
     /// reported output carries no proof.
     is_held: bool,
+    /// The wallet holds the output as spent.
+    held_spent: Option<HeldSpent>,
+    /// The version of the output, and the epoch of the block, that a verified proof showed it up at.
+    proven_up: Option<ProvenUp>,
+    /// The wallet holds the output as spent, and a proof shows it up again at a later version.
+    is_readopted: bool,
+}
+
+/// What the wallet holds of an output it holds as spent.
+#[derive(Clone, Copy)]
+struct HeldSpent {
+    proven_up: ProvenUp,
+    is_frozen: bool,
 }
 
 impl FoundUtxo {

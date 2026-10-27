@@ -117,8 +117,9 @@ message GetSubstateResponse {
   // value hash and bind it to the returned substate value. Only meaningful for status Up.
   uint64 proof_epoch = 9;
   // CBOR-encoded SubstateDownProof, for status Down only: an inclusion proof of the substate at an earlier
-  // committed root, with that root's commit proof, and its exclusion proof under `commit_proof`'s root. A Down is
-  // sent with no proof fields at all when the responder holds no such proof.
+  // committed root, with that root's commit proof, and its exclusion proof under `commit_proof`'s root. Empty for
+  // a Down the responder holds no such proof for, whose `substate_value_proof` is then its exclusion alone: that
+  // shows the version gone only to a reader that has proven it up at a block of an earlier epoch.
   bytes substate_down_proof = 10;
 }
 

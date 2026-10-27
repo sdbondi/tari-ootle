@@ -1035,23 +1035,30 @@ where
                 }
             },
             SubstateResult::Down { version } => {
-                // Only a down proof shows the version was ever up; without one, the Down is left to f+1
-                // agreement. A down proof says nothing about later versions, so it answers only a read for the
-                // version it names, and is not checked for any other read.
-                let Some(down_proof) = proof.substate_down_proof.as_deref() else {
-                    return Ok((result, None));
-                };
+                // A proof of either kind says nothing about later versions, so it answers only a read for the version
+                // it names, and is not checked for any other read.
                 if substate_requirement.version() != Some(*version) {
                     return Ok((result, None));
                 }
-                let proven = self
-                    .verify_down_proof(
-                        substate_requirement.substate_id(),
-                        *version,
-                        down_proof,
-                        &proof.commit_proof,
-                    )
-                    .await?;
+                // A down proof shows the version was committed and has gone. Without one, the value proof is an
+                // exclusion at the anchor, which a version that never existed also satisfies: it is passed on for a
+                // reader that has proven the version up at a block of an earlier epoch, and shows nothing to anyone
+                // else.
+                let proven = match proof.substate_down_proof.as_deref() {
+                    Some(down_proof) => {
+                        self.verify_down_proof(
+                            substate_requirement.substate_id(),
+                            *version,
+                            down_proof,
+                            &proof.commit_proof,
+                        )
+                        .await?
+                    },
+                    None => {
+                        self.verify_substate_proof(substate_requirement.substate_id(), *version, None, &proof)
+                            .await?
+                    },
+                };
                 if !proven {
                     return Ok((result, None));
                 }
@@ -1872,7 +1879,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_down_without_a_down_proof_is_unproven() {
+    async fn a_down_without_a_down_proof_is_unproven_for_another_version() {
         let id = component_id(1);
         let (manager, _) = manager(FakeNetwork {
             down_with_proof: [(id.clone(), (SubstateVersion::new(3), down_proof_data(None)))].into(),
@@ -1882,7 +1889,7 @@ mod tests {
         let (result, proof) = manager
             .get_substate_from_vn(
                 &"vn".to_string(),
-                SubstateRequirementRef::new(&id, Some(SubstateVersion::new(3))),
+                SubstateRequirementRef::new(&id, Some(SubstateVersion::new(2))),
             )
             .await
             .unwrap();
@@ -2308,6 +2315,22 @@ mod tests {
         SubstateId,
         CachedSubstateManager<FakeEpochManager, FakeClient, FakeCache>,
     ) {
+        signed_proof_setup(keys, failing, false)
+    }
+
+    /// As [`signed_down_proof_setup`], with `vn0` serving only the exclusion half of its down proof when
+    /// `exclusion_only` is set.
+    fn signed_proof_setup(
+        keys: &[(
+            tari_crypto::ristretto::RistrettoSecretKey,
+            tari_crypto::ristretto::RistrettoPublicKey,
+        )],
+        failing: HashSet<Addr>,
+        exclusion_only: bool,
+    ) -> (
+        SubstateId,
+        CachedSubstateManager<FakeEpochManager, FakeClient, FakeCache>,
+    ) {
         use tari_crypto::tari_utilities::ByteArray;
 
         let committee = Committee::new(
@@ -2326,14 +2349,20 @@ mod tests {
             .collect::<Vec<_>>();
 
         let (id, proof, _, r2_root) = global_down_proof_signed_by(group(1, 2), &committee, &signers);
+        let (substate_value_proof, substate_down_proof) = if exclusion_only {
+            let decoded: tari_state_tree::SubstateDownProof = tari_bor::serde_codec::from_slice(&proof).unwrap();
+            (tari_bor::serde_codec::to_vec(&decoded.down).unwrap(), None)
+        } else {
+            (vec![], Some(proof))
+        };
         let (mut manager, _) = manager(FakeNetwork {
             down_with_proof: [(
                 id.clone(),
                 (SubstateVersion::ZERO, SubstateProofData {
-                    substate_value_proof: vec![],
+                    substate_value_proof,
                     commit_proof: signed_commit_proof(group(1, 2), 4, r2_root, &committee, &signers),
                     proof_epoch: 0,
-                    substate_down_proof: Some(proof),
+                    substate_down_proof,
                     destroyed_at_state_version: Some(2),
                 }),
             )]
@@ -2380,6 +2409,38 @@ mod tests {
         .unwrap();
         assert!(matches!(lookup.result, SubstateResult::Down { .. }));
         assert!(lookup.verified);
+    }
+
+    /// An exclusion alone answers a read for its version, but is also satisfied by a version committed after its
+    /// anchor, so it settles the read only with more than `f` members agreeing the version is down, and is not
+    /// verified.
+    #[tokio::test]
+    async fn a_members_exclusion_rides_on_a_down_more_than_f_members_agree_on() {
+        let keys = (1..=4)
+            .map(tari_ootle_common_types::crypto::create_key_pair_from_seed)
+            .collect::<Vec<_>>();
+        let (id, manager) = signed_proof_setup(&keys, ["vn1", "vn2", "vn3"].map(String::from).into(), true);
+        let (result, proof) = manager
+            .get_substate_from_vn(
+                &"vn0".to_string(),
+                SubstateRequirementRef::new(&id, Some(SubstateVersion::ZERO)),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(result, SubstateResult::Down { .. }));
+        let proof = proof.expect("a valid exclusion answers a read for its version");
+        assert!(proof.substate_down_proof.is_none());
+        let err = manager
+            .get_substate(&id, Some(SubstateVersion::ZERO))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, IndexerError::InvalidSubstateState), "{err}");
+
+        let (id, manager) = signed_proof_setup(&keys, HashSet::new(), true);
+        let lookup = manager.get_substate(&id, Some(SubstateVersion::ZERO)).await.unwrap();
+        assert!(matches!(lookup.result, SubstateResult::Down { .. }));
+        assert!(!lookup.verified);
+        assert!(lookup.proof.is_some_and(|proof| proof.substate_down_proof.is_none()));
     }
 
     /// A cached head above the version a proven read names says the version is down, but holds no proof of it, so the

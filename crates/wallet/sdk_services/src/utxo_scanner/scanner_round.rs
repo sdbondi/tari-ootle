@@ -420,10 +420,13 @@ where TSpec: WalletSdkSpec
     }
 
     /// Drops each reported spend of an output the wallet holds as not spent, unless the indexer proves that the output
-    /// has gone down at the reported version. A spend is dropped only when the answer refuses it for good: the indexer
-    /// serves no proof, a proof that does not verify, or one the wallet can never trust. The output then stays as it is
-    /// and the spend is not asked for again. Any other failure fails the round before it stores its progress, so the
-    /// next scan asks for the spend again.
+    /// has gone down at the reported version, with a down proof or, for the version the wallet holds proven, an
+    /// exclusion (see [`SubstatesApi::verify_down`]). A spend is dropped only when the answer refuses it for good: the
+    /// indexer serves no proof, a proof that does not verify, or one the wallet can never trust. The output then stays
+    /// as it is and the spend is not asked for again. Any other failure fails the round before it stores its progress,
+    /// so the next scan asks for the spend again.
+    ///
+    /// [`SubstatesApi::verify_down`]: tari_ootle_wallet_sdk::apis::substate::SubstatesApi::verify_down
     ///
     /// A spend of an output the wallet already holds as spent needs no proof, as the wallet settled that spend from its
     /// own verified transaction.
@@ -438,20 +441,24 @@ where TSpec: WalletSdkSpec
                     tx.stealth_outputs_get_by_commitment(self.resource_address, &spent.id.into_commitment_bytes())
                 })
                 .optional()?;
-            if held.is_none_or(|output| matches!(output.status, OutputStatus::Spent)) {
+            let Some(held) = held.filter(|output| !matches!(output.status, OutputStatus::Spent)) else {
                 retained.push(spent);
                 continue;
-            }
+            };
 
             let address = UtxoAddress::new(*self.resource_address, spent.id);
-            match substate_api.verify_down(&address.clone().into(), spent.version).await {
+            match substate_api
+                .verify_down(&address.clone().into(), spent.version, held.proven_up)
+                .await
+            {
                 Ok(()) => retained.push(spent),
                 Err(
                     err @ (SubstateApiError::SubstateDoesNotExist { .. } |
                     SubstateApiError::SubstateNotDown { .. } |
                     SubstateApiError::SubstateUnproven { .. } |
                     SubstateApiError::SubstateUnverified { .. } |
-                    SubstateApiError::SubstateProvenBeforeAnchor { .. }),
+                    SubstateApiError::SubstateProvenBeforeAnchor { .. } |
+                    SubstateApiError::SubstateExcludedNoLaterThanProvenUp { .. }),
                 ) => {
                     warn!(
                         target: LOG_TARGET,

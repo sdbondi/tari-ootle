@@ -791,6 +791,7 @@ fn stealth_output(
         is_on_chain: !matches!(status, OutputStatus::LockedUnconfirmed),
         is_condition_spendable: true,
         lock_id,
+        proven_up: None,
     }
 }
 

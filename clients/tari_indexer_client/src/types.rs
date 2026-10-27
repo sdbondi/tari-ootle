@@ -81,12 +81,13 @@ pub struct GetSubstateResponse {
     #[cfg_attr(feature = "utoipa", schema(value_type = u64))]
     pub version: SubstateVersion,
     /// What the shard group holds for `version`. Only a request with `include_proof` that names the version is
-    /// answered with [`SubstateState::Down`], and only when the indexer verified a down proof for it; any other down
-    /// is a 404.
+    /// answered with [`SubstateState::Down`], and only with a proof the indexer verified for it: a down proof, or an
+    /// exclusion when more than `f` committee members agree the version is down. Any other down is a 404.
     pub state: SubstateState,
     /// True when the indexer verified this answer against the shard group committee (via a merkle
     /// proof). False when proofs are disabled, or when no committee member could supply a proof yet
-    /// (e.g. nothing committed since an epoch change) and the value was served unverified.
+    /// (e.g. nothing committed since an epoch change) and the value was served unverified. A down answer
+    /// is verified only with a down proof: an exclusion alone does not show the version was ever up.
     pub verified: bool,
     /// The proof the indexer verified this answer with. Present only when `include_proof` was set
     /// and a committee member could prove the answer. A down answer always carries one.
@@ -153,9 +154,14 @@ pub struct SubstateProof {
     /// verifier needs it to recompute the leaf.
     #[cfg_attr(feature = "utoipa", schema(value_type = u64))]
     pub value_hash_epoch: Epoch,
-    /// CBOR-encoded `SubstateDownProof`, present when the substate version is down: an inclusion proof that the
-    /// version was committed, anchored at a block of its own, and an exclusion proof under `anchor.state_merkle_root`
-    /// that it is no longer in the state tree. `value_proof` is that exclusion proof.
+    /// CBOR-encoded `SubstateDownProof`, present when the substate version is down and the committee still holds it:
+    /// an inclusion proof that the version was committed, anchored at a block of its own, and an exclusion proof
+    /// under `anchor.state_merkle_root` that it is no longer in the state tree. `value_proof` is that exclusion
+    /// proof.
+    ///
+    /// A down version without one is served with `value_proof` alone. A version that never existed also satisfies
+    /// it, as does one committed after the anchor, so it shows the version gone only to a reader that has proven the
+    /// version up at a block of an earlier epoch than the anchor's.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

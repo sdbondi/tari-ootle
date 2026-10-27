@@ -56,6 +56,7 @@ use tari_ootle_wallet_sdk::{
         NewSigningRequest,
         NonFungibleToken,
         OutputStatus,
+        ProvenUp,
         SigningRequestId,
         SigningRequestModel,
         SigningRequestStatus,
@@ -2075,6 +2076,8 @@ impl WalletStoreWriter for WriteTransaction<'_> {
                 stealth_outputs::is_frozen.eq(output.is_frozen),
                 stealth_outputs::is_condition_spendable.eq(output.is_condition_spendable),
                 stealth_outputs::lock_id.eq(output.lock_id),
+                stealth_outputs::proven_version.eq(output.proven_up.map(|p| p.version.as_u64() as i64)),
+                stealth_outputs::proven_up_epoch.eq(output.proven_up.map(|p| p.epoch.as_u64() as i64)),
             ))
             .execute(self.connection())
             .map_err(|e| WalletStorageError::general(OPERATION, e))?;
@@ -2145,6 +2148,54 @@ impl WalletStoreWriter for WriteTransaction<'_> {
         }
 
         Ok(())
+    }
+
+    fn stealth_outputs_record_proven_up(
+        &mut self,
+        address: &UtxoAddress,
+        proven_up: ProvenUp,
+    ) -> Result<bool, WalletStorageError> {
+        const OPERATION: &str = "stealth_outputs_record_proven_up";
+        use crate::schema::stealth_outputs;
+
+        let resource_address = address.resource_address().to_string();
+        let commitment = serialize_hex(address.id().into_commitment_bytes());
+        let version = proven_up.version.as_u64() as i64;
+        let num_rows = diesel::update(stealth_outputs::table)
+            .set((
+                stealth_outputs::proven_version.eq(version),
+                stealth_outputs::proven_up_epoch.eq(proven_up.epoch.as_u64() as i64),
+                stealth_outputs::updated_at.eq(dsl::now),
+            ))
+            .filter(stealth_outputs::resource_address.eq(&resource_address))
+            .filter(stealth_outputs::commitment.eq(&commitment))
+            .filter(
+                stealth_outputs::proven_version
+                    .is_null()
+                    .or(stealth_outputs::proven_version.lt(version)),
+            )
+            .execute(self.connection())
+            .map_err(|e| WalletStorageError::general(OPERATION, e))?;
+        if num_rows > 0 {
+            return Ok(true);
+        }
+
+        let exists = stealth_outputs::table
+            .select(stealth_outputs::id)
+            .filter(stealth_outputs::resource_address.eq(&resource_address))
+            .filter(stealth_outputs::commitment.eq(&commitment))
+            .first::<i32>(self.connection())
+            .optional()
+            .map_err(|e| WalletStorageError::general(OPERATION, e))?
+            .is_some();
+        if !exists {
+            return Err(WalletStorageError::NotFound {
+                operation: OPERATION,
+                entity: "stealth_output".to_string(),
+                key: format!("address={address}"),
+            });
+        }
+        Ok(false)
     }
 
     // locks

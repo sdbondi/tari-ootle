@@ -16,6 +16,7 @@ use tari_ootle_wallet_sdk::{
         KeyBranch,
         KeyId,
         OutputStatus,
+        ProvenUp,
         StartOfShard,
         StealthOutputModel,
         UtxoSpent,
@@ -65,6 +66,7 @@ fn held_output(status: OutputStatus) -> StealthOutputModel {
         is_on_chain: true,
         is_condition_spendable: true,
         lock_id: None,
+        proven_up: None,
     }
 }
 
@@ -220,6 +222,78 @@ async fn a_proven_spend_marks_the_output_spent() {
     assert_eq!(stats.num_spent, 1);
     assert_eq!(stored_status(&test, &output), SPENT);
     assert_eq!(unspent_balance(&test), Amount::zero());
+}
+
+/// The indexer serves `output` down at `version` with only its exclusion, anchored in the latest trusted epoch, 5: the
+/// answer once validators no longer hold the proof that the version was committed.
+fn serve_excluded(
+    sets: &[ValidatorSetFixture],
+    network: &ProvingNetwork,
+    output: &StealthOutputModel,
+    version: SubstateVersion,
+) {
+    let id = substate_id(output);
+    let mut proof = substate_down_proof(&sets[4], &sets[4], &id, version);
+    proof.down_proof = None;
+    network.serve_down_substate(id, version, Some(proof));
+}
+
+fn proven_up_in(epoch: u64) -> Option<ProvenUp> {
+    Some(ProvenUp {
+        version: VERSION,
+        epoch: Epoch(epoch),
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_exclusion_after_the_epoch_the_output_was_proven_up_in_marks_it_spent() {
+    let output = StealthOutputModel {
+        proven_up: proven_up_in(3),
+        ..held_output(OutputStatus::Unspent)
+    };
+    let (sets, network, test) = wallet_holding(&output, IndexerTrust::Verify).await;
+    serve_excluded(&sets, &network, &output, VERSION);
+    report_spent(&network, &output, VERSION);
+
+    let stats = scan(&test).await;
+    assert_eq!(stats.num_spent, 1);
+    assert_eq!(stored_status(&test, &output), SPENT);
+    assert_eq!(unspent_balance(&test), Amount::zero());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_exclusion_in_the_epoch_the_output_was_proven_up_in_leaves_it_unspent() {
+    let output = StealthOutputModel {
+        proven_up: proven_up_in(5),
+        ..held_output(OutputStatus::Unspent)
+    };
+    let (sets, network, test) = wallet_holding(&output, IndexerTrust::Verify).await;
+    serve_excluded(&sets, &network, &output, VERSION);
+
+    assert_unproven_spend_is_not_applied(&network, &test, &output, VERSION).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_exclusion_of_an_output_never_proven_up_leaves_it_unspent() {
+    let output = held_output(OutputStatus::Unspent);
+    let (sets, network, test) = wallet_holding(&output, IndexerTrust::Verify).await;
+    serve_excluded(&sets, &network, &output, VERSION);
+
+    assert_unproven_spend_is_not_applied(&network, &test, &output, VERSION).await;
+}
+
+/// A version that never existed is also excluded, so an exclusion of another version than the one proven up shows
+/// nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_exclusion_of_another_version_than_the_one_proven_up_leaves_the_output_unspent() {
+    let output = StealthOutputModel {
+        proven_up: proven_up_in(3),
+        ..held_output(OutputStatus::Unspent)
+    };
+    let (sets, network, test) = wallet_holding(&output, IndexerTrust::Verify).await;
+    serve_excluded(&sets, &network, &output, VERSION.next());
+
+    assert_unproven_spend_is_not_applied(&network, &test, &output, VERSION.next()).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

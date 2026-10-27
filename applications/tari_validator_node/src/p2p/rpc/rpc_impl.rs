@@ -198,9 +198,10 @@ impl<TStateStore: StateStore> ValidatorNodeRpcServiceImpl<TStateStore> {
     /// substate lookup) so the value proof's group root matches the commit proof's block header. With
     /// no anchor, no proof is attached and the caller treats the result as unverified.
     ///
-    /// A down substate is proven only together with a [`SubstateDownProof`](tari_state_tree::SubstateDownProof),
-    /// since its exclusion proof alone is also satisfied by a version that never existed. A down substate this node
-    /// recorded no such proof for is answered with no proof at all.
+    /// A down substate is proven with a [`SubstateDownProof`](tari_state_tree::SubstateDownProof) while this node holds
+    /// its record, and otherwise with its exclusion proof alone. The exclusion is also satisfied by a version that
+    /// never existed, so it shows the version gone only to a reader that has proven the version up at a block of an
+    /// earlier epoch.
     fn attach_substate_proof<TTx: StateStoreReadTransaction>(
         tx: &TTx,
         num_preshards: NumPreshards,
@@ -225,7 +226,8 @@ impl<TStateStore: StateStore> ValidatorNodeRpcServiceImpl<TStateStore> {
 }
 
 /// Attaches the proof of `substate` anchored at `commit_proof` to `resp`, or leaves every proof field empty when the
-/// anchor cannot speak for the substate or the substate is down without a recorded down proof.
+/// anchor cannot speak for the substate. A down substate without a recorded down proof is answered with its exclusion
+/// proof and no down proof.
 fn attach_substate_proof_at<TTx: StateStoreReadTransaction>(
     tx: &TTx,
     num_preshards: NumPreshards,
@@ -252,9 +254,6 @@ fn attach_substate_proof_at<TTx: StateStoreReadTransaction>(
 
     let down_proof = encode_down_proof(tx, num_preshards, substate, &value_proof)
         .map_err(RpcStatus::log_internal_error(LOG_TARGET))?;
-    if substate.is_destroyed() && down_proof.is_none() {
-        return Ok(());
-    }
 
     resp.commit_proof = commit_proof.to_bytes();
     resp.substate_value_proof =
@@ -1263,10 +1262,10 @@ mod tests {
         }
     }
 
-    /// An exclusion proof alone does not show a version ever existed, so a down substate with no recorded down proof
-    /// is answered with no proof at all, while one with a record carries all three.
+    /// A down substate with no recorded down proof is answered with its exclusion proof alone, while one with a record
+    /// also carries the down proof.
     #[test]
-    fn a_down_substate_without_a_recorded_down_proof_is_served_unproven() {
+    fn a_down_substate_without_a_recorded_down_proof_is_served_its_exclusion() {
         use tari_ootle_storage::ShardScopedTreeStoreWriter;
         use tari_state_tree::{SpreadPrefixStateTree, SubstateTreeChange};
 
@@ -1295,8 +1294,8 @@ mod tests {
             let tx = store.create_read_tx().unwrap();
             let mut resp = GetSubstateResponse::default();
             attach_substate_proof_at(&tx, NUM_PRESHARDS, &anchor_of(shard), &down, &mut resp).unwrap();
-            assert!(resp.commit_proof.is_empty());
-            assert!(resp.substate_value_proof.is_empty());
+            assert!(!resp.commit_proof.is_empty());
+            assert!(!resp.substate_value_proof.is_empty());
             assert!(resp.substate_down_proof.is_empty());
         }
 

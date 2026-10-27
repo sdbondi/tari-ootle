@@ -177,7 +177,7 @@ fn to_get_substate_response(lookup: ProvenLookup) -> Result<GetSubstateResponse,
         ProvenLookup::Down { version, proof } => Ok(GetSubstateResponse {
             version,
             state: SubstateState::Down {},
-            verified: true,
+            verified: proof.substate_down_proof.is_some(),
             proof: Some(to_substate_proof(proof)?),
         }),
     }

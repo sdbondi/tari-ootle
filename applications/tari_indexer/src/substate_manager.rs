@@ -95,7 +95,8 @@ pub struct FetchedSubstate {
 #[derive(Debug, Clone)]
 pub enum ProvenLookup {
     Up(Box<FetchedSubstate>),
-    /// The version the lookup named is down, as `proof` shows: its `substate_down_proof` is present and verified.
+    /// The version the lookup named is down. A verified `substate_down_proof` proves it. Without one, `proof` is an
+    /// exclusion verified at its anchor, and more than `f` members agreed the version is down.
     Down {
         version: SubstateVersion,
         proof: SubstateProofData,
@@ -311,8 +312,8 @@ impl SubstateManager {
     /// Looks up one substate from the committee, with the proof it was verified with. `None` when the
     /// committee agrees it does not exist.
     ///
-    /// A down version is answered with its down proof when the indexer verified one, which only a lookup naming that
-    /// version can return; any other down is [`SubstateManagerError::InputSubstateIsDown`].
+    /// A down version is answered with the proof the indexer verified for it, a down proof or an exclusion, which only
+    /// a lookup naming that version can return; any other down is [`SubstateManagerError::InputSubstateIsDown`].
     ///
     /// The local substate store holds no proofs, so it is not consulted. A cached head is served with
     /// the proof held for it, and anything else is fetched from the committee.
@@ -334,9 +335,9 @@ impl SubstateManager {
         match lookup_result {
             SubstateLookupResult {
                 result: SubstateResult::Down { version },
-                verified: true,
                 proof: Some(proof),
-            } if proof.substate_down_proof.is_some() => Ok(Some(ProvenLookup::Down { version, proof })),
+                ..
+            } => Ok(Some(ProvenLookup::Down { version, proof })),
             lookup_result => {
                 Ok(Self::to_fetched_substate(req, lookup_result)?.map(|fetched| ProvenLookup::Up(Box::new(fetched))))
             },
@@ -563,16 +564,34 @@ mod tests {
     }
 
     #[test]
+    fn a_down_settled_with_an_exclusion_is_answered_with_it() {
+        let id = substate();
+        let lookup_result = SubstateLookupResult {
+            verified: false,
+            ..down(Some(proof_data(None)))
+        };
+        let lookup = SubstateManager::to_proven_lookup(
+            SubstateRequirementRef::new(&id, Some(SubstateVersion::new(3))),
+            lookup_result,
+        )
+        .unwrap();
+
+        let Some(ProvenLookup::Down { version, proof }) = lookup else {
+            panic!("expected a proven down, got {lookup:?}");
+        };
+        assert_eq!(version, SubstateVersion::new(3));
+        assert_eq!(proof.substate_down_proof, None);
+    }
+
+    #[test]
     fn an_unproven_down_is_an_error() {
         let id = substate();
         let req = SubstateRequirementRef::new(&id, Some(SubstateVersion::new(3)));
 
-        for lookup_result in [down(None), down(Some(proof_data(None)))] {
-            let err = SubstateManager::to_proven_lookup(req, lookup_result).unwrap_err();
-            assert!(
-                matches!(err, SubstateManagerError::InputSubstateIsDown { version, .. } if version == SubstateVersion::new(3)),
-                "{err}"
-            );
-        }
+        let err = SubstateManager::to_proven_lookup(req, down(None)).unwrap_err();
+        assert!(
+            matches!(err, SubstateManagerError::InputSubstateIsDown { version, .. } if version == SubstateVersion::new(3)),
+            "{err}"
+        );
     }
 }

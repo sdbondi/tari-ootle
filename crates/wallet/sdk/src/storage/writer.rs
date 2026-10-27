@@ -41,6 +41,7 @@ use crate::{
         NewSigningRequest,
         NonFungibleToken,
         OutputStatus,
+        ProvenUp,
         SigningRequestId,
         SigningRequestModel,
         StealthOutputModel,
@@ -222,6 +223,13 @@ pub trait WalletStoreWriter: CommittableStore {
         status: Option<OutputStatus>,
         is_frozen: Option<bool>,
     ) -> Result<(), WalletStorageError>;
+    /// Records `proven_up` for the output at `address` unless it holds one of the same or a later version. Returns
+    /// whether it was recorded. An output the wallet does not hold is `NotFound`.
+    fn stealth_outputs_record_proven_up(
+        &mut self,
+        address: &UtxoAddress,
+        proven_up: ProvenUp,
+    ) -> Result<bool, WalletStorageError>;
 
     // Transaction requests
     /// Persist a frozen request. The stored transaction is immutable: the

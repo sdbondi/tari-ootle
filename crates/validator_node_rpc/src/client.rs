@@ -173,8 +173,8 @@ pub struct SubstateProofData {
     /// Epoch the substate value hash was computed at; needed to re-derive the leaf value hash when
     /// verifying an inclusion proof.
     pub proof_epoch: u64,
-    /// CBOR-encoded SubstateDownProof proving a down result was committed before it went down. A down result is
-    /// only proven by this: an exclusion proof alone is also satisfied by a version that never existed.
+    /// CBOR-encoded SubstateDownProof proving a down result was committed before it went down. Without it, a down
+    /// result's `substate_value_proof` is an exclusion alone, which a version that never existed also satisfies.
     pub substate_down_proof: Option<Vec<u8>>,
     /// The shard state version at which the responder recorded the substate's destruction, for a down result.
     pub destroyed_at_state_version: Option<u64>,

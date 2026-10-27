@@ -606,3 +606,21 @@ fn a_result_served_as_json_verifies_and_yields_the_committed_result() {
         "{err}"
     );
 }
+
+#[test]
+fn it_verifies_a_version_absent_at_the_anchor() {
+    let (set, trusted) = trusted_set();
+    let (id, value) = tombstone(1);
+    let mut excluded = substate_down_proof(&set, &set, &id, SubstateVersion::ZERO);
+    excluded.down_proof = None;
+    let committee = committee_for(&trusted, &set, &excluded);
+
+    let tip = committee.verify_absent(&id, SubstateVersion::ZERO, &excluded).unwrap();
+    assert_eq!(tip.epoch, EPOCH);
+
+    let included = substate_proof(&set, &id, SubstateVersion::ZERO, &value);
+    let err = committee
+        .verify_absent(&id, SubstateVersion::ZERO, &included)
+        .unwrap_err();
+    assert!(matches!(err, LightClientError::InvalidSubstateProof(_)), "{err}");
+}

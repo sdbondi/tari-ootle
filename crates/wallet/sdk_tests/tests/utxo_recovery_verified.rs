@@ -20,7 +20,7 @@ use tari_ootle_common_types::{Epoch, SubstateVersion};
 use tari_ootle_light_client::test_fixtures::{NETWORK, Signers, ValidatorSetFixture, substate_proof};
 use tari_ootle_wallet_sdk::{
     IndexerTrust,
-    models::{AccountWithAddress, OutputStatus, StealthOutputModel, UtxoUnspent},
+    models::{AccountWithAddress, OutputStatus, ProvenUp, StealthOutputModel, UtxoUnspent},
     storage::{ReadableWalletStore, WalletStoreReader, WalletStoreWriter, WriteableWalletStore},
 };
 use tari_ootle_wallet_sdk_services::utxo_scanner::UtxoRecovery;
@@ -69,9 +69,33 @@ fn frozen(utxo: &Utxo) -> Utxo {
 
 /// The indexer serves `id` holding `utxo`, proven by the committee of the latest trusted validator set.
 fn serve_proven(sets: &[ValidatorSetFixture], network: &ProvingNetwork, id: UtxoId, utxo: &Utxo) {
+    serve_proven_at(sets, network, id, VERSION, utxo);
+}
+
+/// The indexer serves `id` at `version` holding `utxo`, proven by the committee of the latest trusted validator set.
+fn serve_proven_at(
+    sets: &[ValidatorSetFixture],
+    network: &ProvingNetwork,
+    id: UtxoId,
+    version: SubstateVersion,
+    utxo: &Utxo,
+) {
     let value = SubstateValue::Utxo(utxo.clone());
-    let proof = substate_proof(&sets[4], &substate_id(id), VERSION, &value);
-    network.serve_substate(substate_id(id), VERSION, value, Some(proof));
+    let proof = substate_proof(&sets[4], &substate_id(id), version, &value);
+    network.serve_substate(substate_id(id), version, value, Some(proof));
+}
+
+/// The wallet holds the output at `id` as spent, as a reported freeze's down of its version leaves it.
+fn mark_spent(test: &Test, id: UtxoId) {
+    test.sdk()
+        .stealth_outputs_api()
+        .update_utxo_status(
+            &UtxoAddress::new(STEALTH_TARI_RESOURCE_ADDRESS, id),
+            None,
+            Some(OutputStatus::Spent),
+            None,
+        )
+        .unwrap();
 }
 
 /// The indexer returns `utxo` to the full-UTXO lookup, and the wallet queues it for recovery.
@@ -238,6 +262,72 @@ async fn a_new_output_is_stored_with_the_frozen_flag_the_proof_shows() {
 
     assert_eq!(recover(&test, &network, &account, frozen_id, &held_frozen).await, 0);
     assert!(stored(&test, frozen_id).is_frozen);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_recovered_output_is_stored_with_the_version_and_epoch_it_was_proven_up_at() {
+    let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
+    let (id, utxo) = test.owned_utxo(&account, VALUE);
+    hold(&sets, &network, &test, &account, id, &utxo).await;
+
+    assert_eq!(
+        stored(&test, id).proven_up,
+        Some(ProvenUp {
+            version: VERSION,
+            epoch: Epoch(5),
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_spent_output_proven_up_at_a_later_version_is_held_unspent_again() {
+    let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
+    let (id, utxo) = test.owned_utxo(&account, VALUE);
+    hold(&sets, &network, &test, &account, id, &utxo).await;
+    mark_spent(&test, id);
+
+    serve_proven_at(&sets, &network, id, VERSION.next(), &frozen(&utxo));
+    assert_eq!(recover(&test, &network, &account, id, &frozen(&utxo)).await, 0);
+    let output = stored(&test, id);
+    assert_eq!(output.status, OutputStatus::Unspent);
+    assert!(output.is_frozen);
+    assert_eq!(output.proven_up.unwrap().version, VERSION.next());
+    assert_eq!(queued(&test), 0);
+}
+
+/// A proof of the version the wallet holds proven can predate the wallet's own spend of it, so it does not bring the
+/// output back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_spent_output_proven_up_at_the_version_it_holds_proven_stays_spent() {
+    let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
+    let (id, utxo) = test.owned_utxo(&account, VALUE);
+    hold(&sets, &network, &test, &account, id, &utxo).await;
+    mark_spent(&test, id);
+
+    assert_eq!(recover(&test, &network, &account, id, &utxo).await, 0);
+    assert_eq!(stored(&test, id).status, OutputStatus::Spent);
+    assert_eq!(balance(&test, &account), Amount::from_u64(0));
+    assert_eq!(queued(&test), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_spent_output_reported_unspent_without_a_proof_stays_spent() {
+    let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
+    let (id, utxo) = test.owned_utxo(&account, VALUE);
+    hold(&sets, &network, &test, &account, id, &utxo).await;
+    mark_spent(&test, id);
+
+    network.serve_substate(
+        substate_id(id),
+        VERSION.next(),
+        SubstateValue::Utxo(frozen(&utxo)),
+        None,
+    );
+    assert_eq!(recover(&test, &network, &account, id, &frozen(&utxo)).await, 0);
+    let output = stored(&test, id);
+    assert_eq!(output.status, OutputStatus::Spent);
+    assert!(!output.is_frozen);
+    assert_eq!(queued(&test), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]

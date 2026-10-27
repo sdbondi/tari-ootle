@@ -268,8 +268,13 @@ CREATE TABLE stealth_outputs
     is_frozen              BOOLEAN  NOT NULL DEFAULT 0,
     is_on_chain            BOOLEAN  NOT NULL,
     is_condition_spendable BOOLEAN  NOT NULL,
+    -- The latest version of the output a verified proof showed up, and the epoch of the block it showed it at. Both
+    -- are set together or not at all.
+    proven_version         BIGINT   NULL,
+    proven_up_epoch        BIGINT   NULL,
     created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK ((proven_version IS NULL) = (proven_up_epoch IS NULL)),
     -- Mirror the SpendAuthorization enum: an output must be spendable by at least one path.
     CHECK (spend_key IS NOT NULL OR condition_root IS NOT NULL)
 );

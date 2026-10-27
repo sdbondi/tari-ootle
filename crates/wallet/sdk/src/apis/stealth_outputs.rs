@@ -54,6 +54,7 @@ use crate::{
         KeyBranch,
         KeyId,
         OutputStatus,
+        ProvenUp,
         StealthBalance,
         StealthOutputInfo,
         StealthOutputModel,
@@ -682,6 +683,15 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
         Ok(changed)
     }
 
+    /// Records that a verified proof showed the output at `address` up, unless the wallet holds a proof of the same or
+    /// a later version. Returns whether it was recorded.
+    pub fn record_proven_up(&self, address: &UtxoAddress, proven_up: ProvenUp) -> Result<bool, StealthOutputsApiError> {
+        let recorded = self
+            .store
+            .with_write_tx(|tx| tx.stealth_outputs_record_proven_up(address, proven_up))?;
+        Ok(recorded)
+    }
+
     pub fn update_utxo_status(
         &self,
         address: &UtxoAddress,
@@ -704,6 +714,17 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
             })?
             .is_some();
         Ok(exists)
+    }
+
+    /// The output the wallet holds at `address`, if any.
+    pub fn get_utxo(&self, address: &UtxoAddress) -> Result<Option<StealthOutputModel>, StealthOutputsApiError> {
+        let output = self
+            .store
+            .with_read_tx(|tx| {
+                tx.stealth_outputs_get_by_commitment(address.resource_address(), &address.id().into_commitment_bytes())
+            })
+            .optional()?;
+        Ok(output)
     }
 
     pub fn utxos_get_many(
@@ -1034,6 +1055,7 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
                 is_on_chain: true,
                 is_condition_spendable: self.is_spendable_auth(&output.auth),
                 lock_id: None,
+                proven_up: None,
             };
             // Another key may still own the output, so an invalid result is only returned if none does
             if matches!(model.status, OutputStatus::Invalid) {

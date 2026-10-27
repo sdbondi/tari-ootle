@@ -27,7 +27,7 @@ use tari_template_lib::types::{ResourceAddress, TemplateAddress, constants::TARI
 
 use crate::{
     apis::validator_set::{ValidatorSetApi, ValidatorSetApiError},
-    models::SubstateModel,
+    models::{ProvenUp, SubstateModel},
     network::{FetchedSubstates, WalletNetworkInterface},
     sdk::IndexerTrust,
     storage::{WalletStorageError, WalletStore, WalletStoreReader, WalletStoreWriter},
@@ -108,8 +108,8 @@ where
             .map_err(|e| SubstateApiError::NetworkInterfaceError(e.into()))?;
         let mut read = HashMap::with_capacity(substates.len());
         for (id, substate) in substates {
-            let substate = self.read_served(&id, &substate, verify, proofs.get(&id)).await?;
-            read.insert(id, substate);
+            let read_substate = self.read_served(&id, &substate, verify, proofs.get(&id)).await?;
+            read.insert(id, read_substate.substate);
         }
         Ok(read)
     }
@@ -121,7 +121,7 @@ where
     pub async fn get_each_substate_from_network(
         &self,
         ids: Vec<SubstateId>,
-    ) -> Result<Vec<(SubstateId, Result<Substate, SubstateApiError>)>, SubstateApiError> {
+    ) -> Result<Vec<(SubstateId, Result<ReadSubstate, SubstateApiError>)>, SubstateApiError> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -408,6 +408,7 @@ where
                 resp.proof.as_ref(),
             )
             .await?
+            .substate
             .into_substate_value();
 
         debug!(
@@ -424,12 +425,17 @@ where
     /// and that a later block's state no longer holds it, each against a committee of a validator set the wallet
     /// trusts.
     ///
+    /// Validators keep the proof that a version was committed for a limited time. Past it, the indexer serves only the
+    /// exclusion, which shows the version gone when `proven_up` is a proof the wallet verified of that same version at
+    /// a block of an earlier epoch than the exclusion's.
+    ///
     /// A version that has gone down never comes back up, so the proof shows the version's current state however old
     /// its blocks are. It says nothing about later versions of the substate.
     pub async fn verify_down(
         &self,
         substate_id: &SubstateId,
         version: SubstateVersion,
+        proven_up: Option<ProvenUp>,
     ) -> Result<(), SubstateApiError> {
         let resp = self
             .network_interface
@@ -450,10 +456,29 @@ where
             substate_id: substate_id.clone(),
         };
         let proof = resp.proof.ok_or_else(unproven)?;
-        let down_proof = proof.down_proof.as_deref().ok_or_else(unproven)?;
         let unverified = |source| SubstateApiError::SubstateUnverified {
             substate_id: substate_id.clone(),
             source,
+        };
+        let Some(down_proof) = proof.down_proof.as_deref() else {
+            let proven_up = proven_up
+                .filter(|proven_up| proven_up.version == version)
+                .ok_or_else(unproven)?;
+            if proof.anchor.epoch <= proven_up.epoch {
+                return Err(SubstateApiError::SubstateExcludedNoLaterThanProvenUp {
+                    substate_id: substate_id.clone(),
+                    version,
+                    anchor_epoch: proof.anchor.epoch,
+                    proven_up_epoch: proven_up.epoch,
+                });
+            }
+            let committee = self
+                .trusted_committee(substate_id, proof.anchor.epoch, proof.anchor.shard_group)
+                .await?;
+            committee
+                .verify_absent(substate_id, version, &proof)
+                .map_err(unverified)?;
+            return Ok(());
         };
 
         let (up_epoch, up_shard_group) = down_proof_up_anchor(down_proof).map_err(unverified)?;
@@ -494,25 +519,35 @@ where
         served: &EncodedSubstate,
         verify: bool,
         proof: Option<&SubstateProof>,
-    ) -> Result<Substate, SubstateApiError> {
-        let value = if verify {
-            self.verify_read(substate_id, served.version(), served.value(), proof)
-                .await?
+    ) -> Result<ReadSubstate, SubstateApiError> {
+        let (value, proven_up) = if verify {
+            let (epoch, value) = self
+                .verify_read(substate_id, served.version(), served.value(), proof)
+                .await?;
+            let proven_up = ProvenUp {
+                version: served.version(),
+                epoch,
+            };
+            (value, Some(proven_up))
         } else {
-            served
+            let value = served
                 .value()
                 .decode()
                 .map_err(|e| SubstateApiError::UndecodableSubstate {
                     substate_id: substate_id.clone(),
                     details: e.to_string(),
-                })?
+                })?;
+            (value, None)
         };
-        Ok(Substate::new(served.version(), value))
+        Ok(ReadSubstate {
+            substate: Substate::new(served.version(), value),
+            proven_up,
+        })
     }
 
     /// Verifies that `substate_id` at `version` held `value` at the block `proof` is anchored at, and that the block is
-    /// recent: no more than [`MAX_PROOF_AGE_EPOCHS`] before the latest validator set the wallet trusts. Returns `value`
-    /// decoded.
+    /// recent: no more than [`MAX_PROOF_AGE_EPOCHS`] before the latest validator set the wallet trusts. Returns the
+    /// block's epoch and `value` decoded.
     ///
     /// The latest trusted set advances only as far as the checkpoints the indexer serves. An indexer that stops serving
     /// newer checkpoints can therefore keep the wallet on state proven up to the last one it served; no proof shows its
@@ -523,7 +558,7 @@ where
         version: SubstateVersion,
         value: &Encoded<SubstateValue>,
         proof: Option<&SubstateProof>,
-    ) -> Result<SubstateValue, SubstateApiError> {
+    ) -> Result<(Epoch, SubstateValue), SubstateApiError> {
         let proof = proof.ok_or_else(|| SubstateApiError::SubstateUnproven {
             substate_id: substate_id.clone(),
         })?;
@@ -534,7 +569,7 @@ where
         let committee = self
             .trusted_committee(substate_id, anchor_epoch, proof.anchor.shard_group)
             .await?;
-        let (_, value) = committee
+        let (tip, value) = committee
             .verify_substate(substate_id, version, value, proof)
             .map_err(|source| SubstateApiError::SubstateUnverified {
                 substate_id: substate_id.clone(),
@@ -543,7 +578,7 @@ where
         // Verifying the committee walks to the set of the anchor's epoch when that is past the latest trusted set, and
         // the walk can go further.
         self.check_fresh(substate_id, anchor_epoch)?;
-        Ok(value)
+        Ok((tip.epoch, value))
     }
 
     /// The error for a proof anchored at `anchor_epoch`, for which the wallet trusts no validator set even after
@@ -639,6 +674,13 @@ where
     }
 }
 
+/// A substate read from the network, and the proof of it the wallet verified, if it was proven.
+#[derive(Debug, Clone)]
+pub struct ReadSubstate {
+    pub substate: Substate,
+    pub proven_up: Option<ProvenUp>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SubstateApiError {
     #[error("Store error: {0}")]
@@ -655,6 +697,16 @@ pub enum SubstateApiError {
     UndecodableSubstate { substate_id: SubstateId, details: String },
     #[error("The indexer served substate {substate_id} without a proof. Retry, or use another indexer.")]
     SubstateUnproven { substate_id: SubstateId },
+    #[error(
+        "The indexer proved substate {substate_id} v{version} absent at a block of {anchor_epoch}, no later than \
+         {proven_up_epoch} in which the wallet proved it live. Retry, or use another indexer."
+    )]
+    SubstateExcludedNoLaterThanProvenUp {
+        substate_id: SubstateId,
+        version: SubstateVersion,
+        anchor_epoch: Epoch,
+        proven_up_epoch: Epoch,
+    },
     #[error("The indexer served substate {substate_id} as live at v{version}, not as gone down")]
     SubstateNotDown {
         substate_id: SubstateId,

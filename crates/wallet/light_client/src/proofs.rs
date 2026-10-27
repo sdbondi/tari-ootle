@@ -56,6 +56,31 @@ impl VerifiedCommittee {
         Ok((tip, value))
     }
 
+    /// Verifies that `substate_id` at `version` was not in the state of the block `proof` is anchored at, and returns
+    /// the anchor block's quorum-signed header fields. This committee must be the anchor block's.
+    ///
+    /// A version that never existed is also absent, as is one committed after the anchor. The proof shows the version
+    /// gone only to a caller that has proven it up at a block of an earlier epoch than the returned one.
+    pub fn verify_absent(
+        &self,
+        substate_id: &SubstateId,
+        version: SubstateVersion,
+        proof: &SubstateProof,
+    ) -> Result<VerifiedBlockTip, LightClientError> {
+        let tip = self.verify_commit_proof(&proof.commit_proof)?;
+        verify_substate_value_proof_against_root(
+            &proof.value_proof,
+            substate_id,
+            version,
+            None,
+            self.network(),
+            self.num_preshards(),
+            proof.value_hash_epoch,
+            &TrustedStateRoot::from(tip),
+        )?;
+        Ok(tip)
+    }
+
     /// Verifies that `transaction_id` committed with the receipt `proven` carries, and returns that receipt. A
     /// transaction commits only once, so a proven receipt stays proven however old its anchor block is, given a
     /// committee of that block's epoch.

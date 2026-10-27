@@ -994,6 +994,7 @@ mod tests {
                 is_on_chain: true,
                 is_condition_spendable: true,
                 lock_id: None,
+                proven_up: None,
             }
         }
 

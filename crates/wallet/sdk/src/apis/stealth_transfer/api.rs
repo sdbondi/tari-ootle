@@ -1243,6 +1243,7 @@ impl<'a, TSpec: WalletSdkSpec> StealthTransferApi<'a, TSpec> {
             minimum_value_promise: output.output.minimum_value_promise,
             tag_byte: output.tag,
             lock_id: Some(lock_id),
+            proven_up: None,
             is_burnt: false,
             is_frozen: false,
             is_on_chain: false,
