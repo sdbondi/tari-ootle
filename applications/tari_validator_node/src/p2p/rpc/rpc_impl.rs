@@ -24,7 +24,7 @@ use std::{
     collections::{BTreeSet, HashSet},
     convert::{TryFrom, TryInto},
     num::NonZeroUsize,
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
 };
 
 use log::*;
@@ -89,6 +89,7 @@ use tari_ootle_storage::{
 };
 use tari_ootle_transaction::TransactionId;
 use tari_rpc_framework::{Request, Response, RpcStatus, Streaming};
+use tari_sidechain::FixedHash;
 use tari_state_tree::SubstateValueProof;
 use tari_validator_node_rpc::{STATE_SYNC_MAX_BATCH_SIZE, rpc_service::ValidatorNodeRpcService};
 use tokio::{
@@ -135,6 +136,7 @@ pub struct ValidatorNodeRpcServiceImpl<TStateStore> {
     /// Permits for the batch responses held in memory at once; see [`MAX_BUFFERED_BATCH_RESPONSES`].
     batch_responses: Arc<Semaphore>,
     state_sync_reads: Arc<Semaphore>,
+    root_mismatch_log: Arc<RootMismatchLog>,
 }
 
 impl<TStateStore: StateStore> ValidatorNodeRpcServiceImpl<TStateStore> {
@@ -155,6 +157,7 @@ impl<TStateStore: StateStore> ValidatorNodeRpcServiceImpl<TStateStore> {
             epoch_history_length,
             batch_responses: Arc::new(Semaphore::new(MAX_BUFFERED_BATCH_RESPONSES)),
             state_sync_reads: Arc::new(Semaphore::new(max_concurrent_state_sync_reads())),
+            root_mismatch_log: Arc::default(),
         }
     }
 
@@ -493,11 +496,12 @@ const MAX_LEAF_SHARDS: usize = NumPreshards::MAX.num_shards() + 1;
 ///
 /// `commit_proof` must be the proof of the node's latest committed block, read in `tx`: the committed shard states are
 /// then the ones that block's root commits. If they build another root, the node cannot prove its committed state, so
-/// it serves no leaves.
+/// it serves no leaves, and reports the mismatch through `root_mismatch_log`.
 fn prove_shard_leaves<TTx: StateStoreReadTransaction>(
     tx: &TTx,
     commit_proof: &CommittedBlockProof,
     leaf_shards: &BTreeSet<Shard>,
+    root_mismatch_log: &RootMismatchLog,
 ) -> Result<Vec<ShardStateLeaf>, StorageError> {
     if leaf_shards.is_empty() {
         return Ok(vec![]);
@@ -509,12 +513,19 @@ fn prove_shard_leaves<TTx: StateStoreReadTransaction>(
     let state = CommittedShardGroupState::read(tx, shard_group, protocol_version)?;
     let root = state.root();
     if root.as_slice() != commit_proof.state_merkle_root().as_slice() {
-        error!(
+        let level = if root_mismatch_log.is_first_for(commit_proof.block_id()) {
+            Level::Error
+        } else {
+            Level::Debug
+        };
+        log!(
             target: LOG_TARGET,
-            "BUG: committed state of {shard_group} has root {root}, but its latest committed block (epoch {}, height \
-             {}) commits {}. Serving the commit proof without shard leaves.",
+            level,
+            "BUG: committed state of {shard_group} has root {root}, but its latest committed block {} (epoch {}, \
+             height {}) commits {}. Serving the commit proof without shard leaves.",
+            commit_proof.block_id(),
             commit_proof.epoch(),
-            commit_proof.proof().header.height,
+            commit_proof.height(),
             commit_proof.state_merkle_root()
         );
         return Ok(vec![]);
@@ -526,6 +537,21 @@ fn prove_shard_leaves<TTx: StateStoreReadTransaction>(
         }
     }
     Ok(leaves)
+}
+
+/// The block whose root mismatch was last logged as an error. A peer polling the tip repeats the mismatch on every
+/// request until the next block commits, so it is an error once per block and a debug line after that.
+#[derive(Default)]
+struct RootMismatchLog {
+    last_block: Mutex<Option<FixedHash>>,
+}
+
+impl RootMismatchLog {
+    /// True the first time it is called for `block_id` since it was last called for another block.
+    fn is_first_for(&self, block_id: FixedHash) -> bool {
+        let mut last_block = self.last_block.lock().unwrap_or_else(PoisonError::into_inner);
+        last_block.replace(block_id) != Some(block_id)
+    }
 }
 
 /// The epoch and shard group a read is anchored in.
@@ -989,6 +1015,7 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
 
         let epoch = self.consensus.current_epoch();
         let store = self.state_store.clone();
+        let root_mismatch_log = self.root_mismatch_log.clone();
 
         let maybe_proof = task::spawn_blocking(move || {
             store
@@ -996,7 +1023,7 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
                     let Some(proof) = latest_commit_proof(tx, epoch)? else {
                         return Ok(None);
                     };
-                    let leaves = prove_shard_leaves(tx, &proof, &leaf_shards)?
+                    let leaves = prove_shard_leaves(tx, &proof, &leaf_shards, &root_mismatch_log)?
                         .iter()
                         .map(TryInto::try_into)
                         .collect::<Result<Vec<_>, anyhow::Error>>()
@@ -1575,7 +1602,7 @@ mod tests {
             .map(Shard::from)
             .chain([Shard::global()])
             .collect::<BTreeSet<_>>();
-        let leaves = prove_shard_leaves(&tx, &commit_proof, &requested).unwrap();
+        let leaves = prove_shard_leaves(&tx, &commit_proof, &requested, &RootMismatchLog::default()).unwrap();
 
         let served = leaves.iter().map(|l| (l.shard, l.state_version)).collect::<Vec<_>>();
         assert_eq!(served, vec![
@@ -1592,7 +1619,7 @@ mod tests {
         }
 
         assert!(
-            prove_shard_leaves(&tx, &commit_proof, &BTreeSet::new())
+            prove_shard_leaves(&tx, &commit_proof, &BTreeSet::new(), &RootMismatchLog::default())
                 .unwrap()
                 .is_empty()
         );
@@ -1608,7 +1635,28 @@ mod tests {
         let commit_proof = commit_proof_with_root(group, TreeHash::new([1; 32]));
 
         let requested = BTreeSet::from([Shard::from(1u32)]);
-        assert!(prove_shard_leaves(&tx, &commit_proof, &requested).unwrap().is_empty());
+        let root_mismatch_log = RootMismatchLog::default();
+        assert!(
+            prove_shard_leaves(&tx, &commit_proof, &requested, &root_mismatch_log)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            !root_mismatch_log.is_first_for(commit_proof.block_id()),
+            "the mismatch was not reported for the block"
+        );
+    }
+
+    /// A root mismatch is logged as an error once per block, however often peers ask for the block's leaves.
+    #[test]
+    fn a_root_mismatch_is_first_reported_once_per_block() {
+        let log = RootMismatchLog::default();
+        let (a, b) = (FixedHash::new([1; 32]), FixedHash::new([2; 32]));
+        assert!(log.is_first_for(a));
+        assert!(!log.is_first_for(a));
+        assert!(log.is_first_for(b));
+        assert!(!log.is_first_for(b));
+        assert!(log.is_first_for(a));
     }
 
     fn node_group() -> ShardGroup {

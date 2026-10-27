@@ -493,7 +493,7 @@ fn committed_shard_state<TTx: StateStoreReadTransaction>(
     let mut scoped = ShardScopedTreeStoreReader::new(tx, shard);
     let tree = SpreadPrefixStateTree::new(&mut scoped);
     let root = tree.get_root_hash(version).map_err(|e| StorageError::QueryError {
-        reason: format!("SubstateProofGenerator shard {shard} root: {e}"),
+        reason: format!("shard {shard} root: {e}"),
     })?;
     Ok(CommittedShardState {
         root,
