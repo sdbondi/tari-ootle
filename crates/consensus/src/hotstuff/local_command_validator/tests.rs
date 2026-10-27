@@ -1006,6 +1006,15 @@ mod local_only {
             evaluation.no_vote
         );
     }
+
+    #[test]
+    fn a_transaction_waiting_on_foreign_pledges_is_refused() {
+        let (replica, id, _) = output_only_waiting_on_pledges();
+
+        let evaluation = replica.evaluate_local_only(&[committing(id)]);
+
+        assert_proposed_before_ready(&evaluation, "LocalOnly");
+    }
 }
 
 /// The atom of a LocalPrepare or LocalAccept command.
@@ -1501,15 +1510,6 @@ mod new_multishard_rules {
         let evaluation = replica.evaluate(&[Command::LocalPrepare(atom)]);
 
         assert_proposed_before_ready(&evaluation, "LocalPrepare");
-    }
-
-    #[test]
-    fn a_local_only_command_for_a_transaction_waiting_on_foreign_pledges_is_refused() {
-        let (replica, id, _) = output_only_waiting_on_pledges();
-
-        let evaluation = replica.evaluate_local_only(&[committing(id)]);
-
-        assert_proposed_before_ready(&evaluation, "LocalOnly");
     }
 
     #[test]
