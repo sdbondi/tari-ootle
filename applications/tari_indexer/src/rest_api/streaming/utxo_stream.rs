@@ -73,10 +73,10 @@ impl UtxoUpdateStream {
                 // read matched nothing still reports it when the read moved past the cursor, so that
                 // the client does not read the excluded rows again on its next pass.
                 //
-                // A cursor below the tombstone horizon is told to resync whatever the read found, so a
-                // shard with nothing past the cursor still sends its frame.
-                let resync_required = resync_required(request.unspent_only, state_version, tombstone_horizon);
-                if updates.is_empty() && max_state_version <= state_version && !resync_required {
+                // A cursor below the tombstone horizon is told its spends are incomplete whatever the read
+                // found, so a shard with nothing past the cursor still sends its frame.
+                let spends_incomplete = spends_incomplete(request.unspent_only, state_version, tombstone_horizon);
+                if updates.is_empty() && max_state_version <= state_version && !spends_incomplete {
                     debug!(target: LOG_TARGET, "No updates found for shard {}, moving to next shard", shard);
                     continue;
                 }
@@ -92,7 +92,7 @@ impl UtxoUpdateStream {
                     shard,
                     max_state_version,
                     has_more,
-                    resync_required,
+                    spends_incomplete,
                     updates,
                     index: 0,
                 };
@@ -106,7 +106,7 @@ impl UtxoUpdateStream {
                             max_state_version: pending.max_state_version.as_u64(),
                             num_updates: u32::try_from(pending.updates_len()).expect("loaded more than u32::MAX updates"),
                             has_more: pending.has_more,
-                            resync_required: pending.resync_required,
+                            spends_incomplete: pending.spends_incomplete,
                         });
                         pending.sos_emitted = true;
                     }
@@ -172,7 +172,7 @@ struct PendingUpdates {
     pub shard: Shard,
     pub max_state_version: StateVersion,
     pub has_more: bool,
-    pub resync_required: bool,
+    pub spends_incomplete: bool,
     pub updates: Vec<WalletUtxoUpdate>,
     pub index: usize,
 }
@@ -202,7 +202,7 @@ impl PendingUpdates {
 
 /// Whether a read of a shard from `cursor` may be missing spends, which it is when it asks for them and resumes below
 /// the shard's tombstone horizon. A cursor of zero is a full scan, and misses them as much as any other.
-fn resync_required(unspent_only: bool, cursor: StateVersion, tombstone_horizon: Option<StateVersion>) -> bool {
+fn spends_incomplete(unspent_only: bool, cursor: StateVersion, tombstone_horizon: Option<StateVersion>) -> bool {
     !unspent_only && tombstone_horizon.is_some_and(|horizon| cursor < horizon)
 }
 
@@ -267,10 +267,10 @@ mod tests {
     }
 
     /// The shard's head fetch reached v1000 on other substates, far past the resource's newest row at v10. A read
-    /// from below the horizon is told to resync even with nothing past its cursor, and the rescan resumes from the
-    /// horizon, which clears the flag.
+    /// from below the horizon is told its spends are incomplete even with nothing past its cursor, and a read that
+    /// reaches the end of the shard resumes from the horizon, which clears the flag.
     #[tokio::test]
-    async fn a_resync_below_the_tombstone_horizon_resumes_from_above_it() {
+    async fn a_read_below_the_tombstone_horizon_resumes_from_above_it() {
         let (_dir, store) = store_with_utxos(&[(10, 1)]).await;
         store
             .with_write_tx(|tx| tx.raise_utxo_tombstone_horizon(Shard::from(1u32), StateVersion::new(1000)))
@@ -279,12 +279,12 @@ mod tests {
 
         let frames = stream_frames(&store, &[(1, 10)], false).await;
         assert_eq!(frames.len(), 1);
-        assert!(frames[0].resync_required);
+        assert!(frames[0].spends_incomplete);
         assert_eq!(frames[0].num_updates, 0);
 
         let frames = stream_frames(&store, &[(1, 0), (2, 0)], true).await;
         assert_eq!(frames.len(), 1, "the empty shard without a horizon sends nothing");
-        assert!(!frames[0].resync_required);
+        assert!(!frames[0].spends_incomplete);
         assert_eq!(frames[0].num_updates, 1);
         assert_eq!(frames[0].max_state_version, 1000);
 
@@ -293,13 +293,13 @@ mod tests {
     }
 
     #[test]
-    fn a_cursor_below_the_tombstone_horizon_must_resync_when_it_reads_spends() {
+    fn a_cursor_below_the_tombstone_horizon_reads_incomplete_spends() {
         let v = StateVersion::new;
 
-        assert!(resync_required(false, v(0), Some(v(10))));
-        assert!(resync_required(false, v(9), Some(v(10))));
-        assert!(!resync_required(false, v(10), Some(v(10))));
-        assert!(!resync_required(false, v(0), None));
-        assert!(!resync_required(true, v(9), Some(v(10))));
+        assert!(spends_incomplete(false, v(0), Some(v(10))));
+        assert!(spends_incomplete(false, v(9), Some(v(10))));
+        assert!(!spends_incomplete(false, v(10), Some(v(10))));
+        assert!(!spends_incomplete(false, v(0), None));
+        assert!(!spends_incomplete(true, v(9), Some(v(10))));
     }
 }

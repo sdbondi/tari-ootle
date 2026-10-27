@@ -37,7 +37,7 @@ pub struct StartOfShard {
     /// it clears the flag.
     #[prost(bool, tag = "5")]
     #[serde(default)]
-    pub resync_required: bool,
+    pub spends_incomplete: bool,
 }
 
 #[derive(::prost::Message, serde::Serialize, serde::Deserialize)]

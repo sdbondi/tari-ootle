@@ -277,7 +277,7 @@ where TSpec: WalletSdkSpec
             let payload = result.map_err(|e| StealthScannerApiError::NetworkInterfaceError(e.into()))?;
             if let Some(recv_sos) = payload.sos {
                 debug!(target: LOG_TARGET, "Received StartOfShard for {}", recv_sos.shard);
-                if recv_sos.resync_required && self.flagged.insert(recv_sos.shard) {
+                if recv_sos.spends_incomplete && self.flagged.insert(recv_sos.shard) {
                     newly_flagged.insert(recv_sos.shard);
                 }
                 if let Some(unterminated) = sos.replace(recv_sos) {

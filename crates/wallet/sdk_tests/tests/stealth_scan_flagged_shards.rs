@@ -152,7 +152,7 @@ fn index_below_horizon(network: &ProvingNetwork, delivered: Vec<(UtxoId, UtxoUns
                     shard: *shard,
                     max_state_version,
                     has_more,
-                    resync_required: !unspent_only,
+                    spends_incomplete: !unspent_only,
                 }),
                 update: None,
                 eos: None,

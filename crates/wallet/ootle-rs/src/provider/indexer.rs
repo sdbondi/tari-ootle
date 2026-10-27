@@ -225,7 +225,7 @@ impl<Wallet> IndexerProvider<Wallet> {
     /// viewable-balance ciphertext with [`Self::fetch_unspent_utxos`]. Set `unspent_only = false` on
     /// the request to also receive `Spent`/`Burnt` frames. Such a request is told when a shard's
     /// spends below its cursor may be missing; see
-    /// [`StealthUtxoFrame::StartOfShard::resync_required`](crate::provider::StealthUtxoFrame::StartOfShard::resync_required).
+    /// [`StealthUtxoFrame::StartOfShard::spends_incomplete`](crate::provider::StealthUtxoFrame::StartOfShard::spends_incomplete).
     pub fn watch_stealth_utxos(&self, request: StealthUtxoWatchRequest) -> StealthUtxoStream {
         StealthUtxoStream::new(Arc::downgrade(&self.client), request)
     }

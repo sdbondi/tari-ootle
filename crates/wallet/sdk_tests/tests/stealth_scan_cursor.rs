@@ -113,7 +113,7 @@ fn start_of_shard(max_state_version: u64, has_more: bool) -> StartOfShard {
         shard: SHARD,
         max_state_version: StateVersion::from(max_state_version),
         has_more,
-        resync_required: false,
+        spends_incomplete: false,
     }
 }
 

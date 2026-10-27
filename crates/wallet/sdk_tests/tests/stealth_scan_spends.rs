@@ -110,7 +110,7 @@ fn report_spent(network: &ProvingNetwork, output: &StealthOutputModel, version: 
                 shard: SHARD,
                 max_state_version: SCANNED_TO,
                 has_more: false,
-                resync_required: false,
+                spends_incomplete: false,
             }),
             update: Some(WalletUtxoUpdate::Spent(UtxoSpent { id, version })),
             eos: Some(EndOfShard {

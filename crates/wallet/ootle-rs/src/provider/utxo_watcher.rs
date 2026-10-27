@@ -85,7 +85,7 @@ pub enum StealthUtxoFrame {
         /// output the indexer no longer serves is gone. A spend after the check lands above the
         /// horizon, so a later pass reports it. A monitor that stops before the check is asked
         /// again, as its persisted watermark is still below the horizon.
-        resync_required: bool,
+        spends_incomplete: bool,
     },
     /// A currently-unspent output. Carries only the `(tag, public_nonce)` fetch key — the commitment
     /// and viewable-balance ciphertext must be resolved via
@@ -177,7 +177,7 @@ impl StealthUtxoStream {
                                 max_state_version: StateVersion::from(sos.max_state_version),
                                 num_updates: sos.num_updates,
                                 has_more: sos.has_more,
-                                resync_required: sos.resync_required,
+                                spends_incomplete: sos.spends_incomplete,
                             });
                         }
                         if let Some(update) = update {
