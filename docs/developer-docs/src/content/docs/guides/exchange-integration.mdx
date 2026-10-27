@@ -48,7 +48,7 @@ If you have already integrated Minotari, these are the differences that matter m
 | Finality | Probabilistic. Wait for block confirmations | Deterministic BFT finality. A transaction that has been accepted is final |
 | Deposit reference | Payment ID in the transaction | Destination tag embedded in the deposit address and carried in the encrypted memo |
 | Smallest unit | µT (1 XTM = 1,000,000 µT) | µT (1 TARI = 1,000,000 µT) |
-| Read-only wallet | Supported (view key and public spend key) | **Not yet supported by the wallet daemon.** See [Proposed integration structure](#proposed-integration-structure) |
+| Read-only wallet | Supported (view key and public spend key) | Supported as a watch-only account (view secret key and account public key). See [Proposed integration structure](#proposed-integration-structure) |
 
 ## Proposed integration structure
 
@@ -58,40 +58,26 @@ Each Ootle address has two key pairs:
 - The **view key** lets a wallet detect and decrypt payments sent to the address.
 - The **account (spend) key** is needed to spend them.
 
-The Minotari guide recommends an air-gapped cold wallet and a *read-only* hot wallet. The read-only wallet uses only
-the view key to watch for deposits. The current Ootle wallet daemon **cannot** create a view-only account, so it can
-only watch for deposits on an account whose spend key it also holds. Until watch-only accounts are supported, we
-recommend this structure:
+As on Minotari, we recommend an air-gapped cold wallet and a *read-only* hot wallet that watches for deposits with
+only the view key. The wallet daemon supports this with a **watch-only account**: it holds the cold account's view
+secret key and account public key, and no spend key. The recommended structure is:
 
 - **Indexer.** Your own `tari_indexer`. It follows the validator committees, stores transactions, events and UTXOs,
   and submits your transactions to the network. Wallets talk to Ootle *only* through an indexer. Running your own
   removes your dependence on Tari's public indexers.
-- **Deposit wallet (hot).** A `tari_ootle_walletd` instance that holds the deposit account. It scans for incoming
-  payments, and you sweep its balance to cold storage regularly. Because it holds a spend key, harden it as a hot
-  wallet: keep a small balance and restrict its API.
-- **Cold wallet.** A separate seed that is generated and kept offline. It holds most funds and is only brought online,
-  on a secured machine, to move funds to the withdrawal wallet.
-- **Withdrawal wallet (hot, optional but recommended).** A separate `tari_ootle_walletd` instance or account. It is
-  topped up from cold storage and used for customer withdrawals.
+- **Cold wallet.** A seed that is generated and kept offline. Its account is your **deposit account**: customers pay
+  straight into cold storage, so there is nothing to sweep. It is only brought online, on a secured machine, to top up
+  the withdrawal wallet.
+- **Deposit wallet (watch-only).** A `tari_ootle_walletd` instance on your server with the cold account imported as
+  watch-only. It finds and decrypts incoming payments and reports them to your backend. It cannot spend: a compromise
+  reveals your deposit history, but no funds can be moved.
+- **Withdrawal wallet (hot).** A separate `tari_ootle_walletd` instance with its own seed. It is topped up from cold
+  storage and used for customer withdrawals. Because it holds a spend key, keep a small balance and restrict its API.
 
-<Aside type="note">
-  **Advanced alternative: a view-key-only monitor.** The Ootle SDK can detect and decrypt incoming payments, and
-  confirm that they are spendable by your account, with only the view secret key and the account **public** key:
-  - `ootle-rs`: `IndexerProvider::watch_stealth_utxos` and `fetch_unspent_utxos` fetch candidate outputs
-  - `ootle_sdk_core`: `stealth::scan_stealth_output(network, view_secret, account_public_key, output, skip_memo)`
-    decrypts an output and checks that it is yours
-
-  You can use these to build a monitor that holds no spend key, and keep the deposit account's spend key cold. No
-  packaged tool does this today, so you must build and maintain it yourself. Be aware of its limits:
-  - **Only key-path outputs are confirmed.** An output's one-time spend key is derived from your view key and account
-    key, so `scan_stealth_output` rejects a `StealthPublicKey` output that decrypts under your view key but pays a
-    spend key someone else holds (see [Section 5](#section-5-detecting-deposits)). An output locked by a condition
-    tree (`AccessRuleAllowAll` or a script) carries no spend key: the scan returns it as soon as it decrypts, without
-    checking who can spend it. Credit only outputs whose `pay_to` is `StealthPublicKey`.
-  - **Destination tag memos are returned as raw bytes**, so the `extractDestinationTag` helper in Section 5 does not apply
-    directly.
-  - **Results are unproven.** `fetch_unspent_utxos` returns whatever the indexer serves, without proofs.
-</Aside>
+[Watch-only Accounts](/guides/watch-only-accounts/) describes the watch-only calls in detail. If you would rather not
+run a wallet daemon for deposits, the Ootle SDK can scan with the same two keys (`ootle-rs`:
+`IndexerProvider::watch_stealth_utxos`; `ootle_sdk_core`: `stealth::scan_stealth_output`), but you then build and
+maintain the monitor yourself.
 
 ## Ootle networks and release methodology
 
@@ -317,10 +303,9 @@ describes how they work; the steps for an exchange are:
 1. Open the web UI and register a WebAuthn credential (passkey or security key) for the admin login.
 2. From an admin session, create an API key scoped to exactly what the service needs. You can use the web UI, the
    `auth.create_api_key` method, or the wallet CLI's `auth api-key create`. For example:
-   - **Deposit monitor:** `accounts:read`, `stealth_utxos:read`, `transactions:read`
-   - **Withdrawal service:** `accounts:read`, `transactions:read`, `transfer:create:<withdrawal account component address>`
-   - **Sweep service:** `accounts:read`, `transactions:read`, `transfer:create:<deposit account component address>`.
-     Keep this key out of the deposit monitor.
+   - **Deposit monitor** (on the watch-only deposit wallet): `accounts:read`, `stealth_utxos:read`, `transactions:read`
+   - **Withdrawal service** (on the withdrawal wallet): `accounts:read`, `transactions:read`,
+     `transfer:create:<withdrawal account component address>`
 3. Send the key on every request as `Authorization: Bearer tw_...`.
 
 API keys can have an expiry, and only a hash of each key is stored. An API key cannot create other API keys.
@@ -366,9 +351,11 @@ async function walletRpc(method, params = {}) {
 This prints the new account as JSON, including:
 
 - `component_address`: the on-chain account component.
-- `address`: the account's **Ootle address**. This is where you send funds to cold storage.
-- The view-only key pair, **including the view secret key in plain text**. Anyone with it can see every payment to the
-  account, so clear the terminal and don't log this output.
+- `address`: the account's **Ootle address**. This is your deposit address: the per-customer deposit addresses in
+  [Section 4](#section-4-ootle-addresses) are built from it.
+- `account_public_key` and `view_only_private_key`: the two keys the watch-only deposit wallet needs. The
+  `view_only_private_key` is printed **in plain text**. Anyone with it can see every payment to the account, so clear
+  the terminal and don't log this output.
 
 <Aside type="caution">
   Mainnet has not launched. Before you move real funds to an address generated now, confirm against the mainnet
@@ -385,7 +372,9 @@ This prints the new account as JSON, including:
 Write them down and secure them. If you like, confirm they work by restoring them with `--seed-words` into a scratch
 base path.
 
-3. Record the cold wallet's `address`. Then permanently delete the base path and consider securely wiping the machine.
+3. Record the cold wallet's `address` and `account_public_key`. Carry the `view_only_private_key` to the deposit
+   wallet's server over a channel you trust. Then permanently delete the base path and consider securely wiping the
+   machine.
 
 <Aside type="note">
   The SQLite file in the base path is **not** a complete backup. The seed is encrypted with a key held in the keyring
@@ -399,23 +388,43 @@ scans derived accounts until 10 in a row are unused). Make the transfer, then wi
 ### Creating the deposit and withdrawal wallets
 
 On your server, start a `tari_ootle_walletd` for each wallet, each with its own `--base-path` and `--listen-on` port.
-Then create an account in each one, from an admin session (the web UI, or a JSON-RPC session logged in with WebAuthn).
-Creating accounts needs the `accounts:create` permission, which the service keys above don't have:
+Set up the accounts from an admin session (the web UI, or a JSON-RPC session logged in with WebAuthn). These calls
+need permissions that the service keys above don't have.
+
+In the **deposit wallet**, import the cold account as watch-only with `accounts.import_view_only`:
 
 ```javascript
 // With an admin session token in place of the service API key
-const created = await walletRpc("accounts.create", { account_name: "deposits", is_default: true });
-// created.address -> the Ootle address to hand out to customers
+const { account_address } = await walletRpc("accounts.import_view_only", {
+  account_name: "deposits",
+  account_public_key: "<account_public_key from the cold wallet>",
+  view_secret_key: "<view_only_private_key from the cold wallet>",
+  // Omitted: scanning starts at the current epoch. Import before you hand out any deposit address.
+  birthday_epoch: null,
+});
 ```
 
-Record the seed words of each hot wallet with the `seed-words` subcommand, and store them as carefully as the cold
-seed.
-
-You can fetch the account and its address at any time:
+The import never makes the account the wallet's default account, so address it by name. Compare its address with the
+cold wallet's `address` before you hand it out. A mismatch means the wrong keys were imported, and payments to it would
+not reach the cold account:
 
 ```javascript
-const { account, address } = await walletRpc("accounts.get_default");
+const { account, address } = await walletRpc("accounts.get", { name_or_address: "deposits" });
+// address must equal the cold wallet's address
 ```
+
+If you restore an existing cold wallet instead, export its keys with `accounts.export_view_key`. Pass the exported
+`birthday_epoch` to the import so earlier deposits are found.
+
+In the **withdrawal wallet**, create an ordinary account:
+
+```javascript
+const created = await walletRpc("accounts.create", { account_name: "withdrawals", is_default: true });
+```
+
+Record the withdrawal wallet's seed words with the `seed-words` subcommand, and store them as carefully as the cold
+seed. The deposit wallet holds no spend key for the deposit account, so the cold seed words are that account's only
+backup.
 
 ## Section 4: Ootle addresses
 
@@ -496,7 +505,8 @@ fn validate_withdrawal_address(s: &str, expected: Network) -> Result<OotleAddres
 
 ## Section 5: Detecting deposits
 
-The deposit wallet's account monitor scans the indexer for stealth outputs addressed to its accounts. It does this
+The watch-only deposit wallet's account monitor scans the indexer for stealth outputs addressed to the cold account.
+It also marks an output `Spent` once the cold wallet spends it. It does this
 every 60 seconds by default. To trigger a scan sooner, call `accounts.get_balances` with `refresh: true`. This only
 queues the scan, so new outputs may not appear in a `stealth_utxos.list` call made straight afterwards. Poll on an
 interval rather than expecting refresh-then-list to be immediate. An output the indexer has not indexed yet is
@@ -509,8 +519,9 @@ with its value, status, spend authorization and decrypted memo.
   **Not every listed output is spendable by you. Never credit one that isn't.** Your deposit address is public, so
   anyone can create an output that is encrypted to your view key and carries any value and any destination tag, while
   keeping the spend key for themselves. The wallet detects such an output and stores it with status `Invalid`, along
-  with its decrypted value and memo. Outputs locked by a condition tree rather than a key can also be viewable without
-  being spendable by your key. Credit an output only if **all** of the following are true:
+  with its decrypted value and memo. A watch-only account also stores every output locked by a condition tree as
+  `Invalid`, because the view key cannot rule out that someone else can spend it. Credit an output only if **all** of
+  the following are true:
   - its `status` is not `Invalid`
   - its `auth` is a key path (`Key`)
   - it is not frozen (`is_frozen` is false)
@@ -527,13 +538,13 @@ with its value, status, spend authorization and decrypted memo.
 ```javascript
 const TARI = "resource_0101010101010101010101010101010101010101010101010101010101010101";
 
-const { account } = await walletRpc("accounts.get_default");
+const { account } = await walletRpc("accounts.get", { name_or_address: "deposits" });
 await walletRpc("accounts.get_balances", { account: account.component_address, refresh: true });
 
 const { utxos } = await walletRpc("stealth_utxos.list", {
   resource_address: TARI,
   account_address: account.component_address,
-  filter_by_status: null, // include Spent, so that UTXOs already swept to cold storage are still seen
+  filter_by_status: null, // include Spent, so that UTXOs the cold wallet has already spent are still seen
 });
 
 // utxo.address is an object. This builds the same `utxo_…` string that transaction results use as a substate ID.
@@ -541,7 +552,7 @@ function utxoId(address) {
   return `utxo_${address.resource_address.replace(/^resource_/, "")}_${address.id}`;
 }
 
-// An output of one of your own transactions that has not finalised yet. It is not a deposit.
+// An output that has not finalised yet. It is not a deposit yet.
 function isInFlight(utxo) {
   return utxo.status === "LockedUnconfirmed" || !utxo.is_on_chain;
 }
@@ -549,7 +560,7 @@ function isInFlight(utxo) {
 function isCreditable(utxo) {
   return (
     utxo.status !== "Invalid" && // decrypts under our view key, but its spend key is not ours
-    "Key" in utxo.auth && // key-path output that this wallet can spend
+    "Key" in utxo.auth && // key-path output paying the cold account's spend key
     !utxo.is_frozen &&
     !utxo.is_burnt
   );
@@ -558,7 +569,7 @@ function isCreditable(utxo) {
 for (const utxo of utxos) {
   const depositId = utxoId(utxo.address); // unique per output: use as your idempotency key
   if (alreadyProcessed(depositId)) continue;
-  if (isInternalOutput(depositId)) continue; // change from your own sweeps, see below
+  if (isInternalOutput(depositId)) continue; // change from your own cold-wallet transfers, see below
   if (isInFlight(utxo)) continue; // look again next round
   if (!isCreditable(utxo)) {
     flagForReview(utxo); // never credit these
@@ -607,12 +618,14 @@ destination tag.
 
 ### Recognising your own change outputs
 
-`stealth_utxos.list` also returns outputs that your wallet created for itself. For example, a sweep to cold storage
-can create a change output back to the deposit account with no memo. Without special handling, every sweep would put
-an unreferenced "deposit" into manual review. Record the outputs your own transactions create:
+`stealth_utxos.list` also returns outputs that the cold wallet created for itself. A top-up of the withdrawal wallet
+returns change to the cold account with no memo, and the deposit wallet sees it like any other incoming output.
+Without special handling, every top-up would put an unreferenced "deposit" into manual review. The deposit wallet did
+not submit these transactions, so record their outputs on the cold wallet before you take it offline again, and load
+them into your backend:
 
 ```javascript
-// After each of your own transactions (sweeps, withdrawals) is Accepted or OnlyFeeAccepted:
+// On the restored cold wallet, after each top-up is Accepted or OnlyFeeAccepted:
 const tx = await walletRpc("transactions.get", { transaction_id });
 // A fee-only result also commits the outputs built into the fee intent, including a stealth transfer's change.
 const diff = tx.result?.result?.Accept ?? tx.result?.result?.AcceptFeeRejectRest?.[0];
@@ -621,8 +634,8 @@ for (const [substateId] of diff?.up_substates ?? []) {
 }
 ```
 
-Process your own transactions' results before you run the deposit scan, so their change outputs are already marked
-as internal. Outputs of transactions still in flight are skipped by `isInFlight` until they finalise.
+Load a top-up's outputs before the deposit scan sees them. If one reaches manual review first, match it against the
+top-up's change by amount and transaction.
 
 ### Other things to keep in mind
 
@@ -750,14 +763,15 @@ if (result.timed_out) {
 
 ### Moving funds between your wallets
 
-Sweeps from the deposit wallet to cold storage use exactly the same call, with the cold wallet's Ootle address as
-the destination. Top-ups from cold storage to the withdrawal wallet are made from the restored cold wallet in the
-same way.
+Deposits arrive straight in cold storage, so there are no sweeps. Top-ups from cold storage to the withdrawal wallet
+use exactly the same call, made from the restored cold wallet with the withdrawal account's Ootle address as the
+destination. Record each top-up's outputs as described in
+[Recognising your own change outputs](#recognising-your-own-change-outputs).
 
-Sweep a fixed amount and let the wallet return change, rather than trying to empty the account. Input selection
-covers `amount + max_fee`, and the fee depends on the inputs selected, so an exact full-balance sweep needs several
-dry runs. A single transfer also spends at most a few hundred inputs, so a deposit account that has received many small
-deposits needs several sweeps.
+Top up a fixed amount and let the wallet return change, rather than trying to empty the account. Input selection
+covers `amount + max_fee`, and the fee depends on the inputs selected, so an exact full-balance transfer needs several
+dry runs. A single transfer also spends at most a few hundred inputs, and every deposit is a separate input, so moving
+the funds of many small deposits needs several transfers.
 
 ## Confirming deposits and withdrawals
 
@@ -827,11 +841,11 @@ own deposit and withdrawal path. See [Burn Minotari for TARI](/guides/burn-minot
 
 ### Security
 
-1. **Separate wallets:** keep cold, deposit and withdrawal wallets as separate daemons with separate base paths and
-   seeds.
+1. **Separate wallets:** keep the cold, deposit and withdrawal wallets as separate daemons with separate base paths.
+   The deposit wallet holds the cold account as watch-only, so it never has the cold spend key.
 2. **Least-privilege API keys:** monitoring services must not hold `transfer` permissions. Scope withdrawal keys to
    the withdrawal account's component.
-3. **Low hot balances:** sweep the deposit wallet often, and only top up the withdrawal wallet with what you need.
+3. **Low hot balances:** only the withdrawal wallet holds a spend key online. Top it up with only what you need.
 4. **Private network only:** bind the wallet daemon's JSON-RPC port and the indexer's metrics port to localhost or a
    private interface, and firewall them.
 5. **Fees:** submit stealth transfers with the `final_fee` from a dry run, and set `max_fee_limit` to a sensible ceiling.
@@ -854,6 +868,7 @@ own deposit and withdrawal path. See [Burn Minotari for TARI](/guides/burn-minot
 
 - [ ] Indexer running, synced and monitored (or public indexer chosen)
 - [ ] Cold wallet created offline; seed words secured; base path destroyed
+- [ ] Deposit wallet holding the cold account as watch-only, its address checked against the cold wallet's
 - [ ] Deposit and withdrawal wallets running with WebAuthn enabled, `indexer_trust = "verify"` and scoped API keys
 - [ ] Network-specific config set in the `[<network>.…]` sections
 - [ ] Keyring or override password handled on headless hosts, with secrets in config files rather than on the
@@ -867,6 +882,6 @@ own deposit and withdrawal path. See [Burn Minotari for TARI](/guides/burn-minot
 - [ ] Withdrawal flow: dry run, submit with the dry run's `final_fee`, store `transaction_id`, `wait_result` with a
       timeout and a `timed_out` check, treat only `Accepted` as success and `OnlyFeeAccepted` as manual review,
       resubmit only after a final unsuccessful outcome
-- [ ] Sweep and top-up procedures documented
+- [ ] Top-up procedure documented, including recording each top-up's change outputs as internal
 - [ ] `transaction_retention_epochs` set to cover your reconciliation window, and bounded while gossip indexing is on
 - [ ] End-to-end test on Esmeralda with small amounts
