@@ -746,6 +746,8 @@ if (result.timed_out) {
     string (`""`) removes it.
   - Fees are paid in TARI, and the fee amount is always public. Make sure the withdrawal account holds enough TARI to
     cover them.
+  - A stealth transfer costs more than a public account-to-account transfer, and its fee grows with the number of
+    inputs and outputs.
   - `stealth_transfer` submits the transaction before it returns the `transaction_id`. If the call fails or your
     service crashes before you store the id, the withdrawal may still be on its way. Before you send it again, list
     the withdrawal account's transactions (`transactions.list` with `account`) and look for it. If you can't rule it
