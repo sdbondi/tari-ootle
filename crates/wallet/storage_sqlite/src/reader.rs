@@ -1521,6 +1521,35 @@ impl WalletStoreReader for ReadTransaction<'_> {
             .collect()
     }
 
+    fn stealth_outputs_get_unproven_held(&mut self) -> Result<Vec<StealthOutputModel>, WalletStorageError> {
+        const OPERATION: &str = "stealth_outputs_get_unproven_held";
+        use crate::schema::{accounts, stealth_outputs};
+
+        let rows = stealth_outputs::table
+            .inner_join(accounts::table.on(accounts::id.eq(stealth_outputs::owner_account_id)))
+            .select((stealth_outputs::all_columns, accounts::address))
+            .filter(stealth_outputs::status.eq_any([
+                OutputStatus::Unspent.as_key_str(),
+                OutputStatus::LockedForSpend.as_key_str(),
+            ]))
+            .filter(stealth_outputs::is_on_chain.eq(true))
+            .filter(stealth_outputs::proven_version.is_null())
+            .order_by(stealth_outputs::id.asc())
+            .get_results::<(models::StealthOutput, String)>(self.connection())
+            .map_err(|e| WalletStorageError::general(OPERATION, e))?;
+
+        rows.into_iter()
+            .map(|(row, address)| {
+                let address = address.parse().map_err(|e| WalletStorageError::DecodingError {
+                    operation: OPERATION,
+                    item: "account",
+                    details: format!("Corrupt db: invalid owner account address '{address}': {e}"),
+                })?;
+                row.try_convert(address)
+            })
+            .collect()
+    }
+
     fn transaction_request_get(
         &mut self,
         id: TransactionRequestId,

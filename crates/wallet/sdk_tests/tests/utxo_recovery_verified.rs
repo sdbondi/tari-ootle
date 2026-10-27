@@ -23,7 +23,7 @@ use tari_ootle_wallet_sdk::{
     models::{AccountWithAddress, OutputStatus, ProvenUp, StealthOutputModel, UtxoUnspent},
     storage::{ReadableWalletStore, WalletStoreReader, WalletStoreWriter, WriteableWalletStore},
 };
-use tari_ootle_wallet_sdk_services::utxo_scanner::UtxoRecovery;
+use tari_ootle_wallet_sdk_services::{account_monitor::AccountScanner, notify::Notify, utxo_scanner::UtxoRecovery};
 use tari_template_lib::types::{
     Amount,
     UtxoAddress,
@@ -376,6 +376,43 @@ async fn a_held_output_without_a_proof_is_proven_when_it_is_reported() {
             epoch: Epoch(5),
         })
     );
+}
+
+/// An output held without a proof, as a wallet that trusted its indexer received it, is proven once the wallet
+/// verifies its indexer, without the indexer reporting it again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_output_without_a_proof_is_proven_without_being_reported() {
+    let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
+    let (id, utxo) = test.owned_utxo(&account, VALUE);
+    hold_unproven(&test, &account, id, &utxo);
+
+    serve_proven(&sets, &network, id, &utxo);
+    AccountScanner::new(Notify::new(1), test.sdk().clone())
+        .prove_unproven_held_outputs()
+        .await
+        .unwrap();
+    assert_eq!(
+        stored(&test, id).proven_up,
+        Some(ProvenUp {
+            version: VERSION,
+            epoch: Epoch(5),
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_spent_output_without_a_proof_is_not_proven() {
+    let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
+    let (id, utxo) = test.owned_utxo(&account, VALUE);
+    hold_unproven(&test, &account, id, &utxo);
+    mark_spent(&test, id);
+
+    serve_proven(&sets, &network, id, &utxo);
+    AccountScanner::new(Notify::new(1), test.sdk().clone())
+        .prove_unproven_held_outputs()
+        .await
+        .unwrap();
+    assert!(stored(&test, id).proven_up.is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]

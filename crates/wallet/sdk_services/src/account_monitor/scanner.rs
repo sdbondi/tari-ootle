@@ -935,6 +935,17 @@ where TSpec: WalletSdkSpec
         Ok(())
     }
 
+    /// Proves each output the wallet holds on chain without a proof of any version, and records the proof. An output
+    /// held without a proof can use only a down proof to show its spend, which the network keeps for a limited
+    /// window. Outputs received while the wallet did not verify its indexer have none.
+    pub async fn prove_unproven_held_outputs(&self) -> Result<(), AccountMonitorError> {
+        if !self.wallet_sdk.sdk_config().indexer_trust.is_verify() {
+            return Ok(());
+        }
+        let addresses = self.wallet_sdk.stealth_outputs_api().get_unproven_held_addresses()?;
+        self.prove_held_outputs(addresses).await
+    }
+
     /// Proves each of `addresses` that the wallet holds without a proof of any version, and records the proof (see
     /// [`ProvenUp`](tari_ootle_wallet_sdk::models::ProvenUp)). A transaction's outputs are proven only through its
     /// receipt, which can commit before another shard group commits them, so it does not show a block the outputs were

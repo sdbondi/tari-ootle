@@ -229,6 +229,10 @@ pub trait WalletStoreReader {
         by_status: Option<OutputStatus>,
     ) -> Result<Vec<StealthOutputModel>, WalletStorageError>;
 
+    /// Every stealth output of any account and resource that the wallet holds unspent or locked for spending, is on
+    /// chain, and has no proof of any version.
+    fn stealth_outputs_get_unproven_held(&mut self) -> Result<Vec<StealthOutputModel>, WalletStorageError>;
+
     // Output Locks
     fn locks_get_by_transaction_id(
         &mut self,

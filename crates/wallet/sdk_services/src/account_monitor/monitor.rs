@@ -185,6 +185,9 @@ where
     }
 
     async fn on_poll(&self) {
+        if let Err(err) = self.scanner.prove_unproven_held_outputs().await {
+            error!(target: LOG_TARGET, "Error proving the stealth outputs the wallet holds without a proof: {}", err);
+        }
         if let Err(err) = self.refresh_all_accounts().await {
             error!(target: LOG_TARGET, "Error refreshing all accounts: {}", err);
         }
