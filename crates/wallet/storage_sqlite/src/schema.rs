@@ -230,6 +230,7 @@ diesel::table! {
         is_condition_spendable -> Bool,
         proven_version -> Nullable<BigInt>,
         proven_up_epoch -> Nullable<BigInt>,
+        spent_version -> Nullable<BigInt>,
         created_at -> Timestamp,
         updated_at -> Timestamp,
     }

@@ -211,10 +211,13 @@ pub trait WalletStoreWriter: CommittableStore {
         lock_id: WalletLockId,
     ) -> Result<(), WalletStorageError>;
     fn stealth_outputs_insert(&mut self, output: &StealthOutputModel) -> Result<(), WalletStorageError>;
+    /// Marks the output spent, as a spend of `version` takes it down, and records `version` as
+    /// [`stealth_outputs_record_spent_version`](Self::stealth_outputs_record_spent_version) does.
     fn stealth_outputs_mark_as_spent(
         &mut self,
         resource_address: &ResourceAddress,
         id: &UtxoId,
+        version: SubstateVersion,
     ) -> Result<(), WalletStorageError>;
     fn stealth_outputs_update(
         &mut self,
@@ -222,6 +225,13 @@ pub trait WalletStoreWriter: CommittableStore {
         is_burnt: Option<bool>,
         status: Option<OutputStatus>,
         is_frozen: Option<bool>,
+    ) -> Result<(), WalletStorageError>;
+    /// Records that a spend took down `version` of the output at `address`, unless it holds the same or a later spent
+    /// version.
+    fn stealth_outputs_record_spent_version(
+        &mut self,
+        address: &UtxoAddress,
+        version: SubstateVersion,
     ) -> Result<(), WalletStorageError>;
     /// Records `proven_up` for the output at `address` unless it holds one of the same or a later version. Returns
     /// whether it was recorded. An output the wallet does not hold is `NotFound`.

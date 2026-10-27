@@ -1056,6 +1056,7 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
                 is_condition_spendable: self.is_spendable_auth(&output.auth),
                 lock_id: None,
                 proven_up: None,
+                spent_version: None,
             };
             // Another key may still own the output, so an invalid result is only returned if none does
             if matches!(model.status, OutputStatus::Invalid) {

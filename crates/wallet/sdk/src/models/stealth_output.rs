@@ -43,6 +43,9 @@ pub struct StealthOutputModel {
     /// The latest version of the output the wallet has verified a proof of, if any.
     #[serde(default)]
     pub proven_up: Option<ProvenUp>,
+    /// The latest version of the output the wallet has seen go down in a spend it verified, if any.
+    #[serde(default)]
+    pub spent_version: Option<SubstateVersion>,
 }
 
 /// A version of an output that a verified proof showed in the state of a block of `epoch`.

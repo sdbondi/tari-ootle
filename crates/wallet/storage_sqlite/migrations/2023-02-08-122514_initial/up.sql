@@ -272,6 +272,8 @@ CREATE TABLE stealth_outputs
     -- are set together or not at all.
     proven_version         BIGINT   NULL,
     proven_up_epoch        BIGINT   NULL,
+    -- The latest version of the output a spend the wallet verified took down.
+    spent_version          BIGINT   NULL,
     created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK ((proven_version IS NULL) = (proven_up_epoch IS NULL)),

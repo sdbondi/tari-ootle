@@ -45,6 +45,7 @@ fn stealth_output(value: u64, seed: u8) -> StealthOutputModel {
         is_condition_spendable: true,
         lock_id: None,
         proven_up: None,
+        spent_version: None,
     }
 }
 

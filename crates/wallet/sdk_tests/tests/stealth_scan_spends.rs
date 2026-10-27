@@ -67,6 +67,7 @@ fn held_output(status: OutputStatus) -> StealthOutputModel {
         is_condition_spendable: true,
         lock_id: None,
         proven_up: None,
+        spent_version: None,
     }
 }
 
@@ -261,16 +262,23 @@ async fn an_exclusion_after_the_epoch_the_output_was_proven_up_in_marks_it_spent
     assert_eq!(unspent_balance(&test), Amount::zero());
 }
 
+/// An exclusion anchored in a later epoch will verify, so the spend is asked for again rather than dropped.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_exclusion_in_the_epoch_the_output_was_proven_up_in_leaves_it_unspent() {
+async fn an_exclusion_in_the_epoch_the_output_was_proven_up_in_is_asked_for_again() {
     let output = StealthOutputModel {
         proven_up: proven_up_in(5),
         ..held_output(OutputStatus::Unspent)
     };
     let (sets, network, test) = wallet_holding(&output, IndexerTrust::Verify).await;
     serve_excluded(&sets, &network, &output, VERSION);
+    report_spent(&network, &output, VERSION);
 
-    assert_unproven_spend_is_not_applied(&network, &test, &output, VERSION).await;
+    let err = try_scan(&test).await.unwrap_err();
+    assert!(matches!(err, StealthScannerApiError::SubstateApiError(_)), "{err}");
+    assert_eq!(stored_status(&test, &output), UNSPENT);
+    let err = try_scan(&test).await.unwrap_err();
+    assert!(matches!(err, StealthScannerApiError::SubstateApiError(_)), "{err}");
+    assert_eq!(stored_status(&test, &output), UNSPENT);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -294,6 +302,28 @@ async fn an_exclusion_of_another_version_than_the_one_proven_up_leaves_the_outpu
     serve_excluded(&sets, &network, &output, VERSION.next());
 
     assert_unproven_spend_is_not_applied(&network, &test, &output, VERSION.next()).await;
+}
+
+/// A rescan from an earlier cursor reports again the down that a freeze or unfreeze took the output through, after the
+/// wallet holds it proven up at the later version.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_spend_of_a_version_below_the_one_proven_up_leaves_the_output_unspent() {
+    let output = StealthOutputModel {
+        proven_up: Some(ProvenUp {
+            version: VERSION.next().next(),
+            epoch: Epoch(3),
+        }),
+        ..held_output(OutputStatus::Unspent)
+    };
+    let (sets, network, test) = wallet_holding(&output, IndexerTrust::Verify).await;
+    let id = substate_id(&output);
+    network.serve_down_substate(
+        id.clone(),
+        VERSION,
+        Some(substate_down_proof(&sets[1], &sets[4], &id, VERSION)),
+    );
+
+    assert_unproven_spend_is_not_applied(&network, &test, &output, VERSION).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

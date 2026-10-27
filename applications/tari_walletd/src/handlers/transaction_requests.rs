@@ -995,6 +995,7 @@ mod tests {
                 is_condition_spendable: true,
                 lock_id: None,
                 proven_up: None,
+                spent_version: None,
             }
         }
 

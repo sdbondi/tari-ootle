@@ -58,6 +58,7 @@ fn stealth_output(account: ComponentAddress, value: u64, seed: u8) -> StealthOut
         is_condition_spendable: true,
         lock_id: None,
         proven_up: None,
+        spent_version: None,
     }
 }
 

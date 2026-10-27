@@ -22,6 +22,7 @@ use tari_ootle_wallet_sdk::{
         ClaimedStateVersion,
         OutputStatus,
         StartOfShard,
+        StealthOutputModel,
         UtxoSpent,
         UtxoSpentEvent,
         UtxoUnspent,
@@ -445,6 +446,9 @@ where TSpec: WalletSdkSpec
                 retained.push(spent);
                 continue;
             };
+            if Self::is_superseded(&held, &spent) {
+                continue;
+            }
 
             let address = UtxoAddress::new(*self.resource_address, spent.id);
             match substate_api
@@ -457,8 +461,7 @@ where TSpec: WalletSdkSpec
                     SubstateApiError::SubstateNotDown { .. } |
                     SubstateApiError::SubstateUnproven { .. } |
                     SubstateApiError::SubstateUnverified { .. } |
-                    SubstateApiError::SubstateProvenBeforeAnchor { .. } |
-                    SubstateApiError::SubstateExcludedNoLaterThanProvenUp { .. }),
+                    SubstateApiError::SubstateProvenBeforeAnchor { .. }),
                 ) => {
                     warn!(
                         target: LOG_TARGET,
@@ -473,6 +476,24 @@ where TSpec: WalletSdkSpec
         }
         self.utxos_to_spend = retained;
         Ok(())
+    }
+
+    /// Whether the wallet holds `held` proven up at a later version than `spent` takes down. A version is taken down by
+    /// the change that brings up the next, so such a report is of a re-versioning (a freeze or an unfreeze), not of a
+    /// spend of the output. A scan from an earlier cursor reports it again after the wallet holds the later version.
+    fn is_superseded(held: &StealthOutputModel, spent: &UtxoSpent) -> bool {
+        let is_superseded = held
+            .proven_up
+            .is_some_and(|proven_up| spent.version < proven_up.version);
+        if is_superseded {
+            debug!(
+                target: LOG_TARGET,
+                "Stealth output {} went down at v{}, and is proven up at a later version. Ignoring the spend.",
+                spent.id,
+                spent.version
+            );
+        }
+        is_superseded
     }
 
     fn check_if_tag_matches(&self, unspent: &UtxoUnspent) -> Result<bool, StealthScannerApiError> {
@@ -528,7 +549,10 @@ where TSpec: WalletSdkSpec
             debug!(target: LOG_TARGET, "Stealth output {} is already spent", spent.id);
             return Ok(false);
         }
-        tx.stealth_outputs_mark_as_spent(resource_address, &spent.id)?;
+        if Self::is_superseded(&output, spent) {
+            return Ok(false);
+        }
+        tx.stealth_outputs_mark_as_spent(resource_address, &spent.id, spent.version)?;
         info!(target: LOG_TARGET, "Marked stealth output {} as spent", spent.id);
         Ok(true)
     }

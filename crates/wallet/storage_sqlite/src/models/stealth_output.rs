@@ -74,6 +74,7 @@ pub struct StealthOutput {
     pub is_condition_spendable: bool,
     pub proven_version: Option<i64>,
     pub proven_up_epoch: Option<i64>,
+    pub spent_version: Option<i64>,
     pub created_at: PrimitiveDateTime,
     pub updated_at: PrimitiveDateTime,
 }
@@ -136,6 +137,7 @@ impl StealthOutput {
                     version: SubstateVersion::new(version as u64),
                     epoch: Epoch(epoch as u64),
                 }),
+            spent_version: self.spent_version.map(|version| SubstateVersion::new(version as u64)),
         })
     }
 }

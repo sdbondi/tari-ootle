@@ -330,6 +330,87 @@ async fn a_spent_output_reported_unspent_without_a_proof_stays_spent() {
     assert_eq!(queued(&test), 0);
 }
 
+/// The wallet holds the output of `utxo` at `id` without a proof of any version, as it holds an output its own
+/// transaction created.
+fn hold_unproven(test: &Test, account: &AccountWithAddress, id: UtxoId, utxo: &Utxo) {
+    let output = utxo.output().unwrap();
+    test.sdk()
+        .stealth_outputs_api()
+        .add_output(&StealthOutputModel {
+            owner_account: *account.account.component_address(),
+            resource_address: STEALTH_TARI_RESOURCE_ADDRESS,
+            commitment: id.into_commitment_bytes(),
+            value: VALUE,
+            sender_public_nonce: output.output.public_nonce,
+            view_only_key_id: account.view_only_key_id(),
+            owner_key_id: account.owner_key_id(),
+            encrypted_data: output.output.encrypted_data.clone(),
+            tag_byte: output.tag,
+            memo: None,
+            auth: output.auth.clone(),
+            minimum_value_promise: 0,
+            status: OutputStatus::Unspent,
+            is_burnt: false,
+            is_frozen: false,
+            is_on_chain: true,
+            is_condition_spendable: true,
+            lock_id: None,
+            proven_up: None,
+            spent_version: None,
+        })
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_output_without_a_proof_is_proven_when_it_is_reported() {
+    let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
+    let (id, utxo) = test.owned_utxo(&account, VALUE);
+    hold_unproven(&test, &account, id, &utxo);
+
+    serve_proven(&sets, &network, id, &utxo);
+    assert_eq!(recover(&test, &network, &account, id, &utxo).await, 0);
+    assert_eq!(
+        stored(&test, id).proven_up,
+        Some(ProvenUp {
+            version: VERSION,
+            epoch: Epoch(5),
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_output_the_indexer_cannot_prove_is_settled_without_a_proof() {
+    let (_, network, test, account) = wallet(IndexerTrust::Verify).await;
+    let (id, utxo) = test.owned_utxo(&account, VALUE);
+    hold_unproven(&test, &account, id, &utxo);
+
+    network.serve_substate(substate_id(id), VERSION, SubstateValue::Utxo(utxo.clone()), None);
+    assert_eq!(recover(&test, &network, &account, id, &utxo).await, 0);
+    let output = stored(&test, id);
+    assert_eq!(output.status, OutputStatus::Unspent);
+    assert!(output.proven_up.is_none());
+    assert_eq!(queued(&test), 0);
+}
+
+/// A proof of a version the wallet's own transaction spent can predate that spend, so it does not bring the output
+/// back, though the wallet holds an earlier version proven.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_spent_output_proven_up_no_later_than_the_version_it_saw_spent_stays_spent() {
+    let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
+    let (id, utxo) = test.owned_utxo(&account, VALUE);
+    hold(&sets, &network, &test, &account, id, &utxo).await;
+    test.store()
+        .with_write_tx(|tx| {
+            tx.stealth_outputs_mark_as_spent(&STEALTH_TARI_RESOURCE_ADDRESS, &id, VERSION.next().next())
+        })
+        .unwrap();
+
+    serve_proven_at(&sets, &network, id, VERSION.next().next(), &utxo);
+    assert_eq!(recover(&test, &network, &account, id, &utxo).await, 0);
+    assert_eq!(stored(&test, id).status, OutputStatus::Spent);
+    assert_eq!(balance(&test, &account), Amount::from_u64(0));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_held_output_needs_no_proof_that_it_exists() {
     let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;

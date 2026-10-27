@@ -8,7 +8,7 @@ use std::{
 };
 
 use log::*;
-use tari_engine_types::UtxoOutput;
+use tari_engine_types::{SubstateVersion, UtxoOutput};
 use tari_ootle_common_types::{
     optional::{IsNotFoundError, Optional},
     response_status::TransactionStatusResponseError,
@@ -262,8 +262,8 @@ where
                             is_frozen,
                             is_held: false,
                             held_spent: None,
+                            is_unproven: false,
                             proven_up: None,
-                            is_readopted: false,
                         })
                     })
                     .collect();
@@ -308,8 +308,12 @@ where
     ///
     /// A UTXO the wallet holds as spent is reported unspent again when it was re-versioned (frozen or unfrozen) after
     /// the version the wallet saw go down. It is held unspent again only once the indexer proves it up at a version
-    /// later than the one the wallet holds proven, which a stale proof of a version the wallet has since spent cannot
-    /// show. Without such a proof it stays spent.
+    /// later than both the one the wallet holds proven and the one it saw spent, which a stale proof of a version the
+    /// wallet has since spent cannot show. Without such a proof it stays spent.
+    ///
+    /// A held UTXO without a proof of any version is read once more, and the proof recorded, so that its spend can be
+    /// proven from an exclusion once validators no longer keep its down proof. The report is settled without the proof
+    /// when the indexer serves none.
     async fn settle_reported_utxos(
         &self,
         resource_address: ResourceAddress,
@@ -334,13 +338,20 @@ where
                         continue;
                     };
                     found.held_spent = Some(HeldSpent {
-                        proven_up,
+                        last_version: held
+                            .spent_version
+                            .map_or(proven_up.version, |spent| spent.max(proven_up.version)),
                         is_frozen: held.is_frozen,
                     });
                     to_prove.push(found);
                     continue;
                 }
                 if !found.is_frozen || held.is_frozen {
+                    if held.proven_up.is_none() {
+                        found.is_unproven = true;
+                        to_prove.push(found);
+                        continue;
+                    }
                     settled.push(found);
                     continue;
                 }
@@ -376,6 +387,8 @@ where
             let pair = found.tag_and_nonce();
             let settled_utxo = if let Some(held_spent) = found.held_spent {
                 Self::settle_held_spent(resource_address, found, held_spent, read)?
+            } else if found.is_unproven {
+                Self::settle_held_unproven(resource_address, found, read)?
             } else if found.is_held {
                 Self::settle_held_frozen_claim(resource_address, found, read)?
             } else {
@@ -443,6 +456,28 @@ where
         }))
     }
 
+    /// Settles the report of a UTXO the wallet holds without a proof of any version, which needs no proof, with the
+    /// proof `read` carries if it verified.
+    fn settle_held_unproven(
+        resource_address: ResourceAddress,
+        mut found: FoundUtxo,
+        read: Result<ReadSubstate, SubstateApiError>,
+    ) -> Result<Option<FoundUtxo>, StealthScannerApiError> {
+        match read {
+            Ok(read) => found.proven_up = read.proven_up,
+            Err(SubstateApiError::StoreError(err)) => return Err(err.into()),
+            Err(err) => {
+                debug!(
+                    target: LOG_TARGET,
+                    "Could not prove stealth output {} ({}). Its spend will need a down proof.",
+                    UtxoAddress::new(resource_address, found.id),
+                    err
+                );
+            },
+        }
+        Ok(Some(found))
+    }
+
     /// Settles the report that a UTXO the wallet holds as spent is unspent against `read`. Returns the UTXO held
     /// unspent again when `read` proves it up at a later version than `held_spent`'s, the UTXO left spent when the
     /// answer refuses the report for good, and `None` when the report could not be settled yet.
@@ -485,14 +520,14 @@ where
         let version = read.substate.version();
         let Some(proven_up) = read
             .proven_up
-            .filter(|proven_up| proven_up.version > held_spent.proven_up.version)
+            .filter(|proven_up| proven_up.version > held_spent.last_version)
         else {
             warn!(
                 target: LOG_TARGET,
-                "⚠️ The indexer proved spent stealth output {} up at v{}, not past v{} the wallet holds proven. Keeping it spent.",
+                "⚠️ The indexer proved spent stealth output {} up at v{}, not past v{} the wallet last knew of. Keeping it spent.",
                 address,
                 version,
-                held_spent.proven_up.version
+                held_spent.last_version
             );
             return Ok(Some(found));
         };
@@ -524,7 +559,6 @@ where
         );
         found.is_frozen = is_frozen;
         found.proven_up = Some(proven_up);
-        found.is_readopted = true;
         Ok(Some(found))
     }
 
@@ -650,14 +684,14 @@ where
             )?
         };
         let Some(mut output) = validated else {
-            if found.is_held &&
-                let Some(proven_up) = found.proven_up
-            {
-                outputs_api.record_proven_up(&address, proven_up)?;
-            }
-            if found.is_readopted {
-                outputs_api.update_utxo_status(&address, None, Some(OutputStatus::Unspent), Some(found.is_frozen))?;
+            if found.is_readopted() {
+                // One write: a re-adoption that recorded the later version but left the output spent could never be
+                // retried, as the version would no longer be later than the one held.
                 self.sdk.store().with_write_tx(|tx| {
+                    if let Some(proven_up) = found.proven_up {
+                        tx.stealth_outputs_record_proven_up(&address, proven_up)?;
+                    }
+                    tx.stealth_outputs_update(&address, None, Some(OutputStatus::Unspent), Some(found.is_frozen))?;
                     tx.utxo_process_queue_remove_item(
                         resource_address,
                         found.output.tag,
@@ -669,6 +703,11 @@ where
                     account_address: found.account_addr,
                 });
                 return Ok(true);
+            }
+            if found.is_held &&
+                let Some(proven_up) = found.proven_up
+            {
+                outputs_api.record_proven_up(&address, proven_up)?;
             }
             // The output could be held already, burnt, frozen, or otherwise invalid. If we already have it in the db,
             // update its frozen flag, if not, do nothing.
@@ -717,20 +756,26 @@ struct FoundUtxo {
     is_held: bool,
     /// The wallet holds the output as spent.
     held_spent: Option<HeldSpent>,
+    /// The wallet holds the output without a proof of any version.
+    is_unproven: bool,
     /// The version of the output, and the epoch of the block, that a verified proof showed it up at.
     proven_up: Option<ProvenUp>,
-    /// The wallet holds the output as spent, and a proof shows it up again at a later version.
-    is_readopted: bool,
 }
 
 /// What the wallet holds of an output it holds as spent.
 #[derive(Clone, Copy)]
 struct HeldSpent {
-    proven_up: ProvenUp,
+    /// The later of the version the wallet holds proven up and the version it saw spent.
+    last_version: SubstateVersion,
     is_frozen: bool,
 }
 
 impl FoundUtxo {
+    /// The wallet holds the output as spent, and a proof shows it up again at a later version.
+    fn is_readopted(&self) -> bool {
+        self.held_spent.is_some() && self.proven_up.is_some()
+    }
+
     fn tag_and_nonce(&self) -> TagAndPublicNoncePair {
         (self.output.tag, self.output.output.public_nonce)
     }
