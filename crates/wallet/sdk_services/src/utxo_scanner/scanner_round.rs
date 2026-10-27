@@ -557,7 +557,14 @@ where TSpec: WalletSdkSpec
         for (output, (_, read)) in held.into_iter().zip(reads) {
             let address = output.to_utxo_address();
             match read {
-                Ok(_) => continue,
+                Ok(read) => {
+                    // An output a freeze or unfreeze took to a later version is live at it, and later checks prove
+                    // that version gone.
+                    if let Some(proven_up) = read.proven_up {
+                        self.sdk.stealth_outputs_api().record_proven_up(&address, proven_up)?;
+                    }
+                    continue;
+                },
                 Err(SubstateApiError::SubstateDoesNotExist { .. }) => {},
                 Err(err) if is_refusal(&err) => {
                     warn!(

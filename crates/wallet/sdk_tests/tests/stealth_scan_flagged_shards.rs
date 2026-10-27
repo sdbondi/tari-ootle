@@ -367,3 +367,29 @@ async fn a_flagged_shard_checks_an_output_locked_for_spend_but_not_an_unconfirme
     assert_eq!(status(&test, unconfirmed_id), OutputStatus::LockedUnconfirmed);
     assert_eq!(network.substate_queries(), 1);
 }
+
+/// A freeze or unfreeze took the held output to a later version, at which the check proves it live.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_output_served_live_at_a_later_version_is_kept_proven_up_at_it() {
+    let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
+    let (id, utxo) = test.owned_utxo(&account, VALUE);
+    hold(&test, &account, id, &utxo, Some(3));
+    let later = VERSION.next();
+    let value = SubstateValue::Utxo(utxo.clone());
+    let proof = substate_proof(&sets[4], &substate_id(id), later, &value);
+    network.serve_substate(substate_id(id), later, value, Some(proof));
+    index_below_horizon(&network, Vec::new(), false);
+
+    let stats = scan(&test).await;
+    assert_eq!(stats.num_spent, 0);
+    let stored = test
+        .sdk()
+        .stealth_outputs_api()
+        .utxos_get_many(&STEALTH_TARI_RESOURCE_ADDRESS, None, None)
+        .unwrap()
+        .into_iter()
+        .find(|output| output.commitment == id.into_commitment_bytes())
+        .unwrap();
+    assert_eq!(stored.status, OutputStatus::Unspent);
+    assert_eq!(stored.proven_up.map(|proven_up| proven_up.version), Some(later));
+}
