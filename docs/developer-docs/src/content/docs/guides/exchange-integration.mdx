@@ -46,15 +46,17 @@ If you have already integrated Minotari, these are the differences that matter m
 | API | gRPC | Wallet: JSON-RPC 2.0 over HTTP. Indexer: REST and SSE |
 | Address | Tari address (one-sided or interactive) | Ootle address, Bech32m, prefix `otl_` (mainnet) |
 | Finality | Probabilistic. Wait for block confirmations | Deterministic BFT finality. A transaction that has been accepted is final |
-| Deposit reference | Payment ID in the transaction, plus PayRef (a hash of the output) | Pay reference ("PayRef") embedded in the deposit address and carried in the encrypted memo |
+| Deposit reference | Payment ID in the transaction. PayRef is a proof-of-payment receipt derived after mining | Pay reference ("PayRef"), a deposit tag embedded in the deposit address and carried in the encrypted memo |
 | Smallest unit | µT (1 XTM = 1,000,000 µT) | µT (1 TARI = 1,000,000 µT) |
 | Read-only wallet | Supported (view key and public spend key) | **Not yet supported by the wallet daemon.** See [Proposed integration structure](#proposed-integration-structure) |
 
 <Aside type="caution">
-  **"PayRef" means something different on Ootle.** A Minotari PayRef is a hash of a mined output
-  (`Blake2b_256(block_hash || output_hash)`) that is derived after the fact. An Ootle pay reference is a value of up
-  to 64 bytes that the *receiver* chooses and embeds in the address it gives out. The sender's wallet copies it into
-  the output's encrypted memo. Don't reuse Minotari PayRef logic for Ootle.
+  **"PayRef" means something different on Ootle.** A Minotari PayRef is a proof of payment derived after the fact:
+  once an output is mined, either party can compute `Blake2b_256(block_hash || output_hash)` and quote it to show that
+  this specific payment arrived. An Ootle pay reference is a deposit tag chosen in advance: the *receiver* picks a value
+  of up to 64 bytes, embeds it in the address it gives out, and the sender's wallet copies it into the output's
+  encrypted memo so the receiver can tell which customer a deposit belongs to. Don't reuse Minotari PayRef logic for
+  Ootle.
 </Aside>
 
 ## Proposed integration structure
