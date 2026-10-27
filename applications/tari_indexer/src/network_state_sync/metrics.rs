@@ -1,7 +1,11 @@
 //   Copyright 2025 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use prometheus_client::{metrics::gauge::Gauge, registry::Registry};
+use prometheus_client::{
+    encoding::EncodeLabelSet,
+    metrics::{counter::Counter, family::Family, gauge::Gauge},
+    registry::Registry,
+};
 use tari_template_lib_types::Amount;
 
 use crate::{metrics::CollectorRegister, store::XtrEconomics};
@@ -18,6 +22,12 @@ pub struct NetworkStateMetrics {
     transaction_receipt_count: Gauge,
     validator_claimable_fees: Gauge,
     exhaust_rate_bps: Gauge,
+    shard_leaf_checks: Family<LeafCheckLabels, Counter>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct LeafCheckLabels {
+    outcome: &'static str,
 }
 
 impl NetworkStateMetrics {
@@ -63,7 +73,18 @@ impl NetworkStateMetrics {
                 "Target exhaust burn rate in basis points in effect at the current epoch",
                 registry,
             ),
+            shard_leaf_checks: Family::default().register_at(
+                "shard_leaf_checks",
+                "Streamed shard transition accumulators checked against quorum-verified shard leaves, by outcome: \
+                 promote (matched), adopt (tracking started at the leaf), mismatch, or invalid_version (a streamed \
+                 version whose accumulator cannot be computed)",
+                registry,
+            ),
         }
+    }
+
+    pub fn record_leaf_check(&self, outcome: &'static str) {
+        self.shard_leaf_checks.get_or_create(&LeafCheckLabels { outcome }).inc();
     }
 
     pub fn update(&self, economics: &XtrEconomics, target_burn_rate_bps: u16) {

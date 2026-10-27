@@ -2,7 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::{BTreeSet, HashMap, hash_map::Entry},
     sync::Arc,
     time::SystemTime,
 };
@@ -11,12 +11,12 @@ use log::*;
 use ootle_network::Network;
 use tari_consensus::hotstuff::ConsensusCurrentState;
 use tari_epoch_manager::{EpochManagerReader, service::EpochManagerHandle};
-use tari_ootle_common_types::{Epoch, NodeHeight, ShardGroup};
+use tari_ootle_common_types::{Epoch, NodeHeight, ShardGroup, StateVersion, shard::Shard};
 use tari_ootle_p2p::{PeerAddress, proto::rpc};
-use tari_ootle_storage::consensus_models::{CommittedBlockProof, VerifiedBlockTip};
+use tari_ootle_storage::consensus_models::{CommittedBlockProof, ShardStateLeaf, VerifiedBlockTip};
 use tokio::sync::RwLock;
 
-use crate::network_state_sync::committee_client::ValidatorRpcSession;
+use crate::network_state_sync::{committee_client::ValidatorRpcSession, verified_stage::VerifiedShardLeaf};
 
 const LOG_TARGET: &str = "tari::indexer::network_state_sync::validator_status";
 
@@ -93,6 +93,15 @@ pub enum ProbeFailure {
     InvalidProof(String),
 }
 
+/// A validator's committed tip whose commit proof verified, with the shard leaves it proved against the same block.
+#[derive(Debug, Clone)]
+pub struct VerifiedProbe {
+    pub tip: VerifiedBlockTip,
+    /// The requested shards' leaves, in ascending shard order. A shard outside the validator's shard group has
+    /// none, and there are none at all when the tip is of another shard group than the one probed.
+    pub leaves: Vec<VerifiedShardLeaf>,
+}
+
 /// In-memory, lazily-populated map of the latest probe of each validator the indexer has contacted.
 #[derive(Clone)]
 pub struct ValidatorStatusMonitor {
@@ -122,20 +131,24 @@ impl ValidatorStatusMonitor {
     /// callers can refuse to sync from that peer. Other verification failures are non-fatal (e.g.
     /// the peer has nothing committed yet).
     ///
+    /// The leaves of `leaf_shards` are proved against the same block, and a leaf that fails to verify is an invalid
+    /// proof like a forged commit proof.
+    ///
     /// As a side effect, the peer's self-reported consensus state is recorded for the diagnostic
     /// Validators page. That status is deliberately *not* trusted for sync-source selection.
     pub async fn probe(
         &self,
         session: &mut ValidatorRpcSession,
         shard_group: ShardGroup,
-    ) -> Result<Option<VerifiedBlockTip>, ProbeError> {
+        leaf_shards: &BTreeSet<Shard>,
+    ) -> Result<Option<VerifiedProbe>, ProbeError> {
         let peer = *session.peer_address();
 
         // The trust decision: verify how far the peer has actually committed. A forged proof gates
         // the peer out; other failures are tolerated. On success the verified tip is returned so the
         // caller can record the quorum-signed state root.
-        let verified_tip = match self.verify_committed_tip(session).await {
-            Ok(tip) => Some(tip),
+        let verified_tip = match self.verify_committed_tip(session, shard_group, leaf_shards).await {
+            Ok(probe) => Some(probe),
             Err(e) => {
                 if e.is_invalid_proof() {
                     self.record(peer, shard_group, Err(ProbeFailure::InvalidProof(e.to_string())))
@@ -202,10 +215,18 @@ impl ValidatorStatusMonitor {
     }
 
     /// Fetch and verify the validator's latest committed block proof against its shard group
-    /// committee. Verification is the basis for deciding whether to trust the peer as a sync source.
-    async fn verify_committed_tip(&self, session: &mut ValidatorRpcSession) -> Result<VerifiedBlockTip, ProbeError> {
+    /// committee, and the leaves of `leaf_shards` against its block. Verification is the basis for deciding whether
+    /// to trust the peer as a sync source.
+    async fn verify_committed_tip(
+        &self,
+        session: &mut ValidatorRpcSession,
+        shard_group: ShardGroup,
+        leaf_shards: &BTreeSet<Shard>,
+    ) -> Result<VerifiedProbe, ProbeError> {
         let resp = session
-            .get_committed_block_proof(rpc::GetCommittedBlockProofRequest::default())
+            .get_committed_block_proof(rpc::GetCommittedBlockProofRequest {
+                leaf_shards: leaf_shards.iter().map(|shard| shard.as_u32()).collect(),
+            })
             .await
             .map_err(|e| ProbeError::Rpc(e.to_string()))?;
 
@@ -225,10 +246,57 @@ impl ValidatorStatusMonitor {
             .await
             .map_err(|e| ProbeError::CommitteeUnavailable(e.to_string()))?;
 
-        proof
+        let tip = proof
             .validate(self.network, committee.quorum_threshold(), &*committee)
-            .map_err(|e| ProbeError::InvalidProof(e.to_string()))
+            .map_err(|e| ProbeError::InvalidProof(e.to_string()))?;
+        let leaves = verify_shard_leaves(self.network, &proof, leaf_shards, resp.shard_leaves)?;
+        // Every shard group commits its own copy of the global shard, so only the probed group's block proves
+        // the copy that group's stream follows.
+        let leaves = if tip.shard_group == shard_group {
+            leaves
+        } else {
+            Vec::new()
+        };
+        Ok(VerifiedProbe { tip, leaves })
     }
+}
+
+/// Decodes `leaves` and verifies each against `proof`'s block. Each must be of a shard in `requested`, in strictly
+/// ascending shard order.
+fn verify_shard_leaves(
+    network: Network,
+    proof: &CommittedBlockProof,
+    requested: &BTreeSet<Shard>,
+    leaves: Vec<rpc::ShardStateLeaf>,
+) -> Result<Vec<VerifiedShardLeaf>, ProbeError> {
+    let mut previous = None;
+    leaves
+        .into_iter()
+        .map(|leaf| {
+            let leaf = ShardStateLeaf::try_from(leaf)
+                .map_err(|e| ProbeError::InvalidProof(format!("undecodable shard leaf: {e}")))?;
+            if !requested.contains(&leaf.shard) {
+                return Err(ProbeError::InvalidProof(format!(
+                    "served a leaf of {}, which was not requested",
+                    leaf.shard
+                )));
+            }
+            if previous >= Some(leaf.shard) {
+                return Err(ProbeError::InvalidProof(format!(
+                    "served the leaf of {} out of shard order",
+                    leaf.shard
+                )));
+            }
+            previous = Some(leaf.shard);
+            leaf.verify(network, proof)
+                .map_err(|e| ProbeError::InvalidProof(format!("shard leaf: {e}")))?;
+            Ok(VerifiedShardLeaf {
+                shard: leaf.shard,
+                state_version: StateVersion::new(leaf.state_version),
+                transition_acc: leaf.transition_acc,
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -285,6 +353,157 @@ mod tests {
         let snapshot = record.snapshot.as_ref().unwrap();
         assert_eq!(snapshot.height, NodeHeight::from(10));
         assert_eq!(snapshot.observed_at, t0);
+    }
+
+    mod shard_leaves {
+        use tari_engine_types::ProtocolVersion;
+        use tari_state_tree::{ShardGroupRootTree, TransitionAccumulator, TreeHash};
+
+        use super::*;
+
+        const NETWORK: Network = Network::LocalNet;
+
+        fn group() -> ShardGroup {
+            ShardGroup::new(1u32, 4u32)
+        }
+
+        fn shard(n: u32) -> Shard {
+            Shard::from(n)
+        }
+
+        /// A commit proof of a block of [`group`], and every leaf it commits, as served on the wire.
+        fn served_block() -> (CommittedBlockProof, Vec<rpc::ShardStateLeaf>) {
+            let protocol_version = ProtocolVersion::at(NETWORK, Epoch(1));
+            let states = [
+                (Shard::global(), 0u8),
+                (shard(1), 1),
+                (shard(2), 2),
+                (shard(3), 0),
+                (shard(4), 4),
+            ]
+            .into_iter()
+            .map(|(shard, n)| {
+                (
+                    shard,
+                    TreeHash::new([n; 32]),
+                    u64::from(n),
+                    TransitionAccumulator::new([n.wrapping_add(100); 32]),
+                )
+            })
+            .collect::<Vec<_>>();
+            let tree = ShardGroupRootTree::build(protocol_version, states.clone()).unwrap();
+            let proof = CommittedBlockProof::new(tari_sidechain::SidechainBlockCommitProof {
+                header: tari_sidechain::SidechainBlockHeader {
+                    network: NETWORK.as_byte(),
+                    protocol_version: protocol_version.as_u32(),
+                    parent_id: Default::default(),
+                    justify_id: Default::default(),
+                    height: 4,
+                    epoch: 1,
+                    epoch_hash: Default::default(),
+                    shard_group: tari_sidechain::ShardGroup {
+                        start: group().start().as_u32(),
+                        end_inclusive: group().end().as_u32(),
+                    },
+                    proposed_by: Default::default(),
+                    state_merkle_root: tari_sidechain::FixedHash::new(tree.root().into_array()),
+                    command_merkle_root: Default::default(),
+                    transaction_merkle_root: Default::default(),
+                    signature: Default::default(),
+                    accumulated_data: Default::default(),
+                    metadata_hash: Default::default(),
+                },
+                proof_elements: vec![],
+            });
+            let leaves = states
+                .into_iter()
+                .map(|(shard, shard_root, state_version, transition_acc)| {
+                    let leaf = ShardStateLeaf {
+                        shard,
+                        state_version,
+                        shard_root,
+                        transition_acc,
+                        shard_root_proof: tree.get_proof(shard).unwrap().1,
+                    };
+                    rpc::ShardStateLeaf::try_from(&leaf).unwrap()
+                })
+                .collect();
+            (proof, leaves)
+        }
+
+        fn requested(shards: &[Shard]) -> BTreeSet<Shard> {
+            shards.iter().copied().collect()
+        }
+
+        fn rejection(result: Result<Vec<VerifiedShardLeaf>, ProbeError>) -> String {
+            match result {
+                Err(ProbeError::InvalidProof(details)) => details,
+                other => panic!("expected an invalid proof, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn served_leaves_of_requested_shards_verify() {
+            let (proof, leaves) = served_block();
+            let all = requested(&[Shard::global(), shard(1), shard(2), shard(3), shard(4)]);
+
+            let verified = verify_shard_leaves(NETWORK, &proof, &all, leaves).unwrap();
+
+            let verified = verified
+                .iter()
+                .map(|leaf| (leaf.shard, leaf.state_version.as_u64(), leaf.transition_acc))
+                .collect::<Vec<_>>();
+            assert_eq!(verified, vec![
+                (Shard::global(), 0, TransitionAccumulator::new([100; 32])),
+                (shard(1), 1, TransitionAccumulator::new([101; 32])),
+                (shard(2), 2, TransitionAccumulator::new([102; 32])),
+                (shard(3), 0, TransitionAccumulator::new([100; 32])),
+                (shard(4), 4, TransitionAccumulator::new([104; 32])),
+            ]);
+        }
+
+        #[test]
+        fn a_leaf_whose_accumulator_differs_from_the_committed_one_is_an_invalid_proof() {
+            let (proof, mut leaves) = served_block();
+            leaves.truncate(3);
+            leaves[2].transition_acc = vec![7; 32];
+
+            let details = rejection(verify_shard_leaves(
+                NETWORK,
+                &proof,
+                &requested(&[Shard::global(), shard(1), shard(2)]),
+                leaves,
+            ));
+            assert!(details.starts_with("shard leaf:"), "{details}");
+        }
+
+        #[test]
+        fn a_leaf_of_an_unrequested_shard_is_an_invalid_proof() {
+            let (proof, mut leaves) = served_block();
+            leaves.truncate(3);
+
+            let details = rejection(verify_shard_leaves(
+                NETWORK,
+                &proof,
+                &requested(&[shard(1), shard(2)]),
+                leaves,
+            ));
+            assert!(details.contains("not requested"), "{details}");
+        }
+
+        #[test]
+        fn leaves_out_of_shard_order_or_repeated_are_an_invalid_proof() {
+            let all = requested(&[Shard::global(), shard(1), shard(2), shard(3), shard(4)]);
+            let (proof, mut leaves) = served_block();
+            leaves.swap(1, 2);
+            let details = rejection(verify_shard_leaves(NETWORK, &proof, &all, leaves));
+            assert!(details.contains("out of shard order"), "{details}");
+
+            let (proof, mut leaves) = served_block();
+            leaves[2] = leaves[1].clone();
+            let details = rejection(verify_shard_leaves(NETWORK, &proof, &all, leaves));
+            assert!(details.contains("out of shard order"), "{details}");
+        }
     }
 
     #[test]

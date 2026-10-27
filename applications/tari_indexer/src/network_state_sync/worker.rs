@@ -4,8 +4,9 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     convert::Infallible,
+    fmt::Display,
     pin::pin,
-    sync::Arc,
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::Duration,
 };
 
@@ -39,6 +40,7 @@ use tari_ootle_storage::{
 };
 use tari_rpc_framework::RpcRequestOptions;
 use tari_shutdown::ShutdownSignal;
+use tari_state_tree::SubstateTreeChange;
 use tari_template_lib_types::{Amount, TemplateAddress, TransactionReceiptAddress, UtxoAddress};
 use tokio::{
     sync::{broadcast, watch},
@@ -65,7 +67,8 @@ use crate::{
         stats::SyncStats,
         sync_plan::SyncPlan,
         sync_progress::{SharedSyncProgress, SyncProgress},
-        validator_status::ValidatorStatusMonitor,
+        validator_status::{ValidatorStatusMonitor, VerifiedProbe},
+        verified_stage::{StreamedTransitionError, Verdict, VerifiedShardLeaf, VerifiedStage, streamed_tree_change},
     },
     notify::Notify,
     storage_sqlite::{
@@ -112,6 +115,9 @@ pub struct NetworkWideStateSync {
     shard_watermarks: Arc<ShardWatermarks>,
     consensus_epoch: ConsensusEpoch,
     network: Network,
+    /// Each streamed shard's transition accumulator, checked against verified leaves. A verdict is logged and
+    /// counted.
+    verified_stage: Arc<Mutex<VerifiedStage<PeerAddress>>>,
     #[cfg(feature = "metrics")]
     metrics: NetworkStateMetrics,
     #[cfg(feature = "metrics")]
@@ -148,6 +154,7 @@ impl NetworkWideStateSync {
             shard_watermarks,
             consensus_epoch,
             network,
+            verified_stage: Arc::default(),
             #[cfg(feature = "metrics")]
             metrics,
             #[cfg(feature = "metrics")]
@@ -478,8 +485,11 @@ impl NetworkWideStateSync {
                     // `probe` only returns Err for a forged/malformed proof (other failures are
                     // logged internally and return Ok(None)), which disqualifies the peer so
                     // another committee member is tried.
-                    match validator_status.probe(&mut session, shard_group).await {
-                        Ok(Some(tip)) => consensus_epoch.observe(tip.shard_group, tip.epoch),
+                    match validator_status
+                        .probe(&mut session, shard_group, &BTreeSet::new())
+                        .await
+                    {
+                        Ok(Some(probe)) => consensus_epoch.observe(probe.tip.shard_group, probe.tip.epoch),
                         Ok(None) => {},
                         Err(e) => {
                             return Err(NetworkStateSyncError::InvalidCommitProof {
@@ -525,6 +535,10 @@ impl NetworkWideStateSync {
         info!(target: LOG_TARGET, "🌍️ Inserting checkpoint for {}, shard group {}", checkpoint.epoch(), checkpoint_shard_group);
 
         let xtr_exhausted = checkpoint_exhaust_burn(&checkpoint)?;
+        let verdicts = self.verified_stage().on_checkpoint(&checkpoint);
+        for (shard, verdict) in verdicts {
+            self.report_verdict(shard, verdict, format_args!("the checkpoint of {}", checkpoint.epoch()));
+        }
         self.stats.increment_checkpoints();
         let checkpoint_epoch = checkpoint.epoch();
         // The progress lock is held until the snapshot is written, as `SharedSyncProgress` requires.
@@ -600,6 +614,8 @@ impl NetworkWideStateSync {
     /// tip, which a verified read's anchor must be recent against, near the chain's.
     async fn track_committed_tips(&self, sync_plan: &SyncPlan) -> Infallible {
         let mut pools = sync_plan.committee_pools().clone();
+        // The lowest shard group streams the global shard (see `follow_state`).
+        let global_shard_group = pools.keys().min().copied();
         let mut interval = time::interval(COMMITTED_TIP_PROBE_INTERVAL);
         interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
         loop {
@@ -613,8 +629,14 @@ impl NetworkWideStateSync {
                         continue;
                     },
                 };
-                match self.validator_status.probe(&mut session, shard_group).await {
-                    Ok(Some(tip)) => {
+                let leaf_shards = self.leaf_shards(shard_group, global_shard_group == Some(shard_group));
+                match self
+                    .validator_status
+                    .probe(&mut session, shard_group, &leaf_shards)
+                    .await
+                {
+                    Ok(Some(probe)) => {
+                        let tip = self.check_probe_leaves(probe, session.peer_address());
                         self.consensus_epoch.observe(tip.shard_group, tip.epoch);
                         if let Err(e) = self.persist_verified_tip(tip).await {
                             warn!(target: LOG_TARGET, "⚠️ Failed to record verified state root for shard group {shard_group}: {e}");
@@ -679,8 +701,14 @@ impl NetworkWideStateSync {
                     continue;
                 },
             };
-            match self.validator_status.probe(&mut session, shard_group).await {
-                Ok(Some(verified_tip)) => {
+            let leaf_shards = self.leaf_shards(shard_group, syncs_global_shard);
+            match self
+                .validator_status
+                .probe(&mut session, shard_group, &leaf_shards)
+                .await
+            {
+                Ok(Some(probe)) => {
+                    let verified_tip = self.check_probe_leaves(probe, session.peer_address());
                     self.consensus_epoch
                         .observe(verified_tip.shard_group, verified_tip.epoch);
                     // Record the quorum-signed state root so the read path can skip re-validating
@@ -852,6 +880,99 @@ impl NetworkWideStateSync {
         .await
     }
 
+    /// The shards of `shard_group` whose leaf the next probe asks for: those a leaf would verify or start tracking.
+    fn leaf_shards(&self, shard_group: ShardGroup, syncs_global_shard: bool) -> BTreeSet<Shard> {
+        let stage = self.verified_stage();
+        syncs_global_shard
+            .then_some(Shard::global())
+            .into_iter()
+            .chain(shard_group.shard_iter())
+            .filter(|shard| stage.wants_leaf(*shard))
+            .collect()
+    }
+
+    /// Checks a probe's leaves against the computed accumulators and returns its tip.
+    fn check_probe_leaves(&self, probe: VerifiedProbe, peer: &PeerAddress) -> VerifiedBlockTip {
+        let verdicts = {
+            let mut stage = self.verified_stage();
+            probe
+                .leaves
+                .into_iter()
+                .map(|leaf: VerifiedShardLeaf| (leaf.shard, stage.on_leaf(leaf)))
+                .collect::<Vec<_>>()
+        };
+        for (shard, verdict) in verdicts {
+            self.report_verdict(shard, verdict, format_args!("the tip leaf from {peer}"));
+        }
+        probe.tip
+    }
+
+    /// Extends `shard`'s accumulator with a committed version. `changes` is `None` for a version streamed without
+    /// every transition.
+    fn track_version(
+        &self,
+        shard: Shard,
+        version: StateVersion,
+        epoch: Epoch,
+        changes: Option<Result<Vec<SubstateTreeChange>, StreamedTransitionError>>,
+        peer: &PeerAddress,
+    ) {
+        let result = {
+            let mut stage = self.verified_stage();
+            match changes {
+                Some(Ok(changes)) => stage
+                    .on_version(shard, version, epoch, &changes, *peer)
+                    .map_err(|e| e.to_string()),
+                Some(Err(e)) => {
+                    stage.on_untracked_version(shard, version);
+                    Err(e.to_string())
+                },
+                None => Ok(stage.on_untracked_version(shard, version)),
+            }
+        };
+        match result {
+            Ok(Some(verdict)) => self.report_verdict(shard, verdict, format_args!("v{version} streamed by {peer}")),
+            Ok(None) => {},
+            Err(e) => {
+                error!(target: LOG_TARGET, "⚠️ Peer {peer} streamed v{version} of shard {shard} at {epoch}, whose transition accumulator cannot be computed: {e}. Untracked until a leaf names it");
+                #[cfg(feature = "metrics")]
+                self.metrics.record_leaf_check("invalid_version");
+            },
+        }
+    }
+
+    fn report_verdict(&self, shard: Shard, verdict: Verdict<PeerAddress>, checked_on: impl Display) {
+        let outcome = match verdict {
+            Verdict::Promote(version) => {
+                debug!(target: LOG_TARGET, "🌍️ Shard {shard} verified to v{version} by {checked_on}");
+                "promote"
+            },
+            Verdict::Adopt(version) => {
+                info!(target: LOG_TARGET, "🌍️ Shard {shard} tracked from v{version} by {checked_on}");
+                "adopt"
+            },
+            Verdict::Mismatch {
+                version,
+                epoch,
+                computed,
+                verified,
+                streamed_by,
+            } => {
+                error!(target: LOG_TARGET, "⚠️ Transition accumulator mismatch: shard {shard} v{version} at {epoch} streamed by {streamed_by} computes {computed}, but the verified leaf has {verified} (checked on {checked_on})");
+                "mismatch"
+            },
+            Verdict::Wait | Verdict::Stale => return,
+        };
+        #[cfg(feature = "metrics")]
+        self.metrics.record_leaf_check(outcome);
+        #[cfg(not(feature = "metrics"))]
+        let _ = outcome;
+    }
+
+    fn verified_stage(&self) -> MutexGuard<'_, VerifiedStage<PeerAddress>> {
+        self.verified_stage.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Records a committee-validated tip into the verified-root store, after a fail-open epoch
     /// continuity check: the committee's quorum-signed `epoch_hash` must match the epoch hash the
     /// indexer independently derives from the base layer. A mismatch is logged loudly but does not
@@ -905,10 +1026,9 @@ impl NetworkWideStateSync {
         epoch: &mut watch::Receiver<Epoch>,
         checkpoints_due_at: Option<time::Instant>,
     ) -> Result<StreamEnd, NetworkStateSyncError> {
-        let mut order = StreamOrder::new(
-            &cursors,
-            value_filters.include_filtered_hashes() && !value_filters.is_up_only(),
-        );
+        // Only a followed stream carries every transition, as a value or a hash, which the accumulator needs.
+        let carries_every_transition = value_filters.include_filtered_hashes() && !value_filters.is_up_only();
+        let mut order = StreamOrder::new(&cursors, carries_every_transition);
 
         info!(
             target: LOG_TARGET,
@@ -946,6 +1066,7 @@ impl NetworkWideStateSync {
         // oversized version into chunks flagged `has_more`, and the last chunk flushes them.
         let mut num_updates = 0usize;
         let mut version_buf = VersionBuf::default();
+        let mut tree_changes = Ok(Vec::new());
 
         loop {
             let result = tokio::select! {
@@ -1051,6 +1172,12 @@ impl NetworkWideStateSync {
                         details: format!("Failed to convert substate update: {}", e),
                     })?;
 
+                if carries_every_transition && let Ok(changes) = &mut tree_changes {
+                    match streamed_tree_change(self.network, msg_epoch, &update) {
+                        Ok(change) => changes.push(change),
+                        Err(e) => tree_changes = Err(e),
+                    }
+                }
                 version_buf.extend_from_substate_update(shard, state_version, update, value_filters);
             }
             if batch.has_more {
@@ -1064,6 +1191,7 @@ impl NetworkWideStateSync {
             // The stream flushes (has_more == false) once per state version, so each commit must fold
             // only that version's delta.
             let version = std::mem::take(&mut version_buf);
+            let changes = std::mem::replace(&mut tree_changes, Ok(Vec::new()));
 
             let mut progress = progress.lock().await;
             progress.record_state_version(shard, state_version, msg_epoch);
@@ -1089,6 +1217,13 @@ impl NetworkWideStateSync {
                 })
                 .await?;
             drop(progress);
+            self.track_version(
+                shard,
+                state_version,
+                msg_epoch,
+                carries_every_transition.then_some(changes),
+                session.peer_address(),
+            );
             self.stats.increase_events(committed.num_receipt_events);
             if committed.retired_cache_entries > 0 {
                 debug!(target: LOG_TARGET, "Retired {} cached substates for shard {shard} at state version {state_version}", committed.retired_cache_entries);

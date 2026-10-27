@@ -13,6 +13,7 @@ mod stats;
 mod sync_plan;
 mod sync_progress;
 mod validator_status;
+mod verified_stage;
 mod worker;
 
 pub use config::*;
