@@ -716,7 +716,6 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
         Ok(exists)
     }
 
-    /// The output the wallet holds at `address`, if any.
     /// The address of each output the wallet holds unspent or locked for spending, on chain, with no proof of any
     /// version.
     pub fn get_unproven_held_addresses(&self) -> Result<Vec<UtxoAddress>, StealthOutputsApiError> {
@@ -724,6 +723,7 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
         Ok(outputs.iter().map(StealthOutputModel::to_utxo_address).collect())
     }
 
+    /// The output the wallet holds at `address`, if any.
     pub fn get_utxo(&self, address: &UtxoAddress) -> Result<Option<StealthOutputModel>, StealthOutputsApiError> {
         let output = self
             .store
