@@ -45,6 +45,8 @@ const VALUE: u64 = 1_234;
 const VERSION: SubstateVersion = SubstateVersion::ZERO;
 /// The indexer's tombstone horizon of every shard, and where a rescan of a shard ends.
 const HORIZON: StateVersion = StateVersion::new(50);
+/// Where the first pass of a two-pass rescan ends.
+const MID: StateVersion = StateVersion::new(25);
 
 type Wallet = TestWithNetwork<ProvingNetwork>;
 
@@ -83,6 +85,17 @@ fn unspent(utxo: &Utxo) -> UtxoUnspent {
 
 /// The wallet holds `utxo` unspent, proven up at [`VERSION`] in `proven_up_epoch`.
 fn hold(test: &Wallet, account: &AccountWithAddress, id: UtxoId, utxo: &Utxo, proven_up_epoch: Option<u64>) {
+    hold_as(test, account, id, utxo, proven_up_epoch, OutputStatus::Unspent);
+}
+
+fn hold_as(
+    test: &Wallet,
+    account: &AccountWithAddress,
+    id: UtxoId,
+    utxo: &Utxo,
+    proven_up_epoch: Option<u64>,
+    status: OutputStatus,
+) {
     let output = utxo.output().unwrap();
     test.sdk()
         .stealth_outputs_api()
@@ -99,7 +112,7 @@ fn hold(test: &Wallet, account: &AccountWithAddress, id: UtxoId, utxo: &Utxo, pr
             memo: None,
             auth: output.auth.clone(),
             minimum_value_promise: 0,
-            status: OutputStatus::Unspent,
+            status,
             is_burnt: false,
             is_frozen: false,
             is_on_chain: true,
@@ -117,29 +130,51 @@ fn hold(test: &Wallet, account: &AccountWithAddress, id: UtxoId, utxo: &Utxo, pr
 /// An indexer whose tombstone horizon is [`HORIZON`] in every shard. A request for spends from below it is asked to
 /// resync, and a request for unspent outputs from below it returns those of `live` in the shard and ends at it.
 fn index_below_horizon(network: &ProvingNetwork, live: Vec<(UtxoId, UtxoUnspent)>) {
+    index_in_passes(network, Vec::new(), live, false);
+}
+
+/// As [`index_below_horizon`], but a rescan of a shard holding any of `early` takes two passes: the first returns those
+/// outputs and ends at [`MID`] with more to give, and the second returns the shard's outputs of `late`. With
+/// `always_resync`, every request for spends is asked to resync, wherever its cursor is.
+fn index_in_passes(
+    network: &ProvingNetwork,
+    early: Vec<(UtxoId, UtxoUnspent)>,
+    late: Vec<(UtxoId, UtxoUnspent)>,
+    always_resync: bool,
+) {
     network.answer_utxo_streams(move |cursors, unspent_only| {
+        let in_shard = |outputs: &[(UtxoId, UtxoUnspent)], shard: Shard| {
+            outputs
+                .iter()
+                .filter(|(id, _)| shard_of(*id) == shard)
+                .map(|(_, unspent)| WalletUtxoUpdate::Unspent(unspent.clone()))
+                .collect::<Vec<_>>()
+        };
         let mut payloads = Vec::new();
         for (shard, cursor) in cursors {
-            if *cursor >= HORIZON {
+            let (max_state_version, has_more, updates) = if !unspent_only {
+                if *cursor >= HORIZON && !always_resync {
+                    continue;
+                }
+                (HORIZON, false, Vec::new())
+            } else if *cursor >= HORIZON {
                 continue;
-            }
-            let sos = StartOfShard {
-                shard: *shard,
-                max_state_version: HORIZON,
-                has_more: false,
-                resync_required: !unspent_only,
-            };
-            let mut updates = if unspent_only {
-                live.iter()
-                    .filter(|(id, _)| shard_of(*id) == *shard)
-                    .map(|(_, unspent)| WalletUtxoUpdate::Unspent(unspent.clone()))
-                    .collect()
             } else {
-                Vec::new()
+                let first_pass = in_shard(&early, *shard);
+                if *cursor < MID && !first_pass.is_empty() {
+                    (MID, true, first_pass)
+                } else {
+                    (HORIZON, false, in_shard(&late, *shard))
+                }
             };
             payloads.push(UtxoUpdatePayload {
-                sos: Some(sos),
-                update: updates.pop(),
+                sos: Some(StartOfShard {
+                    shard: *shard,
+                    max_state_version,
+                    has_more,
+                    resync_required: !unspent_only,
+                }),
+                update: None,
                 eos: None,
             });
             payloads.extend(updates.into_iter().map(|update| UtxoUpdatePayload {
@@ -150,9 +185,7 @@ fn index_below_horizon(network: &ProvingNetwork, live: Vec<(UtxoId, UtxoUnspent)
             payloads.push(UtxoUpdatePayload {
                 sos: None,
                 update: None,
-                eos: Some(EndOfShard {
-                    max_state_version: HORIZON,
-                }),
+                eos: Some(EndOfShard { max_state_version }),
             });
         }
         payloads
@@ -305,4 +338,77 @@ async fn a_wallet_holding_nothing_is_not_asked_to_resync() {
     let stats = scan(&test).await;
     assert_eq!(stats.num_resynced_shards, 0);
     assert_resumed_past_horizon_after_scan(&test, &network).await;
+}
+
+/// An output returned by an early pass of a resync can be spent before the final pass, which then drops its spent row
+/// as `unspent_only` asks, so it is checked like an output the resync did not return.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_output_an_early_resync_pass_returned_is_checked_once_the_resync_ends() {
+    let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
+    let (spent_id, spent) = test.owned_utxo(&account, VALUE);
+    let (live_id, live) = test.owned_utxo(&account, VALUE);
+    hold(&test, &account, spent_id, &spent, Some(3));
+    hold(&test, &account, live_id, &live, Some(3));
+    serve_excluded(&sets, &network, spent_id);
+    serve_live(&sets, &network, live_id, &live);
+    index_in_passes(
+        &network,
+        vec![(spent_id, unspent(&spent)), (live_id, unspent(&live))],
+        Vec::new(),
+        false,
+    );
+
+    let stats = scan(&test).await;
+    assert_eq!(stats.num_spent, 1);
+    assert_eq!(status(&test, spent_id), OutputStatus::Spent);
+    assert_eq!(status(&test, live_id), OutputStatus::Unspent);
+    assert_resumed_past_horizon_after_scan(&test, &network).await;
+}
+
+/// An indexer that asks again for a shard the scan has resynced is not followed, so the scan ends. Here every shard is
+/// asked again in the batch after the first, which a two-pass resync of one shard brings about.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shard_asked_again_in_the_same_scan_is_resynced_once() {
+    let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
+    let (id, utxo) = test.owned_utxo(&account, VALUE);
+    hold(&test, &account, id, &utxo, Some(3));
+    serve_live(&sets, &network, id, &utxo);
+    index_in_passes(&network, vec![(id, unspent(&utxo))], Vec::new(), true);
+
+    let stats = scan(&test).await;
+    assert_eq!(stats.num_resynced_shards, NumPreshards::P256.as_u32() as usize);
+    assert_eq!(status(&test, id), OutputStatus::Unspent);
+}
+
+/// A held output locked for a spend is checked, and one locked as the unconfirmed output of the wallet's own pending
+/// transaction is not.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resync_checks_an_output_locked_for_spend_but_not_an_unconfirmed_one() {
+    let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
+    let (locked_id, locked) = test.owned_utxo(&account, VALUE);
+    let (unconfirmed_id, unconfirmed) = test.owned_utxo(&account, VALUE);
+    hold_as(
+        &test,
+        &account,
+        locked_id,
+        &locked,
+        Some(3),
+        OutputStatus::LockedForSpend,
+    );
+    hold_as(
+        &test,
+        &account,
+        unconfirmed_id,
+        &unconfirmed,
+        Some(3),
+        OutputStatus::LockedUnconfirmed,
+    );
+    serve_excluded(&sets, &network, locked_id);
+    index_below_horizon(&network, Vec::new());
+
+    let stats = scan(&test).await;
+    assert_eq!(stats.num_spent, 1);
+    assert_eq!(status(&test, locked_id), OutputStatus::Spent);
+    assert_eq!(status(&test, unconfirmed_id), OutputStatus::LockedUnconfirmed);
+    assert_eq!(network.substate_queries(), 1);
 }

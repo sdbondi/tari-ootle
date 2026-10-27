@@ -81,7 +81,8 @@ pub enum StealthUtxoFrame {
         /// Skip the shard's frames up to its `EndOfShard` without observing its watermark, restart
         /// the shard with [`ShardCursor::resync`], and watch it with `unspent_only = true` until
         /// it has no more. Then check each output the application holds in the shard that the
-        /// rescan did not return, for instance with
+        /// final pass, the one without `has_more`, did not return. An output an earlier pass
+        /// returned may have been spent since. Check it, for instance with
         /// [`IndexerProvider::get_substate`](crate::provider::IndexerProvider::get_substate): an
         /// output the indexer no longer serves is gone. Persist the shard's progress only once the
         /// check is done, so that a monitor that stops part way is asked to resync again.

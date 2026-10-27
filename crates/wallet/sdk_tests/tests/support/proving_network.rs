@@ -46,7 +46,6 @@ use tari_ootle_wallet_sdk::{
 use tari_template_abi::TemplateDef;
 use tari_template_lib::types::{ResourceAddress, TemplateAddress, UtxoId};
 
-/// Answers a stealth UTXO stream request, given the cursor of each shard it asks from.
 /// Answers a stealth UTXO stream request of the given shard cursors and `unspent_only` flag.
 type UtxoStreamAnswer = Arc<dyn Fn(&[(Shard, StateVersion)], bool) -> Vec<UtxoUpdatePayload> + Send + Sync>;
 
