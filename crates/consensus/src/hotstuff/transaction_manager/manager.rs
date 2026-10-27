@@ -831,8 +831,8 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
             .find(|req| !resolved_inputs.contains_key(req.substate_id()))
         {
             error!(target: LOG_TARGET, "⚠️ PREPARE: Missing {req} foreign input pledge for transaction {}", transaction_id);
-            // NOTE: crashes consensus. The foreign proposal should have already been verified to include all input
-            // pledges.
+            // NOTE: crashes consensus. Proposers and replicas only prepare a New transaction once it is ready, and an
+            // output-only transaction is ready only once it holds every foreign input pledge.
             return Err(BlockTransactionExecutorError::InvariantError(format!(
                 "Missing foreign input pledge for transaction {}: {}",
                 transaction_id, req

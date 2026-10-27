@@ -357,6 +357,17 @@ impl Replica {
     /// The transaction's receipt is created in this replica's shard group, so the receipt alone never makes it
     /// cross-shard.
     fn pool_transaction(&self, seed: u64, inputs: &[&SubstateId], script: Script) -> TransactionId {
+        self.pool_transaction_with_readiness(seed, inputs, script, true)
+    }
+
+    /// Pools a transaction like [`Self::pool_transaction`], ready to leave the New stage only if `is_ready`.
+    fn pool_transaction_with_readiness(
+        &self,
+        seed: u64,
+        inputs: &[&SubstateId],
+        script: Script,
+        is_ready: bool,
+    ) -> TransactionId {
         let transaction = (0..)
             .map(|attempt| {
                 let mut builder = Transaction::builder_localnet(Epoch(100));
@@ -376,7 +387,7 @@ impl Replica {
         self.store
             .with_write_tx(|tx| {
                 TransactionRecord::new(transaction).insert(tx)?;
-                tx.transaction_pool_insert_new(id, Decision::Commit, &Evidence::empty(), true, false, Epoch(100), 0)
+                tx.transaction_pool_insert_new(id, Decision::Commit, &Evidence::empty(), is_ready, false, Epoch(100), 0)
             })
             .unwrap();
         id
@@ -1051,6 +1062,61 @@ fn output_only() -> (Replica, TransactionId) {
     (replica, id)
 }
 
+/// Three committees: the one holding the fee resource, another foreign one, and a local one that holds neither.
+fn local_and_two_foreign_thirds() -> (ShardGroup, ShardGroup, ShardGroup) {
+    let tari_token = VersionedSubstateId::new(tari_token(), SubstateVersion::ZERO).to_shard(NUM_PRESHARDS);
+    let (with_token, others): (Vec<_>, Vec<_>) = NUM_PRESHARDS
+        .all_shard_groups_iter(3)
+        .partition(|group| group.contains(&tari_token));
+    (others[0], with_token[0], others[1])
+}
+
+/// A replica of a committee that only creates the receipt of a pooled transaction whose inputs are in two other
+/// committees. With `pledged_by_both`, both foreign committees have pledged their inputs and the transaction is ready
+/// to leave the New stage. Otherwise only the committee holding the fee resource has pledged, and the transaction is
+/// still waiting on the other.
+fn output_only_with_two_foreign_input_groups(pledged_by_both: bool) -> (Replica, TransactionId) {
+    let (local, first, second) = local_and_two_foreign_thirds();
+    let replica = Replica::in_committee(local, 3);
+    let first_input = component_id_in(first);
+    let second_input = component_id_in(second);
+    let id = replica.pool_transaction_with_readiness(1, &[&first_input, &second_input], commits(), pledged_by_both);
+    replica.receive_input_pledges(&id, first, &[&first_input, &tari_token()]);
+    if pledged_by_both {
+        replica.receive_input_pledges(&id, second, &[&second_input]);
+    }
+    (replica, id)
+}
+
+/// A replica waiting on foreign input pledges for an output-only transaction, and the LocalAccept a replica holding
+/// every pledge derives for it.
+fn output_only_waiting_on_pledges() -> (Replica, TransactionId, MultiShardAtom) {
+    let (ready, ready_id) = output_only_with_two_foreign_input_groups(true);
+    let command = ready.honest_new_multishard_command(&ready_id);
+    assert!(
+        matches!(&command, Command::LocalAccept(atom) if atom.decision.is_commit()),
+        "{command}"
+    );
+    let (replica, id) = output_only_with_two_foreign_input_groups(false);
+    assert_eq!(id, ready_id);
+    (replica, id, multishard_atom(&command))
+}
+
+fn assert_proposed_before_ready(evaluation: &Evaluation, expected_command: &str) {
+    assert!(
+        matches!(
+            &evaluation.no_vote,
+            Some(NoVoteReason::ProposedBeforeShardGroupsReady {
+                stage: TransactionPoolStage::New,
+                command,
+                ..
+            }) if *command == expected_command
+        ),
+        "{:?}",
+        evaluation.no_vote
+    );
+}
+
 fn assert_voted(evaluation: &Evaluation, stage: TransactionPoolStage, executed: bool) {
     assert!(evaluation.no_vote.is_none(), "{:?}", evaluation.no_vote);
     assert_eq!(evaluation.stages, [stage]);
@@ -1239,6 +1305,25 @@ mod local_accept_from_new {
     }
 
     #[test]
+    fn an_output_only_commit_pledged_by_every_foreign_group_is_voted_for() {
+        let (replica, id) = output_only_with_two_foreign_input_groups(true);
+        let command = replica.honest_new_multishard_command(&id);
+
+        let evaluation = replica.evaluate(&[command]);
+
+        assert_voted(&evaluation, TransactionPoolStage::LocalAccepted, true);
+    }
+
+    #[test]
+    fn an_output_only_commit_waiting_on_foreign_pledges_is_refused() {
+        let (replica, _, atom) = output_only_waiting_on_pledges();
+
+        let evaluation = replica.evaluate(&[Command::LocalAccept(atom)]);
+
+        assert_proposed_before_ready(&evaluation, "LocalAccept");
+    }
+
+    #[test]
     fn a_transaction_that_prepares_is_refused() {
         let (replica, id) = executing_cross_shard();
         let atom = multishard_atom(&replica.honest_new_multishard_command(&id));
@@ -1407,6 +1492,24 @@ mod new_multishard_rules {
         let evaluation = replica.evaluate(&[Command::LocalPrepare(atom)]);
 
         assert_command_disagreement(&evaluation, "LocalAccept", "LocalPrepare");
+    }
+
+    #[test]
+    fn a_prepare_for_a_transaction_waiting_on_foreign_pledges_is_refused() {
+        let (replica, _, atom) = output_only_waiting_on_pledges();
+
+        let evaluation = replica.evaluate(&[Command::LocalPrepare(atom)]);
+
+        assert_proposed_before_ready(&evaluation, "LocalPrepare");
+    }
+
+    #[test]
+    fn a_local_only_command_for_a_transaction_waiting_on_foreign_pledges_is_refused() {
+        let (replica, id, _) = output_only_waiting_on_pledges();
+
+        let evaluation = replica.evaluate_local_only(&[committing(id)]);
+
+        assert_proposed_before_ready(&evaluation, "LocalOnly");
     }
 
     #[test]

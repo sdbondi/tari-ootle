@@ -120,6 +120,9 @@ where
                 expected: TransactionPoolStage::New,
             }));
         }
+        if let Some(reason) = check_ready_to_leave_stage(&pool_tx, block, "LocalOnly") {
+            return Ok(Some(reason));
+        }
         // LocalOnly so we can lock the epoch here
         pool_tx.update_locked_epoch(block.to_locked_epoch());
 
@@ -251,6 +254,11 @@ where
             tx_rec.id(),
             block,
         );
+
+        // A New transaction is ready only once it holds every foreign input pledge that prepare needs
+        if let Some(reason) = check_ready_to_leave_stage(&tx_rec, block, proposed_kind.as_str()) {
+            return Ok(Some(reason));
+        }
 
         // Prepare phase, ensure we set a locked_epoch if not already done
         tx_rec.update_locked_epoch(block.to_locked_epoch());
