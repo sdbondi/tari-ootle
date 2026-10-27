@@ -48,6 +48,11 @@ impl AsRef<[u8]> for TransactionMessage {
 /// either longer than 64 bytes, since it ends with the 32-byte genesis and block hashes after the call,
 /// or hashed to 32 bytes when longer than 256. Every message here is 64 bytes, so a key signing through it
 /// can never be made to sign a Substrate extrinsic.
+///
+/// The separation runs one way. Any other signer that signs caller-supplied bytes under `substrate` with
+/// the same key can be handed a transaction message, and its signature authorizes that transaction, so a
+/// transaction key is single-purpose, and a guard in front of an external signer derives the message from
+/// a transaction it has inspected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransactionSigningContext(SigningContext<'static>);
 
