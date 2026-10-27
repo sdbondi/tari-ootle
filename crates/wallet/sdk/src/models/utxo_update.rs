@@ -25,8 +25,7 @@ pub struct StartOfShard {
     /// The shard holds updates beyond this pass, as reported by the indexer.
     pub has_more: bool,
     /// The indexer may lack the spends of the shard's outputs below its tombstone horizon, which the request's cursor
-    /// is below. The shard is rescanned for unspent outputs from the start, and each held output of the shard that the
-    /// rescan does not return is checked.
+    /// is below, so each output the wallet holds in the shard is checked before the shard's cursor is stored.
     pub resync_required: bool,
 }
 

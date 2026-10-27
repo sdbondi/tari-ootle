@@ -2,7 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use std::{
-    collections::{HashMap, HashSet, hash_map::Entry},
+    collections::{HashMap, HashSet},
     mem,
 };
 
@@ -41,12 +41,7 @@ use tari_ootle_wallet_sdk::{
     network::{UtxoUpdateStream, WalletNetworkInterface},
     storage::{ReadableWalletStore, WalletStorageError, WalletStoreReader, WalletStoreWriter, WriteableWalletStore},
 };
-use tari_template_lib_types::{
-    ComponentAddress,
-    ResourceAddress,
-    UtxoAddress,
-    crypto::{RistrettoPublicKeyBytes, UtxoTag},
-};
+use tari_template_lib_types::{ComponentAddress, ResourceAddress, UtxoAddress};
 
 use crate::{notify::Notify, utxo_scanner::StealthScannerApiError};
 
@@ -79,18 +74,13 @@ pub struct UtxoScannerRound<'a, TSpec: WalletSdkSpec> {
     /// after the claim expires asks again for every update the claim may have skipped.
     resumed_from_claim: HashSet<Shard>,
     shard_state_versions_to_set: HashMap<Shard, StateVersion>,
-    /// The shards being rescanned for their unspent outputs because the indexer may lack spends below their cursors.
-    resyncs: HashMap<Shard, Resync>,
-    /// The live, on-chain outputs the wallet held in each shard when the current resync pass began, loaded once for
-    /// the pass by the first resync it completes.
-    held_by_shard: Option<HashMap<Shard, Vec<StealthOutputModel>>>,
-    /// The shards this round has resynced. A round resyncs a shard at most once, so that an indexer that keeps asking
-    /// cannot keep it from ending.
-    resynced: HashSet<Shard>,
+    /// The shards the indexer flagged as possibly lacking spends below their cursors. The outputs the wallet holds in
+    /// a flagged shard are checked once a round, before the shard's cursor is stored.
+    flagged: HashSet<Shard>,
     utxos_to_recover: Vec<(ComponentAddress, UtxoUnspent)>,
     utxos_to_spend: Vec<UtxoSpent>,
-    /// The spends of held outputs that a resync did not return, which the indexer has already shown gone.
-    reconciled_spends: Vec<UtxoSpent>,
+    /// The spends of held outputs that the check of a flagged shard showed gone.
+    checked_spends: Vec<UtxoSpent>,
     notify: &'a Notify<WalletEvent>,
 }
 
@@ -116,12 +106,10 @@ where TSpec: WalletSdkSpec
             claims: HashMap::new(),
             resumed_from_claim: HashSet::new(),
             shard_state_versions_to_set: HashMap::new(),
-            resyncs: HashMap::new(),
-            held_by_shard: None,
-            resynced: HashSet::new(),
+            flagged: HashSet::new(),
             utxos_to_recover: Vec::new(),
             utxos_to_spend: Vec::new(),
-            reconciled_spends: Vec::new(),
+            checked_spends: Vec::new(),
             notify,
             stats: UtxoScanRoundStats::default(),
         }
@@ -241,103 +229,69 @@ where TSpec: WalletSdkSpec
     async fn process_next_batch(&mut self) -> Result<bool, StealthScannerApiError> {
         info!(
             target: LOG_TARGET,
-            "🔍️ Scanning for stealth outputs (account {}, resource {}, num shards {}, resyncing {})",
+            "🔍️ Scanning for stealth outputs (account {}, resource {}, num shards {})",
             self.account.component_address(),
             self.resource_address,
             self.cursors.len(),
-            self.resyncs.len(),
         );
 
-        let mut has_more = false;
-        // NOTE that this will request shards in a random order (HashMap). This is good to avoid always starting with
-        // the same shard.
-        let cursors = self
-            .cursors
-            .iter()
-            .filter(|(shard, _)| !self.resyncs.contains_key(shard))
-            .map(|(shard, cursor)| (*shard, *cursor))
-            .collect::<Vec<_>>();
-        if !cursors.is_empty() {
-            let live_output_count = self
-                .sdk
-                .stealth_outputs_api()
-                .count_unspent_or_locked_outputs_for_account(self.account.component_address(), self.resource_address)?;
-            // Optimisation: with no unspent or locked outputs there is no spend left for the wallet to learn of, so
-            // only unspent updates are needed. The indexer moves the cursor past the spent updates this skips, so a
-            // later pass from that cursor does not deliver them either.
-            let stream = self.open_stream(cursors, live_output_count == 0).await?;
-            has_more |= self.process_stream(stream, ScanMode::Incremental).await?;
-        }
+        let live_output_count = self
+            .sdk
+            .stealth_outputs_api()
+            .count_unspent_or_locked_outputs_for_account(self.account.component_address(), self.resource_address)?;
 
-        // A shard the pass above flagged is resynced in the same batch.
-        if !self.resyncs.is_empty() {
-            let cursors = self
-                .resyncs
-                .iter()
-                .map(|(shard, resync)| (*shard, resync.cursor))
-                .collect();
-            self.held_by_shard = None;
-            let stream = self.open_stream(cursors, true).await?;
-            has_more |= self.process_stream(stream, ScanMode::Resync).await?;
-        }
-
-        Ok(has_more)
-    }
-
-    async fn open_stream(
-        &self,
-        cursors: Vec<(Shard, StateVersion)>,
-        unspent_only: bool,
-    ) -> Result<UtxoUpdateStream<NetworkInterfaceError<TSpec>>, StealthScannerApiError> {
-        self.sdk
+        let stream = self
+            .sdk
             .get_network_interface()
             .stream_stealth_utxo_updates(
                 self.account.birthday_epoch(),
                 *self.resource_address,
-                cursors,
-                unspent_only,
+                // NOTE that this will request shards in a random order (HashMap). This is good to avoid always
+                // starting with the same shard.
+                self.cursors.iter().map(|(shard, cursor)| (*shard, *cursor)).collect(),
+                // Optimisation: with no unspent or locked outputs there is no spend left for the wallet to
+                // learn of, so only unspent updates are needed. The indexer moves the cursor past the spent
+                // updates this skips, so a later pass from that cursor does not deliver them either.
+                live_output_count == 0,
             )
             .await
-            .map_err(|e| StealthScannerApiError::NetworkInterfaceError(e.into()))
+            .map_err(|e| StealthScannerApiError::NetworkInterfaceError(e.into()))?;
+
+        let has_more = self.process_stream(stream).await?;
+        Ok(has_more)
     }
 
     async fn process_stream(
         &mut self,
         mut stream: UtxoUpdateStream<NetworkInterfaceError<TSpec>>,
-        mode: ScanMode,
     ) -> Result<bool, StealthScannerApiError> {
         let mut num_received = 0usize;
         let mut sos: Option<StartOfShard> = None;
-        // Whether the stream is in a shard flagged for a resync, whose frames are skipped up to its EndOfShard.
-        let mut skipping = false;
         let mut has_more = false;
+        // The shards this stream flagged first, and the cursors they reached, which are stored only once their held
+        // outputs are checked.
+        let mut newly_flagged = HashSet::new();
+        let mut awaiting_check = HashMap::new();
 
         while let Some(result) = stream.next().await {
             let payload = result.map_err(|e| StealthScannerApiError::NetworkInterfaceError(e.into()))?;
             if let Some(recv_sos) = payload.sos {
                 debug!(target: LOG_TARGET, "Received StartOfShard for {}", recv_sos.shard);
-                if let Some(unterminated) = sos.take() {
+                if recv_sos.resync_required && self.flagged.insert(recv_sos.shard) {
+                    newly_flagged.insert(recv_sos.shard);
+                }
+                if let Some(unterminated) = sos.replace(recv_sos) {
                     warn!(
                         target: LOG_TARGET,
                         "⚠️ Shard {} ended without an EndOfShard. Its scan cursor is left in place.",
                         unterminated.shard
                     );
                 }
-                skipping = mode == ScanMode::Incremental && recv_sos.resync_required;
-                if skipping {
-                    self.begin_resync(recv_sos.shard)?;
-                } else {
-                    sos = Some(recv_sos);
-                }
-            }
-            if skipping {
-                skipping = payload.eos.is_none();
-                continue;
             }
 
             if let Some(update) = payload.update {
                 num_received += 1;
-                self.process_update(update, sos.as_ref())?;
+                self.process_update(update)?;
             }
 
             if payload.eos.is_some() {
@@ -353,20 +307,20 @@ where TSpec: WalletSdkSpec
                     self.account.component_address(),
                     sos.max_state_version
                 );
-                match mode {
-                    ScanMode::Incremental => {
-                        for versions in [&mut self.cursors, &mut self.shard_state_versions_to_set] {
-                            versions
-                                .entry(sos.shard)
-                                .and_modify(|v| {
-                                    if sos.max_state_version > *v {
-                                        *v = sos.max_state_version
-                                    }
-                                })
-                                .or_insert(sos.max_state_version);
-                        }
-                    },
-                    ScanMode::Resync => self.advance_resync(&sos).await?,
+                let to_set = if newly_flagged.contains(&sos.shard) {
+                    &mut awaiting_check
+                } else {
+                    &mut self.shard_state_versions_to_set
+                };
+                for versions in [&mut self.cursors, to_set] {
+                    versions
+                        .entry(sos.shard)
+                        .and_modify(|v| {
+                            if sos.max_state_version > *v {
+                                *v = sos.max_state_version
+                            }
+                        })
+                        .or_insert(sos.max_state_version);
                 }
                 has_more |= sos.has_more;
 
@@ -384,6 +338,11 @@ where TSpec: WalletSdkSpec
             );
         }
 
+        if !newly_flagged.is_empty() {
+            self.check_held_outputs(&newly_flagged).await?;
+            self.stats.num_flagged_shards += newly_flagged.len();
+            self.shard_state_versions_to_set.extend(awaiting_check);
+        }
         self.commit_progress().await?;
         self.stats.num_received += num_received;
 
@@ -398,12 +357,7 @@ where TSpec: WalletSdkSpec
         Ok(has_more)
     }
 
-    /// Queues `update` of the shard that `sos` began.
-    fn process_update(
-        &mut self,
-        update: WalletUtxoUpdate,
-        sos: Option<&StartOfShard>,
-    ) -> Result<(), StealthScannerApiError> {
+    fn process_update(&mut self, update: WalletUtxoUpdate) -> Result<(), StealthScannerApiError> {
         match update {
             WalletUtxoUpdate::Unspent(unspent) => {
                 if self.check_if_tag_matches(&unspent)? {
@@ -412,9 +366,6 @@ where TSpec: WalletSdkSpec
                         "🏷️ Stealth output tag {} matches. Queueing for recovery.",
                         unspent.tag
                     );
-                    if let Some(resync) = sos.and_then(|sos| self.resyncs.get_mut(&sos.shard)) {
-                        resync.returned.insert((unspent.tag, unspent.public_nonce));
-                    }
                     self.utxos_to_recover.push((*self.account.component_address(), unspent));
                 }
             },
@@ -436,7 +387,7 @@ where TSpec: WalletSdkSpec
     async fn commit_progress(&mut self) -> Result<bool, StealthScannerApiError> {
         if self.utxos_to_recover.is_empty() &&
             self.utxos_to_spend.is_empty() &&
-            self.reconciled_spends.is_empty() &&
+            self.checked_spends.is_empty() &&
             self.shard_state_versions_to_set.is_empty()
         {
             return Ok(false);
@@ -445,7 +396,7 @@ where TSpec: WalletSdkSpec
         if self.sdk.sdk_config().indexer_trust.is_verify() {
             self.retain_proven_spends().await?;
         }
-        self.utxos_to_spend.append(&mut self.reconciled_spends);
+        self.utxos_to_spend.append(&mut self.checked_spends);
 
         let mut num_spent = 0;
         let num_recovered = self.utxos_to_recover.len();
@@ -560,128 +511,79 @@ where TSpec: WalletSdkSpec
         Ok(())
     }
 
-    /// Starts rescanning `shard` for its unspent outputs from the start, unless this round has resynced it already. The
-    /// shard's claim is dropped, and its stored cursor stays where it is until the resync completes, so a scan that
-    /// fails before then is asked to resync again.
-    fn begin_resync(&mut self, shard: Shard) -> Result<(), StealthScannerApiError> {
-        if self.resynced.contains(&shard) {
-            warn!(
-                target: LOG_TARGET,
-                "⚠️ The indexer asked again to resync shard {shard}, which this scan has resynced. Its scan cursor is left in place until the next scan.",
-            );
+    /// Queues the spend of each output the wallet holds as live and on chain in one of `shards`, which the indexer may
+    /// lack spends for below the cursor, once the indexer shows that it is gone. The outputs are read in one fetch, and
+    /// one the indexer serves live is kept. Under [`IndexerTrust::Verify`](tari_ootle_wallet_sdk::IndexerTrust::Verify)
+    /// the read must be proven, and the indexer must prove gone the version of each other output the wallet holds
+    /// proven up (see [`SubstatesApi::verify_down`]). Otherwise an output the indexer does not serve is gone.
+    ///
+    /// The indexer keeps every unspent output, so the scan of the shard still delivers each new one. A spend after the
+    /// check lands above the indexer's tombstone horizon, so a later scan delivers it.
+    ///
+    /// [`SubstatesApi::verify_down`]: tari_ootle_wallet_sdk::apis::substate::SubstatesApi::verify_down
+    async fn check_held_outputs(&mut self, shards: &HashSet<Shard>) -> Result<(), StealthScannerApiError> {
+        let account = self.account.component_address();
+        let held = self
+            .sdk
+            .store()
+            .with_read_tx(|tx| {
+                let mut held = Vec::new();
+                for status in [OutputStatus::Unspent, OutputStatus::LockedForSpend] {
+                    held.extend(tx.stealth_outputs_get_many(self.resource_address, Some(account), Some(status))?);
+                }
+                Ok::<_, WalletStorageError>(held)
+            })?
+            .into_iter()
+            .filter(|output| output.is_on_chain && shards.contains(&shard_of(output)))
+            .collect::<Vec<_>>();
+        if held.is_empty() {
             return Ok(());
         }
         info!(
             target: LOG_TARGET,
-            "🔄️ The indexer may lack spends of shard {shard} below the scan cursor of account {} (resource {}). Rescanning the shard for unspent outputs.",
-            self.account.component_address(),
+            "🔄️ The indexer may lack spends below the scan cursors of {} shard(s) of account {account} (resource {}). Checking the {} stealth output(s) the wallet holds in them.",
+            shards.len(),
             self.resource_address,
-        );
-        self.resumed_from_claim.remove(&shard);
-        if self.claims.remove(&shard).is_some() {
-            self.sdk.store().with_write_tx(|tx| {
-                tx.shard_state_version_claims_remove(self.account.component_address(), self.resource_address, [shard])
-            })?;
-        }
-        self.resyncs.insert(shard, Resync {
-            cursor: StateVersion::zero(),
-            returned: HashSet::new(),
-        });
-        Ok(())
-    }
-
-    /// Moves the resync of the shard that `sos` began to where the pass ended, and completes it once the indexer has
-    /// no more to give: the outputs the wallet holds that the resync did not return are reconciled, and the shard's
-    /// cursor moves to where the resync ended.
-    async fn advance_resync(&mut self, sos: &StartOfShard) -> Result<(), StealthScannerApiError> {
-        let Entry::Occupied(mut entry) = self.resyncs.entry(sos.shard) else {
-            warn!(
-                target: LOG_TARGET,
-                "⚠️ The indexer streamed shard {}, which is not being resynced. Ignoring it.",
-                sos.shard
-            );
-            return Ok(());
-        };
-        let resync = entry.get_mut();
-        resync.cursor = resync.cursor.max(sos.max_state_version);
-        if sos.has_more {
-            // An output this pass returned can be spent before the pass that completes the resync, which then reads
-            // its spent row and drops it as `unspent_only` asks. Only the outputs the final pass returns are known
-            // live up to where the resync ends.
-            resync.returned.clear();
-            return Ok(());
-        }
-        let resync = entry.remove();
-        self.reconcile(sos.shard, &resync.returned).await?;
-        self.cursors.insert(sos.shard, resync.cursor);
-        self.shard_state_versions_to_set.insert(sos.shard, resync.cursor);
-        self.resynced.insert(sos.shard);
-        self.stats.num_resynced_shards += 1;
-        Ok(())
-    }
-
-    /// Queues the spend of each output of `shard` the wallet holds as live and on chain that the final pass of a resync
-    /// of the shard did not return, once the indexer shows that it is gone. Under
-    /// [`IndexerTrust::Verify`](tari_ootle_wallet_sdk::IndexerTrust::Verify) the indexer must prove the version the
-    /// wallet holds proven up gone (see [`SubstatesApi::verify_down`]); otherwise it need only not serve the output.
-    ///
-    /// The indexer delivers an output that a freeze or unfreeze took to a later version in the resync, which matches
-    /// the held output by tag and nonce, so such an output is not checked.
-    ///
-    /// [`SubstatesApi::verify_down`]: tari_ootle_wallet_sdk::apis::substate::SubstatesApi::verify_down
-    async fn reconcile(
-        &mut self,
-        shard: Shard,
-        returned: &HashSet<(UtxoTag, RistrettoPublicKeyBytes)>,
-    ) -> Result<(), StealthScannerApiError> {
-        if self.held_by_shard.is_none() {
-            self.held_by_shard = Some(self.load_held_by_shard()?);
-        }
-        let missing = self
-            .held_by_shard
-            .as_mut()
-            .and_then(|held| held.remove(&shard))
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|output| !returned.contains(&(output.tag_byte, output.sender_public_nonce)))
-            .collect::<Vec<_>>();
-        if missing.is_empty() {
-            return Ok(());
-        }
-        debug!(
-            target: LOG_TARGET,
-            "Resync of shard {shard} did not return {} held stealth output(s). Checking whether they are gone.",
-            missing.len()
+            held.len(),
         );
 
         let substate_api = self.sdk.substate_api();
-        if !self.sdk.sdk_config().indexer_trust.is_verify() {
-            let ids = missing
-                .iter()
-                .map(|output| SubstateId::Utxo(output.to_utxo_address()))
-                .collect();
-            let live = substate_api.get_substates_from_network(ids).await?;
-            for output in missing {
-                if !live.contains_key(&SubstateId::Utxo(output.to_utxo_address())) {
-                    // The indexer does not say which version went down. The latest the wallet saw up is the floor.
-                    let version = output
-                        .proven_up
-                        .map_or(SubstateVersion::ZERO, |proven_up| proven_up.version);
-                    self.reconciled_spends.push(UtxoSpent {
-                        id: output.commitment.into(),
-                        version,
-                    });
-                }
-            }
-            return Ok(());
-        }
-
-        for output in missing {
+        let ids = held
+            .iter()
+            .map(|output| SubstateId::Utxo(output.to_utxo_address()))
+            .collect();
+        let reads = substate_api.get_each_substate_from_network(ids).await?;
+        let verify = self.sdk.sdk_config().indexer_trust.is_verify();
+        for (output, (_, read)) in held.into_iter().zip(reads) {
             let address = output.to_utxo_address();
+            match read {
+                Ok(_) => continue,
+                Err(SubstateApiError::SubstateDoesNotExist { .. }) => {},
+                Err(err) if is_refusal(&err) => {
+                    warn!(
+                        target: LOG_TARGET,
+                        "⚠️ The indexer served stealth output {address} as live without proving it ({err}). Keeping the output.",
+                    );
+                    continue;
+                },
+                Err(err) => return Err(err.into()),
+            }
+
+            if !verify {
+                // The indexer does not say which version went down. The latest the wallet saw up is the floor.
+                let version = output
+                    .proven_up
+                    .map_or(SubstateVersion::ZERO, |proven_up| proven_up.version);
+                self.checked_spends.push(UtxoSpent {
+                    id: output.commitment.into(),
+                    version,
+                });
+                continue;
+            }
             let Some(proven_up) = output.proven_up else {
                 warn!(
                     target: LOG_TARGET,
-                    "⚠️ Stealth output {address} was not returned by the resync of shard {shard}, and the wallet holds no proof of a version of it to check against. Keeping the output.",
+                    "⚠️ The indexer does not serve stealth output {address}, and the wallet holds no proof of a version of it to prove it gone with. Keeping the output.",
                 );
                 continue;
             };
@@ -689,43 +591,20 @@ where TSpec: WalletSdkSpec
                 .verify_down(&address.clone().into(), proven_up.version, Some(proven_up))
                 .await
             {
-                Ok(()) => self.reconciled_spends.push(UtxoSpent {
+                Ok(()) => self.checked_spends.push(UtxoSpent {
                     id: output.commitment.into(),
                     version: proven_up.version,
                 }),
-                Err(SubstateApiError::SubstateNotDown { version, .. }) => {
-                    debug!(
-                        target: LOG_TARGET,
-                        "Stealth output {address} was not returned by the resync of shard {shard}, but is live at v{version}. Keeping the output.",
-                    );
-                },
                 Err(err) if is_refusal(&err) => {
                     warn!(
                         target: LOG_TARGET,
-                        "⚠️ Stealth output {address} was not returned by the resync of shard {shard}, but the indexer did not prove it gone ({err}). Keeping the output.",
+                        "⚠️ The indexer does not serve stealth output {address}, but did not prove it gone ({err}). Keeping the output.",
                     );
                 },
                 Err(err) => return Err(err.into()),
             }
         }
         Ok(())
-    }
-
-    /// The account's unspent and locked-for-spend outputs of the resource that are on chain, by shard.
-    fn load_held_by_shard(&self) -> Result<HashMap<Shard, Vec<StealthOutputModel>>, StealthScannerApiError> {
-        let account = self.account.component_address();
-        let held = self.sdk.store().with_read_tx(|tx| {
-            let mut held = Vec::new();
-            for status in [OutputStatus::Unspent, OutputStatus::LockedForSpend] {
-                held.extend(tx.stealth_outputs_get_many(self.resource_address, Some(account), Some(status))?);
-            }
-            Ok::<_, WalletStorageError>(held)
-        })?;
-        let mut by_shard = HashMap::<_, Vec<_>>::new();
-        for output in held.into_iter().filter(|output| output.is_on_chain) {
-            by_shard.entry(shard_of(&output)).or_default().push(output);
-        }
-        Ok(by_shard)
     }
 
     /// Whether the wallet holds `held` proven up at a later version than `spent` takes down. A version is taken down by
@@ -808,7 +687,8 @@ where TSpec: WalletSdkSpec
     }
 }
 
-/// Whether an answer to [`SubstatesApi::verify_down`] refuses the proof for good, so asking again shows nothing more.
+/// Whether an answer to [`SubstatesApi::verify_down`] or to a proven read refuses the proof for good, so asking again
+/// shows nothing more.
 ///
 /// [`SubstatesApi::verify_down`]: tari_ootle_wallet_sdk::apis::substate::SubstatesApi::verify_down
 fn is_refusal(err: &SubstateApiError) -> bool {
@@ -826,21 +706,6 @@ fn shard_of(output: &StealthOutputModel) -> Shard {
     let id = SubstateId::Utxo(output.to_utxo_address());
     // A substate's shard is the same at every version.
     VersionedSubstateIdRef::new(&id, SubstateVersion::ZERO).to_shard(NUM_PRESHARDS)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ScanMode {
-    /// Each shard is read from its cursor.
-    Incremental,
-    /// Each shard being resynced is read for its unspent outputs from where its resync reached.
-    Resync,
-}
-
-/// A shard's rescan for its unspent outputs, from the start.
-struct Resync {
-    cursor: StateVersion,
-    /// The tag and nonce of each of the wallet's outputs the current pass of the rescan returned.
-    returned: HashSet<(UtxoTag, RistrettoPublicKeyBytes)>,
 }
 
 /// How far a round may move the cursors it stores.
@@ -925,9 +790,9 @@ pub struct UtxoScanRoundStats {
     pub num_potential_recoveries: usize,
     /// Number of UTXOs that were marked as spent
     pub num_spent: usize,
-    /// Number of shards rescanned for their unspent outputs because the indexer may have lacked spends below their
-    /// cursors
-    pub num_resynced_shards: usize,
+    /// Number of shards the indexer flagged as possibly lacking spends below their cursors, whose held outputs were
+    /// checked
+    pub num_flagged_shards: usize,
 }
 
 #[cfg(test)]

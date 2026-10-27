@@ -1,8 +1,8 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-//! A wallet whose indexer may lack the spends of a shard below the scan cursor rescans the shard for its unspent
-//! outputs, and marks spent each output it holds that the rescan does not return, once the indexer shows it gone.
+//! A wallet whose indexer may lack the spends of a shard below the scan cursor checks each output it holds in the
+//! shard, and marks spent each one the indexer shows gone, before it stores the shard's cursor.
 
 mod support;
 
@@ -43,9 +43,9 @@ use crate::support::{ProvingNetwork, Test, TestWithNetwork};
 
 const VALUE: u64 = 1_234;
 const VERSION: SubstateVersion = SubstateVersion::ZERO;
-/// The indexer's tombstone horizon of every shard, and where a rescan of a shard ends.
+/// The indexer's tombstone horizon of every shard, and where a scan of a shard ends.
 const HORIZON: StateVersion = StateVersion::new(50);
-/// Where the first pass of a two-pass rescan ends.
+/// Where the first pass of a two-pass scan of a shard ends.
 const MID: StateVersion = StateVersion::new(25);
 
 type Wallet = TestWithNetwork<ProvingNetwork>;
@@ -127,45 +127,25 @@ fn hold_as(
         .unwrap();
 }
 
-/// An indexer whose tombstone horizon is [`HORIZON`] in every shard. A request for spends from below it is asked to
-/// resync, and a request for unspent outputs from below it returns those of `live` in the shard and ends at it.
-fn index_below_horizon(network: &ProvingNetwork, live: Vec<(UtxoId, UtxoUnspent)>) {
-    index_in_passes(network, Vec::new(), live, false);
-}
-
-/// As [`index_below_horizon`], but a rescan of a shard holding any of `early` takes two passes: the first returns those
-/// outputs and ends at [`MID`] with more to give, and the second returns the shard's outputs of `late`. With
-/// `always_resync`, every request for spends is asked to resync, wherever its cursor is.
-fn index_in_passes(
-    network: &ProvingNetwork,
-    early: Vec<(UtxoId, UtxoUnspent)>,
-    late: Vec<(UtxoId, UtxoUnspent)>,
-    always_resync: bool,
-) {
+/// An indexer whose tombstone horizon is [`HORIZON`] in every shard. A request from below it reads to it, delivering
+/// the outputs of `delivered` in the shard, and a request for spends is flagged. With `two_passes`, a request from
+/// below [`MID`] first reads to [`MID`] with more to give.
+fn index_below_horizon(network: &ProvingNetwork, delivered: Vec<(UtxoId, UtxoUnspent)>, two_passes: bool) {
     network.answer_utxo_streams(move |cursors, unspent_only| {
-        let in_shard = |outputs: &[(UtxoId, UtxoUnspent)], shard: Shard| {
-            outputs
-                .iter()
-                .filter(|(id, _)| shard_of(*id) == shard)
-                .map(|(_, unspent)| WalletUtxoUpdate::Unspent(unspent.clone()))
-                .collect::<Vec<_>>()
-        };
         let mut payloads = Vec::new();
         for (shard, cursor) in cursors {
-            let (max_state_version, has_more, updates) = if !unspent_only {
-                if *cursor >= HORIZON && !always_resync {
-                    continue;
-                }
-                (HORIZON, false, Vec::new())
-            } else if *cursor >= HORIZON {
+            if *cursor >= HORIZON {
                 continue;
+            }
+            let (max_state_version, has_more, updates) = if two_passes && *cursor < MID {
+                (MID, true, Vec::new())
             } else {
-                let first_pass = in_shard(&early, *shard);
-                if *cursor < MID && !first_pass.is_empty() {
-                    (MID, true, first_pass)
-                } else {
-                    (HORIZON, false, in_shard(&late, *shard))
-                }
+                let updates = delivered
+                    .iter()
+                    .filter(|(id, _)| shard_of(*id) == *shard)
+                    .map(|(_, unspent)| WalletUtxoUpdate::Unspent(unspent.clone()))
+                    .collect();
+                (HORIZON, false, updates)
             };
             payloads.push(UtxoUpdatePayload {
                 sos: Some(StartOfShard {
@@ -229,83 +209,81 @@ fn status(test: &Wallet, id: UtxoId) -> OutputStatus {
         .status
 }
 
-/// Scans again, and asserts that the scan resumed every shard from at least [`HORIZON`] and resynced none.
+/// Scans again, and asserts that the scan resumed every shard from at least [`HORIZON`] and none was flagged.
 async fn assert_resumed_past_horizon_after_scan(test: &Wallet, network: &ProvingNetwork) {
     let stats = scan(test).await;
-    assert_eq!(stats.num_resynced_shards, 0);
+    assert_eq!(stats.num_flagged_shards, 0);
     let requests = network.utxo_stream_requests();
     let last = requests.last().unwrap();
     assert_eq!(last.len(), NumPreshards::P256.as_u32() as usize);
     assert!(last.iter().all(|(_, cursor)| *cursor >= HORIZON), "{last:?}");
 }
 
+const NUM_SHARDS: usize = NumPreshards::P256.as_u32() as usize;
+
 #[tokio::test(flavor = "multi_thread")]
-async fn a_held_output_a_resync_does_not_return_is_marked_spent_once_proven_gone() {
+async fn a_held_output_in_a_flagged_shard_is_marked_spent_once_proven_gone() {
     let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
-    let (returned_id, returned) = test.owned_utxo(&account, VALUE);
     let (gone_id, gone) = test.owned_utxo(&account, VALUE);
     let (live_id, live) = test.owned_utxo(&account, VALUE);
-    for (id, utxo) in [(returned_id, &returned), (gone_id, &gone), (live_id, &live)] {
-        hold(&test, &account, id, utxo, Some(3));
-    }
+    let (deposit_id, deposit) = test.owned_utxo(&account, VALUE);
+    hold(&test, &account, gone_id, &gone, Some(3));
+    hold(&test, &account, live_id, &live, Some(3));
     serve_excluded(&sets, &network, gone_id);
-    // Live, but committed past where the rescan read to.
     serve_live(&sets, &network, live_id, &live);
-    index_below_horizon(&network, vec![(returned_id, unspent(&returned))]);
+    index_below_horizon(&network, vec![(deposit_id, unspent(&deposit))], false);
 
     let stats = scan(&test).await;
-    assert_eq!(stats.num_resynced_shards, NumPreshards::P256.as_u32() as usize);
+    assert_eq!(stats.num_flagged_shards, NUM_SHARDS);
     assert_eq!(stats.num_spent, 1);
+    assert_eq!(
+        stats.num_potential_recoveries, 1,
+        "the flagged scan still delivers a new output"
+    );
     assert_eq!(status(&test, gone_id), OutputStatus::Spent);
     assert_eq!(status(&test, live_id), OutputStatus::Unspent);
-    assert_eq!(status(&test, returned_id), OutputStatus::Unspent);
+    assert_eq!(network.substate_fetches(), 1, "the held outputs are read in one fetch");
     assert_eq!(
         network.substate_queries(),
-        2,
-        "only the outputs the resync did not return are checked"
+        1,
+        "only the output not served live is proven gone"
     );
-
-    let stats = scan(&test).await;
-    assert_eq!(stats.num_resynced_shards, 0);
     assert_resumed_past_horizon_after_scan(&test, &network).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_held_output_never_proven_up_is_kept_when_a_resync_does_not_return_it() {
+async fn a_held_output_never_proven_up_is_kept_when_the_indexer_does_not_serve_it() {
     let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
     let (id, utxo) = test.owned_utxo(&account, VALUE);
     hold(&test, &account, id, &utxo, None);
     serve_excluded(&sets, &network, id);
-    index_below_horizon(&network, vec![]);
+    index_below_horizon(&network, Vec::new(), false);
 
     let stats = scan(&test).await;
-    assert_eq!(stats.num_resynced_shards, NumPreshards::P256.as_u32() as usize);
+    assert_eq!(stats.num_flagged_shards, NUM_SHARDS);
     assert_eq!(stats.num_spent, 0);
     assert_eq!(status(&test, id), OutputStatus::Unspent);
     assert_eq!(network.substate_queries(), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_resync_whose_check_could_not_be_made_is_asked_for_again() {
+async fn a_flagged_shard_whose_check_failed_is_flagged_again() {
     let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
     let (id, utxo) = test.owned_utxo(&account, VALUE);
     hold(&test, &account, id, &utxo, Some(3));
     serve_excluded(&sets, &network, id);
-    index_below_horizon(&network, vec![]);
-    network.fail_substate_queries(1);
+    index_below_horizon(&network, Vec::new(), false);
+    network.fail_substate_fetches(1);
 
     let err = try_scan(&test).await.unwrap_err();
     assert!(matches!(err, StealthScannerApiError::SubstateApiError(_)), "{err}");
     assert_eq!(status(&test, id), OutputStatus::Unspent);
-    let shard = shard_of(id);
-    let requests = network.utxo_stream_requests();
-    assert!(
-        requests.last().unwrap().contains(&(shard, StateVersion::zero())),
-        "the shard's resync was under way"
-    );
 
     let stats = scan(&test).await;
-    assert!(stats.num_resynced_shards >= 1);
+    assert_eq!(
+        stats.num_flagged_shards, NUM_SHARDS,
+        "no flagged shard's cursor was stored"
+    );
     assert_eq!(stats.num_spent, 1);
     assert_eq!(status(&test, id), OutputStatus::Spent);
     assert_resumed_past_horizon_after_scan(&test, &network).await;
@@ -320,7 +298,7 @@ async fn a_trusting_wallet_marks_spent_a_held_output_the_indexer_no_longer_serve
     hold(&test, &account, live_id, &live, None);
     network.serve_down_substate(substate_id(gone_id), VERSION, None);
     serve_live(&sets, &network, live_id, &live);
-    index_below_horizon(&network, vec![]);
+    index_below_horizon(&network, Vec::new(), false);
 
     let stats = scan(&test).await;
     assert_eq!(stats.num_spent, 1);
@@ -329,61 +307,38 @@ async fn a_trusting_wallet_marks_spent_a_held_output_the_indexer_no_longer_serve
     assert_resumed_past_horizon_after_scan(&test, &network).await;
 }
 
-/// A wallet holding nothing asks only for unspent outputs, which the indexer never asks to resync.
+/// A wallet holding nothing asks only for unspent outputs, which the indexer never flags.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_wallet_holding_nothing_is_not_asked_to_resync() {
+async fn a_wallet_holding_nothing_is_not_flagged() {
     let (_, network, test, _) = wallet(IndexerTrust::Verify).await;
-    index_below_horizon(&network, vec![]);
+    index_below_horizon(&network, Vec::new(), false);
 
     let stats = scan(&test).await;
-    assert_eq!(stats.num_resynced_shards, 0);
+    assert_eq!(stats.num_flagged_shards, 0);
     assert_resumed_past_horizon_after_scan(&test, &network).await;
 }
 
-/// An output returned by an early pass of a resync can be spent before the final pass, which then drops its spent row
-/// as `unspent_only` asks, so it is checked like an output the resync did not return.
+/// A shard is flagged again by its second pass, whose cursor is still below the horizon, and checked once.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_output_an_early_resync_pass_returned_is_checked_once_the_resync_ends() {
-    let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
-    let (spent_id, spent) = test.owned_utxo(&account, VALUE);
-    let (live_id, live) = test.owned_utxo(&account, VALUE);
-    hold(&test, &account, spent_id, &spent, Some(3));
-    hold(&test, &account, live_id, &live, Some(3));
-    serve_excluded(&sets, &network, spent_id);
-    serve_live(&sets, &network, live_id, &live);
-    index_in_passes(
-        &network,
-        vec![(spent_id, unspent(&spent)), (live_id, unspent(&live))],
-        Vec::new(),
-        false,
-    );
-
-    let stats = scan(&test).await;
-    assert_eq!(stats.num_spent, 1);
-    assert_eq!(status(&test, spent_id), OutputStatus::Spent);
-    assert_eq!(status(&test, live_id), OutputStatus::Unspent);
-    assert_resumed_past_horizon_after_scan(&test, &network).await;
-}
-
-/// An indexer that asks again for a shard the scan has resynced is not followed, so the scan ends. Here every shard is
-/// asked again in the batch after the first, which a two-pass resync of one shard brings about.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_shard_asked_again_in_the_same_scan_is_resynced_once() {
+async fn a_shard_flagged_over_two_passes_is_checked_once() {
     let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
     let (id, utxo) = test.owned_utxo(&account, VALUE);
     hold(&test, &account, id, &utxo, Some(3));
-    serve_live(&sets, &network, id, &utxo);
-    index_in_passes(&network, vec![(id, unspent(&utxo))], Vec::new(), true);
+    serve_excluded(&sets, &network, id);
+    index_below_horizon(&network, Vec::new(), true);
 
     let stats = scan(&test).await;
-    assert_eq!(stats.num_resynced_shards, NumPreshards::P256.as_u32() as usize);
-    assert_eq!(status(&test, id), OutputStatus::Unspent);
+    assert_eq!(stats.num_flagged_shards, NUM_SHARDS);
+    assert_eq!(stats.num_spent, 1);
+    assert_eq!(network.substate_fetches(), 1);
+    assert_eq!(network.substate_queries(), 1);
+    assert_resumed_past_horizon_after_scan(&test, &network).await;
 }
 
 /// A held output locked for a spend is checked, and one locked as the unconfirmed output of the wallet's own pending
 /// transaction is not.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_resync_checks_an_output_locked_for_spend_but_not_an_unconfirmed_one() {
+async fn a_flagged_shard_checks_an_output_locked_for_spend_but_not_an_unconfirmed_one() {
     let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
     let (locked_id, locked) = test.owned_utxo(&account, VALUE);
     let (unconfirmed_id, unconfirmed) = test.owned_utxo(&account, VALUE);
@@ -404,7 +359,7 @@ async fn a_resync_checks_an_output_locked_for_spend_but_not_an_unconfirmed_one()
         OutputStatus::LockedUnconfirmed,
     );
     serve_excluded(&sets, &network, locked_id);
-    index_below_horizon(&network, Vec::new());
+    index_below_horizon(&network, Vec::new(), false);
 
     let stats = scan(&test).await;
     assert_eq!(stats.num_spent, 1);
