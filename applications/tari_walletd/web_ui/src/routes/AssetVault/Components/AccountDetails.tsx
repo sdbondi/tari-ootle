@@ -160,7 +160,7 @@ function DestinationTagDialog(props: DestinationTagDialogProps) {
             <TextField
               name="link"
               placeholder="Inv12345...."
-              label="Payment Ref."
+              label="Destination tag"
               fullWidth
               onChange={handleOnChange}
             />

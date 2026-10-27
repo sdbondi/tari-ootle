@@ -117,8 +117,8 @@ impl Memo {
         destination_tag: P,
         msg_bytes: B,
     ) -> Option<Self> {
-        let pr = destination_tag.as_ref();
-        let available_len = (Self::MAX_BYTES_LENGTH - 1).checked_sub(pr.len())?; // -1 for length prefix byte
+        let tag = destination_tag.as_ref();
+        let available_len = (Self::MAX_BYTES_LENGTH - 1).checked_sub(tag.len())?; // -1 for length prefix byte
         let mb = msg_bytes.as_ref();
         let mb = if mb.len() > available_len {
             &mb[..available_len]
@@ -132,15 +132,15 @@ impl Memo {
         destination_tag: P,
         msg_bytes: B,
     ) -> Option<Self> {
-        let pr = destination_tag.as_ref();
+        let tag = destination_tag.as_ref();
         let mb = msg_bytes.as_ref();
         // - 1 for length prefix byte
-        if mb.len() + pr.len() > Self::MAX_BYTES_LENGTH - 1 {
+        if mb.len() + tag.len() > Self::MAX_BYTES_LENGTH - 1 {
             return None;
         }
-        let mut combined = Vec::with_capacity(mb.len() + pr.len());
-        combined.push(u8::try_from(pr.len()).expect("new_destination_tag_and_bytes: length checked"));
-        combined.extend_from_slice(pr);
+        let mut combined = Vec::with_capacity(mb.len() + tag.len());
+        combined.push(u8::try_from(tag.len()).expect("new_destination_tag_and_bytes: length checked"));
+        combined.extend_from_slice(tag);
         combined.extend_from_slice(mb);
         let b = MaxBytes::new_checked(combined)?;
         Some(Self::DestinationTagAndBytes(b))

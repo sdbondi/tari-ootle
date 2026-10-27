@@ -83,8 +83,8 @@ pub struct ParsedOotleAddress {
     pub view_key: Vec<u8>,
     /// The network byte.
     pub network: u8,
-    /// Optional destination tag / memo bytes.
-    pub memo: Option<Vec<u8>>,
+    /// Optional destination tag bytes.
+    pub destination_tag: Option<Vec<u8>>,
 }
 
 /// Seal a transaction (unsigned or unsealed JSON) with the seal signer's secret key.
@@ -235,20 +235,25 @@ pub fn ootle_public_key_from_secret_key(owner_key: &[u8], view_key: &[u8]) -> Re
 /// Generate an Ootle address (bech32m string) from public keys.
 ///
 /// `network` is the network byte (0x00 = MainNet, 0x10 = LocalNet, 0x26 = Esmeralda, etc.).
-/// `memo` is an optional destination tag (max 64 bytes).
+/// `destination_tag` is optional (max 64 bytes).
 #[wasm_bindgen(js_name = "generateOotleAddress")]
 pub fn generate_ootle_address(
     owner_public_key: &[u8],
     view_public_key: &[u8],
     network: u8,
-    memo: Option<Vec<u8>>,
+    destination_tag: Option<Vec<u8>>,
 ) -> Result<String, JsError> {
-    ootle_wasm_core::address::generate_ootle_address(owner_public_key, view_public_key, network, memo.as_deref())
-        .map_err(|e| JsError::new(&e.to_string()))
+    ootle_wasm_core::address::generate_ootle_address(
+        owner_public_key,
+        view_public_key,
+        network,
+        destination_tag.as_deref(),
+    )
+    .map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// Parse a bech32m Ootle address string into its components.
-/// Returns { owner_key: Uint8Array, view_key: Uint8Array, network: number, memo: Uint8Array | undefined }.
+/// Returns { owner_key: Uint8Array, view_key: Uint8Array, network: number, destination_tag: Uint8Array | undefined }.
 #[wasm_bindgen(js_name = "parseOotleAddress")]
 pub fn parse_ootle_address(address: &str) -> Result<ParsedOotleAddress, JsError> {
     let result = ootle_wasm_core::address::parse_ootle_address(address).map_err(|e| JsError::new(&e.to_string()))?;
@@ -256,7 +261,7 @@ pub fn parse_ootle_address(address: &str) -> Result<ParsedOotleAddress, JsError>
         owner_key: result.owner_key,
         view_key: result.view_key,
         network: result.network,
-        memo: result.memo,
+        destination_tag: result.destination_tag,
     })
 }
 

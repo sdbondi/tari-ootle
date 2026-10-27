@@ -125,14 +125,16 @@ impl OotleAddress {
         }
 
         let destination_tag = if destination_tag_len > 0 {
-            let mut pr_buf = vec![0u8; destination_tag_len];
+            let mut tag_buf = vec![0u8; destination_tag_len];
             reader
-                .read_exact(&mut pr_buf)
+                .read_exact(&mut tag_buf)
                 .map_err(|e| OotleAddressError::InvalidDestinationTagLengthSpecifier {
                     given_len: destination_tag_len,
                     source: e,
                 })?;
-            Some(DestinationTag::from_bytes(&pr_buf).expect("decode_from_reader: destination_tag_len checked and read"))
+            Some(
+                DestinationTag::from_bytes(&tag_buf).expect("decode_from_reader: destination_tag_len checked and read"),
+            )
         } else {
             None
         };
@@ -178,7 +180,7 @@ impl OotleAddress {
         // const_option_ops and const_option_basic are unstable, so we'll implement these operations manually
         let kl = RistrettoPublicKeyBytes::length();
         match self.destination_tag {
-            Some(ref pr) => kl * 2 + pr.len(),
+            Some(ref tag) => kl * 2 + tag.len(),
             None => kl * 2,
         }
     }
@@ -228,14 +230,14 @@ impl OotleAddress {
     const fn destination_tag_len(&self) -> usize {
         // const_option_ops and const_option_basic are unstable, so we'll implement these operations manually
         match self.destination_tag {
-            Some(ref pr) => pr.len(),
+            Some(ref tag) => tag.len(),
             None => 0,
         }
     }
 
     pub fn to_bech32_string(&self) -> String {
-        let pr_len = self.destination_tag_len();
-        let mut s = String::with_capacity(119 + pr_len);
+        let tag_len = self.destination_tag_len();
+        let mut s = String::with_capacity(119 + tag_len);
         self.encode_bech32_to_fmt(&mut s).unwrap();
         s
     }

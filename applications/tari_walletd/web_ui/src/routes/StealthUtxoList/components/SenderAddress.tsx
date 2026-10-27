@@ -33,7 +33,7 @@ function formatDestinationTag(destinationTag: string | Uint8Array | null | undef
 }
 
 // Identity key for "is this the same account?" comparisons. We drop the optional destination tag so an incoming
-// SenderAddress with a destination tag still matches the wallet's own account address (which has no destination tag) or an
+// SenderAddress with a destination tag still matches the wallet's own account address (which has no tag) or an
 // address-book entry stored without one.
 function identityKey(address: string): string | null {
   const decoded = decodeOotleAddressOrNull(address);

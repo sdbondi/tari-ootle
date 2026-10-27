@@ -110,10 +110,10 @@ export function SendMoneyDialog(props: SendMoneyDialogProps) {
     }
   }, [props.open, props.resource_type, props.resource_address]);
 
-  // Pre-fill the destination tag input from the destination address's embedded destination tag (if any). The destination tag is
+  // Pre-fill the destination tag input from the tag embedded in the destination address (if any). The tag is
   // decoupled from the "attach sender address" toggle: it drives either a DestinationTagAndBytes memo or, when sender
-  // address is attached, the destination tag slot inside the SenderAddress memo. Skips when the user has already typed
-  // something or the destination's destination tag is non-UTF-8 bytes.
+  // address is attached, the tag slot inside the SenderAddress memo. Skips when the user has already typed something
+  // or the address's destination tag is non-UTF-8 bytes.
   useEffect(() => {
     if (!transferFormState.address) return;
     const decoded = decodeOotleAddressOrNull(transferFormState.address);

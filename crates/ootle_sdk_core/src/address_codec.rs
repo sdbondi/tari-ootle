@@ -116,8 +116,8 @@ pub fn format_identity_address(
     // by name to avoid a silent swap.
     let mut addr = OotleAddress::new(network.into(), view_only_key.to_internal(), account_key.to_internal());
 
-    if let Some(pr_hex) = destination_tag {
-        addr = addr.with_destination_tag(destination_tag_from_hex(pr_hex)?);
+    if let Some(tag_hex) = destination_tag {
+        addr = addr.with_destination_tag(destination_tag_from_hex(tag_hex)?);
     }
 
     let mut out = String::new();
@@ -134,20 +134,20 @@ fn identity_from_ootle_address(addr: &OotleAddress) -> ParsedAddress {
         network: Network::from(addr.network()),
         account_key: PublicKeyBytes::from_internal(addr.account_public_key()),
         view_only_key: PublicKeyBytes::from_internal(addr.view_only_key()),
-        destination_tag: addr.destination_tag().map(|pr| hex::encode(pr.as_bytes())),
+        destination_tag: addr.destination_tag().map(|tag| hex::encode(tag.as_bytes())),
         bech32m: addr.to_bech32_string(),
     }
 }
 
 /// Decodes a lowercase-hex `destination_tag` into a [`DestinationTag`], enforcing the lowercase-hex contract and the
 /// 64-byte cap. Any violation is [`OotleSdkError::Parse`].
-fn destination_tag_from_hex(pr_hex: &str) -> Result<DestinationTag, OotleSdkError> {
-    if pr_hex.chars().any(|c| c.is_ascii_uppercase()) {
+fn destination_tag_from_hex(tag_hex: &str) -> Result<DestinationTag, OotleSdkError> {
+    if tag_hex.chars().any(|c| c.is_ascii_uppercase()) {
         return Err(OotleSdkError::Parse(
             "destination_tag must be lowercase hex".to_string(),
         ));
     }
-    let bytes = hex::decode(pr_hex).map_err(|e| OotleSdkError::Parse(format!("invalid destination_tag hex: {e}")))?;
+    let bytes = hex::decode(tag_hex).map_err(|e| OotleSdkError::Parse(format!("invalid destination_tag hex: {e}")))?;
     // `new_checked` rejects both empty and > MAX_LEN: a present-but-empty destination_tag is meaningless, so
     // empty hex is a parse error.
     DestinationTag::new_checked(bytes).ok_or_else(|| {
@@ -229,14 +229,14 @@ mod tests {
 
     #[test]
     fn identity_with_destination_tag_round_trips() {
-        let pr_hex = "deadbeef";
-        let s = format_identity_address(Network::LocalNet, &account(), &view(), Some(pr_hex)).unwrap();
+        let tag_hex = "deadbeef";
+        let s = format_identity_address(Network::LocalNet, &account(), &view(), Some(tag_hex)).unwrap();
         let ParsedAddress::Identity { destination_tag, .. } = parse_address(&s).unwrap() else {
             panic!("expected Identity");
         };
         assert_eq!(
             destination_tag.as_deref(),
-            Some(pr_hex),
+            Some(tag_hex),
             "destination_tag must round-trip lowercase hex"
         );
     }

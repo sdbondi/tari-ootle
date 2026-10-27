@@ -36,7 +36,7 @@ export function Memo({ memo }: MemoProps) {
           {message}
           <span style={{ marginLeft: "8px" }}>
             {destinationTag && (
-              <StatusChip color={StatusChipColors.Blue} title="This UTXO has an attached Payment Ref.">
+              <StatusChip color={StatusChipColors.Blue} title="This UTXO has an attached destination tag">
                 <CopyToClipboard copy={destinationTag} /> {destinationTag}{" "}
               </StatusChip>
             )}
