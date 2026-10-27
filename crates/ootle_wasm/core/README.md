@@ -29,7 +29,7 @@ Each function accepts unsigned or unsealed transaction JSON.
 - `attach_seal_signature_json(json, seal_signer_public_key, signature) → Result<String>`: seals with an externally produced 64-byte sr25519 signature over the seal message
 - `attach_transaction_signature_json(json, signer_public_key, signature, seal_signer_public_key) → Result<String>`: appends an externally produced authorization signature
 
-Externally produced signatures are standard sr25519 signatures under the `substrate` signing context; see `NPM_README.md`. The `attach_*` functions verify the signature before returning, so a signature over the wrong message or by the wrong key fails at attach time.
+Externally produced signatures are standard sr25519 signatures under the `substrate` signing context; see `NPM_README.md`, including its key isolation requirements: the signing key signs Ootle transaction messages only. The `attach_*` functions verify the signature before returning, so a signature over the wrong message or by the wrong key fails at attach time.
 
 ### `sign` — signing and key management
 

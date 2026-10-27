@@ -66,7 +66,18 @@ const signature = sr25519Sign(secretKey, hash);
 
 These functions sign a transaction without passing a secret key to the binding. The external signer signs a 64-byte hash and returns its 64-byte signature; the binding verifies it and attaches it.
 
-The signature must be a standard sr25519 (schnorrkel) signature under the default `substrate` signing context, with the sr25519 marker bit set in its last byte. Any sr25519 signer, such as a Polkadot signing library, produces this form.
+The signature must be a standard sr25519 (schnorrkel) signature under the default `substrate` signing context, with the sr25519 marker bit set in its last byte. Any sr25519 signer, such as a Polkadot signing library, produces this form. The signer must sign the 64 bytes exactly as given: a signer that hashes, prefixes or wraps the message (for example in `<Bytes>…</Bytes>`) produces a signature that fails verification.
+
+### Key isolation
+
+An Ootle signing key is single-purpose: it signs Ootle transaction messages and nothing else.
+
+Every Ootle authorization is a `substrate`-context sr25519 signature over a 64-byte message. Any path that signs caller-supplied bytes under `substrate` with the same key, such as a "sign message" endpoint, a login or proof-of-ownership challenge, or a raw-signing API another service can call, can be handed an Ootle transaction message, and the signature it returns authorizes that transaction. The network cannot tell such a signature from one your integration produced.
+
+- Give each Ootle account its own key (or derivation path), used by no Substrate chain and no other application.
+- Let only the component that builds Ootle transactions request signatures from that key.
+- Sign only hashes you computed with `hashUnsignedTransaction` or `hashUnsealedTransaction` from a transaction you built or inspected.
+- Sign proofs of ownership and other application messages with a different key.
 
 ### `hashUnsealedTransaction(txJson)`
 

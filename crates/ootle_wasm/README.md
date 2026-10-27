@@ -72,7 +72,7 @@ wasm-pack build crates/ootle_wasm/wasm --target bundler --dev --out-dir ../../..
 | `generateKeypair`            | `() → { secret_key, public_key }`                                                                          | Generate a random Ristretto keypair             |
 | `publicKeyFromSecretKey`     | `(secretKey: Uint8Array) → Uint8Array`                                                                     | Derive public key from secret key               |
 
-All keys and signatures are raw `Uint8Array` bytes.
+All keys and signatures are raw `Uint8Array` bytes. An external signer's key must sign Ootle transaction messages only; see the key isolation requirements in `NPM_README.md`.
 
 ## Usage from JS/TS
 
