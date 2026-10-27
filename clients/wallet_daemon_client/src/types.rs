@@ -2022,8 +2022,11 @@ pub struct StealthTransferRequest {
     pub dry_run: bool,
 }
 
+/// Unknown fields are rejected: an unrecognised name for the destination tag would otherwise be dropped, and the
+/// transfer would go ahead with the destination address's tag in its place.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
+#[serde(deny_unknown_fields)]
 pub struct StealthTransfer {
     pub destination_address: OotleAddress,
     #[cfg_attr(feature = "ts", ts(type = "number | bigint | string"))]
@@ -2360,6 +2363,25 @@ mod tests {
     /// A JS client encodes every 64-bit field as a string, because JavaScript cannot hold an integer
     /// above `Number.MAX_SAFE_INTEGER` in a `number` without losing precision. Both encodings must be
     /// accepted, for any magnitude.
+    #[test]
+    fn stealth_transfer_rejects_unknown_fields() {
+        let transfer = serde_json::json!({
+            "destination_address": "otl_17mufuvtwdwjlqhjj2rwaffwna5uae5pce7qje34p2jmwcz236f0sd7pjcd8eeytpr4lqk0htsk3e740g7gre3t3s4h47cwz7swvrw3secjh6l",
+            "blinded_output_amount": 100,
+            "revealed_output_amount": 0,
+            "pay_to": "StealthPublicKey",
+            "destination_tag": "",
+        });
+        let parsed: StealthTransfer = serde_json::from_value(transfer.clone()).unwrap();
+        assert_eq!(parsed.destination_tag.as_deref(), Some(""));
+
+        let mut renamed = transfer;
+        let tag = renamed.as_object_mut().unwrap().remove("destination_tag").unwrap();
+        renamed["pay_ref"] = tag;
+        let err = serde_json::from_value::<StealthTransfer>(renamed).unwrap_err();
+        assert!(err.to_string().contains("unknown field `pay_ref`"), "{err}");
+    }
+
     #[test]
     fn requests_accept_string_encoded_64_bit_fields() {
         let request: KeysSetActiveRequest = serde_json::from_value(serde_json::json!({

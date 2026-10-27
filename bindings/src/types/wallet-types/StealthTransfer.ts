@@ -4,6 +4,10 @@ import type { Memo } from "../Memo";
 import type { OotleAddress } from "../OotleAddress";
 import type { PayTo } from "./PayTo";
 
+/**
+ * Unknown fields are rejected: an unrecognised name for the destination tag would otherwise be dropped, and the
+ * transfer would go ahead with the destination address's tag in its place.
+ */
 export type StealthTransfer = {
   destination_address: OotleAddress;
   blinded_output_amount: number | bigint | string;
