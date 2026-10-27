@@ -10,17 +10,37 @@ pub trait SignatureDomain {
     fn domain() -> &'static [u8];
 }
 
-/// A signature domain that is the empty byte string.
+/// A signature domain that is the empty byte string, under which no signature verifies.
 ///
-/// # Warning
-/// This is not recommended use as it could lead to signature replay attacks across different contexts.
-/// Instead, define a custom domain for your application using the `custom_signature_domain!` macro.
+/// A [`Signature`] carries no domain on the wire, so this type serves for passing a signature to a
+/// template that verifies it under a domain of its own. To verify, define a domain with the
+/// `custom_signature_domain!` macro.
 ///
 /// # Example
 /// ```rust,ignore
 /// custom_signature_domain!(MyAppDomain, b"MyAppSignatureDomain");
 /// ```
 pub struct NoSignatureDomain;
+
+/// What a template signature is bound to besides its domain and the network.
+///
+/// The engine resolves the scope from the call that verifies, so a template can bind a signature only
+/// to itself or its own component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Encode, Decode, CborLen)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SignatureScope {
+    /// Any template verifying under the same domain accepts the signature, for attestations that more
+    /// than one template consumes.
+    #[default]
+    #[n(0)]
+    Shared,
+    /// Only the template that verifies accepts the signature.
+    #[n(1)]
+    CurrentTemplate,
+    /// Only the component that verifies accepts the signature. Verification outside a component fails.
+    #[n(2)]
+    CurrentComponent,
+}
 
 impl SignatureDomain for NoSignatureDomain {
     fn domain() -> &'static [u8] {
@@ -74,17 +94,10 @@ impl<D: SignatureDomain, T: Into<SignaturePayload>> From<T> for Signature<D> {
 pub enum SignaturePayload {
     #[n(0)]
     RistrettoSchnorrBlake2b(#[n(0)] SchnorrSignatureBytes),
-    /// A standard sr25519 (schnorrkel) signature, signed under the signature domain as its signing
-    /// context. Any sr25519 signer that lets the caller set the context can produce one.
-    /// The engine verifies none under the `libp2p` domain, the context node identity keys sign under.
-    ///
-    /// Transaction authorizations are sr25519 signatures under the `substrate` context over 64-byte
-    /// messages, and `substrate` is the only context many stock signers support. Under the domain
-    /// `b"substrate"`, every authorization on chain is therefore a valid signature over its 64-byte
-    /// transaction message, and a signer asked to sign such a message is authorizing a transaction. A
-    /// template verifying under `b"substrate"` must build the message itself, from a prefix of its own
-    /// and the data the signature attests to, and must never verify a 64-byte message the caller
-    /// supplies.
+    /// A standard sr25519 (schnorrkel) signature under the engine's template signing context, over a
+    /// message the engine derives from the network, the scope, the signature domain and the template's
+    /// message (`tari_ootle_common_types::template_signature_message`). Transaction, node identity and
+    /// other protocol signatures sign under contexts of their own, so none of them verifies as one.
     #[n(1)]
     Sr25519(#[n(0)] Sr25519SignatureBytes),
 }

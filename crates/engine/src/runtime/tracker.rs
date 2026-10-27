@@ -57,6 +57,7 @@ use tari_template_lib::{
 
 use crate::{
     fees::WasmMeteringRate,
+    intrinsics::IntrinsicEnv,
     runtime::{
         RuntimeError,
         error::ArgumentValidationError,
@@ -150,6 +151,20 @@ pub struct StateTracker<TStore> {
     /// intent is delimited by `fee_checkpoint`, and because the checkpoint clones the working state — a count held
     /// there would be duplicated into the clone.
     fee_intent_stealth_transfers: Cell<usize>,
+}
+
+impl<TStore: StateReader> IntrinsicEnv for StateTracker<TStore> {
+    fn network(&self) -> Network {
+        self.read_with(|state| state.network())
+    }
+
+    fn current_template(&self) -> Option<TemplateAddress> {
+        self.read_with(|state| state.current_template().ok().copied())
+    }
+
+    fn current_component(&self) -> Option<ComponentAddress> {
+        self.read_with(|state| state.current_component().ok().flatten())
+    }
 }
 
 impl<TStore: StateReader> StateTracker<TStore> {

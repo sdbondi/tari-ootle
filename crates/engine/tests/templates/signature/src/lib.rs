@@ -44,6 +44,22 @@ mod template {
             spend_signature.verify(&public_key, SOME_MESSAGE)
         }
 
+        pub fn check_sig_for_template(public_key: PublicKey, signature: Signature<MyCustomDomain>) -> bool {
+            signature.verify_for_template(&public_key, SOME_MESSAGE)
+        }
+
+        /// A function call has no component, so a component-scoped signature verifies nowhere here.
+        pub fn check_sig_for_component_outside_a_component(
+            public_key: PublicKey,
+            signature: Signature<MyCustomDomain>,
+        ) -> bool {
+            signature.verify_for_component(&public_key, SOME_MESSAGE)
+        }
+
+        pub fn check_sig_for_component(&self, public_key: PublicKey, signature: Signature<MyCustomDomain>) -> bool {
+            signature.verify_for_component(&public_key, SOME_MESSAGE)
+        }
+
         pub fn claim_funds(
             &mut self,
             public_key: PublicKey,

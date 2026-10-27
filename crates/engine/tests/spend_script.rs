@@ -5,10 +5,8 @@
 //! (`condition_root` + `SpendWitness::ScriptPath` revealing a `SpendCondition` leaf).
 
 use ootle_byte_type::ToByteType;
-use tari_crypto::{
-    keys::{PublicKey as _, SecretKey as _},
-    ristretto::{RistrettoPublicKey, RistrettoSchnorr, RistrettoSecretKey},
-};
+use ootle_network::Network;
+use tari_crypto::{keys::SecretKey as _, ristretto::RistrettoSecretKey};
 use tari_engine::runtime::RuntimeError;
 use tari_engine_types::{
     commit_result::FinalizeResult,
@@ -18,8 +16,9 @@ use tari_engine_types::{
     stealth::{MerkleTree, hashlock_digest},
 };
 use tari_ootle_common_types::{
-    RistrettoSchnorrBlake2bVerifier,
+    TemplateSignatureBinding,
     crypto::create_key_pair_from_seed,
+    sign_template_message_schnorr,
     substate_type::SubstateType,
 };
 use tari_ootle_transaction::{Epoch, Transaction, args};
@@ -924,16 +923,13 @@ const SPEND_SIG_DOMAIN: &[u8] = b"tari.test.spend_script signature domain";
 const SPEND_SIG_MESSAGE: &[u8] = b"spend authorisation";
 
 fn sign_spend(secret: &RistrettoSecretKey, message: &[u8]) -> Signature<NoSignatureDomain> {
-    let (nonce, nonce_pub) = RistrettoPublicKey::random_keypair(&mut rand::rng());
-    let public_key = RistrettoPublicKey::from_secret_key(secret);
-    let challenge = RistrettoSchnorrBlake2bVerifier::compute_challenge(
+    sign_template_message_schnorr(
+        secret,
+        &TemplateSignatureBinding::shared(Network::LocalNet),
         SPEND_SIG_DOMAIN,
         message,
-        &public_key.to_byte_type(),
-        &nonce_pub.to_byte_type(),
-    );
-    let sig = RistrettoSchnorr::sign_raw_uniform(secret, nonce, &challenge).unwrap();
-    sig.to_byte_type().into()
+    )
+    .into()
 }
 
 #[test]

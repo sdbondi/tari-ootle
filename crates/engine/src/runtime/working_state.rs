@@ -245,6 +245,10 @@ impl<TStore: StateReader> WorkingState<TStore> {
         self.transaction_hash
     }
 
+    pub fn network(&self) -> Network {
+        self.network
+    }
+
     pub fn substate_exists(&self, address: &SubstateId) -> Result<bool, RuntimeError> {
         // All public identity resources exist
         if address

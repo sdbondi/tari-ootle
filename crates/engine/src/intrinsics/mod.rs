@@ -4,10 +4,11 @@
 //! Native implementations of the primitives templates reach through
 //! `tari_template_lib::intrinsics`.
 //!
-//! Every intrinsic here is a pure function of its arguments. It cannot touch substate, the
-//! workspace, the fee state or the caller — the only thing it receives is [`EngineArgs`] and the
-//! only thing it returns is a value. That restriction is what makes two things possible: pricing a
-//! call from its declared arguments *before* running it, and reproducing it identically on every
+//! Every intrinsic here is a pure function of its arguments and its [`IntrinsicEnv`]. It cannot
+//! touch substate, the workspace, the fee state or the caller — the only things it receives are
+//! [`EngineArgs`] and the read-only facts in the env, which every validator executing the
+//! transaction shares, and the only thing it returns is a value. That restriction is what makes two things possible:
+//! pricing a call from its declared arguments *before* running it, and reproducing it identically on every
 //! validator.
 //!
 //! # Adding one
@@ -23,20 +24,23 @@
 //! rather than a decode failure.
 
 use digest::Digest;
+use ootle_network::Network;
 use tari_crypto::{
     keys::{PublicKey as PublicKeyTrait, SecretKey as SecretKeyTrait},
     ristretto::{RistrettoPublicKey, RistrettoSecretKey},
     tari_utilities::ByteArray,
 };
 use tari_engine_types::limits::NativeExecutionPoints;
-use tari_ootle_common_types::GetVerifier;
+use tari_ootle_common_types::{GetVerifier, TemplateSignatureBinding, TemplateSignatureScope};
 use tari_template_lib::{
     args::InvokeResult,
     types::{
+        ComponentAddress,
         Hash32,
         Hash64,
+        TemplateAddress,
         bytes::Bytes,
-        crypto::{RistrettoPublicKeyBytes, Scalar32Bytes},
+        crypto::{RistrettoPublicKeyBytes, Scalar32Bytes, SignatureScope},
         engine_args::{IntrinsicId, SignatureVerifyArg},
     },
 };
@@ -94,8 +98,31 @@ pub fn price(intrinsic: IntrinsicId, args: &EngineArgs) -> Result<u64, RuntimeEr
     Ok(points)
 }
 
+/// What an intrinsic reads besides its arguments: facts every validator executing the transaction shares.
+pub trait IntrinsicEnv {
+    fn network(&self) -> Network;
+    /// The template whose code is running.
+    fn current_template(&self) -> Option<TemplateAddress>;
+    /// The component in scope, when the running call has one.
+    fn current_component(&self) -> Option<ComponentAddress>;
+}
+
+/// Resolves a template's signature scope against the running call. `None` when the call has no
+/// component to bind to.
+fn resolve_signature_scope(scope: SignatureScope, env: &dyn IntrinsicEnv) -> Option<TemplateSignatureScope> {
+    match scope {
+        SignatureScope::Shared => Some(TemplateSignatureScope::Shared),
+        SignatureScope::CurrentTemplate => env.current_template().map(TemplateSignatureScope::Template),
+        SignatureScope::CurrentComponent => env.current_component().map(TemplateSignatureScope::Component),
+    }
+}
+
 /// Runs an intrinsic. The caller has already charged [`price`] for it.
-pub fn dispatch(intrinsic: IntrinsicId, args: EngineArgs) -> Result<InvokeResult, RuntimeError> {
+pub fn dispatch(
+    intrinsic: IntrinsicId,
+    args: EngineArgs,
+    env: &dyn IntrinsicEnv,
+) -> Result<InvokeResult, RuntimeError> {
     use IntrinsicId as I;
     match intrinsic {
         I::RISTRETTO_ADD |
@@ -120,8 +147,17 @@ pub fn dispatch(intrinsic: IntrinsicId, args: EngineArgs) -> Result<InvokeResult
                 domain,
                 message,
                 payload,
+                scope,
             } = args.assert_one_arg()?;
-            let is_valid = payload.get_verifier().verify(&domain, &message, &public_key, &payload);
+            let is_valid = resolve_signature_scope(scope, env).is_some_and(|scope| {
+                let binding = TemplateSignatureBinding {
+                    network: env.network(),
+                    scope,
+                };
+                payload
+                    .get_verifier()
+                    .verify(&binding, &domain, &message, &public_key, &payload)
+            });
             Ok(InvokeResult::encode(&is_valid)?)
         },
         unknown => Err(RuntimeError::IntrinsicNotSupported { intrinsic: unknown }),
@@ -324,6 +360,23 @@ fn encode_scalar(s: RistrettoSecretKey) -> Result<InvokeResult, RuntimeError> {
 mod tests {
     use super::*;
 
+    /// An env outside any template call.
+    struct NoEnv;
+
+    impl IntrinsicEnv for NoEnv {
+        fn network(&self) -> Network {
+            Network::LocalNet
+        }
+
+        fn current_template(&self) -> Option<TemplateAddress> {
+            None
+        }
+
+        fn current_component(&self) -> Option<ComponentAddress> {
+            None
+        }
+    }
+
     /// `price` bounds an MSM's term count by dividing the encoded arguments by [`MIN_ENCODED_TERM_LEN`], which
     /// only bounds from above while neither a point nor a scalar encodes to less than that.
     #[test]
@@ -393,7 +446,7 @@ mod tests {
             );
             assert!(
                 !matches!(
-                    dispatch(id, EngineArgs::new()),
+                    dispatch(id, EngineArgs::new(), &NoEnv),
                     Err(RuntimeError::IntrinsicNotSupported { .. })
                 ),
                 "{id} has no arm in `dispatch`",
@@ -411,7 +464,7 @@ mod tests {
             Err(RuntimeError::IntrinsicNotSupported { .. })
         ));
         assert!(matches!(
-            dispatch(unknown, EngineArgs::new()),
+            dispatch(unknown, EngineArgs::new(), &NoEnv),
             Err(RuntimeError::IntrinsicNotSupported { .. })
         ));
     }

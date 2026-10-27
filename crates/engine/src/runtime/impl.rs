@@ -4299,7 +4299,7 @@ where
         let points = intrinsics::price(intrinsic, &args)?;
         self.tracker.charge_native_execution(points)?;
 
-        intrinsics::dispatch(intrinsic, args)
+        intrinsics::dispatch(intrinsic, args, &*self.tracker)
     }
 
     fn spend_context_invoke(&self, action: SpendContextAction) -> Result<InvokeResult, RuntimeError> {
