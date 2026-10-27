@@ -76,8 +76,8 @@ impl NetworkStateMetrics {
             shard_leaf_checks: Family::default().register_at(
                 "shard_leaf_checks",
                 "Streamed shard transition accumulators checked against quorum-verified shard leaves, by outcome: \
-                 promote (matched), adopt (tracking started at the leaf), mismatch, or invalid_version (a streamed \
-                 version whose accumulator cannot be computed)",
+                 promote (matched), adopt (tracking started at the leaf), mismatch, conflict (two verified leaves \
+                 disagree), or invalid_version (a streamed version whose accumulator cannot be computed)",
                 registry,
             ),
         }

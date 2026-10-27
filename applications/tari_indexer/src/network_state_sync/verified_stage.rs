@@ -62,6 +62,13 @@ pub enum Verdict<P> {
         verified: TransitionAccumulator,
         streamed_by: P,
     },
+    /// The leaf disagrees with the accumulator an earlier verified leaf set at the same version. A quorum signed
+    /// both, so the fault lies with the signers or with this indexer's leaf verification.
+    Conflict {
+        version: StateVersion,
+        held: TransitionAccumulator,
+        verified: TransitionAccumulator,
+    },
     /// The stream has not reached the leaf's version. The leaf is checked once it does.
     Wait,
     /// The leaf's version is below every accumulator the shard holds.
@@ -85,7 +92,8 @@ impl<P: Clone> VerifiedStage<P> {
     /// `streamed_by`, and checks a leaf that was waiting for it.
     ///
     /// A version that does not follow the last one streamed to the stage leaves the shard untracked until a leaf names
-    /// its accumulator. So does a version whose transitions no committed version could hold, which is an error.
+    /// its accumulator. So does a version whose transitions no committed version could hold, which is an error that
+    /// carries the verdict on a leaf waiting for it.
     pub fn on_version(
         &mut self,
         shard: Shard,
@@ -93,7 +101,7 @@ impl<P: Clone> VerifiedStage<P> {
         epoch: Epoch,
         changes: &[SubstateTreeChange],
         streamed_by: P,
-    ) -> Result<Option<Verdict<P>>, StateTreeError> {
+    ) -> Result<Option<Verdict<P>>, UncomputableVersion<P>> {
         let stage = self.shards.entry(shard).or_default();
         let previous = match stage.head {
             Head::Known(head, acc) if head.as_u64().checked_add(1) == Some(version.as_u64()) => Some(acc),
@@ -105,10 +113,11 @@ impl<P: Clone> VerifiedStage<P> {
         };
         let acc = match previous.extend(epoch, version.as_u64(), changes) {
             Ok(acc) => acc,
-            Err(e) => {
-                stage.head = Head::Unknown(version);
-                stage.history.clear();
-                return Err(e);
+            Err(source) => {
+                return Err(UncomputableVersion {
+                    source,
+                    verdict: stage.lose_track(version),
+                });
             },
         };
         stage.head = Head::Known(version, acc);
@@ -156,7 +165,7 @@ struct ShardStage<P> {
     head: Head,
     /// The accumulator after each version from the last verified one to the head, oldest first.
     history: VecDeque<Computed<P>>,
-    verified: Option<StateVersion>,
+    verified: Option<(StateVersion, TransitionAccumulator)>,
     /// The lowest leaf ahead of the stream.
     waiting: Option<VerifiedShardLeaf>,
 }
@@ -197,17 +206,23 @@ impl<P: Clone> ShardStage<P> {
             Head::Unknown(head) if leaf.state_version == head => {
                 self.head = Head::Known(head, leaf.transition_acc);
                 self.history.clear();
-                self.verified = Some(head);
+                self.verified = Some((head, leaf.transition_acc));
                 Verdict::Adopt(head)
             },
             Head::Unknown(head) | Head::Known(head, _) if leaf.state_version > head => self.wait(leaf),
             Head::Unknown(_) => Verdict::Stale,
-            Head::Known(head, head_acc) => {
-                if self.verified == Some(head) && leaf.state_version == head {
-                    return if head_acc == leaf.transition_acc {
-                        Verdict::Promote(head)
+            Head::Known(head, _) => {
+                if let Some((version, held)) = self.verified &&
+                    version == leaf.state_version
+                {
+                    return if held == leaf.transition_acc {
+                        Verdict::Promote(version)
                     } else {
-                        Verdict::Stale
+                        Verdict::Conflict {
+                            version,
+                            held,
+                            verified: leaf.transition_acc,
+                        }
                     };
                 }
                 let Some(position) = self
@@ -231,7 +246,7 @@ impl<P: Clone> ShardStage<P> {
                     return verdict;
                 }
                 self.history.drain(..=position);
-                self.verified = Some(leaf.state_version);
+                self.verified = Some((leaf.state_version, leaf.transition_acc));
                 Verdict::Promote(leaf.state_version)
             },
         }
@@ -269,7 +284,7 @@ impl<P: Clone> ShardStage<P> {
         match self.head {
             Head::Unseen => false,
             Head::Unknown(_) => true,
-            Head::Known(head, _) => self.verified != Some(head),
+            Head::Known(head, _) => self.verified.is_none_or(|(version, _)| version != head),
         }
     }
 }
@@ -310,6 +325,14 @@ pub fn streamed_tree_change(
         id: create.substate.as_versioned_substate_id_ref().to_owned(),
         value_hash,
     })
+}
+
+/// A streamed version whose transitions no committed version could hold. The shard is untracked from it on.
+#[derive(Debug)]
+pub struct UncomputableVersion<P> {
+    pub source: StateTreeError,
+    /// The verdict on a leaf that was waiting for the version.
+    pub verdict: Option<Verdict<P>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -528,6 +551,50 @@ mod tests {
         assert!(stage.wants_leaf(shard()));
         assert_eq!(stage.on_leaf(history.leaf(1)), Verdict::Stale);
         assert_eq!(stage.on_leaf(history.leaf(2)), Verdict::Adopt(v(2)));
+    }
+
+    #[test]
+    fn a_leaf_waiting_for_a_version_no_block_could_commit_is_adopted_with_the_error() {
+        let history = History::new(3);
+        let mut stage = VerifiedStage::default();
+        history.stream(&mut stage, 1..=1);
+        assert_eq!(stage.on_leaf(history.leaf(2)), Verdict::Wait);
+
+        let error = stage
+            .on_version(shard(), v(2), EPOCH, &[up(1, 1), up(1, 2)], PEER)
+            .unwrap_err();
+        assert_eq!(error.verdict, Some(Verdict::Adopt(v(2))));
+
+        history.stream(&mut stage, 3..=3);
+        assert_eq!(stage.on_leaf(history.leaf(3)), Verdict::Promote(v(3)));
+    }
+
+    #[test]
+    fn a_leaf_that_disagrees_with_an_earlier_verified_leaf_conflicts() {
+        let history = History::new(3);
+        let forged = |version| VerifiedShardLeaf {
+            transition_acc: TransitionAccumulator::new([7; 32]),
+            ..history.leaf(version)
+        };
+
+        let mut stage = VerifiedStage::default();
+        history.stream(&mut stage, 1..=3);
+        assert_eq!(stage.on_leaf(history.leaf(2)), Verdict::Promote(v(2)));
+        assert_eq!(stage.on_leaf(history.leaf(2)), Verdict::Promote(v(2)));
+        assert_eq!(stage.on_leaf(forged(2)), Verdict::Conflict {
+            version: v(2),
+            held: history.accs[1],
+            verified: forged(2).transition_acc,
+        });
+
+        let mut stage = VerifiedStage::<u8>::default();
+        stage.on_untracked_version(shard(), v(3));
+        assert_eq!(stage.on_leaf(history.leaf(3)), Verdict::Adopt(v(3)));
+        assert_eq!(stage.on_leaf(forged(3)), Verdict::Conflict {
+            version: v(3),
+            held: history.accs[2],
+            verified: forged(3).transition_acc,
+        });
     }
 
     #[test]

@@ -249,28 +249,24 @@ impl ValidatorStatusMonitor {
         let tip = proof
             .validate(self.network, committee.quorum_threshold(), &*committee)
             .map_err(|e| ProbeError::InvalidProof(e.to_string()))?;
-        let leaves = verify_shard_leaves(self.network, &proof, leaf_shards, resp.shard_leaves)?;
-        // Every shard group commits its own copy of the global shard, so only the probed group's block proves
-        // the copy that group's stream follows.
-        let leaves = if tip.shard_group == shard_group {
-            leaves
-        } else {
-            Vec::new()
-        };
+        let leaves = verify_shard_leaves(self.network, &proof, shard_group, leaf_shards, resp.shard_leaves)?;
         Ok(VerifiedProbe { tip, leaves })
     }
 }
 
 /// Decodes `leaves` and verifies each against `proof`'s block. Each must be of a shard in `requested`, in strictly
-/// ascending shard order.
+/// ascending shard order. They are dropped once verified when the block is of a shard group other than
+/// `probed_shard_group`: every shard group commits its own copy of the global shard, so only the probed group's block
+/// proves the copy that group's stream follows.
 fn verify_shard_leaves(
     network: Network,
     proof: &CommittedBlockProof,
+    probed_shard_group: ShardGroup,
     requested: &BTreeSet<Shard>,
     leaves: Vec<rpc::ShardStateLeaf>,
 ) -> Result<Vec<VerifiedShardLeaf>, ProbeError> {
     let mut previous = None;
-    leaves
+    let leaves = leaves
         .into_iter()
         .map(|leaf| {
             let leaf = ShardStateLeaf::try_from(leaf)
@@ -296,7 +292,15 @@ fn verify_shard_leaves(
                 transition_acc: leaf.transition_acc,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    let block_shard_group = proof
+        .shard_group()
+        .map_err(|e| ProbeError::InvalidProof(format!("invalid shard group in proof header: {e}")))?;
+    if block_shard_group == probed_shard_group {
+        Ok(leaves)
+    } else {
+        Ok(Vec::new())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -447,7 +451,7 @@ mod tests {
             let (proof, leaves) = served_block();
             let all = requested(&[Shard::global(), shard(1), shard(2), shard(3), shard(4)]);
 
-            let verified = verify_shard_leaves(NETWORK, &proof, &all, leaves).unwrap();
+            let verified = verify_shard_leaves(NETWORK, &proof, group(), &all, leaves).unwrap();
 
             let verified = verified
                 .iter()
@@ -463,6 +467,20 @@ mod tests {
         }
 
         #[test]
+        fn leaves_of_another_shard_groups_block_are_dropped_once_verified() {
+            let (proof, leaves) = served_block();
+            let all = requested(&[Shard::global(), shard(1), shard(2), shard(3), shard(4)]);
+            let other = ShardGroup::new(1u32, 8u32);
+
+            let verified = verify_shard_leaves(NETWORK, &proof, other, &all, leaves).unwrap();
+            assert!(verified.is_empty());
+
+            let (proof, mut leaves) = served_block();
+            leaves[1].transition_acc = vec![7; 32];
+            rejection(verify_shard_leaves(NETWORK, &proof, other, &all, leaves));
+        }
+
+        #[test]
         fn a_leaf_whose_accumulator_differs_from_the_committed_one_is_an_invalid_proof() {
             let (proof, mut leaves) = served_block();
             leaves.truncate(3);
@@ -471,6 +489,7 @@ mod tests {
             let details = rejection(verify_shard_leaves(
                 NETWORK,
                 &proof,
+                group(),
                 &requested(&[Shard::global(), shard(1), shard(2)]),
                 leaves,
             ));
@@ -485,6 +504,7 @@ mod tests {
             let details = rejection(verify_shard_leaves(
                 NETWORK,
                 &proof,
+                group(),
                 &requested(&[shard(1), shard(2)]),
                 leaves,
             ));
@@ -496,12 +516,12 @@ mod tests {
             let all = requested(&[Shard::global(), shard(1), shard(2), shard(3), shard(4)]);
             let (proof, mut leaves) = served_block();
             leaves.swap(1, 2);
-            let details = rejection(verify_shard_leaves(NETWORK, &proof, &all, leaves));
+            let details = rejection(verify_shard_leaves(NETWORK, &proof, group(), &all, leaves));
             assert!(details.contains("out of shard order"), "{details}");
 
             let (proof, mut leaves) = served_block();
             leaves[2] = leaves[1].clone();
-            let details = rejection(verify_shard_leaves(NETWORK, &proof, &all, leaves));
+            let details = rejection(verify_shard_leaves(NETWORK, &proof, group(), &all, leaves));
             assert!(details.contains("out of shard order"), "{details}");
         }
     }

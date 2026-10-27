@@ -523,7 +523,7 @@ impl NetworkWideStateSync {
                     details: format!("Checkpoint for shard group {} is not valid: {}", shard_group, e),
                 })?;
 
-        verify_checkpoint(
+        let checked = verify_checkpoint(
             self.network,
             &self.epoch_manager,
             &checkpoint,
@@ -535,9 +535,12 @@ impl NetworkWideStateSync {
         info!(target: LOG_TARGET, "🌍️ Inserting checkpoint for {}, shard group {}", checkpoint.epoch(), checkpoint_shard_group);
 
         let xtr_exhausted = checkpoint_exhaust_burn(&checkpoint)?;
-        let verdicts = self.verified_stage().on_checkpoint(&checkpoint);
-        for (shard, verdict) in verdicts {
-            self.report_verdict(shard, verdict, format_args!("the checkpoint of {}", checkpoint.epoch()));
+        // A checkpoint checked for form only carries shard states its sender chose.
+        if checked == CheckpointCheck::QuorumSigned {
+            let verdicts = self.verified_stage().on_checkpoint(&checkpoint);
+            for (shard, verdict) in verdicts {
+                self.report_verdict(shard, verdict, format_args!("the checkpoint of {}", checkpoint.epoch()));
+            }
         }
         self.stats.increment_checkpoints();
         let checkpoint_epoch = checkpoint.epoch();
@@ -917,27 +920,24 @@ impl NetworkWideStateSync {
         changes: Option<Result<Vec<SubstateTreeChange>, StreamedTransitionError>>,
         peer: &PeerAddress,
     ) {
-        let result = {
+        let (verdict, invalid) = {
             let mut stage = self.verified_stage();
             match changes {
-                Some(Ok(changes)) => stage
-                    .on_version(shard, version, epoch, &changes, *peer)
-                    .map_err(|e| e.to_string()),
-                Some(Err(e)) => {
-                    stage.on_untracked_version(shard, version);
-                    Err(e.to_string())
+                Some(Ok(changes)) => match stage.on_version(shard, version, epoch, &changes, *peer) {
+                    Ok(verdict) => (verdict, None),
+                    Err(e) => (e.verdict, Some(e.source.to_string())),
                 },
-                None => Ok(stage.on_untracked_version(shard, version)),
+                Some(Err(e)) => (stage.on_untracked_version(shard, version), Some(e.to_string())),
+                None => (stage.on_untracked_version(shard, version), None),
             }
         };
-        match result {
-            Ok(Some(verdict)) => self.report_verdict(shard, verdict, format_args!("v{version} streamed by {peer}")),
-            Ok(None) => {},
-            Err(e) => {
-                error!(target: LOG_TARGET, "⚠️ Peer {peer} streamed v{version} of shard {shard} at {epoch}, whose transition accumulator cannot be computed: {e}. Untracked until a leaf names it");
-                #[cfg(feature = "metrics")]
-                self.metrics.record_leaf_check("invalid_version");
-            },
+        if let Some(e) = invalid {
+            error!(target: LOG_TARGET, "⚠️ Peer {peer} streamed v{version} of shard {shard} at {epoch}, whose transition accumulator cannot be computed: {e}. Untracked until a leaf names it");
+            #[cfg(feature = "metrics")]
+            self.metrics.record_leaf_check("invalid_version");
+        }
+        if let Some(verdict) = verdict {
+            self.report_verdict(shard, verdict, format_args!("v{version} streamed by {peer}"));
         }
     }
 
@@ -960,6 +960,14 @@ impl NetworkWideStateSync {
             } => {
                 error!(target: LOG_TARGET, "⚠️ Transition accumulator mismatch: shard {shard} v{version} at {epoch} streamed by {streamed_by} computes {computed}, but the verified leaf has {verified} (checked on {checked_on})");
                 "mismatch"
+            },
+            Verdict::Conflict {
+                version,
+                held,
+                verified,
+            } => {
+                error!(target: LOG_TARGET, "⚠️ Verified leaves conflict: shard {shard} v{version} was verified at transition accumulator {held}, but {checked_on} has {verified}");
+                "conflict"
             },
             Verdict::Wait | Verdict::Stale => return,
         };
@@ -1520,22 +1528,32 @@ async fn fetch_checkpoints(
 ///
 /// The next epoch's validator set the checkpoint names, which the committee ratified, must be the one this indexer
 /// assigned: an indexer that disagrees would serve committees the network does not run.
+/// How far [`verify_checkpoint`] could check a checkpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointCheck {
+    /// Its committee's quorum signed it.
+    QuorumSigned,
+    /// Its epoch is before this indexer's records, so it was checked for internal consistency only.
+    FormOnly,
+}
+
 async fn verify_checkpoint<TEpochManager: EpochManagerReader>(
     network: Network,
     epoch_manager: &TEpochManager,
     checkpoint: &EpochCheckpoint,
     shard_group: ShardGroup,
     prev_epoch: Epoch,
-) -> Result<(), NetworkStateSyncError> {
+) -> Result<CheckpointCheck, NetworkStateSyncError> {
     let epoch = checkpoint.epoch();
     let recorded = epoch == prev_epoch || epoch_manager.get_epoch_hash(epoch).await.optional()?.is_some();
     if !recorded {
         debug!(target: LOG_TARGET, "🌍️ {epoch} is before this indexer's records: checking its checkpoint for form only");
-        return checkpoint
+        checkpoint
             .validate_well_formed()
             .map_err(|e| NetworkStateSyncError::InvalidCheckpoint {
                 details: format!("Checkpoint for {epoch}, shard group {shard_group} is not well formed: {e}"),
-            });
+            })?;
+        return Ok(CheckpointCheck::FormOnly);
     }
     let Some(committee) = epoch_manager
         .get_committee_by_shard_group(epoch, shard_group)
@@ -1558,11 +1576,12 @@ async fn verify_checkpoint<TEpochManager: EpochManagerReader>(
         })?;
 
     let Some(committed) = checkpoint.next_epoch_validator_set_hash() else {
-        return Ok(());
+        return Ok(CheckpointCheck::QuorumSigned);
     };
     let next_epoch = epoch + Epoch(1);
     let local = epoch_manager.get_validator_set_hash(next_epoch).await?;
-    check_validator_set(next_epoch, local, committed)
+    check_validator_set(next_epoch, local, committed)?;
+    Ok(CheckpointCheck::QuorumSigned)
 }
 
 fn check_validator_set(
@@ -2720,7 +2739,7 @@ mod tests {
             }
         }
 
-        fn is_invalid_checkpoint(result: &Result<(), NetworkStateSyncError>) -> bool {
+        fn is_invalid_checkpoint(result: &Result<CheckpointCheck, NetworkStateSyncError>) -> bool {
             matches!(result, Err(NetworkStateSyncError::InvalidCheckpoint { .. }))
         }
 
@@ -2730,7 +2749,7 @@ mod tests {
 
             let result = verify_checkpoint(Network::MainNet, &records, &checkpoint(2, low()), low(), Epoch(5)).await;
 
-            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(result.unwrap(), CheckpointCheck::FormOnly);
         }
 
         #[tokio::test]
