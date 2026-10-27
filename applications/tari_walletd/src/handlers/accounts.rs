@@ -1487,7 +1487,10 @@ pub async fn handle_stealth_transfer(
         .as_bytes()
         .try_into()
         .map_err(|_| invalid_params("owner_account", Some("invalid view public key length")))?;
-    let owner_fallback_pay_ref: Vec<u8> = owner_addr.pay_ref().map(|p| p.as_bytes().to_vec()).unwrap_or_default();
+    let owner_fallback_destination_tag: Vec<u8> = owner_addr
+        .destination_tag()
+        .map(|p| p.as_bytes().to_vec())
+        .unwrap_or_default();
 
     // Link the source account, plus any recipients that are the wallet's own accounts. Resolved before
     // `req.transfers` is consumed below and before `owner_account` is moved into the transfer task.
@@ -1506,22 +1509,27 @@ pub async fn handle_stealth_transfer(
         .transfers
         .into_iter()
         .map(|transfer| {
-            // Resolve the effective pay reference for this transfer. The explicit `pay_ref` request field wins
-            // when present; an explicit empty string disables any pay-ref. When the field is unset, fall back to
-            // the destination address's bech32-embedded pay-ref so non-frontend callers keep the historical
-            // behaviour.
-            let effective_pay_ref: Option<Vec<u8>> = match transfer.pay_ref.as_deref() {
+            // Resolve the effective destination tag for this transfer. The explicit `destination_tag` request field
+            // wins when present; an explicit empty string disables any destination tag. When the field is
+            // unset, fall back to the destination address's bech32-embedded destination tag so non-frontend
+            // callers keep the historical behaviour.
+            let effective_destination_tag: Option<Vec<u8>> = match transfer.destination_tag.as_deref() {
                 Some("") => None,
                 Some(s) => Some(s.as_bytes().to_vec()),
-                None => transfer.destination_address.pay_ref().map(|p| p.as_bytes().to_vec()),
+                None => transfer
+                    .destination_address
+                    .destination_tag()
+                    .map(|p| p.as_bytes().to_vec()),
             };
 
             if transfer.attach_sender_address {
-                let pay_ref_bytes = effective_pay_ref
+                let destination_tag_bytes = effective_destination_tag
                     .as_deref()
-                    .unwrap_or(owner_fallback_pay_ref.as_slice());
-                let memo = Memo::new_sender_address(sender_account_key, sender_view_key, pay_ref_bytes)
-                    .ok_or_else(|| invalid_params("pay_ref", Some("pay reference too long (max 64 bytes)")))?;
+                    .unwrap_or(owner_fallback_destination_tag.as_slice());
+                let memo = Memo::new_sender_address(sender_account_key, sender_view_key, destination_tag_bytes)
+                    .ok_or_else(|| {
+                        invalid_params("destination_tag", Some("destination tag too long (max 64 bytes)"))
+                    })?;
                 return Ok(TransferOutput {
                     address: transfer.destination_address,
                     blinded_amount: transfer.blinded_output_amount,
@@ -1531,13 +1539,13 @@ pub async fn handle_stealth_transfer(
                 });
             }
 
-            match effective_pay_ref {
-                Some(pay_ref) => {
+            match effective_destination_tag {
+                Some(destination_tag) => {
                     let memo = transfer.output_memo.unwrap_or_else(|| Memo::new_message("").unwrap());
-                    if memo.as_pay_ref().is_some() {
+                    if memo.as_destination_tag().is_some() {
                         warn!(
                             target: LOG_TARGET,
-                            "❗️ Overwriting existing pay ref in memo for transfer to address {}",
+                            "❗️ Overwriting existing destination tag in memo for transfer to address {}",
                             transfer.destination_address
                         );
                     }
@@ -1546,9 +1554,15 @@ pub async fn handle_stealth_transfer(
                         .as_memo_message()
                         .map(|s| s.as_bytes())
                         .or_else(|| memo.as_memo_bytes())
-                        .ok_or_else(|| invalid_params("pay_ref", Some("can only include pay ref in message memo")))?;
-                    let memo = Memo::new_pay_ref_and_bytes_truncate(&pay_ref, memo_bytes)
-                        .ok_or_else(|| invalid_params("pay_ref", Some("pay reference too long (max 64 bytes)")))?;
+                        .ok_or_else(|| {
+                            invalid_params(
+                                "destination_tag",
+                                Some("can only include destination tag in message memo"),
+                            )
+                        })?;
+                    let memo = Memo::new_destination_tag_and_bytes_truncate(&destination_tag, memo_bytes).ok_or_else(
+                        || invalid_params("destination_tag", Some("destination tag too long (max 64 bytes)")),
+                    )?;
 
                     Ok(TransferOutput {
                         address: transfer.destination_address,

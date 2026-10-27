@@ -21,8 +21,8 @@ pub enum OotleWasmError {
     SigningFailed(String),
     #[error("Invalid network: {0}")]
     InvalidNetwork(String),
-    #[error("Invalid pay reference: length {0} (must be 1-64 bytes)")]
-    InvalidPayRef(usize),
+    #[error("Invalid destination tag: length {0} (must be 1-64 bytes)")]
+    InvalidDestinationTag(usize),
     #[error("Invalid address: {0}")]
     InvalidAddress(String),
     #[error("Invalid hex: {0}")]

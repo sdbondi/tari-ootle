@@ -154,9 +154,9 @@ pub const OP_DERIVE_VIEW_KEY_FROM_SEED: &str = "derive_view_key_from_seed";
 pub const OP_DERIVE_ACCOUNT_ADDRESS: &str = "derive_account_address";
 
 /// The canonical operation id for **identity-address formatting**: encode an
-/// `{network, account_key, view_only_key, pay_ref?}` record into its canonical `otl_…` bech32m
+/// `{network, account_key, view_only_key, destination_tag?}` record into its canonical `otl_…` bech32m
 /// string. Its `input` carries `network` + `account_key` + `view_only_key` (lowercase hex) + an
-/// optional `pay_ref` (lowercase hex); `expected.bech32m` carries the encoded string.
+/// optional `destination_tag` (lowercase hex); `expected.bech32m` carries the encoded string.
 ///
 /// **Default `"bytes"` comparison mode.** bech32m encoding is RNG-free and deterministic, so the
 /// produced string is byte-stable and compared exactly. The HRP is network-qualified, so the
@@ -337,10 +337,10 @@ pub struct VectorInput {
     /// for `format_identity_address` vectors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view_only_key: Option<String>,
-    /// The optional lowercase-hex payment reference feeding `format_identity_address`. Present (and
-    /// non-null) only for the `format_identity_address` vectors that carry a pay_ref.
+    /// The optional lowercase-hex destination tag feeding `format_identity_address`. Present (and
+    /// non-null) only for the `format_identity_address` vectors that carry a destination_tag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pay_ref: Option<String>,
+    pub destination_tag: Option<String>,
     /// The address string feeding `parse_address` (a `component_/resource_<hex>` id or an `otl_…`
     /// identity). Present only for `parse_address` vectors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -832,7 +832,7 @@ pub fn run_operation(fixture: &Fixture) -> ExpectedOutput {
                 .unwrap_or_else(|e| panic!("fixture `{}`: bad account_public_key hex: {e}", fixture.name));
             let view = PublicKeyBytes::from_hex(view_pk)
                 .unwrap_or_else(|e| panic!("fixture `{}`: bad view_only_key hex: {e}", fixture.name));
-            let bech32m = format_identity_address(network, &account, &view, input.pay_ref.as_deref())
+            let bech32m = format_identity_address(network, &account, &view, input.destination_tag.as_deref())
                 .unwrap_or_else(|e| panic!("fixture `{}`: format_identity_address failed: {e}", fixture.name));
             ExpectedOutput {
                 bech32m: Some(bech32m),

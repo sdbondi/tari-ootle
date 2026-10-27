@@ -6,7 +6,7 @@ use tari_crypto::{
     ristretto::{RistrettoPublicKey, RistrettoSecretKey},
     tari_utilities::ByteArray,
 };
-use tari_ootle_address::{Network, OotleAddress, PayRef};
+use tari_ootle_address::{DestinationTag, Network, OotleAddress};
 
 use crate::error::OotleWasmError;
 
@@ -65,7 +65,7 @@ pub struct ParsedOotleAddress {
     pub view_key: Vec<u8>,
     /// The network byte.
     pub network: u8,
-    /// Optional pay reference / memo bytes.
+    /// Optional destination tag / memo bytes.
     pub memo: Option<Vec<u8>>,
 }
 
@@ -77,14 +77,14 @@ pub fn parse_ootle_address(address: &str) -> Result<ParsedOotleAddress, OotleWas
         owner_key: parsed.account_public_key().as_bytes().to_vec(),
         view_key: parsed.view_only_key().as_bytes().to_vec(),
         network: parsed.network() as u8,
-        memo: parsed.pay_ref().map(|pr| pr.as_bytes().to_vec()),
+        memo: parsed.destination_tag().map(|pr| pr.as_bytes().to_vec()),
     })
 }
 
 /// Generate an Ootle address (bech32m string) from public keys.
 ///
 /// `network` is the network byte (see `Network` enum).
-/// `memo` is an optional pay reference (max 64 bytes).
+/// `memo` is an optional destination tag (max 64 bytes).
 pub fn generate_ootle_address(
     owner_public_key: &[u8],
     view_public_key: &[u8],
@@ -102,9 +102,9 @@ pub fn generate_ootle_address(
     let mut address = OotleAddress::new(network, view_pk.to_byte_type(), owner_pk.to_byte_type());
 
     if let Some(memo_bytes) = memo {
-        let pay_ref =
-            PayRef::new_checked(memo_bytes.to_vec()).ok_or(OotleWasmError::InvalidPayRef(memo_bytes.len()))?;
-        address = address.with_pay_ref(pay_ref);
+        let destination_tag = DestinationTag::new_checked(memo_bytes.to_vec())
+            .ok_or(OotleWasmError::InvalidDestinationTag(memo_bytes.len()))?;
+        address = address.with_destination_tag(destination_tag);
     }
 
     Ok(address.to_bech32_string())
@@ -153,7 +153,7 @@ mod tests {
         // Should be parseable back
         let parsed: OotleAddress = address.parse().unwrap();
         assert_eq!(parsed.network(), Network::LocalNet);
-        assert_eq!(parsed.pay_ref(), None);
+        assert_eq!(parsed.destination_tag(), None);
     }
 
     #[test]
@@ -166,7 +166,7 @@ mod tests {
         assert!(address.starts_with("otl_loc_"));
 
         let parsed: OotleAddress = address.parse().unwrap();
-        assert_eq!(parsed.pay_ref().unwrap().as_bytes(), memo);
+        assert_eq!(parsed.destination_tag().unwrap().as_bytes(), memo);
     }
 
     #[test]
@@ -174,7 +174,7 @@ mod tests {
         let sk = generate_ootle_secret_key();
         let pk = ootle_public_key_from_secret_key(&sk).unwrap();
 
-        let memo = vec![0u8; PayRef::MAX_LEN + 1];
+        let memo = vec![0u8; DestinationTag::MAX_LEN + 1];
         let result = generate_ootle_address(&pk.owner_key, &pk.view_key, Network::LocalNet as u8, Some(&memo));
         assert!(result.is_err());
     }

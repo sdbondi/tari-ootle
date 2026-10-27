@@ -104,6 +104,6 @@ Feature: Wallet Daemon
     When I create an account COLD via the wallet daemon WALLET_A
     When I import account COLD from wallet daemon WALLET_A as view-only account WATCH into wallet daemon WALLET_B
 
-    When I do a stealth transfer of 50 from account SENDER on wallet daemon WALLET_A to account WATCH on wallet daemon WALLET_B with pay ref bridge-uuid
-    Then wallet daemon WALLET_B lists a stealth output of 50 for account WATCH with pay ref bridge-uuid sent by account SENDER on wallet daemon WALLET_A
+    When I do a stealth transfer of 50 from account SENDER on wallet daemon WALLET_A to account WATCH on wallet daemon WALLET_B with destination tag bridge-uuid
+    Then wallet daemon WALLET_B lists a stealth output of 50 for account WATCH with destination tag bridge-uuid sent by account SENDER on wallet daemon WALLET_A
     When I check the balance of WATCH on wallet daemon WALLET_B the amount is exactly 50

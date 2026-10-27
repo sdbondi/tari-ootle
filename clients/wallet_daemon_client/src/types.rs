@@ -2035,15 +2035,15 @@ pub struct StealthTransfer {
     pub pay_to: PayTo,
     /// If set, the sender's Ootle address is attached as the output memo so the recipient can identify and save
     /// the sender as a contact. Replaces `output_memo` (the sender address takes precedence). Composes with
-    /// `pay_ref`, which is embedded inside the SenderAddress memo when set.
+    /// `destination_tag`, which is embedded inside the SenderAddress memo when set.
     #[serde(default)]
     pub attach_sender_address: bool,
-    /// Optional pay reference (UTF-8, max 64 bytes). When `attach_sender_address` is true it is embedded inside
-    /// the SenderAddress memo; otherwise it builds a `PayRefAndBytes` memo combined with any `output_memo`. If
-    /// unset, the destination address's bech32-embedded pay reference (if any) is used as a fallback for
+    /// Optional destination tag (UTF-8, max 64 bytes). When `attach_sender_address` is true it is embedded inside
+    /// the SenderAddress memo; otherwise it builds a `DestinationTagAndBytes` memo combined with any `output_memo`. If
+    /// unset, the destination address's bech32-embedded destination tag (if any) is used as a fallback for
     /// backward compatibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pay_ref: Option<String>,
+    pub destination_tag: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

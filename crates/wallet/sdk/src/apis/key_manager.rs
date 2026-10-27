@@ -320,7 +320,7 @@ impl<'a, TSpec: WalletSdkSpec> KeyManagerApi<'a, TSpec> {
                 network: self.network,
                 view_only_key: RistrettoPublicKey::from_secret_key(&view_only_key.key),
                 account_key: RistrettoPublicKey::from_secret_key(&key.key),
-                pay_ref: None,
+                destination_tag: None,
             },
             view_only_key_id: view_only_key.as_key_id(),
             owner_key_id: (*key.derived_key_id()).into(),

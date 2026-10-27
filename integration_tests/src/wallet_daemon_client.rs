@@ -142,7 +142,7 @@ pub async fn transfer_stealth(
                 output_memo: None,
                 pay_to: PayTo::StealthPublicKey,
                 attach_sender_address: false,
-                pay_ref: None,
+                destination_tag: None,
             }],
             // Stealth transfers now carry the NativeExecution charge (~8k µT per blinded output +
             // ~2.1k per statement), so the ceiling leaves generous headroom; the excess refunds.

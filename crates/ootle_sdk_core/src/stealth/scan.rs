@@ -92,13 +92,13 @@ fn parse_encrypted_data(data: &EncryptedDataBytes) -> Result<EncryptedData, Ootl
 /// Maps a decoded internal [`Memo`] to the boundary [`StealthMemo`].
 ///
 /// The boundary deliberately exposes only the two general-purpose variants; every other internal
-/// variant (U256, pay-ref, sender-address) surfaces as [`StealthMemo::Bytes`] of its raw payload.
+/// variant (U256, destination tag, sender-address) surfaces as [`StealthMemo::Bytes`] of its raw payload.
 fn boundary_memo_from_internal(memo: &Memo) -> StealthMemo {
     match memo {
         Memo::Message(s) => StealthMemo::Message(s.to_string()),
         Memo::Bytes(b) => StealthMemo::Bytes(b.to_vec()),
         Memo::U256(b) => StealthMemo::Bytes(b.to_vec()),
-        Memo::PayRefAndBytes(b) => StealthMemo::Bytes(b.to_vec()),
+        Memo::DestinationTagAndBytes(b) => StealthMemo::Bytes(b.to_vec()),
         Memo::SenderAddress(b) => StealthMemo::Bytes(b.to_vec()),
     }
 }

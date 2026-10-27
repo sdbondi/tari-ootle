@@ -6,7 +6,7 @@ description: Track incoming stealth TARI payments on an online wallet daemon whi
 import { Aside } from "@astrojs/starlight/components";
 
 A watch-only (view-only) account lets a wallet daemon find and decrypt incoming stealth outputs for an account without
-holding the account's spend key. The daemon sees each output's value, memo, payment reference and (when the sender
+holding the account's spend key. The daemon sees each output's value, memo, destination tag and (when the sender
 attached it) the sender's address, but it cannot spend anything.
 
 A typical setup has two wallet daemons:
@@ -81,7 +81,7 @@ not reach the cold account.
 The online daemon scans for the account like any other account. These calls work as usual:
 
 - `accounts.get_balances` — the stealth TARI balance.
-- `stealth_utxos.list` — each output with its `value`, `memo` and `sender_address`. A payment reference is carried in
+- `stealth_utxos.list` — each output with its `value`, `memo` and `sender_address`. A destination tag is carried in
   the memo, and in `sender_address` when the sender attached their address.
 - `accounts.get_balance_changes` — the balance history.
 
@@ -95,8 +95,8 @@ satisfies the condition, which the view key cannot rule out. A watch-only daemon
 too, so it never counts toward the balance.
 
 <Aside type="caution">
-The sender writes the memo, so its payment reference and sender address are whatever the sender chose. Nothing proves
-who sent a payment. Give each payer an unguessable, single-use payment reference and credit deposits by that reference,
+The sender writes the memo, so its destination tag and sender address are whatever the sender chose. Nothing proves
+who sent a payment. Give each payer an unguessable, single-use destination tag and credit deposits by that reference,
 not by the sender address.
 </Aside>
 

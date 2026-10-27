@@ -1496,9 +1496,9 @@ fn address_seed_account_pk() -> Fixture {
 // --- Address codec vectors (substate parse + otl_ identity bytes ↔ bech32m) ------------
 //
 // Two operations, one address surface:
-//   * `format_identity_address` — `{network, account_key, view_only_key, pay_ref?}` → `otl_…` bech32m, byte-stable
-//     (`"bytes"`). Multi-network vectors lock the network-qualified HRP; ±pay_ref vectors lock the optional 64-byte
-//     memo. The keys are distinct so a field swap would change the encoded bytes.
+//   * `format_identity_address` — `{network, account_key, view_only_key, destination_tag?}` → `otl_…` bech32m,
+//     byte-stable (`"bytes"`). Multi-network vectors lock the network-qualified HRP; ±destination_tag vectors lock the
+//     optional 64-byte memo. The keys are distinct so a field swap would change the encoded bytes.
 //   * `parse_address` — a `component_/resource_<hex>` substate id or an `otl_…` identity string → the kind-tagged
 //     `ParsedAddress`, byte-stable. The identity-parse vector's `input.address` is the exact string the matching
 //     `format_identity_address` vector emits (the same crate codec a wallet uses), so parse cross-checks that a
@@ -1509,8 +1509,8 @@ const ADDRESS_CODEC_VECTORS: &[VectorCase] = &[
     ("address_codec/identity_mainnet.json", identity_mainnet),
     ("address_codec/identity_esmeralda.json", identity_esmeralda),
     (
-        "address_codec/identity_localnet_with_pay_ref.json",
-        identity_localnet_pay_ref,
+        "address_codec/identity_localnet_with_destination_tag.json",
+        identity_localnet_destination_tag,
     ),
     ("address_codec/parse_identity_esmeralda.json", parse_identity_esmeralda),
     ("address_codec/parse_component.json", parse_component),
@@ -1526,11 +1526,11 @@ const IDENTITY_ACCOUNT_PK_HEX: &str = "f6f89e316e6ba5f05e5250ddd4a5d3ed39dcd038c
 /// from the same seed; distinct from the account key, so a field swap would be observable).
 const IDENTITY_VIEW_PK_HEX: &str = "06f832c34f9c91611d7e0b3eeb85a39f55e8f20798ae30adebec385e83983746";
 
-/// A small, stable lowercase-hex pay_ref (a memo) for the ±pay_ref vector.
-const IDENTITY_PAY_REF_HEX: &str = "00112233445566778899aabbccddeeff";
+/// A small, stable lowercase-hex destination_tag (a memo) for the ±destination_tag vector.
+const IDENTITY_DESTINATION_TAG_HEX: &str = "00112233445566778899aabbccddeeff";
 
 /// Builds a `format_identity_address` fixture shell (generator fills `expected.bech32m`).
-fn identity_format_fixture(name: &str, network: Network, pay_ref: Option<&str>) -> Fixture {
+fn identity_format_fixture(name: &str, network: Network, destination_tag: Option<&str>) -> Fixture {
     Fixture {
         name: name.to_string(),
         schema_version: SCHEMA_VERSION,
@@ -1541,7 +1541,7 @@ fn identity_format_fixture(name: &str, network: Network, pay_ref: Option<&str>) 
             network: Some(network),
             account_public_key: Some(IDENTITY_ACCOUNT_PK_HEX.to_string()),
             view_only_key: Some(IDENTITY_VIEW_PK_HEX.to_string()),
-            pay_ref: pay_ref.map(str::to_string),
+            destination_tag: destination_tag.map(str::to_string),
             ..Default::default()
         },
         expected: harness::ExpectedOutput::default(),
@@ -1564,22 +1564,22 @@ fn parse_address_fixture(name: &str, address: String) -> Fixture {
     }
 }
 
-/// Identity vector — MainNet (`otl_` HRP), no pay_ref.
+/// Identity vector — MainNet (`otl_` HRP), no destination_tag.
 fn identity_mainnet() -> Fixture {
     identity_format_fixture("address_codec/identity_mainnet", Network::MainNet, None)
 }
 
-/// Identity vector — Esmeralda (`otl_esm_` HRP), no pay_ref.
+/// Identity vector — Esmeralda (`otl_esm_` HRP), no destination_tag.
 fn identity_esmeralda() -> Fixture {
     identity_format_fixture("address_codec/identity_esmeralda", Network::Esmeralda, None)
 }
 
-/// Identity vector — LocalNet (`otl_loc_` HRP) with a pay_ref (the optional memo path).
-fn identity_localnet_pay_ref() -> Fixture {
+/// Identity vector — LocalNet (`otl_loc_` HRP) with a destination_tag (the optional memo path).
+fn identity_localnet_destination_tag() -> Fixture {
     identity_format_fixture(
-        "address_codec/identity_localnet_with_pay_ref",
+        "address_codec/identity_localnet_with_destination_tag",
         Network::LocalNet,
-        Some(IDENTITY_PAY_REF_HEX),
+        Some(IDENTITY_DESTINATION_TAG_HEX),
     )
 }
 

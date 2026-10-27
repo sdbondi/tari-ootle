@@ -212,7 +212,7 @@ impl UtxoTagBytes {
 /// A boundary memo: the small, language-neutral subset of the internal stealth memo that the
 /// confidential-transfer surface needs.
 ///
-/// The internal memo carries more variants (U256, pay-ref, sender address); the boundary
+/// The internal memo carries more variants (U256, destination tag, sender address); the boundary
 /// deliberately exposes only the two general-purpose ones. The output path maps these to the
 /// internal memo; the scan path maps a decoded internal memo back to one of these (other internal
 /// variants surface as [`StealthMemo::Bytes`]).

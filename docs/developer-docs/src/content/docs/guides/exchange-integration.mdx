@@ -46,18 +46,9 @@ If you have already integrated Minotari, these are the differences that matter m
 | API | gRPC | Wallet: JSON-RPC 2.0 over HTTP. Indexer: REST and SSE |
 | Address | Tari address (one-sided or interactive) | Ootle address, Bech32m, prefix `otl_` (mainnet) |
 | Finality | Probabilistic. Wait for block confirmations | Deterministic BFT finality. A transaction that has been accepted is final |
-| Deposit reference | Payment ID in the transaction. PayRef is a proof-of-payment receipt derived after mining | Pay reference ("PayRef"), a deposit tag embedded in the deposit address and carried in the encrypted memo |
+| Deposit reference | Payment ID in the transaction | Destination tag embedded in the deposit address and carried in the encrypted memo |
 | Smallest unit | µT (1 XTM = 1,000,000 µT) | µT (1 TARI = 1,000,000 µT) |
 | Read-only wallet | Supported (view key and public spend key) | **Not yet supported by the wallet daemon.** See [Proposed integration structure](#proposed-integration-structure) |
-
-<Aside type="caution">
-  **"PayRef" means something different on Ootle.** A Minotari PayRef is a proof of payment derived after the fact:
-  once an output is mined, either party can compute `Blake2b_256(block_hash || output_hash)` and quote it to show that
-  this specific payment arrived. An Ootle pay reference is a deposit tag chosen in advance: the *receiver* picks a value
-  of up to 64 bytes, embeds it in the address it gives out, and the sender's wallet copies it into the output's
-  encrypted memo so the receiver can tell which customer a deposit belongs to. Don't reuse Minotari PayRef logic for
-  Ootle.
-</Aside>
 
 ## Proposed integration structure
 
@@ -97,7 +88,7 @@ recommend this structure:
     spend key someone else holds (see [Section 5](#section-5-detecting-deposits)). An output locked by a condition
     tree (`AccessRuleAllowAll` or a script) carries no spend key: the scan returns it as soon as it decrypts, without
     checking who can spend it. Credit only outputs whose `pay_to` is `StealthPublicKey`.
-  - **Pay-reference memos are returned as raw bytes**, so the `extractPayRef` helper in Section 5 does not apply
+  - **Destination tag memos are returned as raw bytes**, so the `extractDestinationTag` helper in Section 5 does not apply
     directly.
   - **Results are unproven.** `fetch_unspent_utxos` returns whatever the indexer serves, without proofs.
 </Aside>
@@ -433,9 +424,9 @@ An Ootle address is a **Bech32m** string. It encodes:
 - the network, carried only in the human-readable prefix (`otl_` for mainnet, `otl_esm_` for Esmeralda, and so on)
 - the account public key (32 bytes)
 - the view public key (32 bytes)
-- an optional **pay reference** of 1 to 64 bytes
+- an optional **destination tag** of 1 to 64 bytes
 
-A mainnet address without a pay reference is 114 characters, for example:
+A mainnet address without a destination tag is 114 characters, for example:
 
 ```
 otl_17mufuvtwdwjlqhjj2rwaffwna5uae5pce7qje34p2jmwcz236f0sd7pjcd8eeytpr4lqk0htsk3e740g7gre3t3s4h47cwz7swvrw3secjh6l
@@ -444,41 +435,41 @@ otl_17mufuvtwdwjlqhjj2rwaffwna5uae5pce7qje34p2jmwcz236f0sd7pjcd8eeytpr4lqk0htsk3
 Ootle addresses have no interactive or one-sided mode, so they need no feature-byte check like Minotari addresses.
 Every Ootle address can receive payments while your infrastructure is offline.
 
-### Unique deposit addresses with pay references
+### Unique deposit addresses with destination tags
 
-Take your deposit account's address, attach a unique pay reference, and re-encode it. This gives each customer, or
+Take your deposit account's address, attach a unique destination tag, and re-encode it. This gives each customer, or
 each deposit, its own address, and every one of them pays into the same deposit account. When a customer pays to it,
-the Tari Ootle wallet copies the pay reference into the encrypted memo of the output by default. This is the Ootle
+the Tari Ootle wallet copies the destination tag into the encrypted memo of the output by default. This is the Ootle
 equivalent of asking customers to fill in a Payment ID, but in most cases the customer doesn't have to do anything.
 
 It is **not guaranteed** that the reference arrives. Plan for deposits without one:
 
-- **The customer's wallet can override it.** The wallet daemon copies the destination's pay reference only when the
-  sender doesn't set one. Over JSON-RPC an empty pay reference removes it, and any other value replaces it.
-- **Other senders may not copy it at all.** Software built on `ootle-rs` or the SDK doesn't copy the address's pay
-  reference automatically.
+- **The customer's wallet can override it.** The wallet daemon copies the destination address's tag only when the
+  sender doesn't set one. Over JSON-RPC an empty destination tag removes it, and any other value replaces it.
+- **Other senders may not copy it at all.** Software built on `ootle-rs` or the SDK doesn't copy the address's destination
+  tag automatically.
 
 To create a deposit address:
 
 - **Rust** (crate `tari_ootle_address`):
 
   ```rust
-  let pay_ref = PayRef::from_bytes(reference.as_bytes()).ok_or("pay reference must be 1-64 bytes")?;
-  let deposit_address = base_address.with_pay_ref(pay_ref).to_string();
+  let destination_tag = DestinationTag::from_bytes(reference.as_bytes()).ok_or("destination tag must be 1-64 bytes")?;
+  let deposit_address = base_address.with_destination_tag(destination_tag).to_string();
   ```
 
 - **TypeScript:** `decodeOotleAddress` / `encodeOotleAddress` from `@tari-project/ootle-ts-bindings`.
-- **Web UI:** the "PayRef address" button on the account details page (useful for manual testing).
+- **Web UI:** the "Destination tag address" button on the account details page (useful for manual testing).
 
 Make each reference random and unguessable, and store the mapping to the customer in your database. Don't use
-sequential IDs or customer identifiers: the pay reference is visible to anyone who sees the address.
+sequential IDs or customer identifiers: the destination tag is visible to anyone who sees the address.
 
 **Use printable ASCII, no more than 40 characters**, for example a UUID string or 16 random bytes written as hex.
 Raw binary references are not safe, and long ones are not either:
 
-- The wallet daemon's `pay_ref` field is UTF-8 text.
-- Older releases of the TypeScript bindings, which browser wallets use, decode pay references as text and reject
-  addresses whose pay reference is longer than about 40 bytes.
+- The wallet daemon's `destination_tag` field is UTF-8 text.
+- Older releases of the TypeScript bindings, which browser wallets use, decode destination tags as text and reject
+  addresses whose destination tag is longer than about 40 bytes.
 
 ### Validating customer withdrawal addresses
 
@@ -516,7 +507,7 @@ with its value, status, spend authorization and decrypted memo.
 
 <Aside type="caution">
   **Not every listed output is spendable by you. Never credit one that isn't.** Your deposit address is public, so
-  anyone can create an output that is encrypted to your view key and carries any value and any pay reference, while
+  anyone can create an output that is encrypted to your view key and carries any value and any destination tag, while
   keeping the spend key for themselves. The wallet detects such an output and stores it with status `Invalid`, along
   with its decrypted value and memo. Outputs locked by a condition tree rather than a key can also be viewable without
   being spendable by your key. Credit an output only if **all** of the following are true:
@@ -574,28 +565,28 @@ for (const utxo of utxos) {
     continue;
   }
   const amountMicro = BigInt(utxo.value); // in µT. 1 TARI = 1_000_000 µT
-  const payRef = extractPayRef(utxo.memo, issuedRefs);
-  // Look up payRef in your table of issued deposit references. If it matches, credit the customer's account.
+  const destinationTag = extractDestinationTag(utxo.memo, issuedRefs);
+  // Look up destinationTag in your table of issued deposit references. If it matches, credit the customer's account.
   // Otherwise queue it for manual review.
 }
 ```
 
-A pay reference copied from the address arrives in one of two memo forms, depending on the sender's wallet settings.
+A destination tag copied from the address arrives in one of two memo forms, depending on the sender's wallet settings.
 Both are hex-encoded, and the reference inside is the raw bytes you embedded in the address. Wallets built on the
 Ootle SDK (mobile and other SDK-based wallets) can't copy the reference. Their users can only type it into a text
 memo, which arrives as `{"Message": "..."}`. Match that against your issued references as a fallback:
 
 ```javascript
-// Returns the pay reference as text, matching the printable-ASCII references recommended in Section 4.
-function extractPayRef(memo, issuedRefs) {
+// Returns the destination tag as text, matching the printable-ASCII references recommended in Section 4.
+function extractDestinationTag(memo, issuedRefs) {
   if (!memo) return null;
-  // [len: u8][pay_ref: len bytes][optional message bytes]
-  if (memo.PayRefAndBytes) {
-    const b = Buffer.from(memo.PayRefAndBytes, "hex");
+  // [len: u8][destination_tag: len bytes][optional message bytes]
+  if (memo.DestinationTagAndBytes) {
+    const b = Buffer.from(memo.DestinationTagAndBytes, "hex");
     return b[0] > 0 && b.length >= 1 + b[0] ? b.subarray(1, 1 + b[0]).toString("utf8") : null;
   }
   // The sender chose to attach their own address:
-  // [account_key: 32][view_key: 32][len: u8][pay_ref: len bytes]
+  // [account_key: 32][view_key: 32][len: u8][destination_tag: len bytes]
   if (memo.SenderAddress) {
     const b = Buffer.from(memo.SenderAddress, "hex");
     return b.length > 65 && b[64] > 0 && b.length >= 65 + b[64] ? b.subarray(65, 65 + b[64]).toString("utf8") : null;
@@ -610,9 +601,9 @@ function extractPayRef(memo, issuedRefs) {
 ```
 
 Credit each output exactly once, keyed by its UTXO `address` (`utxo_…`). Only credit outputs that pass the checks
-above and whose pay reference matches one you issued. Send any other deposit to manual review, including one with a
-missing or unknown pay reference. This happens, for example, when a customer pays your base address without a pay
-reference.
+above and whose destination tag matches one you issued. Send any other deposit to manual review, including one with a
+missing or unknown destination tag. This happens, for example, when a customer pays your base address without a
+destination tag.
 
 ### Recognising your own change outputs
 
@@ -635,7 +626,7 @@ as internal. Outputs of transactions still in flight are skipped by `isInFlight`
 
 ### Other things to keep in mind
 
-- **The memo is written by the sender's wallet.** A pay reference tells you *which of your issued addresses* was
+- **The memo is written by the sender's wallet.** A destination tag tells you *which of your issued addresses* was
   paid. It is not proof of *who* paid. The `sender_address` field, filled in when the memo is a `SenderAddress`, is
   informational only. Never use it to decide which account to credit.
 - `stealth_utxos.list` has no timestamp or transaction ID for each output. For a timestamped audit trail of the
@@ -696,7 +687,7 @@ function stealthTransferRequest(destination, amountMicro, maxFee, dryRun) {
         output_memo: null,
         pay_to: "StealthPublicKey",
         attach_sender_address: false,
-        pay_ref: null, // null keeps any pay reference embedded in the destination address (e.g. another exchange's deposit address)
+        destination_tag: null, // null keeps any destination tag embedded in the destination address (e.g. another exchange's deposit address)
       },
     ],
     max_fee: maxFee.toString(),
@@ -736,8 +727,8 @@ if (result.timed_out) {
 ```
 
 <Aside type="caution">
-  - **Leave `pay_ref` as `null` unless you mean to override it.** If the customer withdraws to another exchange's
-    deposit address that has a pay reference embedded, `null` makes sure the pay reference is forwarded. An empty
+  - **Leave `destination_tag` as `null` unless you mean to override it.** If the customer withdraws to another exchange's
+    deposit address that has a destination tag embedded, `null` makes sure the destination tag is forwarded. An empty
     string (`""`) removes it.
   - Fees are paid in TARI and are always public. Keep a TARI balance in the withdrawal account to cover them.
   - `stealth_transfer` submits the transaction before it returns the `transaction_id`. If the call fails or your
@@ -849,11 +840,11 @@ own deposit and withdrawal path. See [Burn Minotari for TARI](/guides/burn-minot
    the result.
 8. **Verify the indexer:** keep `indexer_trust = "verify"` in every wallet daemon, and point the deposit wallet at an
    indexer you run. Incoming deposits are not proven.
-9. **Audit logging:** log every credit with the UTXO address, the pay reference, the amount and the time.
+9. **Audit logging:** log every credit with the UTXO address, the destination tag, the amount and the time.
 
 ### Customer experience
 
-1. Give each customer their own deposit address with a pay reference embedded, so they never have to type a
+1. Give each customer their own deposit address with a destination tag embedded, so they never have to type a
    reference by hand.
 2. Show the address with its network clearly labelled ("Tari Ootle"), separate from any Minotari (XTM) deposit
    option.
@@ -868,10 +859,10 @@ own deposit and withdrawal path. See [Burn Minotari for TARI](/guides/burn-minot
 - [ ] Keyring or override password handled on headless hosts, with secrets in config files rather than on the
       command line
 - [ ] Each wallet daemon on its own port; `allowed_hosts` set if anything reaches it by host name
-- [ ] Deposit addresses with pay references generated and stored
+- [ ] Deposit addresses with destination tags generated and stored
 - [ ] Deposit scanner crediting once per UTXO, and only spendable outputs (not `Invalid`, not frozen, `Key` auth);
       in-flight outputs of your own transactions skipped
-- [ ] Unknown or missing pay references routed to review; own change outputs recognised as internal
+- [ ] Unknown or missing destination tags routed to review; own change outputs recognised as internal
 - [ ] Withdrawal address validation (prefix, network, key validity)
 - [ ] Withdrawal flow: dry run, submit with the dry run's `final_fee`, store `transaction_id`, `wait_result` with a
       timeout and a `timed_out` check, treat only `Accepted` as success and `OnlyFeeAccepted` as manual review,

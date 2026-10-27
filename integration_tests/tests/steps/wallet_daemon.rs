@@ -735,10 +735,10 @@ async fn when_i_import_view_only_account(
 
 #[when(
     expr = "I do a stealth transfer of {int} from account {word} on wallet daemon {word} to account {word} on wallet \
-            daemon {word} with pay ref {word}"
+            daemon {word} with destination tag {word}"
 )]
 #[allow(clippy::too_many_arguments)]
-async fn when_i_stealth_transfer_with_pay_ref(
+async fn when_i_stealth_transfer_with_destination_tag(
     world: &mut TariWorld,
     step: &Step,
     amount: u64,
@@ -746,7 +746,7 @@ async fn when_i_stealth_transfer_with_pay_ref(
     source_wallet_daemon_name: String,
     dest_account_name: String,
     dest_wallet_daemon_name: String,
-    pay_ref: String,
+    destination_tag: String,
 ) {
     cucumber_log!("==== Step: {}", step.value);
     let mut dest = wallet_daemon_client::get_auth_wallet_daemon_client(world, &dest_wallet_daemon_name).await;
@@ -771,7 +771,7 @@ async fn when_i_stealth_transfer_with_pay_ref(
                 output_memo: None,
                 pay_to: PayTo::StealthPublicKey,
                 attach_sender_address: true,
-                pay_ref: Some(pay_ref),
+                destination_tag: Some(destination_tag),
             }],
             max_fee: 50_000,
             dry_run: false,
@@ -791,17 +791,17 @@ async fn when_i_stealth_transfer_with_pay_ref(
 }
 
 #[then(
-    expr = "wallet daemon {word} lists a stealth output of {int} for account {word} with pay ref {word} sent by \
-            account {word} on wallet daemon {word}"
+    expr = "wallet daemon {word} lists a stealth output of {int} for account {word} with destination tag {word} sent \
+            by account {word} on wallet daemon {word}"
 )]
 #[allow(clippy::too_many_arguments)]
-async fn then_wallet_daemon_lists_stealth_output_with_pay_ref(
+async fn then_wallet_daemon_lists_stealth_output_with_destination_tag(
     world: &mut TariWorld,
     step: &Step,
     wallet_daemon_name: String,
     amount: u64,
     account_name: String,
-    pay_ref: String,
+    destination_tag: String,
     sender_account_name: String,
     sender_wallet_daemon_name: String,
 ) {
@@ -835,12 +835,12 @@ async fn then_wallet_daemon_lists_stealth_output_with_pay_ref(
             .utxos;
         if let Some(utxo) = utxos.iter().find(|u| u.value == Amount::from(amount)) {
             assert!(matches!(utxo.status, OutputStatus::Unspent), "{:?}", utxo.status);
-            let (_, _, memo_pay_ref) = utxo
+            let (_, _, memo_destination_tag) = utxo
                 .memo
                 .as_ref()
                 .and_then(|m| m.as_sender_address())
                 .expect("UTXO memo is not a sender address");
-            assert_eq!(memo_pay_ref, pay_ref.as_bytes());
+            assert_eq!(memo_destination_tag, destination_tag.as_bytes());
             let utxo_sender = utxo.sender_address.as_ref().expect("UTXO has no sender address");
             assert_eq!(utxo_sender.account_public_key(), sender_address.account_public_key());
             return;

@@ -326,7 +326,7 @@ pub(crate) unsafe fn required_str<'a>(ptr: *const c_char, arg: &str) -> Result<&
 
 /// Reads an **optional** `*const c_char`: a NULL pointer is `Ok(None)` (the absent case), a non-null
 /// pointer is read as a `&str` (mapping invalid UTF-8 to an `INVALID` envelope). Used for nullable
-/// FFI string args (e.g. an optional `pay_ref_hex`).
+/// FFI string args (e.g. an optional `destination_tag_hex`).
 ///
 /// # Safety
 /// `ptr`, if non-null, must point to a valid NUL-terminated C string that outlives the borrow.
@@ -664,10 +664,10 @@ pub unsafe extern "C" fn ootle_derive_account_address(account_public_key_hex: *c
 /// [`ParsedAddress`](ootle_sdk_core::ParsedAddress):
 /// - substate: `{"kind":"component"|"resource","canonical":"…_<hex>"}`;
 /// - identity: `{"kind":"identity","network":"<keyword>","account_key":"<hex>","view_only_key":"<hex>",
-///   "pay_ref":"<hex>"?,"bech32m":"otl_…"}` (`pay_ref` is absent when none).
+///   "destination_tag":"<hex>"?,"bech32m":"otl_…"}` (`destination_tag` is absent when none).
 ///
 /// An unknown prefix, a malformed substate id, or a bad bech32m string (checksum / HRP / length /
-/// oversize pay_ref) ⇒ `"PARSE"`; no handle.
+/// oversize destination_tag) ⇒ `"PARSE"`; no handle.
 ///
 /// # Safety
 /// `address_str` must be a valid NUL-terminated UTF-8 C string. The returned envelope must be freed
@@ -689,35 +689,35 @@ pub unsafe extern "C" fn ootle_parse_address(address_str: *const c_char) -> Ootl
 ///
 /// `network` is the L1 discriminant byte (selects the network-qualified HRP — `otl_` MainNet,
 /// `otl_loc_` LocalNet, `otl_esm_` Esmeralda, …). `account_key_hex` / `view_only_key_hex` are the
-/// lowercase-hex 32-byte public keys. `pay_ref_hex` is a **nullable** lowercase-hex payment reference
+/// lowercase-hex 32-byte public keys. `destination_tag_hex` is a **nullable** lowercase-hex destination tag
 /// (pass NULL for none); over 64 bytes ⇒ `"PARSE"`. On success `data_json` is `{"bech32m":"otl_…"}`;
 /// no handle.
 ///
-/// Bad / odd / uppercase key hex or pay_ref hex ⇒ `"PARSE"`.
+/// Bad / odd / uppercase key hex or destination_tag hex ⇒ `"PARSE"`.
 ///
 /// # Safety
 /// `account_key_hex` and `view_only_key_hex` must be valid NUL-terminated UTF-8 C strings.
-/// `pay_ref_hex` must be NULL or such a string. The returned envelope must be freed with
+/// `destination_tag_hex` must be NULL or such a string. The returned envelope must be freed with
 /// [`ootle_result_free`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ootle_format_identity_address(
     network: u8,
     account_key_hex: *const c_char,
     view_only_key_hex: *const c_char,
-    pay_ref_hex: *const c_char,
+    destination_tag_hex: *const c_char,
 ) -> OotleResult {
     guarded(|| {
         flatten((|| {
             let network = network_from_byte(network)?;
             let account_hex = unsafe { required_str(account_key_hex, "account_key_hex") }?;
             let view_hex = unsafe { required_str(view_only_key_hex, "view_only_key_hex") }?;
-            // The pay_ref is optional: NULL ⇒ None (handle the null before any required_str path).
-            let pay_ref = unsafe { optional_str(pay_ref_hex, "pay_ref_hex") }?;
+            // The destination_tag is optional: NULL ⇒ None (handle the null before any required_str path).
+            let destination_tag = unsafe { optional_str(destination_tag_hex, "destination_tag_hex") }?;
 
             let account = public_key_from_hex(account_hex, "account_key_hex")?;
             let view = public_key_from_hex(view_hex, "view_only_key_hex")?;
 
-            match format_identity_address(network, &account, &view, pay_ref) {
+            match format_identity_address(network, &account, &view, destination_tag) {
                 Ok(bech32m) => {
                     let body = serde_json::json!({ "bech32m": bech32m });
                     Ok(OotleResult::ok_json(&output_json(&body, "identity address")?))

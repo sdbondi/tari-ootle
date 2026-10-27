@@ -250,7 +250,7 @@ impl TrafficSim {
                     output_memo: Some(Memo::new_message(format!("Transfer {id}: {amount_to_send}")).unwrap()),
                     pay_to: PayTo::StealthPublicKey,
                     attach_sender_address: false,
-                    pay_ref: None,
+                    destination_tag: None,
                 }],
                 max_fee: crate::MAX_FEE,
                 dry_run: false,

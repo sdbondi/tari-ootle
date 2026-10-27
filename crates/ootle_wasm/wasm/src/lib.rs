@@ -51,7 +51,7 @@ pub struct DecryptedOutputResult {
     pub mask: Vec<u8>,
     /// The plaintext value (u64).
     pub value: u64,
-    /// JSON-encoded `Memo` (variants: `U256` / `Message` / `Bytes` / `PayRefAndBytes`), or `null` if
+    /// JSON-encoded `Memo` (variants: `U256` / `Message` / `Bytes` / `DestinationTagAndBytes`), or `null` if
     /// the payload carried no memo or `skipMemo` was set.
     pub memo_json: Option<String>,
 }
@@ -83,7 +83,7 @@ pub struct ParsedOotleAddress {
     pub view_key: Vec<u8>,
     /// The network byte.
     pub network: u8,
-    /// Optional pay reference / memo bytes.
+    /// Optional destination tag / memo bytes.
     pub memo: Option<Vec<u8>>,
 }
 
@@ -235,7 +235,7 @@ pub fn ootle_public_key_from_secret_key(owner_key: &[u8], view_key: &[u8]) -> Re
 /// Generate an Ootle address (bech32m string) from public keys.
 ///
 /// `network` is the network byte (0x00 = MainNet, 0x10 = LocalNet, 0x26 = Esmeralda, etc.).
-/// `memo` is an optional pay reference (max 64 bytes).
+/// `memo` is an optional destination tag (max 64 bytes).
 #[wasm_bindgen(js_name = "generateOotleAddress")]
 pub fn generate_ootle_address(
     owner_public_key: &[u8],

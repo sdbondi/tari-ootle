@@ -28,11 +28,11 @@ describe("OotleAddress de/encoding", () => {
     expect(parsed.accountPublicKey).toEqual(sample.accountPublicKey);
   });
 
-  it("encodes and decodes address with payRef", () => {
+  it("encodes and decodes address with destinationTag", () => {
     const sample = makeDecodedAddress();
-    const payRefString = "Invoice #12345";
+    const destinationTagString = "Invoice #12345";
     const check = encodeOotleAddress(sample);
-    sample.payRef = payRefString;
+    sample.destinationTag = destinationTagString;
 
     const address = encodeOotleAddress(sample);
 
@@ -46,30 +46,30 @@ describe("OotleAddress de/encoding", () => {
     expect(parsed.network).toEqual(sample.network);
     expect(parsed.viewOnlyKey).toEqual(sample.viewOnlyKey);
     expect(parsed.accountPublicKey).toEqual(sample.accountPublicKey);
-    expect(parsed.payRef).toEqual(payRefString);
+    expect(parsed.destinationTag).toEqual(destinationTagString);
   });
 
-  it("encodes and decodes a 64-byte payRef on the longest prefix", () => {
+  it("encodes and decodes a 64-byte destinationTag on the longest prefix", () => {
     const sample = makeDecodedAddress();
     sample.network = "esmeralda";
-    sample.payRef = "x".repeat(64);
+    sample.destinationTag = "x".repeat(64);
 
     const address = encodeOotleAddress(sample);
     const parsed = decodeOotleAddress(address);
 
     expect(address.startsWith("otl_esm_")).toBe(true);
-    expect(parsed.payRef).toEqual(sample.payRef);
+    expect(parsed.destinationTag).toEqual(sample.destinationTag);
     expect(validateOotleAddress(address)).toBe(true);
   });
 
-  it("decodes a payRef that is not UTF-8 as bytes", () => {
+  it("decodes a destinationTag that is not UTF-8 as bytes", () => {
     const sample = makeDecodedAddress();
-    const payRef = new Uint8Array([0xff, 0xfe, 0x00, 0x80]);
-    sample.payRef = payRef;
+    const destinationTag = new Uint8Array([0xff, 0xfe, 0x00, 0x80]);
+    sample.destinationTag = destinationTag;
 
     const parsed = decodeOotleAddress(encodeOotleAddress(sample));
 
-    expect(parsed.payRef).toEqual(payRef);
+    expect(parsed.destinationTag).toEqual(destinationTag);
   });
 
   it("throws on invalid address", () => {

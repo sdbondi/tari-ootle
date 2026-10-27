@@ -951,7 +951,7 @@ fn format_identity_address_round_trips_via_parse() {
     let account = CArg::new(fx["input"]["account_public_key"].as_str().unwrap());
     let view = CArg::new(fx["input"]["view_only_key"].as_str().unwrap());
 
-    // Format: matches the committed bech32m exactly (pay_ref NULL).
+    // Format: matches the committed bech32m exactly (destination_tag NULL).
     let r = unsafe { ootle_format_identity_address(net, account.ptr(), view.ptr(), std::ptr::null()) };
     assert!(ok(&r), "expected success, got {}", error_code(&r));
     assert!(r.handle.is_null(), "format returns no handle");
@@ -975,14 +975,14 @@ fn format_identity_address_round_trips_via_parse() {
 }
 
 #[test]
-fn format_identity_address_with_pay_ref() {
-    let fx = load_fixture("address_codec/identity_localnet_with_pay_ref.json");
+fn format_identity_address_with_destination_tag() {
+    let fx = load_fixture("address_codec/identity_localnet_with_destination_tag.json");
     let net = network_byte(&fx["input"]["network"]);
     let account = CArg::new(fx["input"]["account_public_key"].as_str().unwrap());
     let view = CArg::new(fx["input"]["view_only_key"].as_str().unwrap());
-    let pay_ref = CArg::new(fx["input"]["pay_ref"].as_str().unwrap());
+    let destination_tag = CArg::new(fx["input"]["destination_tag"].as_str().unwrap());
 
-    let r = unsafe { ootle_format_identity_address(net, account.ptr(), view.ptr(), pay_ref.ptr()) };
+    let r = unsafe { ootle_format_identity_address(net, account.ptr(), view.ptr(), destination_tag.ptr()) };
     assert!(ok(&r), "expected success, got {}", error_code(&r));
     let out = data_json(&r);
     assert_eq!(
@@ -992,12 +992,12 @@ fn format_identity_address_with_pay_ref() {
     let bech32m = out["bech32m"].as_str().unwrap().to_string();
     unsafe { ootle_result_free(r) };
 
-    // Parse it back: the pay_ref hex survives.
+    // Parse it back: the destination_tag hex survives.
     let addr = CArg::new(&bech32m);
     let r = unsafe { ootle_parse_address(addr.ptr()) };
     assert!(ok(&r));
     let parsed = data_json(&r);
-    assert_eq!(parsed["pay_ref"], fx["input"]["pay_ref"]);
+    assert_eq!(parsed["destination_tag"], fx["input"]["destination_tag"]);
     unsafe { ootle_result_free(r) };
 }
 
@@ -1057,7 +1057,7 @@ fn format_identity_address_rejects_bad_input() {
     assert_eq!(error_code(&r), "PARSE");
     unsafe { ootle_result_free(r) };
 
-    // pay_ref over 64 bytes → PARSE.
+    // destination_tag over 64 bytes → PARSE.
     let over_cap = CArg::new(&"aa".repeat(65));
     let r = unsafe { ootle_format_identity_address(0x26, account.ptr(), view.ptr(), over_cap.ptr()) };
     assert!(!ok(&r));
@@ -2173,11 +2173,11 @@ fn no_leaks_over_many_round_trips() {
     let addr_pk_hex = CArg::new(addr_fx["input"]["account_public_key"].as_str().unwrap());
 
     // Address codec (format identity + parse), driven from the committed address_codec vectors.
-    let id_fx = load_fixture("address_codec/identity_localnet_with_pay_ref.json");
+    let id_fx = load_fixture("address_codec/identity_localnet_with_destination_tag.json");
     let id_net = network_byte(&id_fx["input"]["network"]);
     let id_account = CArg::new(id_fx["input"]["account_public_key"].as_str().unwrap());
     let id_view = CArg::new(id_fx["input"]["view_only_key"].as_str().unwrap());
-    let id_pay_ref = CArg::new(id_fx["input"]["pay_ref"].as_str().unwrap());
+    let id_destination_tag = CArg::new(id_fx["input"]["destination_tag"].as_str().unwrap());
     let parse_id_fx = load_fixture("address_codec/parse_identity_esmeralda.json");
     let parse_addr = CArg::new(parse_id_fx["input"]["address"].as_str().unwrap());
     let parse_comp_fx = load_fixture("address_codec/parse_component.json");
@@ -2289,8 +2289,9 @@ fn no_leaks_over_many_round_trips() {
         assert!(ok(&addr));
         unsafe { ootle_result_free(addr) };
 
-        // address codec: format identity (with pay_ref) + parse identity + parse substate
-        let fmt = unsafe { ootle_format_identity_address(id_net, id_account.ptr(), id_view.ptr(), id_pay_ref.ptr()) };
+        // address codec: format identity (with destination_tag) + parse identity + parse substate
+        let fmt =
+            unsafe { ootle_format_identity_address(id_net, id_account.ptr(), id_view.ptr(), id_destination_tag.ptr()) };
         assert!(ok(&fmt));
         unsafe { ootle_result_free(fmt) };
         let pid = unsafe { ootle_parse_address(parse_addr.ptr()) };

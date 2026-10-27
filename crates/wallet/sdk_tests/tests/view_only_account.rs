@@ -139,14 +139,14 @@ fn view_only_account_decrypts_incoming_stealth_output() {
     assert_eq!(output.value, 1234);
     assert!(matches!(output.status, OutputStatus::Unspent), "{:?}", output.status);
     assert_eq!(output.owner_key_id, None);
-    let (sender_account_key, sender_view_key, pay_ref) = output
+    let (sender_account_key, sender_view_key, destination_tag) = output
         .memo
         .as_ref()
         .and_then(|m| m.as_sender_address())
         .expect("sender address memo");
     assert_eq!(sender_account_key, sender_address.account_key.to_byte_type().as_bytes());
     assert_eq!(sender_view_key, sender_address.view_only_key.to_byte_type().as_bytes());
-    assert_eq!(pay_ref, b"bridge-uuid");
+    assert_eq!(destination_tag, b"bridge-uuid");
 }
 
 #[test]

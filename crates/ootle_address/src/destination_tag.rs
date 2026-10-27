@@ -3,10 +3,10 @@
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, type = "string"))]
-pub struct PayRef(Box<[u8]>);
+pub struct DestinationTag(Box<[u8]>);
 
-impl PayRef {
-    /// Maximum length of a PayRef in bytes. This is chosen to easily fit within typical memo field constraints.
+impl DestinationTag {
+    /// Maximum length of a DestinationTag in bytes. This is chosen to easily fit within typical memo field constraints.
     pub const MAX_LEN: usize = 64;
 
     pub fn new_checked<T: Into<Box<[u8]>>>(contents: T) -> Option<Self> {
@@ -35,15 +35,15 @@ impl PayRef {
     }
 }
 
-impl AsRef<[u8]> for PayRef {
+impl AsRef<[u8]> for DestinationTag {
     fn as_ref(&self) -> &[u8] {
         &self.0
     }
 }
 
-impl From<PayRef> for Box<[u8]> {
-    fn from(pay_ref: PayRef) -> Self {
-        pay_ref.0
+impl From<DestinationTag> for Box<[u8]> {
+    fn from(destination_tag: DestinationTag) -> Self {
+        destination_tag.0
     }
 }
 
@@ -55,9 +55,9 @@ mod serde_impl {
         serde_helpers::BytesVisitor,
     };
 
-    use super::PayRef;
+    use super::DestinationTag;
 
-    impl Serialize for PayRef {
+    impl Serialize for DestinationTag {
         fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
         where S: Serializer {
             if serializer.is_human_readable() {
@@ -69,16 +69,18 @@ mod serde_impl {
         }
     }
 
-    impl<'de> Deserialize<'de> for PayRef {
+    impl<'de> Deserialize<'de> for DestinationTag {
         fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
         where D: Deserializer<'de> {
             if deserializer.is_human_readable() {
                 let s = String::deserialize(deserializer)?;
                 let bytes = bytes_from_hex(&s).map_err(serde::de::Error::custom)?;
-                PayRef::new_checked(bytes).ok_or_else(|| serde::de::Error::custom("Invalid PayRef length"))
+                DestinationTag::new_checked(bytes)
+                    .ok_or_else(|| serde::de::Error::custom("Invalid DestinationTag length"))
             } else {
                 let bytes = deserializer.deserialize_byte_buf(BytesVisitor::new())?;
-                PayRef::new_checked(bytes).ok_or_else(|| serde::de::Error::custom("Invalid PayRef length"))
+                DestinationTag::new_checked(bytes)
+                    .ok_or_else(|| serde::de::Error::custom("Invalid DestinationTag length"))
             }
         }
     }

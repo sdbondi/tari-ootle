@@ -165,10 +165,10 @@ OotleResult ootle_derive_account_address(const char *account_public_key_hex);
  * [`ParsedAddress`](ootle_sdk_core::ParsedAddress):
  * - substate: `{"kind":"component"|"resource","canonical":"…_<hex>"}`;
  * - identity: `{"kind":"identity","network":"<keyword>","account_key":"<hex>","view_only_key":"<hex>",
- *   "pay_ref":"<hex>"?,"bech32m":"otl_…"}` (`pay_ref` is absent when none).
+ *   "destination_tag":"<hex>"?,"bech32m":"otl_…"}` (`destination_tag` is absent when none).
  *
  * An unknown prefix, a malformed substate id, or a bad bech32m string (checksum / HRP / length /
- * oversize pay_ref) ⇒ `"PARSE"`; no handle.
+ * oversize destination_tag) ⇒ `"PARSE"`; no handle.
  *
  * # Safety
  * `address_str` must be a valid NUL-terminated UTF-8 C string. The returned envelope must be freed
@@ -181,21 +181,21 @@ OotleResult ootle_parse_address(const char *address_str);
  *
  * `network` is the L1 discriminant byte (selects the network-qualified HRP — `otl_` MainNet,
  * `otl_loc_` LocalNet, `otl_esm_` Esmeralda, …). `account_key_hex` / `view_only_key_hex` are the
- * lowercase-hex 32-byte public keys. `pay_ref_hex` is a **nullable** lowercase-hex payment reference
+ * lowercase-hex 32-byte public keys. `destination_tag_hex` is a **nullable** lowercase-hex destination tag
  * (pass NULL for none); over 64 bytes ⇒ `"PARSE"`. On success `data_json` is `{"bech32m":"otl_…"}`;
  * no handle.
  *
- * Bad / odd / uppercase key hex or pay_ref hex ⇒ `"PARSE"`.
+ * Bad / odd / uppercase key hex or destination_tag hex ⇒ `"PARSE"`.
  *
  * # Safety
  * `account_key_hex` and `view_only_key_hex` must be valid NUL-terminated UTF-8 C strings.
- * `pay_ref_hex` must be NULL or such a string. The returned envelope must be freed with
+ * `destination_tag_hex` must be NULL or such a string. The returned envelope must be freed with
  * [`ootle_result_free`].
  */
 OotleResult ootle_format_identity_address(uint8_t network,
                                           const char *account_key_hex,
                                           const char *view_only_key_hex,
-                                          const char *pay_ref_hex);
+                                          const char *destination_tag_hex);
 
 /**
  * Builds the public-transfer unsigned tx + the want list to resolve it.
