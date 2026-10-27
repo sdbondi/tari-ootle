@@ -105,7 +105,7 @@ pub async fn stream_utxo_updates(
         }
     }
 
-    let stream = UtxoUpdateStream::new(context.substate_manager().clone(), req, encoder);
+    let stream = UtxoUpdateStream::new(context.read_only_store().clone(), req, encoder);
     let mut response = stream.into_response();
     // The body encoding is negotiated from `Accept`, so a cache keyed on the URL alone would serve
     // protobuf bytes to a client that asked for JSON.

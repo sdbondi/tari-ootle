@@ -400,7 +400,7 @@ pub(crate) mod tests {
 
     /// One state version covers a whole synced batch, so a shard's UTXOs cluster into version
     /// groups. These build a shard whose groups straddle the read limit.
-    fn utxo_resource() -> tari_template_lib_types::ResourceAddress {
+    pub(crate) fn utxo_resource() -> tari_template_lib_types::ResourceAddress {
         use std::str::FromStr;
         tari_template_lib_types::ResourceAddress::from_str(
             "resource_0000000000000000000000000000000000000000000000000000000000000000",
@@ -408,7 +408,7 @@ pub(crate) mod tests {
         .unwrap()
     }
 
-    fn unspent_at(seq: u8, state_version: u64) -> crate::storage_sqlite::models::UtxoUpdateRecord {
+    pub(crate) fn unspent_at(seq: u8, state_version: u64) -> crate::storage_sqlite::models::UtxoUpdateRecord {
         use tari_engine_types::{UtxoOutput, crypto::OutputBody};
         use tari_template_lib_types::{
             EncryptedData,
@@ -439,7 +439,7 @@ pub(crate) mod tests {
         }))
     }
 
-    async fn store_with_utxos(groups: &[(u64, u8)]) -> (tempfile::TempDir, SqliteIndexerStore) {
+    pub(crate) async fn store_with_utxos(groups: &[(u64, u8)]) -> (tempfile::TempDir, SqliteIndexerStore) {
         let (dir, store) = temp_store().await;
         let mut seq = 0u8;
         let mut records = Vec::new();
@@ -806,6 +806,52 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(unset, None);
+    }
+
+    /// Freezing an output long after it was created stores its next version far from its first row. A page ending on
+    /// the output resumes after the row it served, not the first one.
+    #[tokio::test]
+    async fn listing_pages_past_a_re_versioned_output() {
+        use tari_template_lib_types::UtxoId;
+
+        use crate::storage_sqlite::models::UtxoUpdateRecord;
+
+        let (_dir, store) = store_with_utxos(&[(10, 3)]).await;
+        let UtxoUpdateRecord::Unspent(mut refrozen) = unspent_at(1, 20) else {
+            unreachable!()
+        };
+        refrozen.version = SubstateVersion::new(1);
+        store
+            .with_write_tx(move |tx| {
+                tx.batch_insert_utxo_updates(Epoch(1), [
+                    spent_at(1, 20),
+                    UtxoUpdateRecord::Unspent(refrozen),
+                    unspent_at(4, 30),
+                ])
+            })
+            .await
+            .unwrap();
+        let list = |from: Option<u8>| {
+            let store = store.clone();
+            async move {
+                store
+                    .with_read_tx(move |tx| {
+                        tx.utxos_list(&utxo_resource(), from.map(|seq| UtxoId::from_array([seq; 32])), 3)
+                    })
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect::<Vec<_>>()
+            }
+        };
+
+        assert_eq!(list(None).await, [
+            UtxoId::from_array([2; 32]),
+            UtxoId::from_array([3; 32]),
+            UtxoId::from_array([1; 32])
+        ]);
+        assert_eq!(list(Some(1)).await, [UtxoId::from_array([4; 32])]);
     }
 
     #[tokio::test]

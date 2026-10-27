@@ -35,7 +35,6 @@ use tari_engine_types::{
     substate::{EncodedSubstate, Substate, SubstateId, SubstateValue},
 };
 use tari_epoch_manager::service::EpochManagerHandle;
-use tari_indexer_client::types::UtxoStateUpdateSet;
 use tari_indexer_lib::{
     cached_substate_manager::{
         CachedSubstateManager,
@@ -51,11 +50,9 @@ use tari_ootle_common_types::{
     NodeHeight,
     NumPreshards,
     ShardGroup,
-    StateVersion,
     SubstateRequirementRef,
     SubstateVersion,
     optional::IsNotFoundError,
-    shard::Shard,
 };
 use tari_ootle_p2p::PeerAddress;
 use tari_ootle_storage::{StorageError, consensus_models::VerifiedBlockTip};
@@ -215,35 +212,6 @@ impl SubstateManager {
             cache_manager: cached_substates,
             substate_store: self.substate_store,
         }
-    }
-
-    /// A shard's UTXO updates past `from_state_version`, with the shard's tombstone horizon read in the same
-    /// transaction, so that no tombstone the read lacks is pruned below a horizon it does not report.
-    pub async fn get_utxo_updates(
-        &self,
-        resource_address: ResourceAddress,
-        from_epoch: Epoch,
-        shard: Shard,
-        from_state_version: StateVersion,
-        unspent_only: bool,
-        limit: u32,
-    ) -> Result<(UtxoStateUpdateSet, Option<StateVersion>), SubstateManagerError> {
-        let updates = self
-            .substate_store
-            .with_read_tx(move |tx| {
-                let updates = tx.utxos_get_updates(
-                    resource_address,
-                    from_epoch,
-                    shard,
-                    from_state_version,
-                    unspent_only,
-                    limit,
-                )?;
-                let horizon = tx.utxo_tombstone_horizon(shard)?;
-                Ok::<_, StorageError>((updates, horizon))
-            })
-            .await?;
-        Ok(updates)
     }
 
     /// The unspent UTXOs matching `public_nonce_and_tag`, and the pairs of `public_nonce_and_tag` whose UTXO is spent

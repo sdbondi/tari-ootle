@@ -9,7 +9,8 @@ export type UtxoStateUpdateSet = {
    * The state version the read reached. Every update of the shard at or below it is either in
    * `updates` or excluded by the request's filters, so it is a resume point: a later request
    * filtering on `state_version > max_state_version` loses nothing. It can be above the highest
-   * version in `updates`, and is the request's own cursor when the read found nothing past it.
+   * version in `updates`: a read that found nothing past the cursor reports the cursor, and one
+   * with `has_more` false reports at least the shard's tombstone horizon.
    */
   max_state_version: StateVersion;
   max_epoch: Epoch;

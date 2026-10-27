@@ -245,8 +245,8 @@ pub(super) fn utxos_list_query<'a>(
     query.limit(i64::from(limit)).order_by(utxos::id.asc())
 }
 
-/// The row a listing resumes after when its cursor is `from_id`: the first row stored for the output, so that a
-/// re-versioned output's later row skips nothing stored between the two.
+/// The row a listing resumes after when its cursor is `from_id`: the output's newest row, which is the one the listing
+/// served, since only an output's newest version can be unspent.
 pub(super) fn utxos_list_cursor_query<'a>(
     resource_address: &ResourceAddress,
     from_id: UtxoId,
@@ -257,7 +257,7 @@ pub(super) fn utxos_list_cursor_query<'a>(
         .select(utxos::id)
         .filter(utxos::resource_address.eq(resource_address.to_string()))
         .filter(utxos::commitment.eq(from_id.to_commitment_hex_string()))
-        .order_by(utxos::id.asc())
+        .order_by(utxos::id.desc())
         .limit(1)
         .into_boxed()
 }

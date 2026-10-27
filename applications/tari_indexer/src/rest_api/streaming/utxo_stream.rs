@@ -22,7 +22,8 @@ use tari_ootle_common_types::{StateVersion, shard::Shard};
 
 use crate::{
     rest_api::{encoder::Encoder, error::ErrorResponse, streaming::encoding::MimeTypeEncoder},
-    substate_manager::SubstateManager,
+    storage_sqlite::SqliteIndexerStore,
+    store::ReadOnlyStore,
 };
 
 const LOG_TARGET: &str = "tari::indexer::rest_api::streaming::utxo_stream";
@@ -33,7 +34,11 @@ pub struct UtxoUpdateStream {
 }
 
 impl UtxoUpdateStream {
-    pub fn new(substate_manager: SubstateManager, request: GetUtxoUpdatesRequest, encoder: MimeTypeEncoder) -> Self {
+    pub fn new(
+        store: ReadOnlyStore<SqliteIndexerStore>,
+        request: GetUtxoUpdatesRequest,
+        encoder: MimeTypeEncoder,
+    ) -> Self {
         let content_type = encoder.media_type();
         let inner = try_stream! {
             let mut buffer = BytesMut::with_capacity(1024);
@@ -50,7 +55,7 @@ impl UtxoUpdateStream {
                     max_state_version,
                     max_epoch,
                     has_more,
-                }, tombstone_horizon) = substate_manager
+                }, tombstone_horizon) = store
                     .get_utxo_updates(
                         request.resource_address,
                         request.from_epoch,
@@ -220,7 +225,72 @@ fn wallet_utxo_update_to_protobuf(update: &WalletUtxoUpdate) -> protobuf::Wallet
 
 #[cfg(test)]
 mod tests {
+    use tari_ootle_common_types::Epoch;
+
     use super::*;
+    use crate::{
+        rest_api::streaming::encoding::JsonEncoder,
+        storage_sqlite::tests::{store_with_utxos, utxo_resource},
+        store::{IndexerStore, IndexerStoreWriteTransaction},
+    };
+
+    /// The start-of-shard frames a stream from `cursors` sends.
+    async fn stream_frames(
+        store: &SqliteIndexerStore,
+        cursors: &[(u32, u64)],
+        unspent_only: bool,
+    ) -> Vec<protobuf::StartOfShard> {
+        let request = GetUtxoUpdatesRequest {
+            from_epoch: Epoch(0),
+            shard_state_versions: cursors
+                .iter()
+                .map(|&(shard, version)| (Shard::from(shard), StateVersion::new(version)))
+                .collect(),
+            resource_address: utxo_resource(),
+            unspent_only,
+            per_shard_limit: 10,
+        };
+        let stream = UtxoUpdateStream::new(
+            ReadOnlyStore::new(store.clone()),
+            request,
+            MimeTypeEncoder::Json(JsonEncoder),
+        );
+        let chunks = stream.map(|chunk| chunk.unwrap()).collect::<Vec<_>>().await;
+        chunks
+            .iter()
+            .filter_map(|chunk| {
+                serde_json::from_slice::<protobuf::UtxoUpdatePayload>(chunk)
+                    .unwrap()
+                    .sos
+            })
+            .collect()
+    }
+
+    /// The shard's head fetch reached v1000 on other substates, far past the resource's newest row at v10. A read
+    /// from below the horizon is told to resync even with nothing past its cursor, and the rescan resumes from the
+    /// horizon, which clears the flag.
+    #[tokio::test]
+    async fn a_resync_below_the_tombstone_horizon_resumes_from_above_it() {
+        let (_dir, store) = store_with_utxos(&[(10, 1)]).await;
+        store
+            .with_write_tx(|tx| tx.raise_utxo_tombstone_horizon(Shard::from(1u32), StateVersion::new(1000)))
+            .await
+            .unwrap();
+
+        let frames = stream_frames(&store, &[(1, 10)], false).await;
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].resync_required);
+        assert_eq!(frames[0].num_updates, 0);
+
+        let frames = stream_frames(&store, &[(1, 0), (2, 0)], true).await;
+        assert_eq!(frames.len(), 1, "the empty shard without a horizon sends nothing");
+        assert!(!frames[0].resync_required);
+        assert_eq!(frames[0].num_updates, 1);
+        assert_eq!(frames[0].max_state_version, 1000);
+
+        let frames = stream_frames(&store, &[(1, 1000)], false).await;
+        assert!(frames.is_empty(), "{frames:?}");
+    }
 
     #[test]
     fn a_cursor_below_the_tombstone_horizon_must_resync_when_it_reads_spends() {

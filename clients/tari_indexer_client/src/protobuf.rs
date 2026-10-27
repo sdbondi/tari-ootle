@@ -32,7 +32,8 @@ pub struct StartOfShard {
     /// cursor and its tombstone horizon (`utxo_tombstone_horizons` on `/info`), so a held output
     /// that is not reported spent may still be spent. Set only when the request includes spends. A
     /// client clears the shard's cursor and rescans it for unspent outputs, then checks each held
-    /// output the rescan does not return.
+    /// output the rescan does not return. A pass that reaches the end of the shard reports at least
+    /// the horizon as its `max_state_version`, so resuming from the rescan clears the flag.
     #[prost(bool, tag = "5")]
     #[serde(default)]
     pub resync_required: bool,

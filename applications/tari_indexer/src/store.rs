@@ -621,6 +621,42 @@ impl<T: IndexerStoreReader> ReadOnlyStore<T> {
             .await
     }
 
+    /// A shard's UTXO updates past `from_state_version`, with the shard's tombstone horizon read in the same
+    /// transaction, so that no tombstone the read lacks is pruned below a horizon it does not report.
+    ///
+    /// A read that reaches the end of the shard's rows reports at least the horizon as its `max_state_version`. Every
+    /// row at or below the horizon was committed with it, so the read has seen them all, and it lets a client whose
+    /// resource has no rows near the horizon resume from above it.
+    pub async fn get_utxo_updates(
+        &self,
+        resource_address: ResourceAddress,
+        from_epoch: Epoch,
+        shard: Shard,
+        from_state_version: StateVersion,
+        unspent_only: bool,
+        limit: u32,
+    ) -> Result<(UtxoStateUpdateSet, Option<StateVersion>), StorageError> {
+        self.inner
+            .with_read_tx(move |tx| {
+                let mut updates = tx.utxos_get_updates(
+                    resource_address,
+                    from_epoch,
+                    shard,
+                    from_state_version,
+                    unspent_only,
+                    limit,
+                )?;
+                let horizon = tx.utxo_tombstone_horizon(shard)?;
+                if !updates.has_more &&
+                    let Some(horizon) = horizon
+                {
+                    updates.max_state_version = updates.max_state_version.max(horizon);
+                }
+                Ok((updates, horizon))
+            })
+            .await
+    }
+
     pub async fn get_utxo_tombstone_horizons(&self) -> Result<Vec<(Shard, StateVersion)>, StorageError> {
         self.inner.with_read_tx(|tx| tx.utxo_tombstone_horizons()).await
     }
