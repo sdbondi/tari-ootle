@@ -2022,8 +2022,8 @@ pub struct StealthTransferRequest {
     pub dry_run: bool,
 }
 
-/// Unknown fields are rejected: an unrecognised name for the destination tag would otherwise be dropped, and the
-/// transfer would go ahead with the destination address's tag in its place.
+/// Unknown fields are rejected, so that a request naming the destination tag by an unrecognised field fails instead
+/// of using the destination address's tag.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "wallet-types/"))]
 #[serde(deny_unknown_fields)]
@@ -2360,9 +2360,6 @@ mod tests {
 
     use super::*;
 
-    /// A JS client encodes every 64-bit field as a string, because JavaScript cannot hold an integer
-    /// above `Number.MAX_SAFE_INTEGER` in a `number` without losing precision. Both encodings must be
-    /// accepted, for any magnitude.
     #[test]
     fn stealth_transfer_rejects_unknown_fields() {
         let transfer = serde_json::json!({
@@ -2382,6 +2379,9 @@ mod tests {
         assert!(err.to_string().contains("unknown field `pay_ref`"), "{err}");
     }
 
+    /// A JS client encodes every 64-bit field as a string, because JavaScript cannot hold an integer
+    /// above `Number.MAX_SAFE_INTEGER` in a `number` without losing precision. Both encodings must be
+    /// accepted, for any magnitude.
     #[test]
     fn requests_accept_string_encoded_64_bit_fields() {
         let request: KeysSetActiveRequest = serde_json::from_value(serde_json::json!({

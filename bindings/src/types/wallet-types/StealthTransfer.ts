@@ -5,8 +5,8 @@ import type { OotleAddress } from "../OotleAddress";
 import type { PayTo } from "./PayTo";
 
 /**
- * Unknown fields are rejected: an unrecognised name for the destination tag would otherwise be dropped, and the
- * transfer would go ahead with the destination address's tag in its place.
+ * Unknown fields are rejected, so that a request naming the destination tag by an unrecognised field fails instead
+ * of using the destination address's tag.
  */
 export type StealthTransfer = {
   destination_address: OotleAddress;
