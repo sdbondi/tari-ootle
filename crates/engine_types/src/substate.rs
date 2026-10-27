@@ -65,9 +65,9 @@ use crate::{
     hashing::{EngineHashDomainLabel, hasher32, substate_value_hasher32},
     limits,
     non_fungible::NonFungibleContainer,
-    published_template::{PublishedTemplate, PublishedTemplateAddress},
+    published_template::{PublishedTemplate, PublishedTemplateAddress, PublishedTemplateMetadata},
     resource::Resource,
-    substate_hasher::SubstateHashMessage,
+    substate_hasher::{SubstateHashMessage, SubstateValueHashMessage},
     transaction_receipt::TransactionReceipt,
     utxo::Utxo,
     vault::Vault,
@@ -174,8 +174,26 @@ impl EncodedSubstate {
 /// produced under different schema versions can never collide in the JMT.
 pub fn hash_substate(network: Network, substate: &SubstateValue, version: SubstateVersion, epoch: Epoch) -> Hash32 {
     let proto_version = ProtocolVersion::at(network, epoch);
+    hash_substate_message(substate.as_hash_message(proto_version), version, epoch)
+}
+
+/// Hashes a published template from its metadata alone, giving the same hash as [`hash_substate`] of the full
+/// template substate.
+pub fn hash_published_template_metadata(
+    network: Network,
+    metadata: &PublishedTemplateMetadata,
+    version: SubstateVersion,
+    epoch: Epoch,
+) -> Hash32 {
+    let proto_version = ProtocolVersion::at(network, epoch);
+    let message =
+        SubstateHashMessage::from_value_message(proto_version, SubstateValueHashMessage::Template(metadata.into()));
+    hash_substate_message(message, version, epoch)
+}
+
+fn hash_substate_message(message: SubstateHashMessage<'_>, version: SubstateVersion, epoch: Epoch) -> Hash32 {
     substate_value_hasher32()
-        .chain(&substate.as_hash_message(proto_version))
+        .chain(&message)
         .chain(&version)
         .chain(&epoch)
         .result()

@@ -2,7 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use borsh::{BorshSerialize, io};
-use tari_template_lib::types::Hash32;
+use tari_template_lib::types::{Hash32, TemplateMetadataHash, crypto::RistrettoPublicKeyBytes};
 
 use crate::{
     ProtocolVersion,
@@ -11,7 +11,7 @@ use crate::{
     confidential_output::ConfidentialOutput,
     hashing::{EngineHashDomainLabel, hasher32},
     non_fungible::NonFungibleContainer,
-    published_template::PublishedTemplate,
+    published_template::{PublishedTemplate, PublishedTemplateMetadata},
     resource::Resource,
     substate::SubstateValue,
     transaction_receipt::TransactionReceipt,
@@ -29,8 +29,12 @@ pub enum SubstateHashMessage<'a> {
 
 impl<'a> SubstateHashMessage<'a> {
     pub fn new(protocol_version: ProtocolVersion, value: &'a SubstateValue) -> Self {
+        Self::from_value_message(protocol_version, value.into())
+    }
+
+    pub fn from_value_message(protocol_version: ProtocolVersion, message: SubstateValueHashMessage<'a>) -> Self {
         match protocol_version {
-            ProtocolVersion::V0 => Self::V0(value.into()),
+            ProtocolVersion::V0 => Self::V0(message),
         }
     }
 }
@@ -150,27 +154,38 @@ impl borsh::BorshSerialize for TransactionReceiptHashMessage<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+/// Commits to the binary by its `binary_hash`, so a template's value hash can be derived from its
+/// [`PublishedTemplateMetadata`] alone.
+#[derive(Debug, Clone, Copy, borsh::BorshSerialize)]
 pub struct PublishedTemplateHashMessage<'a> {
-    pub template: &'a PublishedTemplate,
+    template_name: &'a str,
+    at_epoch: u64,
+    author: &'a RistrettoPublicKeyBytes,
+    metadata_hash: &'a Option<TemplateMetadataHash>,
+    binary_hash: Hash32,
 }
 
 impl<'a> From<&'a PublishedTemplate> for PublishedTemplateHashMessage<'a> {
     fn from(template: &'a PublishedTemplate) -> Self {
-        Self { template }
+        Self {
+            template_name: &template.template_name,
+            at_epoch: template.at_epoch,
+            author: &template.author,
+            metadata_hash: &template.metadata_hash,
+            binary_hash: template.to_binary_hash(),
+        }
     }
 }
 
-impl borsh::BorshSerialize for PublishedTemplateHashMessage<'_> {
-    fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
-        BorshSerialize::serialize(&self.template.template_name, writer)?;
-        BorshSerialize::serialize(&self.template.at_epoch, writer)?;
-        BorshSerialize::serialize(&self.template.author, writer)?;
-        BorshSerialize::serialize(&self.template.metadata_hash, writer)?;
-
-        let binary_hash = hash(&self.template.binary);
-        BorshSerialize::serialize(&binary_hash, writer)?;
-        Ok(())
+impl<'a> From<&'a PublishedTemplateMetadata> for PublishedTemplateHashMessage<'a> {
+    fn from(metadata: &'a PublishedTemplateMetadata) -> Self {
+        Self {
+            template_name: &metadata.template_name,
+            at_epoch: metadata.at_epoch,
+            author: &metadata.author_public_key,
+            metadata_hash: &metadata.metadata_hash,
+            binary_hash: metadata.binary_hash,
+        }
     }
 }
 
@@ -228,8 +243,9 @@ mod tests {
         Epoch,
         SubstateVersion,
         fees::{FeeBreakdown, FeeReceipt, FeeSource},
+        published_template::{TemplateBlob, TemplateName},
         resource_container::ResourceContainer,
-        substate::hash_substate,
+        substate::{hash_published_template_metadata, hash_substate},
         transaction_receipt::{DiffSummary, FinalizeOutcome},
     };
 
@@ -275,6 +291,16 @@ mod tests {
         })
     }
 
+    fn template(binary: &[u8]) -> PublishedTemplate {
+        PublishedTemplate {
+            template_name: TemplateName::try_from("baseline").unwrap(),
+            author: RistrettoPublicKeyBytes::from_bytes(&[5u8; 32]).unwrap(),
+            binary: TemplateBlob::new_checked(binary.to_vec()).unwrap(),
+            at_epoch: 3,
+            metadata_hash: Some(TemplateMetadataHash::try_from(vec![9u8; 32]).unwrap()),
+        }
+    }
+
     fn hash_at(version: ProtocolVersion, value: &SubstateValue) -> Hash32 {
         hasher32(EngineHashDomainLabel::SubstateValue)
             .chain(&SubstateHashMessage::new(version, value))
@@ -309,6 +335,45 @@ mod tests {
         assert_eq!(
             hex(hash_at(ProtocolVersion::V0, &resource(UpdateRule::Locked))),
             "30d55dd7f25674254559dbcb8af6130df44501f1c3b76f790e72d23aa0a9e840"
+        );
+    }
+
+    /// Pins the version 0 preimage for a template, as [`version_0_receipt_hash_is_pinned`] does for a
+    /// receipt.
+    #[test]
+    fn version_0_template_hash_is_pinned() {
+        assert_eq!(
+            hex(hash_at(
+                ProtocolVersion::V0,
+                &SubstateValue::Template(template(b"wasm"))
+            )),
+            "fcfa3804d28d15458bbb90fc39ce19ff090ebc8941fb30c9b626a7588191a4a9"
+        );
+    }
+
+    /// The indexer derives template value hashes from streamed metadata.
+    #[test]
+    fn template_metadata_hashes_like_the_template() {
+        let template = template(b"wasm");
+        let metadata = template.clone().into_template_metadata();
+        for (version, epoch) in [(SubstateVersion::ZERO, Epoch(3)), (SubstateVersion::new(7), Epoch(11))] {
+            assert_eq!(
+                hash_published_template_metadata(Network::Esmeralda, &metadata, version, epoch),
+                hash_substate(
+                    Network::Esmeralda,
+                    &SubstateValue::Template(template.clone()),
+                    version,
+                    epoch
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn version_0_covers_template_binary() {
+        assert_ne!(
+            hash_at(ProtocolVersion::V0, &SubstateValue::Template(template(b"wasm"))),
+            hash_at(ProtocolVersion::V0, &SubstateValue::Template(template(b"wasn")))
         );
     }
 
