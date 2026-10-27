@@ -528,11 +528,12 @@ with its value, status, spend authorization and decrypted memo.
   - it is on chain (`is_on_chain` is true) and not burnt (`is_burnt` is false)
 </Aside>
 
-<Aside type="caution">
-  **Incoming outputs are not proven.** The wallet takes the outputs it detects from the indexer as served, even with
-  `indexer_trust = "verify"`, which proves receipts, reads and spends. Point the deposit wallet only at an indexer
-  you run yourself. Before crediting a large deposit, you can also fetch the UTXO from your indexer with
-  `GET /substates/{utxo_id}?include_proof=true` and verify the proof.
+<Aside type="note">
+  **Incoming outputs are proven.** With `indexer_trust = "verify"` (the default), the wallet stores a detected output
+  only once the indexer proves that the network holds it, and it stores the output and frozen flag that the proof
+  shows. Until then the output is not listed, and the wallet asks for the proof again on later scans. An indexer that
+  serves no proof, or a proof that does not verify, can delay a deposit but cannot invent one. Keep this setting on
+  the deposit wallet.
 </Aside>
 
 ```javascript
@@ -780,8 +781,8 @@ the funds of many small deposits needs several transfers.
 Ootle uses a BFT consensus protocol (chained HotStuff), so finality is deterministic: committees of validators commit
 each transaction through a three-chain rule. **Once a transaction has been committed it is final. Ootle has no reorgs
 and no probabilistic confirmations,** so you don't need to wait for a block count before crediting a deposit as you
-do on Minotari. A stealth output that the deposit wallet reports on-chain has been committed, provided the indexer
-reported it honestly (see [Section 5](#section-5-detecting-deposits)).
+do on Minotari. A stealth output that the deposit wallet reports on-chain has been committed: the wallet lists it
+only after the indexer has proven it (see [Section 5](#section-5-detecting-deposits)).
 
 Every transaction has a `max_epoch` set when it is built (by default about an hour ahead). A transaction pinned to an
 epoch after its `max_epoch` is aborted. The pinned epoch is fixed when validators sequence the transaction, so it can
@@ -852,8 +853,8 @@ own deposit and withdrawal path. See [Burn Minotari for TARI](/guides/burn-minot
 6. **Spendable deposits only:** never credit an output that is `Invalid`, frozen, or not a key-path (`Key`) output.
 7. **Idempotency:** credit deposits once per UTXO address, and record withdrawal transaction IDs before you wait for
    the result.
-8. **Verify the indexer:** keep `indexer_trust = "verify"` in every wallet daemon, and point the deposit wallet at an
-   indexer you run. Incoming deposits are not proven.
+8. **Verify the indexer:** keep `indexer_trust = "verify"` in every wallet daemon, so that deposits, receipts and
+   spends are all proven. Point the wallets at an indexer you run, so that another operator cannot delay them.
 9. **Audit logging:** log every credit with the UTXO address, the destination tag, the amount and the time.
 
 ### Customer experience

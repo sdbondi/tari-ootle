@@ -100,9 +100,9 @@ who sent a payment. Give each payer an unguessable, single-use destination tag a
 not by the sender address.
 </Aside>
 
-<Aside type="caution">
-The daemon gets UTXO data from its indexer without a proof that it is on chain. Run an indexer you trust, or confirm
-each deposit on chain, before you credit it.
+<Aside type="note">
+With `indexer_trust = "verify"` (the default), the daemon stores an incoming output only once its indexer proves that
+the network holds it. Until then the output is not listed. Keep this setting on a daemon that reports deposits.
 </Aside>
 
 ### Payments cannot be sent
