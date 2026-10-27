@@ -744,7 +744,8 @@ if (result.timed_out) {
   - **Leave `destination_tag` as `null` unless you mean to override it.** If the customer withdraws to another exchange's
     deposit address that has a destination tag embedded, `null` makes sure the destination tag is forwarded. An empty
     string (`""`) removes it.
-  - Fees are paid in TARI and are always public. Keep a TARI balance in the withdrawal account to cover them.
+  - Fees are paid in TARI, and the fee amount is always public. Make sure the withdrawal account holds enough TARI to
+    cover them.
   - `stealth_transfer` submits the transaction before it returns the `transaction_id`. If the call fails or your
     service crashes before you store the id, the withdrawal may still be on its way. Before you send it again, list
     the withdrawal account's transactions (`transactions.list` with `account`) and look for it. If you can't rule it
