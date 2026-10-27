@@ -15,7 +15,7 @@ use tari_common_types::types::PrivateKey;
 use tari_consensus_types::{Decision, PcId, ProposalCertificate, ShardGroupAccumulatedData};
 use tari_crypto::{ristretto::RistrettoPublicKey, tari_utilities::epoch_time::EpochTime};
 use tari_engine_types::{
-    commit_result::{AbortReason, ExecuteResult, FinalizeResult, RejectReason, TransactionResult},
+    commit_result::{AbortReason, ExecuteResult, FeeIntentFallback, FinalizeResult, RejectReason, TransactionResult},
     component::{Component, ComponentBody, ComponentHeader},
     creation_check::CreationCheck,
     fees::{FeeBreakdown, FeeReceipt, FeeSource},
@@ -55,11 +55,13 @@ use tari_ootle_storage::{
         LockedEpoch,
         MultiShardAtom,
         NoVoteReason,
+        SubstateChange,
         SubstatePledge,
         SubstateRecord,
         SubstateTransition,
         SubstateUpdateBatch,
         TransactionExecution,
+        TransactionPoolRecord,
         TransactionPoolStage,
         TransactionPoolStatusUpdate,
         TransactionRecord,
@@ -86,7 +88,12 @@ use crate::{
     hotstuff::{
         block_change_set::ProposedBlockChangeSet,
         substate_store::PendingSubstateStore,
-        transaction_manager::{ConsensusTransactionManager, EvidenceOrExecution, PreparedTransaction},
+        transaction_manager::{
+            ConsensusTransactionManager,
+            EvidenceOrExecution,
+            PreparedTransaction,
+            adopt_fee_intent_commit,
+        },
     },
     traits::{BlockTransactionExecutor, BlockTransactionExecutorError, CertificateStore, UncommittedChainTemplates},
 };
@@ -107,6 +114,8 @@ struct Script {
     extra_downs: Vec<VersionedSubstateId>,
     /// Substates the execution reports reading at version zero besides the inputs it is given.
     extra_reads: Vec<SubstateId>,
+    /// A committed execution settles a fee intent that creates only the receipt.
+    fee_intent: bool,
 }
 
 /// Stands in for the engine: a transaction executes as its script says, writing every input it is given that is not
@@ -190,23 +199,31 @@ impl BlockTransactionExecutor<TestStore> for ScriptedExecutor {
             diff.up(id.clone(), component(SubstateVersion::ZERO));
             outputs.push(VersionedSubstateId::new(id, SubstateVersion::ZERO));
         }
-        diff.up(
-            receipt.clone(),
-            Substate::new(SubstateVersion::ZERO, TransactionReceipt {
-                outcome: FinalizeOutcome::Commit,
-                diff_summary: Default::default(),
-                fee_withdrawals: Default::default(),
-                events: Default::default(),
+        let receipt_substate = Substate::new(SubstateVersion::ZERO, TransactionReceipt {
+            outcome: FinalizeOutcome::Commit,
+            diff_summary: Default::default(),
+            fee_withdrawals: Default::default(),
+            events: Default::default(),
+            fee_receipt: fee_receipt(),
+            epoch: Epoch::zero(),
+            intent_commitment: transaction.calculate_intent_commitment(),
+        });
+        diff.up(receipt.clone(), receipt_substate.clone());
+        outputs.push(VersionedSubstateId::new(receipt.clone(), SubstateVersion::ZERO));
+        let fee_intent = script.fee_intent.then(|| {
+            let mut fee_intent_diff = SubstateDiff::new();
+            fee_intent_diff.up(receipt, receipt_substate);
+            FeeIntentFallback {
+                diff: fee_intent_diff,
+                events: Vec::new(),
+                logs: Vec::new(),
                 fee_receipt: fee_receipt(),
-                epoch: Epoch::zero(),
-                intent_commitment: transaction.calculate_intent_commitment(),
-            }),
-        );
-        outputs.push(VersionedSubstateId::new(receipt, SubstateVersion::ZERO));
+            }
+        });
 
         let outputs = outputs.into_iter().map(VersionedSubstateIdLockIntent::output).collect();
         let result = execute_result(transaction, TransactionResult::Accept(diff));
-        Ok(TransactionExecution::new(result, inputs, outputs))
+        Ok(TransactionExecution::new(result, inputs, outputs).with_fee_intent_fallback(fee_intent))
     }
 }
 
@@ -449,6 +466,16 @@ impl Replica {
                             &mut substate_store,
                             &mut change_set,
                         ),
+                        Command::AllAccept(atom) => validator.evaluate_all_accept_command(
+                            tx,
+                            block,
+                            atom,
+                            &self.committee,
+                            &mut substate_store,
+                            &mut change_set,
+                            &mut evaluation.total_leader_fee,
+                            &mut evaluation.total_exhaust_burn,
+                        ),
                         command => panic!("unsupported command {command}"),
                     }
                     .unwrap();
@@ -462,6 +489,12 @@ impl Replica {
                     evaluation.stages.push(rec.current_stage());
                     evaluation.executed.push(change_set.transaction_execution(id).is_some());
                 }
+                let (changes, _) = substate_store.into_parts();
+                evaluation.ups = changes
+                    .iter()
+                    .filter(|change| matches!(change, SubstateChange::Up { .. }))
+                    .map(|change| change.substate_id().clone())
+                    .collect();
                 Ok::<_, StorageError>(evaluation)
             })
             .unwrap()
@@ -469,38 +502,98 @@ impl Replica {
 
     /// Evaluates the LocalPrepare `atom` in the parent block and stores what it changes, with the parent justified.
     fn prepare_in_parent(&self, atom: &MultiShardAtom) {
+        self.store
+            .with_write_tx(|tx| {
+                // Reading what a block left pending walks back to the commit block
+                tx.blocks_set_qcs(self.parent.parent(), Some(&PcId::zero()), None)
+            })
+            .unwrap();
+        self.store_in_parent(&Command::LocalPrepare(atom.clone()));
+    }
+
+    /// Evaluates the LocalAccept `atom` in the parent block and stores what it changes, with the parent justified.
+    fn accept_in_parent(&self, atom: &MultiShardAtom) {
+        self.store_in_parent(&Command::LocalAccept(atom.clone()));
+    }
+
+    fn store_in_parent(&self, command: &Command) {
         let block = &self.parent;
         let validator = LocalCommandValidator::new(&self.manager, &self.public_key);
         self.store
             .with_write_tx(|tx| {
-                // Reading what a block left pending walks back to the commit block
-                tx.blocks_set_qcs(block.parent(), Some(&PcId::zero()), None)?;
                 let mut change_set = ProposedBlockChangeSet::new(block.as_leaf());
                 let mut substate_store = PendingSubstateStore::init(&**tx, block.as_leaf(), NUM_PRESHARDS)?;
-                let no_vote = validator
-                    .evaluate_local_prepare_command(
-                        &**tx,
-                        block,
+                let (no_vote, atom) = match command {
+                    Command::LocalPrepare(atom) => (
+                        validator.evaluate_local_prepare_command(
+                            &**tx,
+                            block,
+                            atom,
+                            &self.committee,
+                            &mut substate_store,
+                            &mut change_set,
+                        ),
                         atom,
-                        &self.committee,
-                        &mut substate_store,
-                        &mut change_set,
-                    )
-                    .unwrap();
+                    ),
+                    Command::LocalAccept(atom) => (
+                        validator.evaluate_local_accept_command(
+                            &**tx,
+                            block,
+                            atom,
+                            &self.committee,
+                            false,
+                            &mut substate_store,
+                            &mut change_set,
+                        ),
+                        atom,
+                    ),
+                    command => panic!("unsupported command {command}"),
+                };
+                let no_vote = no_vote.unwrap();
                 assert!(no_vote.is_none(), "{no_vote:?}");
                 let mut rec = change_set
                     .get_transaction_pool_record(&**tx, substate_store.parent_chain(), &atom.id)
                     .unwrap();
                 let (_, locks) = substate_store.into_parts();
                 change_set.set_substate_locks(locks);
-                rec.evidence_mut()
-                    .add_shard_group(self.committee.shard_group())
-                    .set_prepare_qc(PcId::zero());
+                let evidence = rec.evidence_mut().add_shard_group(self.committee.shard_group());
+                if command.is_local_prepare() {
+                    evidence.set_prepare_qc(PcId::zero());
+                } else {
+                    evidence.set_accept_qc(PcId::zero());
+                }
                 rec.set_ready(rec.is_ready_for_pending_stage(self.committee.shard_group()));
                 change_set.set_next_transaction_update(rec).unwrap();
                 change_set.save(tx)
             })
             .unwrap();
+    }
+
+    /// Makes the candidate the parent and evaluates commands in a new child of it.
+    fn extend(&mut self) {
+        let candidate = child(&self.candidate, self.committee.shard_group(), BlockCommands::empty());
+        self.store
+            .with_write_tx(|tx| {
+                candidate.justify().save(tx)?;
+                candidate.insert(tx)
+            })
+            .unwrap();
+        self.parent = std::mem::replace(&mut self.candidate, candidate);
+    }
+
+    /// The pool record of transaction `id` as the candidate block reads it.
+    fn pending_record(&self, id: &TransactionId) -> TransactionPoolRecord {
+        let block = &self.candidate;
+        self.store
+            .with_read_tx(|tx| {
+                let substate_store = PendingSubstateStore::init(tx, block.as_leaf(), NUM_PRESHARDS)?;
+                ProposedBlockChangeSet::new(block.as_leaf()).get_transaction_pool_record(
+                    tx,
+                    substate_store.parent_chain(),
+                    id,
+                )
+            })
+            .unwrap()
     }
 
     /// The execution of transaction `id` pending in the parent block.
@@ -613,6 +706,8 @@ struct Evaluation {
     stages: Vec<TransactionPoolStage>,
     /// Whether each transaction voted for has an execution in the block.
     executed: Vec<bool>,
+    /// The substates the block puts up.
+    ups: Vec<SubstateId>,
 }
 
 fn commits() -> Script {
@@ -1485,6 +1580,111 @@ mod new_multishard_rules {
                 evaluation.no_vote,
                 Some(NoVoteReason::InvalidEvidence {
                     reason: InvalidEvidenceReason::MismatchedEvidence
+                })
+            ),
+            "{:?}",
+            evaluation.no_vote
+        );
+    }
+}
+
+/// A replica that has prepared and accepted [`executing_cross_shard`]'s transaction, whose execution settles a fee
+/// intent, holding the other shard group's pledge of the output it creates there.
+fn accepted_cross_shard_with_fee_intent() -> (Replica, TransactionId) {
+    let (local, foreign) = local_and_foreign_halves();
+    let mut replica = Replica::in_committee(local, 2);
+    let input = component_id_in(local);
+    replica.add_substate(&input);
+    let output = component_id_in(foreign);
+    let id = replica.pool_transaction(1, &[&input], Script {
+        commit: true,
+        new_outputs: vec![output.clone()],
+        fee_intent: true,
+        ..Default::default()
+    });
+    let output_pledge = SubstatePledge::Output {
+        substate_id: VersionedSubstateId::new(output, SubstateVersion::ZERO),
+    };
+    replica
+        .store
+        .with_write_tx(|tx| tx.foreign_substate_pledges_save(&id, foreign, &vec![output_pledge]))
+        .unwrap();
+    let prepare = multishard_atom(&replica.honest_new_multishard_command(&id));
+    replica.prepare_in_parent(&prepare);
+    replica.extend();
+    let involved = NonZeroU64::new(prepare.evidence.num_shard_groups() as u64).unwrap();
+    replica.accept_in_parent(&MultiShardAtom {
+        leader_fee: Some(calculate_leader_fee(FEE, exhaust_burn(), involved)),
+        ..prepare
+    });
+    (replica, id)
+}
+
+/// The record of transaction `id` after the other shard group's LocalAccept in the block, which commits only the
+/// fee intent, and the fee-intent commit it switches the transaction to.
+fn adopt_foreign_fee_intent_accept(
+    replica: &Replica,
+    id: &TransactionId,
+) -> (TransactionPoolRecord, TransactionExecution) {
+    let (_, foreign) = local_and_foreign_halves();
+    let mut rec = replica.pending_record(id);
+    let execution = adopt_fee_intent_commit(id, replica.pending_execution(id)).unwrap();
+    rec.set_fee_intent_only(true)
+        .set_transaction_fee(execution.transaction_fee())
+        .set_exhaust_burn(execution.exhaust_burn());
+    let involved = NonZeroU64::new(rec.evidence().num_shard_groups() as u64).unwrap();
+    let leader_fee = rec.calculate_leader_fee(involved);
+    rec.set_leader_fee(leader_fee);
+    rec.evidence_mut()
+        .add_shard_group(foreign)
+        .set_prepare_qc(PcId::zero())
+        .set_accept_qc(PcId::zero());
+    (rec, execution)
+}
+
+fn all_accept_atom(rec: &TransactionPoolRecord) -> MultiShardAtom {
+    MultiShardAtom {
+        leader_fee: rec.leader_fee().cloned(),
+        ..rec.get_current_multi_shard_atom()
+    }
+}
+
+mod all_accept {
+    use super::*;
+
+    /// A foreign LocalAccept earlier in the block that switches the transaction to its fee-intent commit leaves that
+    /// commit as the diff the AllAccept applies.
+    #[test]
+    fn an_accept_after_a_foreign_proposal_in_the_block_switched_it_to_its_fee_intent_applies_the_fee_intent() {
+        let (replica, id) = accepted_cross_shard_with_fee_intent();
+        let (rec, execution) = adopt_foreign_fee_intent_accept(&replica, &id);
+        let receipt = SubstateId::TransactionReceipt(TransactionReceiptAddress::from(id));
+
+        let evaluation = replica.evaluate_after(&[Command::AllAccept(all_accept_atom(&rec))], |change_set| {
+            change_set.set_next_transaction_update(rec).unwrap();
+            change_set.add_transaction_execution(id, execution).unwrap();
+        });
+
+        assert_voted(&evaluation, TransactionPoolStage::AllAccepted, true);
+        assert_eq!(evaluation.ups, [receipt]);
+    }
+
+    #[test]
+    fn an_accept_of_a_fee_intent_only_transaction_holding_its_full_execution_is_refused() {
+        let (replica, id) = accepted_cross_shard_with_fee_intent();
+        let (rec, _) = adopt_foreign_fee_intent_accept(&replica, &id);
+
+        let evaluation = replica.evaluate_after(&[Command::AllAccept(all_accept_atom(&rec))], |change_set| {
+            change_set.set_next_transaction_update(rec).unwrap();
+        });
+
+        assert!(
+            matches!(
+                evaluation.no_vote,
+                Some(NoVoteReason::FeeIntentExecutionMismatch {
+                    fee_intent_only: true,
+                    execution_fee_intent_only: false,
+                    ..
                 })
             ),
             "{:?}",

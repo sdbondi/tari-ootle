@@ -814,14 +814,37 @@ where
             }));
         }
 
-        let execution = BlockTransactionExecution::get_pending_for_block(tx, tx_rec.id(), &block.as_leaf())
-            .optional()?
-            .ok_or_else(|| {
-                HotStuffError::InvariantError(format!(
-                    "evaluate_all_accept_command: Transaction {} has COMMIT decision but execution is missing",
-                    tx_rec.id()
-                ))
-            })?;
+        // A foreign proposal earlier in this block may have replaced the stored execution with its fee-intent commit
+        let stored_execution;
+        let execution = match proposed_block_change_set.transaction_execution(tx_rec.id()) {
+            Some(execution) => execution.transaction_execution(),
+            None => {
+                stored_execution = BlockTransactionExecution::get_pending_for_block(tx, tx_rec.id(), &block.as_leaf())
+                    .optional()?
+                    .ok_or_else(|| {
+                        HotStuffError::InvariantError(format!(
+                            "evaluate_all_accept_command: Transaction {} has COMMIT decision but execution is missing",
+                            tx_rec.id()
+                        ))
+                    })?;
+                stored_execution.transaction_execution()
+            },
+        };
+
+        if execution.is_fee_intent_commit != tx_rec.is_fee_intent_only() {
+            warn!(
+                target: LOG_TARGET,
+                "❌ NO VOTE: AllAccept of transaction {} in block {} would apply an execution that disagrees with \
+                 the transaction's fee-intent flag",
+                tx_rec.id(),
+                block,
+            );
+            return Ok(Some(NoVoteReason::FeeIntentExecutionMismatch {
+                transaction_id: *tx_rec.id(),
+                fee_intent_only: tx_rec.is_fee_intent_only(),
+                execution_fee_intent_only: execution.is_fee_intent_commit,
+            }));
+        }
 
         let diff = execution.result().finalize.any_accept().ok_or_else(|| {
             HotStuffError::InvariantError(format!(

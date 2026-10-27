@@ -56,6 +56,16 @@ pub enum NoVoteReason {
         local_fee_intent_only: bool,
         proposed_fee_intent_only: bool,
     },
+    #[error(
+        "Transaction {transaction_id} commits {}, but the execution this node holds for it commits {}",
+        commit_scope(*fee_intent_only),
+        commit_scope(*execution_fee_intent_only)
+    )]
+    FeeIntentExecutionMismatch {
+        transaction_id: TransactionId,
+        fee_intent_only: bool,
+        execution_fee_intent_only: bool,
+    },
     #[error("Leader fee disagreement")]
     LeaderFeeDisagreement,
     #[error("Total leader fee disagreement")]
@@ -178,6 +188,7 @@ impl NoVoteReason {
             Self::AllAcceptMustBeCommit { .. } => "AllAcceptMustBeCommit",
             Self::FeeDisagreement => "FeeDisagreement",
             Self::FeeIntentOnlyDisagreement { .. } => "FeeIntentOnlyDisagreement",
+            Self::FeeIntentExecutionMismatch { .. } => "FeeIntentExecutionMismatch",
             Self::LeaderFeeDisagreement => "LeaderFeeDisagreement",
             Self::TotalExhaustBurnDisagreement => "TotalExhaustBurnDisagreement",
             Self::NoLeaderFee => "NoLeaderFee",

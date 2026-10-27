@@ -350,9 +350,13 @@ where TConsensusSpec: ConsensusSpec
 
             // Leader thinks that all foreign ACCEPT pledges have been received and, we are ready to accept the result
             // (COMMIT/ABORT)
-            TransactionPoolStage::LocalAccepted => {
-                self.accept_transaction(state_anchor, &pool_tx, local_committee_info, substate_store)
-            },
+            TransactionPoolStage::LocalAccepted => self.accept_transaction(
+                state_anchor,
+                &pool_tx,
+                local_committee_info,
+                substate_store,
+                executed_transactions,
+            ),
             // Not reachable as there is nothing to propose for these stages. To confirm that all local nodes
             // agreed with the Accept, more (possibly empty) blocks with QCs will be
             // proposed and accepted, otherwise the Accept block will not be committed.
@@ -1153,21 +1157,30 @@ where TConsensusSpec: ConsensusSpec
         tx_rec: &TransactionPoolRecord,
         local_committee_info: &CommitteeInfo,
         substate_store: &mut PendingSubstateStore<TTx>,
+        executed_transactions: &HashMap<TransactionId, TransactionExecution>,
     ) -> Result<Option<Command>, HotStuffError> {
         if tx_rec.current_decision().is_abort() {
             return Ok(Some(Command::SomeAccept(tx_rec.get_current_multi_shard_atom())));
         }
 
-        let tx = substate_store.read_transaction();
-        let execution = tx_rec
-            .get_pending_execution_for_block(tx, state_anchor)
-            .optional()?
-            .ok_or_else(|| {
-                HotStuffError::InvariantError(format!(
-                    "accept_transaction: Transaction {} has COMMIT decision but execution is missing",
-                    tx_rec.id(),
-                ))
-            })?;
+        // A foreign proposal in this block may have replaced the stored execution with its fee-intent commit
+        let stored_execution;
+        let execution = match executed_transactions.get(tx_rec.id()) {
+            Some(execution) => execution,
+            None => {
+                let tx = substate_store.read_transaction();
+                stored_execution = tx_rec
+                    .get_pending_execution_for_block(tx, state_anchor)
+                    .optional()?
+                    .ok_or_else(|| {
+                        HotStuffError::InvariantError(format!(
+                            "accept_transaction: Transaction {} has COMMIT decision but execution is missing",
+                            tx_rec.id(),
+                        ))
+                    })?;
+                stored_execution.transaction_execution()
+            },
+        };
         let diff = execution.result().finalize.any_accept().ok_or_else(|| {
             HotStuffError::InvariantError(format!(
                 "local_accept_transaction: Transaction {} has COMMIT decision but execution failed when proposing",
