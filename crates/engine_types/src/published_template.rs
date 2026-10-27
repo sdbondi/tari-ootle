@@ -48,7 +48,7 @@ pub struct PublishedTemplateMetadata {
     /// Author's public key.
     #[n(1)]
     pub author_public_key: RistrettoPublicKeyBytes,
-    /// SHA-256 hash of the WASM binary.
+    /// `hash_template_code` of the WASM binary, as returned by `PublishedTemplate::to_binary_hash`.
     #[n(2)]
     pub binary_hash: Hash32,
     /// Epoch at which the template was published.
