@@ -1518,6 +1518,15 @@ async fn fetch_checkpoints(
         .collect()
 }
 
+/// How far [`verify_checkpoint`] could check a checkpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointCheck {
+    /// Its committee's quorum signed it.
+    QuorumSigned,
+    /// Its epoch is before this indexer's records, so it was checked for internal consistency only.
+    FormOnly,
+}
+
 /// Verifies `checkpoint` against `epoch_manager`'s record of its epoch, before it is stored and served.
 ///
 /// In an epoch the epoch manager has a record of, the checkpoint must be of one of that epoch's shard groups, and its
@@ -1528,15 +1537,6 @@ async fn fetch_checkpoints(
 ///
 /// The next epoch's validator set the checkpoint names, which the committee ratified, must be the one this indexer
 /// assigned: an indexer that disagrees would serve committees the network does not run.
-/// How far [`verify_checkpoint`] could check a checkpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CheckpointCheck {
-    /// Its committee's quorum signed it.
-    QuorumSigned,
-    /// Its epoch is before this indexer's records, so it was checked for internal consistency only.
-    FormOnly,
-}
-
 async fn verify_checkpoint<TEpochManager: EpochManagerReader>(
     network: Network,
     epoch_manager: &TEpochManager,
