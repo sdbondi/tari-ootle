@@ -974,8 +974,9 @@ pub struct GetIndexerInfoResponse {
     /// `transaction_retention_epochs`, so a retained transaction always has its receipt.
     pub transaction_receipt_retention_epochs: Option<u64>,
     /// How many epochs past the epoch its transaction committed in this indexer retains an event
-    /// before pruning it. `None` means events are retained indefinitely. Event queries and the event
-    /// stream's catch-up answer no further back than this.
+    /// before pruning it. `None` means events are retained indefinitely. Event queries answer no
+    /// further back than this, and the event stream refuses with 410 to resume from a cursor older
+    /// than the newest pruned event.
     pub event_retention_epochs: Option<u64>,
     /// Whether this indexer stores transactions observed on the network gossip topic in addition to
     /// those submitted directly to it. When false, a transaction submitted elsewhere is unknown to

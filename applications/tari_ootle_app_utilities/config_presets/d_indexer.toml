@@ -57,13 +57,14 @@
 #transaction_retention_epochs = 50
 
 # How many epochs past the epoch its transaction committed in a transaction receipt is retained.
-# Unset (the default) or "forever" retains receipts indefinitely. A stored transaction reports its
+# "forever" retains receipts indefinitely. (default = 1000) A stored transaction reports its
 # outcome from its receipt, so a window not longer than transaction_retention_epochs is raised to one
 # epoch longer, and receipts are retained forever while transactions are.
 #transaction_receipt_retention_epochs = 1000
 
-# How many epochs past the epoch its transaction committed in an event is retained. Unset (the default)
-# or "forever" retains events indefinitely. A pruned event no longer answers event queries.
+# How many epochs past the epoch its transaction committed in an event is retained. "forever" retains
+# events indefinitely. (default = 1000) A pruned event no longer answers event queries, and the event
+# stream refuses (410) to resume from a cursor older than the newest pruned event.
 #event_retention_epochs = 1000
 
 # How long, in seconds, each pruner idles between passes once it has nothing left to prune.

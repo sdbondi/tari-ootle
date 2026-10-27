@@ -2038,6 +2038,56 @@ pub(crate) mod tests {
             .unwrap();
     }
 
+    /// A stream cursor is stale exactly when an event above it was pruned, so the pruner must record
+    /// the highest id it deleted, and never lower it on a later pass.
+    #[tokio::test]
+    async fn pruning_events_records_the_highest_pruned_id() {
+        use crate::store::ReadOnlyStore;
+
+        let (_dir, store) = temp_store().await;
+        let reader = ReadOnlyStore::new(store.clone());
+        assert_eq!(reader.get_events_pruned_through_id().await.unwrap(), 0);
+
+        insert_receipts(&store, vec![
+            (1, receipt_with_events_at(Epoch(5), 2)),
+            (2, receipt_with_events_at(Epoch(10), 1)),
+        ])
+        .await;
+        store
+            .with_write_tx(move |tx| tx.prune_events_before_epoch(Epoch(10), 100))
+            .await
+            .unwrap();
+        assert_eq!(reader.get_events_pruned_through_id().await.unwrap(), 2);
+
+        let query = || crate::store::EventQuery {
+            topic: None,
+            substate_id: None,
+            template_address: None,
+            resource_address: None,
+            wildcard_scan_limit: 100,
+        };
+        assert!(
+            reader
+                .get_unpruned_events_after_id(query(), 1, 10)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let page = reader
+            .get_unpruned_events_after_id(query(), 2, 10)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.events.len(), 1);
+
+        // A pass that deletes nothing leaves the recorded id in place.
+        store
+            .with_write_tx(move |tx| tx.prune_events_before_epoch(Epoch(10), 100))
+            .await
+            .unwrap();
+        assert_eq!(reader.get_events_pruned_through_id().await.unwrap(), 2);
+    }
+
     /// As with transactions, the prune selects run under the write lock on every pass, so they must be
     /// served from the epoch indexes rather than a table scan.
     #[tokio::test]

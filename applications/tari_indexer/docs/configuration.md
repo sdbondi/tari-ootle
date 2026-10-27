@@ -85,17 +85,18 @@ Main indexer application settings.
 # to the filesystem: SQLite reuses the freed pages rather than shrinking the file.
 #transaction_retention_epochs = 50
 
-# How many epochs past the epoch its transaction committed in a transaction receipt is retained.
-# Unset (the default) or "forever" retains receipts indefinitely. A pruned receipt no longer answers
+# How many epochs past the epoch its transaction committed in a transaction receipt is retained
+# (default: 1000). "forever" retains receipts indefinitely. A pruned receipt no longer answers
 # a result lookup or appears in the receipt listing. A stored transaction reports its outcome from
 # its receipt, so a window not longer than transaction_retention_epochs is raised to one epoch
 # longer, and receipts are retained forever while transactions are. The economic totals on
 # /network/economics, including the receipt count, keep counting pruned receipts.
 #transaction_receipt_retention_epochs = 1000
 
-# How many epochs past the epoch its transaction committed in an event is retained. Unset (the
-# default) or "forever" retains events indefinitely. A pruned event no longer answers event queries
-# or the event stream's catch-up.
+# How many epochs past the epoch its transaction committed in an event is retained (default: 1000).
+# "forever" retains events indefinitely. A pruned event no longer answers event queries, and the
+# event stream answers 410 to a resume cursor older than the newest pruned event, so the client
+# resynchronises from current state instead of silently missing events.
 #event_retention_epochs = 1000
 
 # How long each pruner idles between passes once it has nothing left to prune, in seconds. While a

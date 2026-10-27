@@ -212,7 +212,7 @@ web_ui_address = "127.0.0.1:15000"
 
 # How long the indexer keeps full transaction bodies. The default is 50 epochs. Set this well above your longest
 # reconciliation window. Receipts (the outcome of a transaction) follow transaction_receipt_retention_epochs, and
-# events follow event_retention_epochs. Both default to "forever".
+# events follow event_retention_epochs. Both default to 1000 epochs.
 transaction_retention_epochs = 500
 
 # Wallets verify the proofs served by the indexer by default, so leave this enabled (default = true).
@@ -818,7 +818,9 @@ For reconciliation or independent verification, ask your indexer:
   - A 404 means neither the indexer nor the validators have a record of the transaction.
 - `GET /events` is a server-sent event (SSE) stream that includes `TransactionFinalized` notifications.
 - `GET /transactions/events/stream` is an SSE stream of engine events. You can filter it by `topic`, `substate_id`,
-  `template_address` or `resource_address`, and resume it with `Last-Event-ID`.
+  `template_address` or `resource_address`, and resume it with `Last-Event-ID`. If events after your cursor have aged
+  past `event_retention_epochs`, the indexer answers `410 Gone`: reconcile balances from current state, then reconnect
+  without a cursor.
 
 Make sure your indexer is up and following the network (`GET /health`, `GET /info`) before you rely on its answers. Indexer
 metrics are exposed on `/_metrics` for monitoring.

@@ -486,13 +486,21 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
             .load::<i64>(self.connection())
             .map_err(|e| StorageError::general(OPERATION, e))?;
 
-        if ids.is_empty() {
+        let Some(&batch_max_id) = ids.iter().max() else {
             return Ok(0);
+        };
+
+        let num_deleted = diesel::delete(events::table.filter(events::id.eq_any(ids)))
+            .execute(self.connection())
+            .map_err(|e| StorageError::general(OPERATION, e))?;
+
+        let pruned_through =
+            Optional::optional(self.key_value_get_value::<_, i64>(Key::EventsPrunedThroughId))?.unwrap_or(0);
+        if batch_max_id > pruned_through {
+            self.key_value_set(Key::EventsPrunedThroughId, batch_max_id)?;
         }
 
-        diesel::delete(events::table.filter(events::id.eq_any(ids)))
-            .execute(self.connection())
-            .map_err(|e| StorageError::general(OPERATION, e))
+        Ok(num_deleted)
     }
 
     fn insert_or_ignore_epoch_checkpoint(&mut self, epoch_checkpoint: &EpochCheckpoint) -> Result<(), StorageError> {

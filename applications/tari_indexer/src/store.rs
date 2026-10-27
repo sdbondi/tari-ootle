@@ -629,15 +629,29 @@ impl<T: IndexerStoreReader> ReadOnlyStore<T> {
             .await
     }
 
-    pub async fn get_events_after_id(
+    /// Returns the events matching `query` with id above `after_id`, oldest first, or `None` if
+    /// retention has pruned any event with id above `after_id`: a client resuming from that cursor
+    /// would silently miss events. The check and the page share one read transaction, so a prune
+    /// cannot land between them.
+    pub async fn get_unpruned_events_after_id(
         &self,
         query: EventQuery,
         after_id: i64,
         limit: u32,
-    ) -> Result<EventsPage, StorageError> {
+    ) -> Result<Option<EventsPage>, StorageError> {
         self.inner
-            .with_read_tx(move |tx| tx.get_events_after_id(&query, after_id, limit))
+            .with_read_tx(move |tx| {
+                if after_id < events_pruned_through_id(tx)? {
+                    return Ok(None);
+                }
+                tx.get_events_after_id(&query, after_id, limit).map(Some)
+            })
             .await
+    }
+
+    /// The highest id of any event retention has pruned, or 0 if none has been.
+    pub async fn get_events_pruned_through_id(&self) -> Result<i64, StorageError> {
+        self.inner.with_read_tx(|tx| events_pruned_through_id(tx)).await
     }
 
     pub async fn list_template_catalogue(
@@ -720,4 +734,11 @@ impl<T: IndexerStoreReader> ReadOnlyStore<T> {
             .with_read_tx(move |tx| tx.list_watched_substates(template_address.as_ref(), limit, offset))
             .await
     }
+}
+
+fn events_pruned_through_id<TTx: IndexerStoreReadTransaction>(tx: &mut TTx) -> Result<i64, StorageError> {
+    Ok(tx
+        .key_value_get_value::<_, i64>(Key::EventsPrunedThroughId)
+        .optional()?
+        .unwrap_or(0))
 }

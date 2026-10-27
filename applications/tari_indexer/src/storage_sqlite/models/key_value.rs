@@ -61,6 +61,10 @@ pub enum Key {
     /// The number of transaction receipts this indexer has indexed, including those it has since pruned.
     /// type: u64
     TransactionReceiptCount,
+    /// The highest id of any event deleted by retention pruning. Event ids are assigned in insertion
+    /// order and never reused, so a client cursor below this has missed at least one event.
+    /// type: i64
+    EventsPrunedThroughId,
 }
 
 impl Key {
@@ -73,6 +77,7 @@ impl Key {
             Self::TariAccumulatedFees => "tari_accumulated_fees",
             Self::TariAccumulatedReceiptExhaustBurn => "tari_accumulated_receipt_exhaust_burn",
             Self::TransactionReceiptCount => "transaction_receipt_count",
+            Self::EventsPrunedThroughId => "events_pruned_through_id",
         }
     }
 }

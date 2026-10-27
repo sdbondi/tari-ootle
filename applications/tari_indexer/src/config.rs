@@ -224,7 +224,8 @@ pub struct IndexerConfig {
     #[serde(default = "default_transaction_retention_epochs", with = "retention_epochs")]
     pub transaction_retention_epochs: Option<u64>,
     /// How many epochs past the epoch its transaction committed in a transaction receipt is retained
-    /// before it is pruned. Write `"forever"` (the default) to retain receipts indefinitely.
+    /// before it is pruned. Defaults to 1000 epochs. Write `"forever"` to retain receipts
+    /// indefinitely; receipts are synced for the whole network, so that grows the database without bound.
     ///
     /// A pruned receipt no longer answers a result lookup or appears in the receipt listing, so set
     /// this well above the longest a client may take to fetch a result. A window not longer than
@@ -232,14 +233,15 @@ pub struct IndexerConfig {
     /// indefinitely while transactions are; see [`IndexerConfig::effective_receipt_retention_epochs`].
     /// The network economic totals, including the receipt count, are accumulated as receipts are
     /// indexed and keep counting pruned ones.
-    #[serde(default, with = "retention_epochs")]
+    #[serde(default = "default_transaction_receipt_retention_epochs", with = "retention_epochs")]
     pub transaction_receipt_retention_epochs: Option<u64>,
     /// How many epochs past the epoch its transaction committed in an event is retained before it is
-    /// pruned. Write `"forever"` (the default) to retain events indefinitely.
+    /// pruned. Defaults to 1000 epochs. Write `"forever"` to retain events indefinitely; with no
+    /// `event_filters` that indexes every event on the network and grows the database without bound.
     ///
-    /// A pruned event no longer answers event queries or the event stream's catch-up, so a client
-    /// resuming from an older cursor misses it.
-    #[serde(default, with = "retention_epochs")]
+    /// A pruned event no longer answers event queries. The event stream refuses to resume from a
+    /// cursor older than the newest pruned event, so a client learns it must resynchronise.
+    #[serde(default = "default_event_retention_epochs", with = "retention_epochs")]
     pub event_retention_epochs: Option<u64>,
     /// Store transactions observed on the network-wide transaction gossip topic, not only those
     /// submitted directly to this indexer. When enabled the indexer joins the transaction mesh as a
@@ -370,6 +372,14 @@ fn default_transaction_retention_epochs() -> Option<u64> {
     Some(50)
 }
 
+fn default_transaction_receipt_retention_epochs() -> Option<u64> {
+    Some(1000)
+}
+
+fn default_event_retention_epochs() -> Option<u64> {
+    Some(1000)
+}
+
 mod retention_epochs {
     //! A retention window accepts a number of epochs or the string `"forever"`. An
     //! omitted key takes the default and TOML has no null literal, so without an explicit spelling
@@ -483,8 +493,8 @@ impl Default for IndexerConfig {
             substate_cache_max_entries: default_substate_cache_max_entries(),
             substate_cache_negative_ttl: default_substate_cache_negative_ttl(),
             transaction_retention_epochs: default_transaction_retention_epochs(),
-            transaction_receipt_retention_epochs: None,
-            event_retention_epochs: None,
+            transaction_receipt_retention_epochs: default_transaction_receipt_retention_epochs(),
+            event_retention_epochs: default_event_retention_epochs(),
             index_gossiped_transactions: default_index_gossiped_transactions(),
             max_transaction_gossip_queue_bytes: default_max_transaction_gossip_queue_bytes(),
             prune_interval: default_prune_interval(),
