@@ -19,7 +19,7 @@ use tari_engine_types::{
 };
 use tari_indexer_client::types::TransactionSource;
 use tari_indexer_lib::substate_cache::{FetchWatermark, SubstateCacheEntryRef, caches_nonexistence};
-use tari_ootle_common_types::{Epoch, StateVersion, displayable::Displayable, optional::Optional};
+use tari_ootle_common_types::{Epoch, StateVersion, displayable::Displayable, optional::Optional, shard::Shard};
 use tari_ootle_storage::{
     StorageError,
     consensus_models::{EpochCheckpoint, SubstateData},
@@ -131,7 +131,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
 
                     let insert = UtxoRecordInsert {
                         commitment,
-                        public_nonce: serialize_hex(unspent.utxo_output.output.public_nonce),
+                        public_nonce: Some(serialize_hex(unspent.utxo_output.output.public_nonce)),
                         version: unspent.version.as_u64() as i64,
                         utxo: Some(encode_committed(&Utxo {
                             output: Some(unspent.utxo_output.clone()),
@@ -140,7 +140,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
                         shard: unspent.shard.as_u32() as i32,
                         resource_address,
                         state_version: unspent.state_version.as_u64() as i64,
-                        utxo_tag: unspent.utxo_output.tag.value() as i32,
+                        utxo_tag: Some(unspent.utxo_output.tag.value() as i32),
                         epoch: epoch.as_u64() as i64,
                         is_spent: false,
                         is_burnt: false,
@@ -169,18 +169,65 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
                     };
                     // A re-versioned output (freeze, unfreeze) keeps its commitment, so each version has its own
                     // row and only the version this transition takes down is marked spent.
-                    diesel::update(utxos::table)
-                        .filter(utxos::resource_address.eq(resource_address))
-                        .filter(utxos::commitment.eq(commitment))
+                    let num_updated = diesel::update(utxos::table)
+                        .filter(utxos::resource_address.eq(&resource_address))
+                        .filter(utxos::commitment.eq(&commitment))
                         .filter(utxos::version.eq(spent.version.as_u64() as i64))
                         .set(update)
                         .execute(self.connection())
                         .map_err(|e| StorageError::general(OPERATION, format!("update error: {e}")))?;
+                    // The stream serves a spend as the id and version it took down, which a client holding the
+                    // output can act on whether or not this indexer ever held it unspent.
+                    if num_updated == 0 {
+                        let tombstone = UtxoRecordInsert {
+                            commitment,
+                            public_nonce: None,
+                            version: spent.version.as_u64() as i64,
+                            shard: spent.shard.as_u32() as i32,
+                            resource_address,
+                            state_version: spent.state_version.as_u64() as i64,
+                            utxo: None,
+                            utxo_tag: None,
+                            epoch: epoch.as_u64() as i64,
+                            is_spent: true,
+                            is_burnt: false,
+                        };
+                        diesel::insert_into(utxos::table)
+                            .values(tombstone)
+                            .execute(self.connection())
+                            .map_err(|e| StorageError::general(OPERATION, format!("insert error: {e}")))?;
+                    }
                 },
             }
         }
 
         Ok(skipped)
+    }
+
+    fn raise_utxo_tombstone_horizon(&mut self, shard: Shard, state_version: StateVersion) -> Result<(), StorageError> {
+        const OPERATION: &str = "raise_utxo_tombstone_horizon";
+        use crate::storage_sqlite::schema::utxo_tombstone_horizons;
+
+        // Versions from 2^63 up are stored negative, so the comparison is made on the decoded version rather than
+        // in SQL.
+        if self
+            .utxo_tombstone_horizon(shard)?
+            .is_some_and(|horizon| horizon >= state_version)
+        {
+            return Ok(());
+        }
+        let version = state_version.as_u64() as i64;
+        diesel::insert_into(utxo_tombstone_horizons::table)
+            .values((
+                utxo_tombstone_horizons::shard.eq(shard.as_u32() as i32),
+                utxo_tombstone_horizons::state_version.eq(version),
+            ))
+            .on_conflict(utxo_tombstone_horizons::shard)
+            .do_update()
+            .set(utxo_tombstone_horizons::state_version.eq(version))
+            .execute(self.connection())
+            .map_err(|e| StorageError::general(OPERATION, e))?;
+        Ok(())
     }
 
     fn upsert_substate(&mut self, substate: &SubstateData) -> Result<(), StorageError> {

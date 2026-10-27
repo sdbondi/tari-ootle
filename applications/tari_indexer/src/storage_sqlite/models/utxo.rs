@@ -30,13 +30,13 @@ pub(crate) struct UtxoRecordUpdate {
 #[diesel(table_name = utxos)]
 pub(crate) struct UtxoRecordInsert {
     pub commitment: String,
-    pub public_nonce: String,
+    pub public_nonce: Option<String>,
     pub version: i64,
     pub shard: i32,
     pub resource_address: String,
     pub state_version: i64,
     pub utxo: Option<Vec<u8>>,
-    pub utxo_tag: i32,
+    pub utxo_tag: Option<i32>,
     pub epoch: i64,
     pub is_spent: bool,
     pub is_burnt: bool,
@@ -46,13 +46,13 @@ pub(crate) struct UtxoRecordInsert {
 pub(crate) struct UtxoRecord {
     pub _id: i64,
     pub commitment: String,
-    pub public_nonce: String,
+    pub public_nonce: Option<String>,
     pub version: i64,
     pub resource_address: String,
     pub _shard: i32,
     pub state_version: i64,
     pub utxo: Option<Vec<u8>>,
-    pub utxo_tag: i32,
+    pub utxo_tag: Option<i32>,
     pub epoch: i64,
     pub is_spent: bool,
     pub is_burnt: bool,
@@ -84,8 +84,13 @@ impl UtxoRecord {
                 }
             },
             Some(_) => {
-                let public_nonce = deserialize_hex_try_from::<RistrettoPublicKeyBytes, _>(&self.public_nonce)?;
-                let tag = UtxoTag::new(self.utxo_tag as u32);
+                let (Some(public_nonce), Some(tag)) = (&self.public_nonce, self.utxo_tag) else {
+                    return Err(StorageError::DataInconsistency {
+                        details: format!("Unspent UTXO {} has no stored public nonce or tag", self.commitment),
+                    });
+                };
+                let public_nonce = deserialize_hex_try_from::<RistrettoPublicKeyBytes, _>(public_nonce)?;
+                let tag = UtxoTag::new(tag as u32);
 
                 Ok((
                     StateVersion::new(self.state_version as u64),

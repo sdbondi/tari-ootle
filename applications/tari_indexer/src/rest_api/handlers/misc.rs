@@ -55,6 +55,11 @@ pub async fn get_identity(Extension(context): Extension<HandlerContext>) -> Hand
 pub async fn get_info(Extension(context): Extension<HandlerContext>) -> HandlerResult<Response> {
     let config = context.published_config();
     let network = context.network();
+    let utxo_tombstone_horizons = context
+        .read_only_store()
+        .get_utxo_tombstone_horizons()
+        .await
+        .map_err(ErrorResponse::anyhow)?;
 
     let response = GetIndexerInfoResponse {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -69,8 +74,9 @@ pub async fn get_info(Extension(context): Extension<HandlerContext>) -> HandlerR
         verify_substate_proofs: config.verify_substate_proofs,
         substate_cache_max_serve_lag_secs: config.substate_cache_max_serve_lag.as_secs(),
         indexes_all_events: config.indexes_all_events,
+        utxo_tombstone_horizons,
     };
-    // Only `current_epoch` changes at runtime; the rest is fixed for the life of the process.
+    // `current_epoch` and the tombstone horizons change at runtime; the rest is fixed for the life of the process.
     Ok(context.apply_cache_control(Json(response), 30))
 }
 

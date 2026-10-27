@@ -28,6 +28,14 @@ pub struct StartOfShard {
     /// give, so counting `num_updates` cannot answer this.
     #[prost(bool, tag = "4")]
     pub has_more: bool,
+    /// This indexer may lack the tombstones of outputs spent in the shard between the request's
+    /// cursor and its tombstone horizon (`utxo_tombstone_horizons` on `/info`), so a held output
+    /// that is not reported spent may still be spent. Set only when the request includes spends. A
+    /// client clears the shard's cursor and rescans it for unspent outputs, then checks each held
+    /// output the rescan does not return.
+    #[prost(bool, tag = "5")]
+    #[serde(default)]
+    pub resync_required: bool,
 }
 
 #[derive(::prost::Message, serde::Serialize, serde::Deserialize)]

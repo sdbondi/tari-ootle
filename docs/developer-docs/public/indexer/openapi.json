@@ -1080,7 +1080,7 @@
         "tags": [
           "handlers::transaction_events"
         ],
-        "description": "SSE stream of template-emitted transaction events. Supports catch-up via the `after_id` query parameter or `Last-Event-ID` header.",
+        "description": "SSE stream of template-emitted transaction events. Supports catch-up via the `after_id` query parameter or `Last-Event-ID` header. A cursor older than the indexer's event retention window (see `event_retention_epochs` on /info) is refused with 410, and a stream whose catch-up reaches pruned events ends, so the reconnect is refused the same way.",
         "operationId": "sse_transaction_events",
         "parameters": [
           {
@@ -1130,7 +1130,21 @@
             }
           }
         ],
-        "responses": {}
+        "responses": {
+          "200": {
+            "description": "SSE stream of transaction events"
+          },
+          "410": {
+            "description": "Events after the resume cursor have been pruned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/transactions/recent": {
@@ -1316,6 +1330,16 @@
           },
           "400": {
             "description": "Invalid request parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The from_id UTXO is not stored on this indexer",
             "content": {
               "application/json": {
                 "schema": {
@@ -1712,7 +1736,8 @@
           "index_gossiped_transactions",
           "verify_substate_proofs",
           "substate_cache_max_serve_lag_secs",
-          "indexes_all_events"
+          "indexes_all_events",
+          "utxo_tombstone_horizons"
         ],
         "properties": {
           "current_epoch": {
@@ -1727,7 +1752,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "How many epochs past the epoch its transaction committed in this indexer retains an event\nbefore pruning it. `None` means events are retained indefinitely. Event queries and the event\nstream's catch-up answer no further back than this.",
+            "description": "How many epochs past the epoch its transaction committed in this indexer retains an event\nbefore pruning it. `None` means events are retained indefinitely. Event queries answer no\nfurther back than this, and the event stream refuses with 410 to resume from a cursor older\nthan the newest pruned event.",
             "minimum": 0
           },
           "index_gossiped_transactions": {
@@ -1776,6 +1801,26 @@
             "format": "int64",
             "description": "How many epochs past its terminal epoch this indexer retains a transaction before pruning the\nrecord. `None` means transactions are retained indefinitely. A client paginating transaction\nhistory hits this floor rather than the start of the chain.",
             "minimum": 0
+          },
+          "utxo_tombstone_horizons": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": false,
+              "prefixItems": [
+                {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                }
+              ]
+            },
+            "description": "Per shard, the state version at and below which this indexer may lack the tombstone of a spent\nUTXO, ascending by shard. A shard's first sync fetches only its live substates, so a spend\nbefore it is not seen. A shard not listed has every tombstone. The UTXO stream sets\n`StartOfShard::resync_required` for a shard whose cursor is below its horizon. This is sync\nstate, and rises while the indexer runs."
           },
           "verify_substate_proofs": {
             "type": "boolean",

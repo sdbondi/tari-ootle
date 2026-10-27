@@ -1002,6 +1002,13 @@ pub struct GetIndexerInfoResponse {
     /// Whether this indexer stores every event on the network. When false it is configured with event
     /// filters, so event queries answer over a subset and absence is not proof an event did not occur.
     pub indexes_all_events: bool,
+    /// Per shard, the state version at and below which this indexer may lack the tombstone of a spent
+    /// UTXO, ascending by shard. A shard's first sync fetches only its live substates, so a spend
+    /// before it is not seen. A shard not listed has every tombstone. The UTXO stream sets
+    /// `StartOfShard::resync_required` for a shard whose cursor is below its horizon. This is sync
+    /// state, and rises while the indexer runs.
+    #[cfg_attr(feature = "utoipa", schema(value_type = Vec<(u32, u64)>))]
+    pub utxo_tombstone_horizons: Vec<(Shard, StateVersion)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

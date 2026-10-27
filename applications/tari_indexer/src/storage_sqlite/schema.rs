@@ -102,17 +102,24 @@ diesel::table! {
     utxos (id) {
         id -> BigInt,
         commitment -> Text,
-        public_nonce -> Text,
+        public_nonce -> Nullable<Text>,
         version -> BigInt,
         resource_address -> Text,
         shard -> Integer,
         state_version -> BigInt,
         utxo -> Nullable<Binary>,
-        utxo_tag -> Integer,
+        utxo_tag -> Nullable<Integer>,
         epoch -> BigInt,
         is_spent -> Bool,
         is_burnt -> Bool,
         created_at -> Timestamp,
+    }
+}
+
+diesel::table! {
+    utxo_tombstone_horizons (shard) {
+        shard -> Integer,
+        state_version -> BigInt,
     }
 }
 
@@ -169,6 +176,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     template_catalogue,
     transaction_receipts,
     transactions,
+    utxo_tombstone_horizons,
     utxos,
     verified_state_roots,
     watched_substates,

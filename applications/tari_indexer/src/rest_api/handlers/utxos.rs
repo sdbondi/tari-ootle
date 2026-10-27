@@ -21,7 +21,7 @@ use tari_indexer_client::types::{
     ListUtxosRequest,
     ListUtxosResponse,
 };
-use tari_ootle_common_types::NumPreshards;
+use tari_ootle_common_types::{NumPreshards, optional::Optional};
 
 use crate::rest_api::{
     context::HandlerContext,
@@ -147,6 +147,7 @@ pub async fn fetch_utxos(
 responses(
     (status = 200, description = "List of UTXOs", body = ListUtxosResponse),
     (status = BAD_REQUEST, description = "Invalid request parameters", body = ErrorResponse),
+    (status = NOT_FOUND, description = "The from_id UTXO is not stored on this indexer", body = ErrorResponse),
     (status = INTERNAL_SERVER_ERROR, description = "Failed to list UTXOs", body = ErrorResponse),
 ))]
 pub async fn list_utxos(
@@ -163,7 +164,14 @@ pub async fn list_utxos(
         .substate_manager()
         .list_utxos(&req.resource_address, req.from_id, req.limit)
         .await
-        .map_err(ErrorResponse::anyhow)?;
+        .optional()
+        .map_err(ErrorResponse::anyhow)?
+        .ok_or_else(|| {
+            ErrorResponse::not_found(
+                "The from_id UTXO is not stored on this indexer: it may have been pruned once spent. Restart the \
+                 listing without from_id.",
+            )
+        })?;
 
     Ok(Json(ListUtxosResponse { utxos }))
 }

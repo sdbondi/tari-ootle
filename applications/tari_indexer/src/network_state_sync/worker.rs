@@ -1081,6 +1081,7 @@ impl NetworkWideStateSync {
                         shard,
                         state_version,
                         msg_epoch,
+                        value_filters.is_up_only(),
                         sync_progress_snapshot,
                         &event_filters,
                         &watched_templates,
@@ -1569,6 +1570,10 @@ impl VersionBuf {
     /// Writes the version, with `sync_progress` recording it, and folds what it inserted into the
     /// running totals.
     ///
+    /// `without_downs` says the version was streamed without its destroyed substates, as a shard's
+    /// first sync fetches it. The tombstones of the UTXOs spent at or below it are then missing, so
+    /// the shard's tombstone horizon is raised to it in the same write.
+    ///
     /// The receipt-sourced totals are taken from the receipts actually inserted, so a receipt whose
     /// address is already indexed is neither counted again nor announced.
     #[expect(clippy::too_many_arguments)]
@@ -1578,6 +1583,7 @@ impl VersionBuf {
         shard: Shard,
         state_version: StateVersion,
         epoch: Epoch,
+        without_downs: bool,
         sync_progress: SyncProgress,
         event_filters: &[EventFilter],
         watched_templates: &HashSet<TemplateAddress>,
@@ -1588,6 +1594,9 @@ impl VersionBuf {
         let retired_cache_entries = tx.substate_cache_invalidate(self.invalidations, state_version)?;
         debug!(target: LOG_TARGET, "✅ Committing {} UTXOs for shard {shard} (epoch: {epoch})", self.utxos.len());
         let skipped_utxos = tx.batch_insert_utxo_updates(epoch, self.utxos)?;
+        if without_downs {
+            tx.raise_utxo_tombstone_horizon(shard, state_version)?;
+        }
         for substate_data in self.validator_fee_pools {
             tx.upsert_substate(&substate_data)?;
         }
@@ -1839,6 +1848,15 @@ mod tests {
         }
 
         async fn commit(store: &SqliteIndexerStore, version: u64, buf: VersionBuf) -> CommittedVersion {
+            commit_streamed(store, version, false, buf).await
+        }
+
+        async fn commit_streamed(
+            store: &SqliteIndexerStore,
+            version: u64,
+            without_downs: bool,
+            buf: VersionBuf,
+        ) -> CommittedVersion {
             store
                 .with_write_tx(move |tx| {
                     buf.commit(
@@ -1846,6 +1864,7 @@ mod tests {
                         SHARD,
                         StateVersion::new(version),
                         Epoch(1),
+                        without_downs,
                         SyncProgress::default(),
                         &[],
                         &HashSet::new(),
@@ -1860,6 +1879,25 @@ mod tests {
                 .with_read_tx(|tx| tx.key_value_get_value::<_, Amount>(Key::TariAccumulatedFees))
                 .await
                 .unwrap()
+        }
+
+        /// A shard's first sync streams its versions without their destroyed substates, so every such
+        /// version raises the shard's tombstone horizon. A version streamed whole does not.
+        #[tokio::test]
+        async fn a_version_streamed_without_its_downs_raises_the_tombstone_horizon() {
+            let dir = tempfile::tempdir().unwrap();
+            let store = SqliteIndexerStore::try_create(dir.path().join("indexer.db")).unwrap();
+            let horizon = || {
+                let store = store.clone();
+                async move { store.with_read_tx(|tx| tx.utxo_tombstone_horizon(SHARD)).await.unwrap() }
+            };
+
+            commit_streamed(&store, 5, true, VersionBuf::default()).await;
+            commit_streamed(&store, 9, true, VersionBuf::default()).await;
+            assert_eq!(horizon().await, Some(StateVersion::new(9)));
+
+            commit_streamed(&store, 12, false, VersionBuf::default()).await;
+            assert_eq!(horizon().await, Some(StateVersion::new(9)));
         }
 
         /// A receipt address is written once on the network, so a conflict at one means some sync peer

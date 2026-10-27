@@ -217,6 +217,8 @@ impl SubstateManager {
         }
     }
 
+    /// A shard's UTXO updates past `from_state_version`, with the shard's tombstone horizon read in the same
+    /// transaction, so that no tombstone the read lacks is pruned below a horizon it does not report.
     pub async fn get_utxo_updates(
         &self,
         resource_address: ResourceAddress,
@@ -225,18 +227,20 @@ impl SubstateManager {
         from_state_version: StateVersion,
         unspent_only: bool,
         limit: u32,
-    ) -> Result<UtxoStateUpdateSet, SubstateManagerError> {
+    ) -> Result<(UtxoStateUpdateSet, Option<StateVersion>), SubstateManagerError> {
         let updates = self
             .substate_store
             .with_read_tx(move |tx| {
-                tx.utxos_get_updates(
+                let updates = tx.utxos_get_updates(
                     resource_address,
                     from_epoch,
                     shard,
                     from_state_version,
                     unspent_only,
                     limit,
-                )
+                )?;
+                let horizon = tx.utxo_tombstone_horizon(shard)?;
+                Ok::<_, StorageError>((updates, horizon))
             })
             .await?;
         Ok(updates)

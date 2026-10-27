@@ -45,12 +45,12 @@ impl UtxoUpdateStream {
                     state_version
                 );
 
-                let UtxoStateUpdateSet {
+                let (UtxoStateUpdateSet {
                     updates,
                     max_state_version,
                     max_epoch,
                     has_more,
-                } = substate_manager
+                }, tombstone_horizon) = substate_manager
                     .get_utxo_updates(
                         request.resource_address,
                         request.from_epoch,
@@ -67,7 +67,11 @@ impl UtxoUpdateStream {
                 // or excluded by this request's `from_epoch`/`unspent_only` filters. A shard whose
                 // read matched nothing still reports it when the read moved past the cursor, so that
                 // the client does not read the excluded rows again on its next pass.
-                if updates.is_empty() && max_state_version <= state_version {
+                //
+                // A cursor below the tombstone horizon is told to resync whatever the read found, so a
+                // shard with nothing past the cursor still sends its frame.
+                let resync_required = resync_required(request.unspent_only, state_version, tombstone_horizon);
+                if updates.is_empty() && max_state_version <= state_version && !resync_required {
                     debug!(target: LOG_TARGET, "No updates found for shard {}, moving to next shard", shard);
                     continue;
                 }
@@ -83,6 +87,7 @@ impl UtxoUpdateStream {
                     shard,
                     max_state_version,
                     has_more,
+                    resync_required,
                     updates,
                     index: 0,
                 };
@@ -96,6 +101,7 @@ impl UtxoUpdateStream {
                             max_state_version: pending.max_state_version.as_u64(),
                             num_updates: u32::try_from(pending.updates_len()).expect("loaded more than u32::MAX updates"),
                             has_more: pending.has_more,
+                            resync_required: pending.resync_required,
                         });
                         pending.sos_emitted = true;
                     }
@@ -161,6 +167,7 @@ struct PendingUpdates {
     pub shard: Shard,
     pub max_state_version: StateVersion,
     pub has_more: bool,
+    pub resync_required: bool,
     pub updates: Vec<WalletUtxoUpdate>,
     pub index: usize,
 }
@@ -188,6 +195,12 @@ impl PendingUpdates {
     }
 }
 
+/// Whether a read of a shard from `cursor` may be missing spends, which it is when it asks for them and resumes below
+/// the shard's tombstone horizon. A cursor of zero is a full scan, and misses them as much as any other.
+fn resync_required(unspent_only: bool, cursor: StateVersion, tombstone_horizon: Option<StateVersion>) -> bool {
+    !unspent_only && tombstone_horizon.is_some_and(|horizon| cursor < horizon)
+}
+
 fn wallet_utxo_update_to_protobuf(update: &WalletUtxoUpdate) -> protobuf::WalletUtxoUpdate {
     match update {
         WalletUtxoUpdate::Unspent(unspent) => protobuf::WalletUtxoUpdate::Unspent(protobuf::UtxoUnspent {
@@ -202,5 +215,21 @@ fn wallet_utxo_update_to_protobuf(update: &WalletUtxoUpdate) -> protobuf::Wallet
             id: burnt.id.as_bytes().to_vec(),
             version: burnt.version.as_u64(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cursor_below_the_tombstone_horizon_must_resync_when_it_reads_spends() {
+        let v = StateVersion::new;
+
+        assert!(resync_required(false, v(0), Some(v(10))));
+        assert!(resync_required(false, v(9), Some(v(10))));
+        assert!(!resync_required(false, v(10), Some(v(10))));
+        assert!(!resync_required(false, v(0), None));
+        assert!(!resync_required(true, v(9), Some(v(10))));
     }
 }

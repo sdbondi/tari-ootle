@@ -4,6 +4,7 @@ drop table substate_cache;
 drop table verified_state_roots;
 drop table watched_substates;
 drop table template_catalogue;
+drop table utxo_tombstone_horizons;
 drop table utxos;
 drop table epoch_checkpoints;
 drop table key_values;

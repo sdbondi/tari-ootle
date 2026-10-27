@@ -112,14 +112,16 @@ create table utxos
 (
     id               integer   not NULL primary key AUTOINCREMENT,
     commitment       text      not NULL,
-    public_nonce     text      not NULL,
+    -- `public_nonce` and `utxo_tag` are NULL on the tombstone of an output this indexer never held unspent: it was spent
+    -- before this indexer saw its creation, which the shard's first sync skips and a later sync streams without a value.
+    public_nonce     text      NULL,
     version          bigint    not NULL,
     resource_address text      not NULL,
     shard            int       not NULL,
     state_version    bigint    not NULL,
     -- The CBOR-encoded `Utxo` while unspent, served as stored. NULL once spent.
     utxo             blob      NULL,
-    utxo_tag         int       not NULL,
+    utxo_tag         int       NULL,
     epoch            bigint    not NULL,
     is_spent         boolean   not NULL,
     is_burnt         boolean   not NULL,
@@ -138,6 +140,15 @@ CREATE INDEX utxos_resource_unspent_idx ON utxos (resource_address) WHERE is_spe
 -- Finds a resource's spent or burnt UTXOs by public nonce and tag, as fetching UTXOs by key does to report which of
 -- the requested outputs are spent. Queries must repeat this condition as SQL literals for SQLite to use the index.
 CREATE INDEX utxos_resource_public_nonce_utxo_tag_spent_idx ON utxos (resource_address, public_nonce, utxo_tag) WHERE is_spent = true OR is_burnt = true;
+
+-- Per shard, the state version at and below which this indexer may lack the tombstone of a spent UTXO. A shard's first
+-- sync fetches only its live substates, so the spends before it are not seen. The UTXO stream asks a client resuming
+-- from below a shard's horizon to resync it. A shard with no row has every tombstone.
+create table utxo_tombstone_horizons
+(
+    shard         int    not null primary key,
+    state_version bigint not null
+);
 
 -- Lightweight template metadata received from validators via the TEMPLATE_METADATA sync flag. This
 -- lets the indexer serve a searchable template catalogue without storing full WASM binaries.
