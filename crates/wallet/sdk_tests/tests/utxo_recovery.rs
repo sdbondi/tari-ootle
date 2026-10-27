@@ -161,6 +161,7 @@ impl WalletNetworkInterface for UtxoNetwork {
             shard,
             max_state_version: StateVersion::from(1),
             has_more: false,
+            resync_required: false,
         };
         let payloads = self
             .state

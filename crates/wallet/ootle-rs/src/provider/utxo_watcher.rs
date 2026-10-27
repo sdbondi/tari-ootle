@@ -74,6 +74,18 @@ pub enum StealthUtxoFrame {
         /// The shard has updates beyond this pass. Poll again to drain it rather than waiting for
         /// the next scheduled pass.
         has_more: bool,
+        /// The indexer may lack the spends of the shard's outputs below its tombstone horizon, which
+        /// the request's cursor is below, so an output the application holds that this pass does
+        /// not report spent may still be spent. Set only when the request includes spends.
+        ///
+        /// Skip the shard's frames up to its `EndOfShard` without observing its watermark, restart
+        /// the shard with [`ShardCursor::resync`], and watch it with `unspent_only = true` until
+        /// it has no more. Then check each output the application holds in the shard that the
+        /// rescan did not return, for instance with
+        /// [`IndexerProvider::get_substate`](crate::provider::IndexerProvider::get_substate): an
+        /// output the indexer no longer serves is gone. Persist the shard's progress only once the
+        /// check is done, so that a monitor that stops part way is asked to resync again.
+        resync_required: bool,
     },
     /// A currently-unspent output. Carries only the `(tag, public_nonce)` fetch key — the commitment
     /// and viewable-balance ciphertext must be resolved via
@@ -165,6 +177,7 @@ impl StealthUtxoStream {
                                 max_state_version: StateVersion::from(sos.max_state_version),
                                 num_updates: sos.num_updates,
                                 has_more: sos.has_more,
+                                resync_required: sos.resync_required,
                             });
                         }
                         if let Some(update) = update {
@@ -432,6 +445,13 @@ impl ShardCursor {
             .collect()
     }
 
+    /// Restarts `shard` from `StateVersion::zero` without a claim, for a rescan of its unspent outputs that
+    /// [`StealthUtxoFrame::StartOfShard::resync_required`] asks for. A rescan that reaches the end of the shard moves
+    /// it past the indexer's tombstone horizon.
+    pub fn resync(&mut self, shard: Shard) {
+        self.positions.insert(shard, ShardPosition::default());
+    }
+
     /// Advances `shard` to the indexer's `max_state_version` under the `bound` the pass resumed under. Monotonic:
     /// never moves the resume version backwards.
     ///
@@ -679,6 +699,21 @@ mod tests {
 
         assert!(bound.expires(SHARD, &claim));
         assert!(!bound.disproves(SHARD, &claim));
+    }
+
+    #[test]
+    fn a_resynced_shard_restarts_from_zero_without_its_claim() {
+        let mut cursor = cursor_at(100, Some(claim(120, 130, Some(2))));
+        cursor.resync(SHARD);
+        assert_eq!(cursor.position(SHARD), ShardPosition::default());
+
+        let bound = bound_at(3, 200);
+        assert_eq!(resume_version(&mut cursor, &bound), v(0));
+        cursor.observe(SHARD, v(250), &bound);
+        assert_eq!(cursor.position(SHARD), ShardPosition {
+            verified: v(200),
+            claim: Some(claim(250, 250, Some(3))),
+        });
     }
 
     #[test]

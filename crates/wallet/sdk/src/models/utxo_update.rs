@@ -24,6 +24,10 @@ pub struct StartOfShard {
     pub max_state_version: StateVersion,
     /// The shard holds updates beyond this pass, as reported by the indexer.
     pub has_more: bool,
+    /// The indexer may lack the spends of the shard's outputs below its tombstone horizon, which the request's cursor
+    /// is below. The shard is rescanned for unspent outputs from the start, and each held output of the shard that the
+    /// rescan does not return is checked.
+    pub resync_required: bool,
 }
 
 #[derive(Debug, Clone)]

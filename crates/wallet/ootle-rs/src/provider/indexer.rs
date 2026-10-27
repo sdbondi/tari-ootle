@@ -223,7 +223,9 @@ impl<Wallet> IndexerProvider<Wallet> {
     /// Each drained pass yields typed [`StealthUtxoFrame`](crate::provider::StealthUtxoFrame)s. An
     /// `Unspent` frame carries only the `(tag, public_nonce)` fetch key — resolve the commitment and
     /// viewable-balance ciphertext with [`Self::fetch_unspent_utxos`]. Set `unspent_only = false` on
-    /// the request to also receive `Spent`/`Burnt` frames.
+    /// the request to also receive `Spent`/`Burnt` frames. Such a request is told when a shard's
+    /// spends below its cursor may be missing; see
+    /// [`StealthUtxoFrame::StartOfShard::resync_required`](crate::provider::StealthUtxoFrame::StartOfShard::resync_required).
     pub fn watch_stealth_utxos(&self, request: StealthUtxoWatchRequest) -> StealthUtxoStream {
         StealthUtxoStream::new(Arc::downgrade(&self.client), request)
     }

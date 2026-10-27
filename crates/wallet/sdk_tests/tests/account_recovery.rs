@@ -168,6 +168,7 @@ impl WalletNetworkInterface for OneUtxoNetwork {
                 shard,
                 max_state_version: StateVersion::from(1),
                 has_more: false,
+                resync_required: false,
             }),
             update: Some(WalletUtxoUpdate::Unspent(utxo)),
             eos: Some(EndOfShard {
