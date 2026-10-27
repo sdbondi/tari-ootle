@@ -205,7 +205,7 @@ impl ValidatorStatusMonitor {
     /// committee. Verification is the basis for deciding whether to trust the peer as a sync source.
     async fn verify_committed_tip(&self, session: &mut ValidatorRpcSession) -> Result<VerifiedBlockTip, ProbeError> {
         let resp = session
-            .get_committed_block_proof(rpc::GetCommittedBlockProofRequest {})
+            .get_committed_block_proof(rpc::GetCommittedBlockProofRequest::default())
             .await
             .map_err(|e| ProbeError::Rpc(e.to_string()))?;
 

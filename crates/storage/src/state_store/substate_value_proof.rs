@@ -29,7 +29,7 @@ use tari_state_tree::{
 use crate::{
     StateStoreReadTransaction,
     StorageError,
-    consensus_models::{CommittedBlockProof, VerifiedBlockTip},
+    consensus_models::{CommittedBlockProof, ShardStateLeaf, VerifiedBlockTip},
     state_store::ShardScopedTreeStoreReader,
 };
 
@@ -54,24 +54,12 @@ use crate::{
 pub struct SubstateProofGenerator<'a, TTx> {
     tx: &'a TTx,
     num_preshards: NumPreshards,
-    /// The tree over the shard group's per-shard states, global shard included (see
-    /// [`ShardGroupRootTree`]). Every level-2 proof is a leaf of this one tree, so it is built once
-    /// however many substates are proved - which is what keeps the cost of a batch independent of the
-    /// size of the shard group.
-    root_tree: ShardGroupRootTree,
-    /// The committed state of each shard in the root tree, keyed by shard.
-    shards: HashMap<Shard, CommittedShardState>,
-    /// Level-2 proofs, extracted from `root_tree` on first use of each shard.
+    /// The shard group's committed shard states and the root tree over them. Every level-2 proof is a leaf of this
+    /// one tree, so it is built once however many substates are proved - which is what keeps the cost of a batch
+    /// independent of the size of the shard group.
+    shard_group_state: CommittedShardGroupState,
+    /// Level-2 proofs, extracted from `shard_group_state` on first use of each shard.
     shard_root_proofs: HashMap<Shard, SparseMerkleProofExt>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CommittedShardState {
-    root: TreeHash,
-    /// `None` if the shard has no committed state yet, in which case `root` is the empty-tree
-    /// placeholder and no substate in the shard can be proved.
-    version: Option<Version>,
-    transition_acc: TransitionAccumulator,
 }
 
 impl<'a, TTx: StateStoreReadTransaction> SubstateProofGenerator<'a, TTx> {
@@ -83,28 +71,10 @@ impl<'a, TTx: StateStoreReadTransaction> SubstateProofGenerator<'a, TTx> {
         num_preshards: NumPreshards,
         protocol_version: ProtocolVersion,
     ) -> Result<Self, StorageError> {
-        let mut shard_states = Vec::with_capacity(shard_group.len() + 1);
-        let mut shards = HashMap::with_capacity(shard_group.len() + 1);
-        for shard in shard_group.shard_iter_with_global() {
-            let state = committed_shard_state(tx, shard)?;
-            shard_states.push((
-                shard,
-                state.root,
-                state.version.unwrap_or_default(),
-                state.transition_acc,
-            ));
-            shards.insert(shard, state);
-        }
-
         Ok(Self {
             tx,
             num_preshards,
-            root_tree: ShardGroupRootTree::build(protocol_version, shard_states).map_err(|e| {
-                StorageError::QueryError {
-                    reason: format!("SubstateProofGenerator shard group root tree: {e}"),
-                }
-            })?,
-            shards,
+            shard_group_state: CommittedShardGroupState::read(tx, shard_group, protocol_version)?,
             shard_root_proofs: HashMap::new(),
         })
     }
@@ -117,7 +87,7 @@ impl<'a, TTx: StateStoreReadTransaction> SubstateProofGenerator<'a, TTx> {
     /// itself failed and nothing it produced can be trusted.
     pub fn generate(&mut self, versioned_id: &VersionedSubstateId) -> Result<Option<SubstateValueProof>, StorageError> {
         let shard = versioned_id.to_shard(self.num_preshards);
-        let Some(state) = self.shards.get(&shard).copied() else {
+        let Some(state) = self.shard_group_state.shards.get(&shard).copied() else {
             return Ok(None);
         };
         let Some(version) = state.version else {
@@ -136,12 +106,7 @@ impl<'a, TTx: StateStoreReadTransaction> SubstateProofGenerator<'a, TTx> {
         // Level 2: prove the shard root is committed in the shard-group root.
         let shard_root_proof = match self.shard_root_proofs.entry(shard) {
             Entry::Occupied(entry) => entry.get().clone(),
-            Entry::Vacant(entry) => {
-                let (_, proof) = self.root_tree.get_proof(shard).map_err(|e| StorageError::QueryError {
-                    reason: format!("SubstateProofGenerator shard root proof: {e}"),
-                })?;
-                entry.insert(proof).clone()
-            },
+            Entry::Vacant(entry) => entry.insert(self.shard_group_state.shard_root_proof(shard)?).clone(),
         };
 
         Ok(Some(SubstateValueProof::new(
@@ -152,6 +117,83 @@ impl<'a, TTx: StateStoreReadTransaction> SubstateProofGenerator<'a, TTx> {
             leaf_proof,
         )))
     }
+}
+
+/// The committed state of every shard in a shard group, global shard included, and the shard-group root tree
+/// over them (see [`ShardGroupRootTree`]).
+///
+/// Read in the same transaction as the commit proof of the node's latest committed block, its root is that block's
+/// `state_merkle_root`, so each [`ShardStateLeaf`] it proves verifies against that commit proof.
+pub struct CommittedShardGroupState {
+    root_tree: ShardGroupRootTree,
+    shards: HashMap<Shard, CommittedShardState>,
+}
+
+impl CommittedShardGroupState {
+    /// Reads the committed root, version and accumulator of every shard in `shard_group`, plus the global shard, and
+    /// builds the root tree over them under `protocol_version`, the version of the block whose `state_merkle_root`
+    /// the tree is compared with.
+    pub fn read<TTx: StateStoreReadTransaction>(
+        tx: &TTx,
+        shard_group: ShardGroup,
+        protocol_version: ProtocolVersion,
+    ) -> Result<Self, StorageError> {
+        let mut shard_states = Vec::with_capacity(shard_group.len() + 1);
+        let mut shards = HashMap::with_capacity(shard_group.len() + 1);
+        for shard in shard_group.shard_iter_with_global() {
+            let state = committed_shard_state(tx, shard)?;
+            shard_states.push((
+                shard,
+                state.root,
+                state.version.unwrap_or_default(),
+                state.transition_acc,
+            ));
+            shards.insert(shard, state);
+        }
+
+        let root_tree =
+            ShardGroupRootTree::build(protocol_version, shard_states).map_err(|e| StorageError::QueryError {
+                reason: format!("shard group root tree: {e}"),
+            })?;
+        Ok(Self { root_tree, shards })
+    }
+
+    /// The shard-group state merkle root.
+    pub fn root(&self) -> TreeHash {
+        self.root_tree.root()
+    }
+
+    /// The committed leaf of `shard` with its proof in [`Self::root`], or `None` if `shard` is neither in the shard
+    /// group nor the global shard. A shard with no committed state has the empty leaf at version 0, proved by its
+    /// absence from the tree.
+    pub fn prove_leaf(&self, shard: Shard) -> Result<Option<ShardStateLeaf>, StorageError> {
+        let Some(state) = self.shards.get(&shard) else {
+            return Ok(None);
+        };
+        Ok(Some(ShardStateLeaf {
+            shard,
+            state_version: state.version.unwrap_or_default(),
+            shard_root: state.root,
+            transition_acc: state.transition_acc,
+            shard_root_proof: self.shard_root_proof(shard)?,
+        }))
+    }
+
+    fn shard_root_proof(&self, shard: Shard) -> Result<SparseMerkleProofExt, StorageError> {
+        let (_, proof) = self.root_tree.get_proof(shard).map_err(|e| StorageError::QueryError {
+            reason: format!("shard root proof of {shard}: {e}"),
+        })?;
+        Ok(proof)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CommittedShardState {
+    root: TreeHash,
+    /// `None` if the shard has no committed state yet, in which case `root` is the empty-tree
+    /// placeholder and no substate in the shard can be proved.
+    version: Option<Version>,
+    transition_acc: TransitionAccumulator,
 }
 
 /// A shard-group state merkle root a quorum committed, with the block that committed it.

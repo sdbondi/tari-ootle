@@ -129,6 +129,33 @@ pub fn verify_state_version_leaf(
     })
 }
 
+/// A shard's leaf in a block's state merkle root: the shard's root, state version and transition accumulator when
+/// the block committed, with the proof that the root commits them.
+#[derive(Debug, Clone)]
+pub struct ShardStateLeaf {
+    pub shard: Shard,
+    pub state_version: Version,
+    pub shard_root: TreeHash,
+    pub transition_acc: TransitionAccumulator,
+    pub shard_root_proof: SparseMerkleProofExt,
+}
+
+impl ShardStateLeaf {
+    /// Checks this leaf against `commit_proof`'s block with [`verify_state_version_leaf`]. As there, validating the
+    /// commit proof itself is the caller's part.
+    pub fn verify(&self, network: Network, commit_proof: &CommittedBlockProof) -> Result<(), StateVersionProofError> {
+        verify_state_version_leaf(
+            network,
+            commit_proof,
+            self.shard,
+            self.state_version,
+            &self.shard_root,
+            &self.transition_acc,
+            &self.shard_root_proof,
+        )
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum StateVersionProofError {
     #[error("proof is for a block of network byte {header_network}, not {network}")]

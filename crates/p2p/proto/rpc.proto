@@ -393,7 +393,11 @@ message GetHighQcResponse {
   tari.ootle.consensus.QuorumCertificate high_qc = 1;
 }
 
-message GetCommittedBlockProofRequest {}
+message GetCommittedBlockProofRequest {
+  // The shards whose leaves in the block's state merkle root the response proves. Shards outside the block's shard
+  // group (other than the global shard) are skipped, as are repeats. At most 257 may be named.
+  repeated uint32 leaf_shards = 1;
+}
 
 message GetCommittedBlockProofResponse {
   // CBOR-encoded SidechainBlockCommitProof for the responder's latest committed block.
@@ -401,4 +405,18 @@ message GetCommittedBlockProofResponse {
   // epoch) against the shard group committee via the committed QC chain. Allows a caller
   // to verify how far the responder has committed without trusting its self-reported state.
   bytes commit_proof = 1;
+  // The leaf of each requested shard in commit_proof's state merkle root, in ascending shard order. Empty if no
+  // shards were requested, or if the responder cannot prove its committed state against that root.
+  repeated ShardStateLeaf shard_leaves = 2;
+}
+
+// A shard's root, state version and transition accumulator as a block's state merkle root commits them. A shard with
+// no state has the placeholder root, version 0 and the zero accumulator, and its proof is an exclusion proof.
+message ShardStateLeaf {
+  uint32 shard = 1;
+  uint64 state_version = 2;
+  bytes shard_root = 3;
+  bytes transition_acc = 4;
+  // CBOR-encoded SparseMerkleProofExt of the shard's leaf in the block's state merkle root.
+  bytes shard_root_proof = 5;
 }

@@ -13,6 +13,7 @@ use tari_jellyfish::TreeHash;
 use tari_ootle_common_types::{SubstateVersion, shard::Shard};
 use tari_ootle_storage::consensus_models::{
     EpochCheckpoint,
+    ShardStateLeaf,
     SubstateCreate,
     SubstateData,
     SubstateDestroy,
@@ -254,5 +255,40 @@ impl From<&TreeRootSummary> for proto::rpc::TreeRootSummary {
             state_version: value.state_version,
             transition_acc: value.transition_acc.as_slice().to_vec(),
         }
+    }
+}
+
+// -------------------------------- ShardStateLeaf -------------------------------- //
+impl TryFrom<proto::rpc::ShardStateLeaf> for ShardStateLeaf {
+    type Error = anyhow::Error;
+
+    fn try_from(value: proto::rpc::ShardStateLeaf) -> Result<Self, Self::Error> {
+        Ok(Self {
+            shard: Shard::from(value.shard),
+            state_version: value.state_version,
+            shard_root: TreeHash::try_from_bytes(&value.shard_root).context("ShardStateLeaf::shard_root")?,
+            transition_acc: TransitionAccumulator::try_from_bytes(&value.transition_acc)
+                .context("ShardStateLeaf::transition_acc")?,
+            shard_root_proof: tari_bor::serde_codec::from_slice_with_max_depth(
+                &value.shard_root_proof,
+                MAX_CBOR_NESTING_DEPTH,
+            )
+            .map_err(|e| anyhow!("Failed to decode ShardStateLeaf::shard_root_proof: {e}"))?,
+        })
+    }
+}
+
+impl TryFrom<&ShardStateLeaf> for proto::rpc::ShardStateLeaf {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &ShardStateLeaf) -> Result<Self, Self::Error> {
+        Ok(Self {
+            shard: value.shard.as_u32(),
+            state_version: value.state_version,
+            shard_root: value.shard_root.as_slice().to_vec(),
+            transition_acc: value.transition_acc.as_slice().to_vec(),
+            shard_root_proof: tari_bor::serde_codec::to_vec(&value.shard_root_proof)
+                .map_err(|e| anyhow!("Failed to encode ShardStateLeaf::shard_root_proof: {e}"))?,
+        })
     }
 }
