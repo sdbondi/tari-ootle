@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use ootle_byte_type::{FromByteType, ToByteType};
-use signature::{Keypair, hazmat::PrehashSigner};
+use signature::Keypair;
 use tari_crypto::{
     keys::{PublicKey, SecretKey},
     ristretto::{RistrettoPublicKey, RistrettoSecretKey},
@@ -12,8 +12,9 @@ use tari_ootle_address::{Network, OotleAddress};
 use tari_ootle_common_types::{
     base_layer_hashing::encrypted_data_hasher,
     engine_types::crypto::OutputBody,
-    signature::{Sr25519SignatureBytes, TRANSACTION_SIGNING_CONTEXT, TransactionMessage},
+    signature::Sr25519SignatureBytes,
 };
+use tari_ootle_transaction::{TRANSACTION_SIGNING_CONTEXT, TransactionMessage};
 use tari_ootle_wallet_crypto::{
     DecryptedData,
     StealthCryptoApi,
@@ -32,7 +33,7 @@ use crate::{
     key_provider,
     key_provider::{DiffieHellmanKdfKeyProvider, LocalKeyProvider, OutputMaskProvider},
     signer,
-    signer::StealthKeyPrehashSigner,
+    signer::{StealthKeyPrehashSigner, TransactionMessageSigner},
     stealth::{
         BurnClaimKeyProvider,
         BurnClaimStatementSpec,
@@ -94,11 +95,12 @@ impl OotleSecretKey {
     }
 }
 
-impl PrehashSigner<(Sr25519SignatureBytes, RistrettoPublicKey)> for OotleSecretKey {
-    /// Signs a 64-byte transaction message; any other length is an error.
-    fn sign_prehash(&self, prehash: &[u8]) -> signature::Result<(Sr25519SignatureBytes, RistrettoPublicKey)> {
-        let prehash: &TransactionMessage = prehash.try_into().map_err(|_| signature::Error::new())?;
-        let signature = TRANSACTION_SIGNING_CONTEXT.sign(&self.account_secret, prehash);
+impl TransactionMessageSigner<(Sr25519SignatureBytes, RistrettoPublicKey)> for OotleSecretKey {
+    fn sign_transaction_message(
+        &self,
+        message: &TransactionMessage,
+    ) -> signer::Result<(Sr25519SignatureBytes, RistrettoPublicKey)> {
+        let signature = TRANSACTION_SIGNING_CONTEXT.sign(&self.account_secret, message);
         let public_key = self.verifying_key();
         Ok((signature, public_key))
     }

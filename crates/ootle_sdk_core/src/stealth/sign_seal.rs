@@ -35,10 +35,12 @@ use tari_crypto::{
     ristretto::{RistrettoPublicKey, RistrettoSecretKey},
     tari_utilities::ByteArray,
 };
-use tari_ootle_common_types::signature::{Sr25519SignatureBytes, TRANSACTION_SIGNING_CONTEXT};
+use tari_ootle_common_types::signature::Sr25519SignatureBytes;
 use tari_ootle_transaction::{
+    TRANSACTION_SIGNING_CONTEXT,
     Transaction,
     TransactionId,
+    TransactionMessage,
     TransactionSealSignature,
     TransactionSignature,
     UnsealedTransactionV1,
@@ -103,8 +105,8 @@ impl SpendSecrets {
     }
 }
 
-/// Signs a 64-byte message with a fresh random nonce.
-fn sign_random(secret: &RistrettoSecretKey, message: &[u8; 64]) -> Sr25519SignatureBytes {
+/// Signs a transaction message with a fresh random nonce.
+fn sign_random(secret: &RistrettoSecretKey, message: &TransactionMessage) -> Sr25519SignatureBytes {
     TRANSACTION_SIGNING_CONTEXT.sign(secret, message)
 }
 

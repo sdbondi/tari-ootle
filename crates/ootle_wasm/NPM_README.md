@@ -37,7 +37,7 @@ const publicKey = publicKeyFromSecretKey(secretKey);
 
 ### `hashUnsignedTransaction(unsignedTxJson, sealSignerPublicKey)`
 
-Hash a transaction for an authorization signature. Returns a 64-byte `Uint8Array` that should be passed to `sr25519Sign`, or to any sr25519 signer. The hash excludes attached signatures, so it is the same before and after `attachTransactionSignature`.
+Hash a transaction for an authorization signature. Returns the 64-byte `Uint8Array` an external signer signs (see [External signers](#external-signers-hsm-mpc)). The hash excludes attached signatures, so it is the same before and after `attachTransactionSignature`.
 
 - `unsignedTxJson` — JSON-serialised `UnsignedTransactionV1` or `UnsealedTransactionV1`
 - `sealSignerPublicKey` — raw public key bytes of the account owner (seal signer)
@@ -51,16 +51,24 @@ const hash = hashUnsignedTransaction(
 );
 ```
 
-### `sr25519Sign(secretKey, message)`
+### `addTransactionSigner(txJson, signerSecretKey, sealSignerPublicKey)`
 
-sr25519-sign a 64-byte transaction message (the hash from `hashUnsignedTransaction` or `hashUnsealedTransaction`). Returns the standard 64-byte sr25519 signature, which the transaction carries as is. Throws if the message is not 64 bytes, so the key never signs a Substrate signing payload.
+Hash the transaction and append an authorization signature by `signerSecretKey`, committing to the seal signer `sealSignerPublicKey`. Accepts unsigned or unsealed transaction JSON and returns the unsealed transaction JSON.
+
+### `sealTransaction(txJson, sealSignerSecretKey)`
+
+Hash the transaction and seal it with `sealSignerSecretKey`. Accepts unsigned or unsealed transaction JSON and returns the sealed `Transaction` JSON. The seal covers every authorization signature, so add them all first.
 
 ```typescript
-import { sr25519Sign } from "@tari-project/ootle-wasm";
+import { addTransactionSigner, sealTransaction } from "@tari-project/ootle-wasm";
 
-const signature = sr25519Sign(secretKey, hash);
-// signature: Uint8Array (64 bytes)
+let txJson = JSON.stringify(unsignedTransaction);
+// Optional: authorizations from other keys
+txJson = addTransactionSigner(txJson, authorizerSecretKey, sealSignerPublicKey);
+const transactionJson = sealTransaction(txJson, sealSignerSecretKey);
 ```
+
+These functions sign only messages they hash from the transaction themselves. Signing a hash computed elsewhere is the external-signer path below.
 
 ## External signers (HSM, MPC)
 
@@ -146,9 +154,7 @@ const derivedPublicKey = publicKeyFromSecretKey(restored);
 ```typescript
 import {
   generateKeypair,
-  publicKeyFromSecretKey,
-  hashUnsignedTransaction,
-  sr25519Sign,
+  sealTransaction,
   borEncodeTransaction,
 } from "@tari-project/ootle-wasm";
 
@@ -160,19 +166,13 @@ const unsignedTx = {
   /* ... UnsignedTransactionV1 fields ... */
 };
 
-// 3. Hash for signing
-const hash = hashUnsignedTransaction(JSON.stringify(unsignedTx), public_key);
+// 3. Seal with the account key
+const transactionJson = sealTransaction(JSON.stringify(unsignedTx), secret_key);
 
-// 4. Sign
-const signature = sr25519Sign(secret_key, hash);
+// 4. BOR-encode
+const envelope = borEncodeTransaction(transactionJson);
 
-// 5. Assemble the signed transaction and BOR-encode
-const signedTx = {
-  /* ... Transaction with signature attached ... */
-};
-const envelope = borEncodeTransaction(JSON.stringify(signedTx));
-
-// 6. Submit envelope to the Ootle network
+// 5. Submit envelope to the Ootle network
 ```
 
 ## License

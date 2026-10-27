@@ -291,7 +291,7 @@ impl UnsignedTransactionV1 {
 impl Signable<&RistrettoPublicKeyBytes> for UnsignedTransactionV1 {
     type Signature = TransactionSignature;
 
-    fn to_signing_message(&self, seal_signer: &RistrettoPublicKeyBytes) -> [u8; 64] {
+    fn to_signing_message(&self, seal_signer: &RistrettoPublicKeyBytes) -> crate::TransactionMessage {
         TransactionSignature::create_message_v1(seal_signer, self)
     }
 }

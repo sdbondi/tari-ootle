@@ -22,6 +22,7 @@ use tari_ootle_transaction::{
     Transaction,
     TransactionEnvelope,
     TransactionId,
+    TransactionMessage,
     TransactionSignature,
     UnsealedTransactionV1,
     UnsignedTransaction,
@@ -107,7 +108,10 @@ fn main_signer_with_auth(
 /// Re-derives the authorization signing message a co-signer must sign: the digest committing to the
 /// seal signer's public key and the unsigned transaction (`TransactionSignature::create_message_v1`).
 /// A and B both compute this from the identical unsigned record, so they agree on the message.
-pub fn cosign_auth_message(seal_signer_pk: &RistrettoPublicKeyBytes, unsigned: &UnsignedTransaction) -> [u8; 64] {
+pub fn cosign_auth_message(
+    seal_signer_pk: &RistrettoPublicKeyBytes,
+    unsigned: &UnsignedTransaction,
+) -> TransactionMessage {
     let UnsignedTransaction::V1(v1) = unsigned;
     TransactionSignature::create_message_v1(seal_signer_pk, v1)
 }

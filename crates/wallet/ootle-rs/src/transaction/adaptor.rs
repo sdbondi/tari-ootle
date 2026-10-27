@@ -21,8 +21,8 @@ use tari_crypto::{
     keys::PublicKey,
     ristretto::{RistrettoPublicKey, RistrettoSecretKey},
 };
-use tari_ootle_common_types::signature::{Sr25519SignatureBytes, TRANSACTION_SIGNING_CONTEXT, TransactionMessage};
-use tari_ootle_transaction::TransactionSignature;
+use tari_ootle_common_types::signature::Sr25519SignatureBytes;
+use tari_ootle_transaction::{TRANSACTION_SIGNING_CONTEXT, TransactionMessage, TransactionSignature};
 pub use tari_ootle_wallet_crypto::adaptor::{RistrettoAdaptorSignature, extract, verify};
 use tari_ootle_wallet_crypto::adaptor::{complete, sign};
 

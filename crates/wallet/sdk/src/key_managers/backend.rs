@@ -6,8 +6,8 @@ use tari_crypto::{
     keys::PublicKey,
     ristretto::{RistrettoPublicKey, RistrettoSecretKey},
 };
-use tari_ootle_common_types::signature::{SignatureOutput, TRANSACTION_SIGNING_CONTEXT};
-use tari_ootle_transaction::Signable;
+use tari_ootle_common_types::signature::SignatureOutput;
+use tari_ootle_transaction::{Signable, TRANSACTION_SIGNING_CONTEXT};
 use tari_ootle_wallet_crypto::derive_ristretto_key;
 
 use crate::models::DerivedKeyIndex;

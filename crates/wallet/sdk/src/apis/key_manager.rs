@@ -15,9 +15,9 @@ use tari_ootle_address::RistrettoOotleAddress;
 use tari_ootle_common_types::{
     Epoch,
     optional::{IsNotFoundError, Optional},
-    signature::{SignatureOutput, TRANSACTION_SIGNING_CONTEXT},
+    signature::SignatureOutput,
 };
-use tari_ootle_transaction::Signable;
+use tari_ootle_transaction::{Signable, TRANSACTION_SIGNING_CONTEXT};
 use tari_ootle_wallet_crypto::{
     StealthCryptoApi,
     encryption::{CipherError, decrypt_with_password, encrypt_with_password},

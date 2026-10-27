@@ -19,13 +19,8 @@ use tari_crypto::{
     keys::{PublicKey, SecretKey},
     ristretto::{RistrettoPublicKey, RistrettoSecretKey},
 };
-use tari_ootle_common_types::signature::{
-    Sr25519SignatureBytes,
-    TRANSACTION_SIGNING_CONTEXT,
-    TransactionMessage,
-    components,
-    from_components,
-};
+use tari_ootle_common_types::signature::{Sr25519SignatureBytes, components, from_components};
+use tari_ootle_transaction::{TRANSACTION_SIGNING_CONTEXT, TransactionMessage};
 use tari_utilities::ByteArray;
 
 /// A Schnorr adaptor pre-signature encrypted under an adaptor point `T = t·G`.
@@ -128,6 +123,7 @@ pub fn extract(pre: &RistrettoAdaptorSignature, completed: &Sr25519SignatureByte
 mod tests {
     use ootle_byte_type::ToByteType;
     use tari_crypto::ristretto::{RistrettoPublicKey, RistrettoSecretKey};
+    use tari_ootle_transaction::{Epoch, TransactionSealSignature, UnsealedTransactionV1, UnsignedTransactionV1};
 
     use super::*;
 
@@ -137,25 +133,30 @@ mod tests {
         (secret, public)
     }
 
-    const MESSAGE: &TransactionMessage = &[7; 64];
+    /// The seal message of an empty transaction, distinct for each `max_epoch`.
+    fn message(max_epoch: u64) -> TransactionMessage {
+        let transaction =
+            UnsignedTransactionV1::new(0u8, vec![], vec![], Default::default(), None, Epoch(max_epoch), false);
+        TransactionSealSignature::create_message_v1(&UnsealedTransactionV1::new(transaction, vec![]))
+    }
 
     #[test]
     fn complete_yields_a_valid_transaction_signature() {
         let (x, p) = keypair();
         let (t, big_t) = keypair();
-        let pre = sign(&x, &big_t, MESSAGE);
-        assert!(verify(&pre, &p, &big_t, MESSAGE));
+        let pre = sign(&x, &big_t, &message(1));
+        assert!(verify(&pre, &p, &big_t, &message(1)));
 
         let sig = complete(&pre, &t);
         // The completed signature is an ordinary transaction signature with no adaptor awareness needed.
-        assert!(TRANSACTION_SIGNING_CONTEXT.verify(&sig, &p.to_byte_type(), MESSAGE));
+        assert!(TRANSACTION_SIGNING_CONTEXT.verify(&sig, &p.to_byte_type(), &message(1)));
     }
 
     #[test]
     fn extract_recovers_the_adaptor_secret() {
         let (x, _p) = keypair();
         let (t, big_t) = keypair();
-        let pre = sign(&x, &big_t, MESSAGE);
+        let pre = sign(&x, &big_t, &message(1));
         let sig = complete(&pre, &t);
 
         assert_eq!(extract(&pre, &sig), Some(t));
@@ -166,9 +167,9 @@ mod tests {
         let (x, p) = keypair();
         let (_t, big_t) = keypair();
         let (wrong_t, _) = keypair();
-        let pre = sign(&x, &big_t, MESSAGE);
+        let pre = sign(&x, &big_t, &message(1));
         let sig = complete(&pre, &wrong_t);
-        assert!(!TRANSACTION_SIGNING_CONTEXT.verify(&sig, &p.to_byte_type(), MESSAGE));
+        assert!(!TRANSACTION_SIGNING_CONTEXT.verify(&sig, &p.to_byte_type(), &message(1)));
     }
 
     #[test]
@@ -176,9 +177,9 @@ mod tests {
         let (x, p) = keypair();
         let (_t, big_t) = keypair();
         let (_, other_p) = keypair();
-        let pre = sign(&x, &big_t, MESSAGE);
-        assert!(!verify(&pre, &p, &big_t, &[8; 64]));
-        assert!(!verify(&pre, &other_p, &big_t, MESSAGE));
+        let pre = sign(&x, &big_t, &message(1));
+        assert!(!verify(&pre, &p, &big_t, &message(2)));
+        assert!(!verify(&pre, &other_p, &big_t, &message(1)));
     }
 
     #[test]
@@ -187,8 +188,8 @@ mod tests {
         let (_t, big_t) = keypair();
         let identity = RistrettoPublicKey::default();
 
-        let pre = sign(&x, &big_t, MESSAGE);
-        assert!(!verify(&pre, &identity, &big_t, MESSAGE), "identity public key");
-        assert!(!verify(&pre, &p, &identity, MESSAGE), "identity adaptor point");
+        let pre = sign(&x, &big_t, &message(1));
+        assert!(!verify(&pre, &identity, &big_t, &message(1)), "identity public key");
+        assert!(!verify(&pre, &p, &identity, &message(1)), "identity adaptor point");
     }
 }

@@ -39,8 +39,8 @@
 
 use serde::{Deserialize, Serialize};
 use tari_crypto::ristretto::RistrettoSecretKey;
-use tari_ootle_common_types::signature::{Sr25519SignatureBytes, TRANSACTION_SIGNING_CONTEXT, components};
-use tari_ootle_transaction::{MainSigner, TransactionSignature, UnsignedTransaction};
+use tari_ootle_common_types::signature::{Sr25519SignatureBytes, components};
+use tari_ootle_transaction::{MainSigner, TRANSACTION_SIGNING_CONTEXT, TransactionSignature, UnsignedTransaction};
 
 use crate::{
     PartialTransaction,

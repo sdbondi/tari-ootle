@@ -203,7 +203,7 @@ fn sample_unsigned() -> UnsignedTransactionV1 {
 fn signing_context_matches_protocol() {
     assert_eq!(
         SIGNING_CONTEXT,
-        tari_ootle_common_types::signature::TRANSACTION_SIGNING_CONTEXT.as_bytes()
+        tari_ootle_transaction::TRANSACTION_SIGNING_CONTEXT.as_bytes()
     );
 }
 
@@ -246,8 +246,8 @@ fn add_signer_recipe_matches_and_verifies() {
         &TransactionSignature::signing_preimage_v1(&seal_signer, &tx),
     );
     assert_eq!(
-        m,
-        TransactionSignature::create_message_v1(&seal_signer, &tx),
+        &m,
+        TransactionSignature::create_message_v1(&seal_signer, &tx).as_bytes(),
         "message mismatch"
     );
 
@@ -283,8 +283,8 @@ fn seal_recipe_matches_and_verifies() {
     // (1) seal message recipe == create_message_v1
     let m = message(TX_LABEL_SEAL, &TransactionSealSignature::signing_preimage_v1(&unsealed));
     assert_eq!(
-        m,
-        TransactionSealSignature::create_message_v1(&unsealed),
+        &m,
+        TransactionSealSignature::create_message_v1(&unsealed).as_bytes(),
         "seal message mismatch"
     );
 
@@ -409,7 +409,7 @@ fn stealth_recipe_matches_and_verifies() {
 fn nonce_differs_from_the_tari_schnorr_app() {
     let secret = random_scalar();
     let pk = public_key(&secret);
-    let m = TransactionSignature::create_message_v1(&pk_bytes(&random_scalar()), &sample_unsigned());
+    let m = *TransactionSignature::create_message_v1(&pk_bytes(&random_scalar()), &sample_unsigned()).as_bytes();
 
     let mut h = Blake2b512::new();
     h.update(b"com.tari.ootle.ledger.schnorr_nonce.v1");

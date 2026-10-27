@@ -152,7 +152,10 @@ mod tests {
 
     /// Signs `message` the way an external sr25519 signer does, returning the 64-byte signature.
     fn external_sign(secret: &RistrettoSecretKey, message: &[u8]) -> Vec<u8> {
-        crate::sign::sr25519_sign(secret.as_bytes(), message).unwrap()
+        tari_ootle_common_types::signature::SigningContext::new(b"substrate")
+            .sign(secret, message)
+            .as_bytes()
+            .to_vec()
     }
 
     #[test]

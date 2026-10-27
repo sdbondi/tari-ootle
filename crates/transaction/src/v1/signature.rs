@@ -12,7 +12,7 @@ use tari_crypto::{
 use tari_ootle_common_types::{
     Epoch,
     InputDeclaration,
-    signature::{SignatureOutput, Sr25519SignatureBytes, TRANSACTION_SIGNING_CONTEXT},
+    signature::{SignatureOutput, Sr25519SignatureBytes},
 };
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 
@@ -20,6 +20,8 @@ use crate::{
     BlobHashes,
     Instruction,
     MainSigner,
+    TRANSACTION_SIGNING_CONTEXT,
+    TransactionMessage,
     UnsealedTransactionV1,
     UnsignedTransaction,
     UnsignedTransactionV1,
@@ -114,7 +116,7 @@ impl TransactionSealSignature {
     }
 
     /// Verifies this seal against an already-derived signing message.
-    pub fn verify_message(&self, message: [u8; 64]) -> bool {
+    pub fn verify_message(&self, message: TransactionMessage) -> bool {
         TRANSACTION_SIGNING_CONTEXT.verify(&self.signature, &self.public_key, &message)
     }
 
@@ -130,13 +132,13 @@ impl TransactionSealSignature {
         RistrettoPublicKey::from_canonical_bytes(self.public_key.as_bytes())
     }
 
-    pub fn create_message(transaction: &UnsealedTransaction) -> [u8; 64] {
+    pub fn create_message(transaction: &UnsealedTransaction) -> TransactionMessage {
         match transaction {
             UnsealedTransaction::V1(t) => Self::create_message_v1(t),
         }
     }
 
-    pub fn create_message_v1(transaction: &UnsealedTransactionV1) -> [u8; 64] {
+    pub fn create_message_v1(transaction: &UnsealedTransactionV1) -> TransactionMessage {
         let blob_hashes = transaction.unsigned_transaction().blobs.hashes();
         Self::create_message_v1_with_blob_hashes(transaction, &blob_hashes)
     }
@@ -146,7 +148,7 @@ impl TransactionSealSignature {
     pub fn create_message_v1_with_blob_hashes(
         transaction: &UnsealedTransactionV1,
         blob_hashes: &BlobHashes,
-    ) -> [u8; 64] {
+    ) -> TransactionMessage {
         Self::create_message_v1_inner(
             transaction.schema_version(),
             TransactionSignatureFields::from(transaction.unsigned_transaction()),
@@ -182,7 +184,7 @@ impl TransactionSealSignature {
 
     /// Pruned-form seal message. Uses the stored `BlobHashes` and produces the same digest as
     /// the equivalent full form would.
-    pub fn create_message_v1_pruned(transaction: &PrunedUnsealedTransactionV1) -> [u8; 64] {
+    pub fn create_message_v1_pruned(transaction: &PrunedUnsealedTransactionV1) -> TransactionMessage {
         Self::create_message_v1_inner(
             transaction.schema_version(),
             TransactionSignatureFields::from(transaction.unsigned_transaction()),
@@ -196,14 +198,16 @@ impl TransactionSealSignature {
         fields: TransactionSignatureFields<'_>,
         blob_hashes: &BlobHashes,
         signatures: &[TransactionSignature],
-    ) -> [u8; 64] {
+    ) -> TransactionMessage {
         // Project explicitly so blob bytes never enter the digest — only their commitments do.
-        transaction_hasher_v1("SealSignature")
-            .chain(&schema_version)
-            .chain(&fields)
-            .chain(blob_hashes)
-            .chain(signatures)
-            .result()
+        TransactionMessage::new(
+            transaction_hasher_v1("SealSignature")
+                .chain(&schema_version)
+                .chain(&fields)
+                .chain(blob_hashes)
+                .chain(signatures)
+                .result(),
+        )
     }
 
     pub fn verify_v1_pruned(&self, transaction: &PrunedUnsealedTransactionV1) -> bool {
@@ -270,7 +274,7 @@ impl TransactionSignature {
     /// more than one signature MUST derive the message once and use this: deriving it per signature
     /// makes verification cost `O(signatures × body bytes)`, which an attacker controls on both
     /// factors within a single transaction.
-    pub fn verify_message(&self, message: [u8; 64]) -> bool {
+    pub fn verify_message(&self, message: TransactionMessage) -> bool {
         TRANSACTION_SIGNING_CONTEXT.verify(&self.signature, &self.public_key, &message)
     }
 
@@ -282,13 +286,19 @@ impl TransactionSignature {
         &self.public_key
     }
 
-    pub fn create_message(seal_signer: &RistrettoPublicKeyBytes, transaction: &UnsignedTransaction) -> [u8; 64] {
+    pub fn create_message(
+        seal_signer: &RistrettoPublicKeyBytes,
+        transaction: &UnsignedTransaction,
+    ) -> TransactionMessage {
         match transaction {
             UnsignedTransaction::V1(v1) => Self::create_message_v1(seal_signer, v1),
         }
     }
 
-    pub fn create_message_v1(seal_signer: &RistrettoPublicKeyBytes, transaction: &UnsignedTransactionV1) -> [u8; 64] {
+    pub fn create_message_v1(
+        seal_signer: &RistrettoPublicKeyBytes,
+        transaction: &UnsignedTransactionV1,
+    ) -> TransactionMessage {
         let blob_hashes = transaction.blobs.hashes();
         Self::create_message_v1_with_blob_hashes(seal_signer, transaction, &blob_hashes)
     }
@@ -300,7 +310,7 @@ impl TransactionSignature {
         seal_signer: &RistrettoPublicKeyBytes,
         transaction: &UnsignedTransactionV1,
         blob_hashes: &BlobHashes,
-    ) -> [u8; 64] {
+    ) -> TransactionMessage {
         Self::create_message_v1_inner(
             seal_signer,
             transaction.schema_version(),
@@ -341,7 +351,7 @@ impl TransactionSignature {
         seal_signer: &RistrettoPublicKeyBytes,
         transaction: &PrunedUnsignedTransactionV1,
         blob_hashes: &BlobHashes,
-    ) -> [u8; 64] {
+    ) -> TransactionMessage {
         Self::create_message_v1_inner(
             seal_signer,
             transaction.schema_version(),
@@ -355,13 +365,15 @@ impl TransactionSignature {
         schema_version: u16,
         fields: TransactionSignatureFields<'_>,
         blob_hashes: &BlobHashes,
-    ) -> [u8; 64] {
-        transaction_hasher_v1("Signature")
-            .chain(&schema_version)
-            .chain(seal_signer)
-            .chain(&fields)
-            .chain(blob_hashes)
-            .result()
+    ) -> TransactionMessage {
+        TransactionMessage::new(
+            transaction_hasher_v1("Signature")
+                .chain(&schema_version)
+                .chain(seal_signer)
+                .chain(&fields)
+                .chain(blob_hashes)
+                .result(),
+        )
     }
 
     pub fn verify_v1_pruned(
@@ -382,7 +394,7 @@ impl TransactionSignature {
     ///
     /// A caller verifying a sealed transaction should use [`verify_sealed_batch`] instead, which
     /// folds the seal into the same multiplication.
-    pub fn verify_all_against_message(signatures: &[Self], message: [u8; 64]) -> bool {
+    pub fn verify_all_against_message(signatures: &[Self], message: TransactionMessage) -> bool {
         if signatures.is_empty() {
             return true;
         }
@@ -404,9 +416,9 @@ impl TransactionSignature {
 /// both digests are derivable before anything is verified, which is all the batch needs.
 pub fn verify_sealed_batch(
     seal: &TransactionSealSignature,
-    seal_message: [u8; 64],
+    seal_message: TransactionMessage,
     signatures: &[TransactionSignature],
-    authorization_message: [u8; 64],
+    authorization_message: TransactionMessage,
 ) -> bool {
     verify_batch(
         std::iter::once((seal.public_key(), seal.signature(), &seal_message)).chain(
@@ -438,7 +450,13 @@ pub fn verify_sealed_batch(
 ///
 /// [`SigningContext::verify_batch`]: tari_ootle_common_types::signature::SigningContext::verify_batch
 fn verify_batch<'a, I>(terms: I) -> bool
-where I: IntoIterator<Item = (&'a RistrettoPublicKeyBytes, &'a Sr25519SignatureBytes, &'a [u8; 64])> {
+where I: IntoIterator<
+        Item = (
+            &'a RistrettoPublicKeyBytes,
+            &'a Sr25519SignatureBytes,
+            &'a TransactionMessage,
+        ),
+    > {
     let items: Vec<_> = terms
         .into_iter()
         .map(|(public_key, signature, message)| (signature, public_key, message))
@@ -552,11 +570,11 @@ mod tests {
         TransactionSignature::sign_v1(&sk, seal_signer, tx)
     }
 
-    fn sig_msg(seal_signer: &RistrettoPublicKeyBytes, tx: &UnsignedTransactionV1) -> [u8; 64] {
+    fn sig_msg(seal_signer: &RistrettoPublicKeyBytes, tx: &UnsignedTransactionV1) -> TransactionMessage {
         TransactionSignature::create_message_v1(seal_signer, tx)
     }
 
-    fn seal_msg(t: &UnsealedTransactionV1) -> [u8; 64] {
+    fn seal_msg(t: &UnsealedTransactionV1) -> TransactionMessage {
         TransactionSealSignature::create_message_v1(t)
     }
 
@@ -573,7 +591,7 @@ mod tests {
             .expand_to_keypair(ExpansionMode::Ed25519);
 
         let message = TransactionSignature::create_message_v1(&seal_signer, &unsigned);
-        let signature = keypair.sign(signing_context(TRANSACTION_SIGNING_CONTEXT.as_bytes()).bytes(&message));
+        let signature = keypair.sign(signing_context(TRANSACTION_SIGNING_CONTEXT.as_bytes()).bytes(message.as_bytes()));
         let signature = TransactionSignature::new(
             RistrettoPublicKeyBytes::from(keypair.public.to_bytes()),
             Sr25519SignatureBytes::from_array(signature.to_bytes()),

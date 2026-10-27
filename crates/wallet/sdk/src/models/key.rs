@@ -10,8 +10,8 @@ use tari_crypto::{
     ristretto::{RistrettoPublicKey, RistrettoSecretKey},
 };
 use tari_ootle_address::RistrettoOotleAddress;
-use tari_ootle_common_types::signature::{Sr25519SignatureBytes, TRANSACTION_SIGNING_CONTEXT};
-use tari_ootle_transaction::Signable;
+use tari_ootle_common_types::signature::Sr25519SignatureBytes;
+use tari_ootle_transaction::{Signable, TRANSACTION_SIGNING_CONTEXT};
 use tari_template_lib::types::crypto::RistrettoPublicKeyBytes;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]

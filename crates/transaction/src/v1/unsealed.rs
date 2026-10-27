@@ -154,7 +154,7 @@ impl UnsealedTransactionV1 {
 impl Signable for UnsealedTransactionV1 {
     type Signature = TransactionSealSignature;
 
-    fn to_signing_message(&self, _context: ()) -> [u8; 64] {
+    fn to_signing_message(&self, _context: ()) -> crate::TransactionMessage {
         TransactionSealSignature::create_message_v1(self)
     }
 }
@@ -162,7 +162,7 @@ impl Signable for UnsealedTransactionV1 {
 impl Signable<&RistrettoPublicKeyBytes> for UnsealedTransactionV1 {
     type Signature = TransactionSignature;
 
-    fn to_signing_message(&self, context: &RistrettoPublicKeyBytes) -> [u8; 64] {
+    fn to_signing_message(&self, context: &RistrettoPublicKeyBytes) -> crate::TransactionMessage {
         TransactionSignature::create_message_v1(context, &self.transaction)
     }
 }

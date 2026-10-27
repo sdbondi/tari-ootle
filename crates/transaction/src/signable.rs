@@ -4,7 +4,7 @@
 pub trait Signable<Ctx = ()> {
     type Signature;
 
-    fn to_signing_message(&self, context: Ctx) -> [u8; 64];
+    fn to_signing_message(&self, context: Ctx) -> crate::TransactionMessage;
 }
 
 pub trait IntoSigned<Ctx = ()>: Signable<Ctx> {

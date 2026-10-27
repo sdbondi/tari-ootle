@@ -68,7 +68,8 @@ wasm-pack build crates/ootle_wasm/wasm --target bundler --dev --out-dir ../../..
 | `hashUnsealedTransaction`    | `(txJson: string) → Uint8Array`                                                                            | Hash a transaction for sealing (64 bytes)       |
 | `attachSealSignature`        | `(txJson: string, sealSignerPubKey: Uint8Array, signature: Uint8Array) → string`                           | Seal with an external signer's signature        |
 | `attachTransactionSignature` | `(txJson: string, signerPubKey: Uint8Array, signature: Uint8Array, sealSignerPubKey: Uint8Array) → string` | Append an external signer's authorization       |
-| `sr25519Sign`                | `(secretKey: Uint8Array, message: Uint8Array) → Uint8Array`                                                | sr25519-sign a 64-byte transaction message      |
+| `addTransactionSigner`       | `(txJson: string, signerSecretKey: Uint8Array, sealSignerPubKey: Uint8Array) → string`                     | Append an authorization by a secret key         |
+| `sealTransaction`            | `(txJson: string, sealSignerSecretKey: Uint8Array) → string`                                               | Seal with the seal signer's secret key          |
 | `generateKeypair`            | `() → { secret_key, public_key }`                                                                          | Generate a random Ristretto keypair             |
 | `publicKeyFromSecretKey`     | `(secretKey: Uint8Array) → Uint8Array`                                                                     | Derive public key from secret key               |
 
@@ -79,10 +80,8 @@ All keys and signatures are raw `Uint8Array` bytes. An external signer's key mus
 ```typescript
 import init, {
   generateKeypair,
-  sr25519Sign,
-  hashUnsignedTransaction,
+  sealTransaction,
   borEncodeTransaction,
-  publicKeyFromSecretKey,
 } from './pkg/ootle_wasm.js';
 
 // Initialise the WASM module
@@ -91,10 +90,7 @@ await init();
 // Generate a keypair
 const { secret_key, public_key } = generateKeypair();
 
-// Hash an unsigned transaction for signing
-const unsignedTxJson = JSON.stringify(unsignedTransaction);
-const hash = hashUnsignedTransaction(unsignedTxJson, sealSignerPublicKey);
-
-// Sign the hash
-const signature = sr25519Sign(secret_key, hash);
+// Seal an unsigned transaction and encode it for submission
+const transactionJson = sealTransaction(JSON.stringify(unsignedTransaction), secret_key);
+const envelope = borEncodeTransaction(transactionJson);
 ```

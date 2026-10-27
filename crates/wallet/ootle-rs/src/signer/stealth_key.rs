@@ -4,7 +4,7 @@
 use std::future::Future;
 
 use tari_crypto::ristretto::RistrettoPublicKey;
-use tari_ootle_common_types::signature::TransactionMessage;
+use tari_ootle_transaction::TransactionMessage;
 
 use crate::signer;
 

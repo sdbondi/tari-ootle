@@ -31,11 +31,10 @@ Each function accepts unsigned or unsealed transaction JSON.
 
 Externally produced signatures are standard sr25519 signatures under the `substrate` signing context; see `NPM_README.md`, including its key isolation requirements: the signing key signs Ootle transaction messages only. The `attach_*` functions verify the signature before returning, so a signature over the wrong message or by the wrong key fails at attach time.
 
-### `sign` — signing and key management
+### `sign` — key management
 
-sr25519 transaction signatures and Ristretto255 keypair operations.
+Ristretto255 keypair operations. Transaction signing lives in `transaction`, which hashes the transaction itself.
 
-- `sr25519_sign(secret_key: &[u8], message: &[u8]) → Result<Vec<u8>>`: rejects a message that is not 64 bytes
 - `public_key_from_secret_key(secret_key_hex: &str) → Result<String>`
 - `generate_keypair() → KeypairResult`
 

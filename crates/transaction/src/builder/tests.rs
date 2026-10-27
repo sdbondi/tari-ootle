@@ -6,7 +6,7 @@ use tari_crypto::{
     keys::{PublicKey as _, SecretKey as _},
     ristretto::{RistrettoPublicKey, RistrettoSecretKey},
 };
-use tari_ootle_common_types::{Epoch, signature::TRANSACTION_SIGNING_CONTEXT};
+use tari_ootle_common_types::Epoch;
 use tari_template_lib_types::{ComponentAddress, TemplateAddress};
 
 use crate::{
@@ -15,6 +15,7 @@ use crate::{
     Instruction,
     IntoSigned,
     Signable,
+    TRANSACTION_SIGNING_CONTEXT,
     Transaction,
     TransactionSignature,
     args,

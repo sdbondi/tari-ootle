@@ -5,7 +5,6 @@ use std::mem;
 
 use async_trait::async_trait;
 use ootle_byte_type::{FromByteType, ToByteType};
-use signature::hazmat::PrehashSigner;
 use tari_crypto::{
     keys::PublicKey,
     ristretto::{RistrettoPublicKey, RistrettoSecretKey},
@@ -46,7 +45,7 @@ use crate::{
     Address,
     key_provider::{LocalKeyProvider, OutputMaskProvider},
     signer,
-    signer::StealthKeyPrehashSigner,
+    signer::{StealthKeyPrehashSigner, TransactionMessageSigner},
     stealth::{
         InputDecryptor,
         Output,
@@ -62,7 +61,7 @@ use crate::{
 
 #[async_trait]
 impl<C> TransactionSigner for LocalKeyProvider<C>
-where C: PrehashSigner<(Sr25519SignatureBytes, RistrettoPublicKey)> + Send + Sync
+where C: TransactionMessageSigner<(Sr25519SignatureBytes, RistrettoPublicKey)> + Send + Sync
 {
     fn address(&self) -> &Address {
         &self.address
@@ -70,7 +69,7 @@ where C: PrehashSigner<(Sr25519SignatureBytes, RistrettoPublicKey)> + Send + Syn
 
     async fn sign_transaction(&self, message: &UnsealedTransaction) -> signer::Result<TransactionSealSignature> {
         let message = message.to_signing_message(());
-        let (signature, public_key) = self.credentials.sign_prehash(&message)?;
+        let (signature, public_key) = self.credentials.sign_transaction_message(&message)?;
         let sig = TransactionSealSignature::new(public_key.to_byte_type(), signature);
         Ok(sig)
     }
@@ -81,7 +80,7 @@ where C: PrehashSigner<(Sr25519SignatureBytes, RistrettoPublicKey)> + Send + Syn
         tx: &UnsignedTransaction,
     ) -> signer::Result<TransactionAuthorization> {
         let message = tx.to_signing_message(seal_signer);
-        let (signature, public_key) = self.credentials.sign_prehash(&message)?;
+        let (signature, public_key) = self.credentials.sign_transaction_message(&message)?;
         let sig = TransactionSignature::new(public_key.to_byte_type(), signature);
         Ok(sig.into())
     }

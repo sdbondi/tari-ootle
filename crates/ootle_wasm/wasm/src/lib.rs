@@ -156,15 +156,6 @@ pub fn bor_encode_transaction(transaction_json: &str) -> Result<String, JsError>
     ootle_wasm_core::bor::bor_encode_transaction_json(transaction_json).map_err(|e| JsError::new(&e.to_string()))
 }
 
-/// Sign a 64-byte transaction signing message with a secret key. Returns the 64-byte sr25519
-/// signature, which a transaction signature carries as is. Any sr25519 signer (an HSM, an MPC vault)
-/// that signs the message under the default `substrate` context produces an equivalent signature.
-/// Throws if the message is not 64 bytes, so the key never signs a Substrate signing payload.
-#[wasm_bindgen(js_name = "sr25519Sign")]
-pub fn sr25519_sign(secret_key: &[u8], message: &[u8]) -> Result<Vec<u8>, JsError> {
-    ootle_wasm_core::sign::sr25519_sign(secret_key, message).map_err(|e| JsError::new(&e.to_string()))
-}
-
 /// Derive the public key from a secret key (both raw bytes).
 #[wasm_bindgen(js_name = "publicKeyFromSecretKey")]
 pub fn public_key_from_secret_key(secret_key: &[u8]) -> Result<Vec<u8>, JsError> {

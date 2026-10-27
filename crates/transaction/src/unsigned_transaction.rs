@@ -289,7 +289,7 @@ impl From<UnsignedTransactionV1> for UnsignedTransaction {
 impl Signable<&RistrettoPublicKeyBytes> for UnsignedTransaction {
     type Signature = TransactionSignature;
 
-    fn to_signing_message(&self, sealed_signer: &RistrettoPublicKeyBytes) -> [u8; 64] {
+    fn to_signing_message(&self, sealed_signer: &RistrettoPublicKeyBytes) -> crate::TransactionMessage {
         match &self {
             Self::V1(tx) => tx.to_signing_message(sealed_signer),
         }
