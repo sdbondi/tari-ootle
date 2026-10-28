@@ -76,6 +76,8 @@ struct ProvingNetworkState {
     /// Requests for a page of checkpoints to walk through.
     walk_requests: usize,
     substates: HashMap<SubstateId, ServedSubstate>,
+    /// Versions served as gone down to requests that name them, beside the version `substates` serves.
+    down_versions: HashMap<(SubstateId, SubstateVersion), Option<SubstateProof>>,
     /// How many of the next substate queries fail as if the indexer could not be reached.
     failing_substate_queries: usize,
     /// How many of the next substate fetches fail as if the indexer could not be reached.
@@ -133,6 +135,7 @@ impl ProvingNetwork {
                 unserved: None,
                 walk_requests: 0,
                 substates: HashMap::new(),
+                down_versions: HashMap::new(),
                 failing_substate_queries: 0,
                 failing_substate_fetches: 0,
                 committee_requests: 0,
@@ -243,6 +246,12 @@ impl ProvingNetwork {
         });
     }
 
+    /// Serves `version` of `id` as gone down, with `proof`, to requests for proofs that name the version, beside the
+    /// version served for `id`.
+    pub fn serve_down_version(&self, id: SubstateId, version: SubstateVersion, proof: Option<SubstateProof>) {
+        self.state.lock().unwrap().down_versions.insert((id, version), proof);
+    }
+
     /// Fails the next `count` substate queries as if the indexer could not be reached.
     pub fn fail_substate_queries(&self, count: usize) {
         self.state.lock().unwrap().failing_substate_queries = count;
@@ -304,6 +313,16 @@ impl WalletNetworkInterface for ProvingNetwork {
         if state.failing_substate_queries > 0 {
             state.failing_substate_queries -= 1;
             return Err(ProvingNetworkError::Unreachable);
+        }
+        if include_proof &&
+            let Some(version) = version &&
+            let Some(proof) = state.down_versions.get(&(address.clone(), version))
+        {
+            return Ok(SubstateQueryResult {
+                version,
+                state: SubstateState::Down {},
+                proof: proof.clone(),
+            });
         }
         let served = state
             .substates

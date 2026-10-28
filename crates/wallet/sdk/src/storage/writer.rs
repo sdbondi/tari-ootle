@@ -219,6 +219,9 @@ pub trait WalletStoreWriter: CommittableStore {
         id: &UtxoId,
         version: SubstateVersion,
     ) -> Result<(), WalletStorageError>;
+    /// Marks the output at `address` burnt and releases it from any lock, unless it is spent or burnt already. A burn
+    /// is final, so a spent or burnt output keeps its status. Returns whether the output was marked.
+    fn stealth_outputs_mark_as_burnt(&mut self, address: &UtxoAddress) -> Result<bool, WalletStorageError>;
     fn stealth_outputs_update(
         &mut self,
         address: &UtxoAddress,

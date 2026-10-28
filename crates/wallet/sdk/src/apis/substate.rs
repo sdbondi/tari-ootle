@@ -684,6 +684,17 @@ pub struct ReadSubstate {
     pub proven_up: Option<ProvenUp>,
 }
 
+impl ReadSubstate {
+    /// Whether the substate is a UTXO that a burn left without an output. A burn is final: every later version of the
+    /// UTXO is without one too.
+    pub fn is_burnt_utxo(&self) -> bool {
+        self.substate
+            .substate_value()
+            .as_utxo()
+            .is_some_and(|utxo| utxo.is_burnt())
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SubstateApiError {
     #[error("Store error: {0}")]

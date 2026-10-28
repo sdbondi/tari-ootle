@@ -2132,6 +2132,29 @@ impl WalletStoreWriter for WriteTransaction<'_> {
         Ok(())
     }
 
+    fn stealth_outputs_mark_as_burnt(&mut self, address: &UtxoAddress) -> Result<bool, WalletStorageError> {
+        const OPERATION: &str = "stealth_outputs_mark_as_burnt";
+        use crate::schema::stealth_outputs;
+
+        let num_rows = diesel::update(stealth_outputs::table)
+            .set((
+                stealth_outputs::status.eq(OutputStatus::Burnt.as_key_str()),
+                stealth_outputs::is_burnt.eq(true),
+                stealth_outputs::lock_id.eq::<Option<i32>>(None),
+                stealth_outputs::locked_at.eq::<Option<PrimitiveDateTime>>(None),
+                stealth_outputs::updated_at.eq(dsl::now),
+            ))
+            .filter(stealth_outputs::resource_address.eq(address.resource_address().to_string()))
+            .filter(stealth_outputs::commitment.eq(serialize_hex(address.id().into_commitment_bytes())))
+            .filter(
+                stealth_outputs::status.ne_all([OutputStatus::Spent.as_key_str(), OutputStatus::Burnt.as_key_str()]),
+            )
+            .execute(self.connection())
+            .map_err(|e| WalletStorageError::general(OPERATION, e))?;
+
+        Ok(num_rows > 0)
+    }
+
     fn stealth_outputs_update(
         &mut self,
         address: &UtxoAddress,
@@ -3482,6 +3505,7 @@ impl WalletEventStoreWriter for WriteTransaction<'_> {
             WalletEvent::UtxoRecovered(payload) => (Some(payload.account_address), serialize_json(payload)?),
             WalletEvent::UtxoRecoveryCompleted(payload) => (None, serialize_json(payload)?),
             WalletEvent::UtxoSpent(payload) => (Some(payload.account_address), serialize_json(payload)?),
+            WalletEvent::UtxoBurnt(payload) => (Some(payload.account_address), serialize_json(payload)?),
             WalletEvent::TransactionRequestCreated(payload) => (None, serialize_json(payload)?),
             WalletEvent::ValidatorSetReanchored(payload) => (None, serialize_json(payload)?),
         };

@@ -22,6 +22,7 @@ use tari_ootle_wallet_sdk::{
         AccountAndViewKeys,
         OutputStatus,
         ProvenUp,
+        UtxoBurntEvent,
         UtxoRecoveredEvent,
         UtxoRecoveryCompletedEvent,
         UtxoRecoveryStartedEvent,
@@ -263,6 +264,7 @@ where
                             is_held: false,
                             held_spent: None,
                             is_unproven: false,
+                            burnt_at: None,
                             proven_up: None,
                         })
                     })
@@ -314,6 +316,9 @@ where
     /// A held UTXO without a proof of any version is read once more, and the proof recorded, so that its spend can be
     /// proven from an exclusion once validators no longer keep its down proof. The report is settled without the proof
     /// when the indexer serves none.
+    ///
+    /// A held UTXO that a read proves burnt is recorded burnt. A burn is final, so the report of a UTXO the wallet
+    /// holds burnt needs no proof and changes nothing.
     async fn settle_reported_utxos(
         &self,
         resource_address: ResourceAddress,
@@ -331,6 +336,11 @@ where
                 .optional()?;
             if let Some(held) = held {
                 found.is_held = true;
+                if held.status == OutputStatus::Burnt {
+                    found.is_frozen = held.is_frozen;
+                    settled.push(found);
+                    continue;
+                }
                 if held.status == OutputStatus::Spent {
                     let Some(proven_up) = held.proven_up else {
                         found.is_frozen = held.is_frozen;
@@ -464,6 +474,7 @@ where
         read: Result<ReadSubstate, SubstateApiError>,
     ) -> Result<Option<FoundUtxo>, StealthScannerApiError> {
         match read {
+            Ok(read) if read.is_burnt_utxo() => found.burnt_at = Some(read.substate.version()),
             Ok(read) => found.proven_up = read.proven_up,
             Err(SubstateApiError::StoreError(err)) => return Err(err.into()),
             Err(err) => {
@@ -571,6 +582,10 @@ where
     ) -> Result<Option<FoundUtxo>, StealthScannerApiError> {
         let address = UtxoAddress::new(resource_address, found.id);
         match read {
+            Ok(read) if read.is_burnt_utxo() => {
+                found.burnt_at = Some(read.substate.version());
+                Ok(Some(found))
+            },
             Ok(ReadSubstate { substate, proven_up }) => {
                 found.is_frozen = substate.substate_value().as_utxo().is_some_and(|utxo| utxo.is_frozen());
                 found.proven_up = proven_up;
@@ -669,6 +684,19 @@ where
         let outputs_api = self.sdk.stealth_outputs_api();
 
         let address = UtxoAddress::new(resource_address, found.id);
+        if let Some(burnt_at) = found.burnt_at {
+            debug!(target: LOG_TARGET, "The indexer reported stealth output {} unspent, but proved it burnt at v{}", address, burnt_at);
+            if let Some(account_address) = outputs_api.mark_burnt(&address)? {
+                self.notify(UtxoBurntEvent {
+                    account_address,
+                    address,
+                });
+            }
+            self.sdk.store().with_write_tx(|tx| {
+                tx.utxo_process_queue_remove_item(resource_address, found.output.tag, found.output.output.public_nonce)
+            })?;
+            return Ok(false);
+        }
         let commitment = found.id.into_commitment_bytes();
         let validated = if found.is_held {
             None
@@ -757,6 +785,8 @@ struct FoundUtxo {
     held_spent: Option<HeldSpent>,
     /// The wallet holds the output without a proof of any version.
     is_unproven: bool,
+    /// The version at which a read of the output the wallet holds showed it burnt.
+    burnt_at: Option<SubstateVersion>,
     /// The version of the output, and the epoch of the block, that a verified proof showed it up at.
     proven_up: Option<ProvenUp>,
 }

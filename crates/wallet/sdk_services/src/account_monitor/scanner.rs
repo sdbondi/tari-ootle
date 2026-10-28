@@ -987,8 +987,8 @@ where TSpec: WalletSdkSpec
         Ok(())
     }
 
-    /// Proves each of `addresses` in one fetch and records each proof. Returns how many were proven. Each output that
-    /// is not proven is logged at `failure_level`.
+    /// Proves each of `addresses` in one fetch and records each proof, or the burn of an output proven burnt. Returns
+    /// how many were proven. Each output that is not proven is logged at `failure_level`.
     async fn prove_outputs(
         &self,
         addresses: &[UtxoAddress],
@@ -1017,6 +1017,12 @@ where TSpec: WalletSdkSpec
         let mut num_proven = 0;
         for (address, (_, read)) in addresses.iter().zip(reads) {
             match read {
+                Ok(read) if read.proven_up.is_some() && read.is_burnt_utxo() => {
+                    if let Some(account_address) = stealth_outputs_api.mark_burnt(address)? {
+                        self.record_stealth_balance_change(account_address, *address.resource_address())?;
+                    }
+                    num_proven += 1;
+                },
                 Ok(ReadSubstate {
                     proven_up: Some(proven_up),
                     ..

@@ -46,6 +46,9 @@ pub enum OutputStatus {
     /// mask were not constructed correctly by the sender. This output will not "be counted" in the confidential
     /// balance.
     Invalid,
+    /// The resource issuer burnt this stealth output. Its value is destroyed and it cannot be spent. Only stealth
+    /// outputs are burnt.
+    Burnt,
 }
 
 impl OutputStatus {
@@ -56,6 +59,7 @@ impl OutputStatus {
             Self::LockedForSpend => "LockedForSpend",
             Self::LockedUnconfirmed => "LockedUnconfirmed",
             Self::Invalid => "Invalid",
+            Self::Burnt => "Burnt",
         }
     }
 }
@@ -70,6 +74,7 @@ impl FromStr for OutputStatus {
             "LockedForSpend" => Ok(Self::LockedForSpend),
             "LockedUnconfirmed" => Ok(Self::LockedUnconfirmed),
             "Invalid" => Ok(Self::Invalid),
+            "Burnt" => Ok(Self::Burnt),
             _ => Err(()),
         }
     }

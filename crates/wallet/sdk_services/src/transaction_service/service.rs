@@ -622,6 +622,7 @@ where
             WalletEvent::UtxoRecovered(_) |
             WalletEvent::UtxoRecoveryCompleted(_) |
             WalletEvent::UtxoSpent(_) |
+            WalletEvent::UtxoBurnt(_) |
             WalletEvent::TransactionRequestCreated(_) |
             WalletEvent::ValidatorSetReanchored(_) => {},
         }
