@@ -251,8 +251,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
     }
 
     // Staged versions run contiguously up from a shard's first version, so they stay far below 2^63 and compare
-    // correctly as `i64`.
-
+    // correctly as `i64` here and in `staged_versions_discard_above`.
     fn staged_versions_delete_through(
         &mut self,
         shard: Shard,

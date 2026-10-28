@@ -29,8 +29,9 @@ pub enum NetworkStateSyncError {
     UnverifiedHistory {
         details: String,
         blamed: Vec<PeerAddress>,
-        /// The shard whose staged history disagreed with a verified leaf, and the verified version it was rewound to.
-        mismatch: Option<(Shard, StateVersion)>,
+        /// The shard whose history after this verified version mismatched a verified leaf or could not be accumulated,
+        /// which counts towards halting the shard group once every member's has.
+        diverged_from: Option<(Shard, StateVersion)>,
     },
     #[error("Request failed: {0}")]
     RequestFailed(#[from] RpcStatus),
@@ -51,14 +52,14 @@ pub enum NetworkStateSyncError {
 }
 
 impl NetworkStateSyncError {
-    /// True if this failure is attributable to the peer or the stream rather than to local state, so
-    /// the shards it covers can be left for another round while the rest of the sync proceeds.
     /// True if this failure blames stream peers for history no verified leaf covers, which the shard group answers by
     /// excluding them.
     pub fn is_unverified_history(&self) -> bool {
         matches!(self, Self::UnverifiedHistory { .. })
     }
 
+    /// True if this failure is attributable to the peer or the stream rather than to local state, so
+    /// the shards it covers can be left for another round while the rest of the sync proceeds.
     pub fn is_peer_fault(&self) -> bool {
         matches!(
             self,

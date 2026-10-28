@@ -829,24 +829,24 @@ impl NetworkWideStateSync {
                 Err(NetworkStateSyncError::UnverifiedHistory {
                     details,
                     blamed,
-                    mismatch,
+                    diverged_from,
                 }) => {
                     warn!(target: LOG_TARGET, "⚠️ Shard group {shard_group}: {details}. Excluding {} for the rest of the epoch", display_peers(&blamed));
                     for peer in &blamed {
                         pool.mark_failed(*peer);
                     }
-                    let Some((shard, rewound_to)) = mismatch else {
+                    let Some((shard, from)) = diverged_from else {
                         continue;
                     };
                     let committee_size = match pool.committee_size().await {
                         Ok(committee_size) => committee_size,
                         Err(e) => {
-                            warn!(target: LOG_TARGET, "⚠️ Shard group {shard_group}'s committee size is unknown, so its mismatches are not counted towards halting it: {e}");
+                            warn!(target: LOG_TARGET, "⚠️ Shard group {shard_group}'s committee size is unknown, so its divergent history is not counted towards halting it: {e}");
                             continue;
                         },
                     };
-                    if breaker.record(shard, rewound_to, &blamed, committee_size) {
-                        error!(target: LOG_TARGET, "⚠️ Every one of the {committee_size} members of shard group {shard_group} streamed history of shard {shard} from v{rewound_to} that mismatches a verified leaf. This indexer's own accumulator recomputation is suspect, so it stops following the shard group until the epoch moves. Report this with the mismatch errors above");
+                    if breaker.record(shard, from, &blamed, committee_size) {
+                        error!(target: LOG_TARGET, "⚠️ Every one of the {committee_size} members of shard group {shard_group} streamed history of shard {shard} after v{from} that mismatches a verified leaf or cannot be accumulated. This indexer's own accumulator recomputation is suspect, so it stops following the shard group until the epoch moves. Report this with the errors above");
                         #[cfg(feature = "metrics")]
                         self.metrics.record_leaf_check("circuit_breaker");
                         breaker = MismatchBreaker::default();
@@ -1134,7 +1134,7 @@ impl NetworkWideStateSync {
                          {checked_on}). Discarded every version staged above v{rewound_to}"
                     ),
                     blamed,
-                    mismatch: Some((shard, rewound_to)),
+                    diverged_from: Some((shard, rewound_to)),
                 });
             },
             Verdict::Conflict {
@@ -1379,8 +1379,11 @@ impl NetworkWideStateSync {
                 changed = keepalives.changed(), if keepalives_open => {
                     match changed {
                         Ok(()) => {
-                            for shard in level.keys() {
-                                self.shard_watermarks.refresh(*shard);
+                            let stage = self.verified_stage();
+                            for (shard, level_at) in &level {
+                                if stage.verified_version(*shard) >= *level_at {
+                                    self.shard_watermarks.refresh(*shard);
+                                }
                             }
                         },
                         Err(_) => keepalives_open = false,
@@ -1424,13 +1427,10 @@ impl NetworkWideStateSync {
                     // The completion marker is the only point at which this shard is known to be
                     // level with the committee, which is what the substate cache needs: mid-stream
                     // the indexer holds every transition up to some version while the chain is
-                    // arbitrarily far ahead of it. The watermark moves only as far as the shard is
-                    // verified, since nothing above that is promoted. Confirmed even when the
-                    // watermark did not move - a quiet shard is still one this indexer is keeping up
-                    // with.
+                    // arbitrarily far ahead of it. Confirmed even when the watermark did not move -
+                    // a quiet shard is still one this indexer is keeping up with.
                     level.insert(shard, level_at);
-                    let verified = self.verified_stage().verified_version(shard);
-                    self.shard_watermarks.confirm(shard, level_at.min(verified));
+                    self.confirm_level(shard, level_at);
                     if burst {
                         leaves.burst.notify_one();
                     }
@@ -1537,12 +1537,15 @@ impl NetworkWideStateSync {
         batch: Vec<u8>,
         peer: &PeerAddress,
     ) -> Result<StagedWithVerdict, NetworkStateSyncError> {
+        // A version this indexer cannot accumulate counts towards the circuit breaker as a mismatch does: if every
+        // member streams one, the recomputation is the likelier fault.
+        let verified = self.verified_stage().verified_version(shard);
         let invalid = |details: String| {
             self.record_leaf_check("invalid_version");
             NetworkStateSyncError::UnverifiedHistory {
                 details: format!("Peer {peer} streamed v{state_version} of shard {shard} at {epoch}, {details}"),
                 blamed: vec![*peer],
-                mismatch: None,
+                diverged_from: Some((shard, verified)),
             }
         };
         let changes = changes.map_err(|e| invalid(format!("which no committed version could hold: {e}")))?;
@@ -1567,10 +1570,21 @@ impl NetworkWideStateSync {
         })
     }
 
-    /// Moves `shard`'s watermark up to the version it was promoted to, as far as the stream last found it level.
+    /// Confirms `shard`'s watermark at `level_at`, the version the stream found it level at, once every version up to
+    /// it is promoted.
+    ///
+    /// The substate cache retires an entry only when the version that supersedes it is promoted, and serves on a
+    /// confirmation's freshness alone, so a shard with versions still staged below its level is left to age.
+    fn confirm_level(&self, shard: Shard, level_at: StateVersion) {
+        if self.verified_stage().verified_version(shard) >= level_at {
+            self.shard_watermarks.confirm(shard, level_at);
+        }
+    }
+
+    /// Confirms `shard`'s watermark once a promotion reaches the version the stream last found it level at.
     fn confirm_promoted(&self, shard: Shard, promoted: Option<StateVersion>, level: &HashMap<Shard, StateVersion>) {
-        if let (Some(promoted), Some(level_at)) = (promoted, level.get(&shard)) {
-            self.shard_watermarks.confirm(shard, promoted.min(*level_at));
+        if let (Some(_), Some(level_at)) = (promoted, level.get(&shard)) {
+            self.confirm_level(shard, *level_at);
         }
     }
 
@@ -1597,7 +1611,7 @@ impl NetworkWideStateSync {
                      has been ahead of it for {VERIFICATION_GRACE:?}"
                 ),
                 blamed: vec![*peer],
-                mismatch: None,
+                diverged_from: None,
             });
         }
         if let Some((shard, version)) = checks.overdue(now) {
@@ -1609,7 +1623,7 @@ impl NetworkWideStateSync {
                      {VERIFICATION_GRACE:?}. Discarded every version staged above v{rewound_to}"
                 ),
                 blamed: vec![*peer],
-                mismatch: None,
+                diverged_from: None,
             });
         }
         Ok(())
@@ -1902,19 +1916,19 @@ impl StreamChecks {
     }
 }
 
-/// The peers whose staged history mismatched a verified leaf, by the shard and the verified version it was rewound to.
-/// Once every member of a committee has mismatched from the same version, the fault is this indexer's own: its
-/// recomputation of the accumulator disagrees with the committee's.
+/// The peers whose history of a shard after a verified version mismatched a verified leaf or could not be
+/// accumulated, by the shard and that version. Once every member of a committee has diverged from the same version,
+/// the fault is this indexer's own: its recomputation of the accumulator disagrees with the committee's.
 #[derive(Debug, Default)]
 struct MismatchBreaker {
     mismatched: HashMap<(Shard, StateVersion), HashSet<PeerAddress>>,
 }
 
 impl MismatchBreaker {
-    /// Records that `peers` mismatched from `rewound_to` of `shard`, returning whether every one of the committee's
+    /// Records that `peers` diverged after `from` of `shard`, returning whether every one of the committee's
     /// `committee_size` members has.
-    fn record(&mut self, shard: Shard, rewound_to: StateVersion, peers: &[PeerAddress], committee_size: usize) -> bool {
-        let mismatched = self.mismatched.entry((shard, rewound_to)).or_default();
+    fn record(&mut self, shard: Shard, from: StateVersion, peers: &[PeerAddress], committee_size: usize) -> bool {
+        let mismatched = self.mismatched.entry((shard, from)).or_default();
         mismatched.extend(peers.iter().copied());
         mismatched.len() >= committee_size
     }

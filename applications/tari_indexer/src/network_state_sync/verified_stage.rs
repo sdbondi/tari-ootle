@@ -7,7 +7,7 @@
 //! The accumulator is cumulative, so a leaf that matches the accumulator computed at its version authenticates every
 //! version streamed up to it.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use ootle_network::Network;
 use tari_engine_types::{published_template::PublishedTemplateAddress, substate::hash_published_template_metadata};
@@ -20,6 +20,11 @@ use tari_template_lib_types::Hash32;
 /// stream. A tip leaf comes from a committee member probed in the last few seconds, so it trails the stream by a
 /// handful of versions; a leaf further behind checks nothing a later one does not.
 pub const MAX_ACCUMULATOR_HISTORY: usize = 256;
+
+/// The most leaves a shard holds ahead of the stream. A catch-up meets a checkpoint leaf per epoch on its way to the
+/// tip, and each one it holds promotes what was staged below it; past this many, those between the lowest and the
+/// highest are dropped first.
+pub const MAX_WAITING_LEAVES: usize = 64;
 
 /// A shard's state version and transition accumulator as a quorum committed them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,7 +180,7 @@ impl<P: Clone> VerifiedStage<P> {
     pub fn wants_leaf(&self, shard: Shard) -> bool {
         self.shards
             .get(&shard)
-            .is_some_and(|stage| stage.waiting.is_none() && stage.head.0 > stage.verified.0)
+            .is_some_and(|stage| stage.waiting.is_empty() && stage.head.0 > stage.verified.0)
     }
 
     /// `shard`'s last verified version.
@@ -185,9 +190,9 @@ impl<P: Clone> VerifiedStage<P> {
             .map_or(StateVersion::new(0), |stage| stage.verified.0)
     }
 
-    /// The version of the verified leaf `shard` is waiting for the stream to reach.
+    /// The version of the lowest verified leaf `shard` is waiting for the stream to reach.
     pub fn waiting_for(&self, shard: Shard) -> Option<StateVersion> {
-        self.shards.get(&shard)?.waiting.map(|leaf| leaf.state_version)
+        self.shards.get(&shard)?.waiting.keys().next().copied()
     }
 
     /// The highest version any verified leaf of `shard` has named.
@@ -208,8 +213,8 @@ struct ShardStage<P> {
     head: (StateVersion, TransitionAccumulator),
     /// The accumulator after each version staged above the verified one, oldest first.
     history: VecDeque<Staged<P>>,
-    /// The lowest leaf ahead of the stream.
-    waiting: Option<VerifiedShardLeaf>,
+    /// The leaves ahead of the stream, by version.
+    waiting: BTreeMap<StateVersion, VerifiedShardLeaf>,
     highest_leaf: Option<StateVersion>,
 }
 
@@ -221,7 +226,7 @@ impl<P> Default for ShardStage<P> {
             verified: origin,
             head: origin,
             history: VecDeque::new(),
-            waiting: None,
+            waiting: BTreeMap::new(),
             highest_leaf: None,
         }
     }
@@ -246,11 +251,12 @@ impl<P: Clone> ShardStage<P> {
             return Verdict::Stale;
         }
         if leaf.state_version > self.head.0 {
-            if self
-                .waiting
-                .is_none_or(|waiting| leaf.state_version < waiting.state_version)
-            {
-                self.waiting = Some(leaf);
+            self.waiting.entry(leaf.state_version).or_insert(leaf);
+            if self.waiting.len() > MAX_WAITING_LEAVES {
+                let below_highest = self.waiting.keys().rev().nth(1).copied();
+                if let Some(version) = below_highest {
+                    self.waiting.remove(&version);
+                }
             }
             return Verdict::Wait;
         }
@@ -279,10 +285,21 @@ impl<P: Clone> ShardStage<P> {
         Verdict::Promote(leaf.state_version)
     }
 
+    /// Checks the leaves the stream has reached, lowest first, returning the verdict of the last one, or of the
+    /// first that mismatches. A mismatch rewinds the head, so the leaves above it wait again.
     fn check_waiting(&mut self) -> Option<Verdict<P>> {
-        let head = self.head.0;
-        let leaf = self.waiting.take_if(|leaf| leaf.state_version <= head)?;
-        Some(self.check(leaf))
+        let mut verdict = None;
+        while let Some(entry) = self.waiting.first_entry() &&
+            *entry.key() <= self.head.0
+        {
+            let leaf = entry.remove();
+            match self.check(leaf) {
+                mismatch @ Verdict::Mismatch { .. } => return Some(mismatch),
+                Verdict::Stale => {},
+                checked => verdict = Some(checked),
+            }
+        }
+        verdict
     }
 }
 
@@ -465,8 +482,56 @@ mod tests {
         assert_eq!(stage.waiting_for(shard()), Some(v(3)));
         assert_eq!(stage.highest_leaf(shard()), Some(v(4)));
 
-        assert_eq!(history.stream(&mut stage, 2..=4), vec![Verdict::Promote(v(3))]);
+        assert_eq!(history.stream(&mut stage, 2..=3), vec![Verdict::Promote(v(3))]);
+        assert_eq!(stage.waiting_for(shard()), Some(v(4)));
+        assert_eq!(history.stream(&mut stage, 4..=4), vec![Verdict::Promote(v(4))]);
         assert_eq!(stage.waiting_for(shard()), None);
+    }
+
+    #[test]
+    fn a_catch_up_promotes_at_each_leaf_it_reaches() {
+        let history = History::new(9);
+        let mut stage = VerifiedStage::default();
+        for version in [3, 9, 6] {
+            assert_eq!(stage.on_leaf(history.leaf(version)), Verdict::Wait);
+        }
+
+        let verdicts = history.stream(&mut stage, 1..=9);
+        assert_eq!(verdicts, [3, 6, 9].map(|n| Verdict::Promote(v(n))));
+    }
+
+    #[test]
+    fn a_catch_up_mismatches_at_the_first_leaf_past_a_tampered_version() {
+        let history = History::new(6);
+        let mut stage = VerifiedStage::default();
+        stage.on_leaf(history.leaf(2));
+        stage.on_leaf(history.leaf(5));
+        history.stream(&mut stage, 1..=3);
+        stage.on_version(shard(), v(4), EPOCH, &[up(77, 1)], PEER).unwrap();
+
+        let verdict = stage
+            .on_version(shard(), v(5), EPOCH, history.changes(5), PEER)
+            .unwrap()
+            .1;
+        assert!(matches!(verdict, Some(Verdict::Mismatch { version, .. }) if version == v(5)));
+        assert_eq!(stage.verified_version(shard()), v(2));
+        assert_eq!(stage.on_leaf(history.leaf(5)), Verdict::Wait);
+        assert_eq!(history.stream(&mut stage, 3..=5), vec![Verdict::Promote(v(5))]);
+    }
+
+    #[test]
+    fn past_the_most_waiting_leaves_the_lowest_and_highest_are_kept() {
+        let num_versions = MAX_WAITING_LEAVES as u64 + 5;
+        let history = History::new(num_versions);
+        let mut stage = VerifiedStage::default();
+        for version in 1..=num_versions {
+            stage.on_leaf(history.leaf(version));
+        }
+
+        assert_eq!(stage.waiting_for(shard()), Some(v(1)));
+        let verdicts = history.stream(&mut stage, 1..=num_versions);
+        assert_eq!(verdicts.len(), MAX_WAITING_LEAVES);
+        assert_eq!(verdicts.last(), Some(&Verdict::Promote(v(num_versions))));
     }
 
     type Tamper = dyn Fn(&mut Vec<SubstateTreeChange>, &mut Epoch);
