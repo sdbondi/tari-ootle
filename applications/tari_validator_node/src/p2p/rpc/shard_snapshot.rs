@@ -31,6 +31,9 @@ const _: () = assert!(
     "a full snapshot page and its largest substate must fit one RPC response"
 );
 
+/// The most leaves a page reads from the tree at once.
+const LEAF_READ_CHUNK: usize = 64;
+
 /// The field number of `GetShardSnapshotResponse.substates`, which frames each substate in the encoded response.
 const SNAPSHOT_SUBSTATES_TAG: u32 = 1;
 
@@ -73,38 +76,46 @@ pub fn read_shard_snapshot<TTx: StateStoreReadTransaction>(
     let tree_error = |e: JmtStorageError| StorageError::QueryError {
         reason: format!("read the tree of {shard} at state version {state_version}: {e}"),
     };
-    let leaves = match jmt.get_leaves_after(state_version, after, limit) {
-        Ok(leaves) => leaves,
-        Err(JmtStorageError::NotFound(_)) => return Ok(ShardSnapshotPage::Unavailable),
-        Err(e) => return Err(tree_error(e)),
-    };
-
     let value_filters = value_filters | SubstateValueFilterFlags::ALL_HASHES;
-    let num_leaves = leaves.len();
-    let mut substates = Vec::with_capacity(num_leaves);
+    let mut substates = Vec::new();
     let mut page_bytes = 0usize;
-    let mut last_key = None;
+    let mut last_key = after.copied();
     let mut is_full = false;
-    for leaf in leaves {
-        let record = tx.substates_get(leaf.payload())?;
-        let created_epoch = record.created.at_epoch;
-        let substate_id = record.substate_id.clone();
-        let data = value_filters.serve(record).ok_or_else(|| StorageError::QueryError {
-            reason: format!("{substate_id} is served in no form under {value_filters:?}"),
-        })?;
-        let substate = proto::SnapshotSubstate {
-            substate: Some(data.into()),
-            created_epoch: Some(created_epoch.into()),
+    let mut is_exhausted = false;
+    // Leaves are read a chunk at a time, so a page the byte budget fills early reads few beyond it
+    'page: while substates.len() < limit {
+        let chunk = LEAF_READ_CHUNK.min(limit - substates.len());
+        let leaves = match jmt.get_leaves_after(state_version, last_key.as_ref(), chunk) {
+            Ok(leaves) => leaves,
+            Err(JmtStorageError::NotFound(_)) => return Ok(ShardSnapshotPage::Unavailable),
+            Err(e) => return Err(tree_error(e)),
         };
-        let substate_bytes = prost::encoding::message::encoded_len(SNAPSHOT_SUBSTATES_TAG, &substate);
-        if !substates.is_empty() && page_bytes.saturating_add(substate_bytes) > MAX_SNAPSHOT_PAGE_BYTES {
-            is_full = true;
+        is_exhausted = leaves.len() < chunk;
+        for leaf in leaves {
+            let record = tx.substates_get(leaf.payload())?;
+            let created_epoch = record.created.at_epoch;
+            let substate_id = record.substate_id.clone();
+            let data = value_filters.serve(record).ok_or_else(|| StorageError::QueryError {
+                reason: format!("{substate_id} is served in no form under {value_filters:?}"),
+            })?;
+            let substate = proto::SnapshotSubstate {
+                substate: Some(data.into()),
+                created_epoch: Some(created_epoch.into()),
+            };
+            let substate_bytes = prost::encoding::message::encoded_len(SNAPSHOT_SUBSTATES_TAG, &substate);
+            if !substates.is_empty() && page_bytes.saturating_add(substate_bytes) > MAX_SNAPSHOT_PAGE_BYTES {
+                is_full = true;
+                break 'page;
+            }
+            page_bytes = page_bytes.saturating_add(substate_bytes);
+            substates.push(substate);
+            last_key = Some(*leaf.leaf_key());
+        }
+        if is_exhausted {
             break;
         }
-        page_bytes = page_bytes.saturating_add(substate_bytes);
-        substates.push(substate);
-        last_key = Some(*leaf.leaf_key());
     }
+    let last_key = last_key.filter(|_| !substates.is_empty());
     let last_leaf_proof = match last_key {
         Some(key) => match jmt.get_with_proof_ext(key.as_ref(), state_version) {
             Ok((_, proof)) => Some(proof),
@@ -115,7 +126,7 @@ pub fn read_shard_snapshot<TTx: StateStoreReadTransaction>(
     };
     Ok(ShardSnapshotPage::Page {
         substates,
-        is_last: !is_full && num_leaves < limit,
+        is_last: is_exhausted && !is_full,
         last_leaf_proof,
     })
 }
@@ -285,16 +296,17 @@ mod tests {
 
     #[test]
     fn its_pages_rebuild_the_root_of_the_version() {
-        let (_dir, store, [root_v1, root_v2]) = store_with_templates(40, 15, 16);
+        // More substates than a leaf read chunk, so pages span chunks
+        let (_dir, store, [root_v1, root_v2]) = store_with_templates(150, 15, 16);
         let filters = SubstateValueFilterFlags::TRANSACTION_RECEIPT;
-        for limit in [1, 7, 40, 41, 1000] {
+        for limit in [1, 7, LEAF_READ_CHUNK, LEAF_READ_CHUNK + 1, 150, 1000] {
             let (substates, root, num_pages) = page_through(&store, 1, root_v1, limit, filters);
-            assert_eq!(substates.len(), 40, "limit {limit}");
+            assert_eq!(substates.len(), 150, "limit {limit}");
             assert_eq!(root, root_v1, "limit {limit}");
-            assert_eq!(num_pages, 40 / limit + 1, "limit {limit}");
+            assert_eq!(num_pages, 150 / limit + 1, "limit {limit}");
         }
         let (substates, root, _) = page_through(&store, 2, root_v2, 6, filters);
-        assert_eq!(substates.len(), 25);
+        assert_eq!(substates.len(), 135);
         assert_eq!(root, root_v2);
         // Unselected substates are served as their hash alone
         assert!(substates.iter().all(|data| data.value.hash().is_some()));

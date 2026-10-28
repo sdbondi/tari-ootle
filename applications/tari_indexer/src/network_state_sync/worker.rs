@@ -16,6 +16,7 @@ use ootle_network::Network;
 use prost::Message;
 use tari_engine_types::{
     SubstateVersion,
+    limits::ENGINE_LIMITS,
     published_template::PublishedTemplateMetadata,
     substate::{SubstateId, SubstateValue},
     transaction_receipt::TransactionReceipt,
@@ -151,8 +152,9 @@ const MAX_PROMOTED_VERSIONS: usize = 1024;
 /// The most encoded bytes of staged versions promoted in one write transaction, which bounds what it decodes and
 /// announces at once.
 const MAX_PROMOTED_BYTES: usize = 64 * 1024 * 1024;
-/// The most staged snapshot substates a promotion reads and commits at a time.
-const MAX_PROMOTED_SNAPSHOT_SUBSTATES: usize = 1024;
+/// The most staged snapshot substates a promotion reads and commits at a time: as many as [`MAX_PROMOTED_BYTES`] holds
+/// of the largest substate the engine commits.
+const MAX_PROMOTED_SNAPSHOT_SUBSTATES: usize = MAX_PROMOTED_BYTES / ENGINE_LIMITS.max_substate_size;
 /// The most substates one snapshot page asks for. The responder caps it too.
 const SNAPSHOT_PAGE_SUBSTATES: u32 = 1000;
 /// The longest a shard snapshot is paged in for before it is abandoned. Each page is checked as it arrives, so this
@@ -933,10 +935,7 @@ impl NetworkWideStateSync {
                 return Ok(RoundEnd::Pause("no session"));
             },
         };
-        let new_shards = self.shards_to_snapshot(shards, progress).await;
-        let mut leaf_shards = self.leaf_shards(shard_group, shards.contains(&Shard::global()));
-        leaf_shards.extend(new_shards.iter().copied());
-        let mut snapshot_leaves = Vec::new();
+        let leaf_shards = self.leaf_shards(shard_group, shards.contains(&Shard::global()));
         match self
             .validator_status
             .probe(&mut session, shard_group, &leaf_shards)
@@ -944,7 +943,6 @@ impl NetworkWideStateSync {
         {
             Ok(Some(probe)) => {
                 self.consensus_epoch.observe(probe.tip.shard_group, probe.tip.epoch);
-                let tip_epoch = probe.tip.epoch;
                 // Record the quorum-signed state root so the read path can skip re-validating
                 // commit proofs for this tip. A failure here must not abort the state sync.
                 if let Err(e) = self.persist_verified_tip(probe.tip).await {
@@ -952,12 +950,8 @@ impl NetworkWideStateSync {
                 }
                 let peer = *session.peer_address();
                 for proved in probe.leaves {
-                    if new_shards.contains(&proved.leaf.shard) {
-                        snapshot_leaves.push((proved, tip_epoch));
-                    } else {
-                        self.apply_leaf(proved.leaf, format!("the tip leaf from {peer}"), progress)
-                            .await?;
-                    }
+                    self.apply_leaf(proved.leaf, format!("the tip leaf from {peer}"), progress)
+                        .await?;
                 }
             },
             Ok(None) => {},
@@ -968,8 +962,9 @@ impl NetworkWideStateSync {
             },
         }
 
+        let new_shards = self.shards_to_snapshot(shards, progress).await;
         if let Some(end) = self
-            .snapshot_new_shards(new_shards, &snapshot_leaves, &mut session, progress, cancel)
+            .snapshot_new_shards(shard_group, new_shards, &mut session, progress, cancel)
             .await?
         {
             return Ok(end);
@@ -1077,20 +1072,41 @@ impl NetworkWideStateSync {
             .collect()
     }
 
-    /// Takes a snapshot of each of `new_shards` from `session` at its leaf in `leaves`, proved in a block of the epoch
-    /// paired with it, and promotes it. Returns how the round ends if one cannot be taken.
+    /// Takes a snapshot of each of `new_shards` of `shard_group` from `session`, at a leaf probed just before it so
+    /// that each starts at a version the peer still holds the tree of, and promotes it. Returns how the round ends if
+    /// one cannot be taken.
     async fn snapshot_new_shards(
         &self,
+        shard_group: ShardGroup,
         new_shards: BTreeSet<Shard>,
-        leaves: &[(ProvedShardLeaf, Epoch)],
         session: &mut ValidatorRpcSession,
         progress: &SharedSyncProgress,
         cancel: &CancellationToken,
     ) -> Result<Option<RoundEnd>, NetworkStateSyncError> {
         for shard in new_shards {
-            let Some(&(proved, tip_epoch)) = leaves.iter().find(|(proved, _)| proved.leaf.shard == shard) else {
-                return Ok(Some(RoundEnd::Pause(
-                    "a new shard has no verified leaf to take a snapshot at",
+            let probe = match self
+                .validator_status
+                .probe(session, shard_group, &BTreeSet::from([shard]))
+                .await
+            {
+                Ok(probe) => probe,
+                Err(e) => {
+                    warn!(target: LOG_TARGET, "⚠️ Validator {} for shard group {} served an INVALID commit proof: {}", session.peer_address(), shard_group, e);
+                    return Ok(Some(RoundEnd::Pause("invalid commit proof")));
+                },
+            };
+            let Some((proved, tip_epoch)) = probe.and_then(|probe| {
+                let tip_epoch = probe.tip.epoch;
+                probe
+                    .leaves
+                    .into_iter()
+                    .find(|proved| proved.leaf.shard == shard)
+                    .map(|proved| (proved, tip_epoch))
+            }) else {
+                return Ok(Some(self.abandon_snapshot(
+                    shard,
+                    "the peer proved no leaf of the shard",
+                    session.peer_address(),
                 )));
             };
             // A shard with no state at the leaf is followed from its first version, which is all its history
@@ -1099,7 +1115,8 @@ impl NetworkWideStateSync {
             }
             let end = self.snapshot_shard(proved, tip_epoch, session, progress, cancel).await;
             if !matches!(end, Ok(SnapshotEnd::Promoted)) {
-                // A snapshot that ends unpromoted is started again from its first page, or not at all
+                // A shard whose snapshots are abandoned too often replays its history, and takes no snapshot that
+                // would clear these rows
                 self.store
                     .with_write_tx(move |tx| tx.snapshot_substates_delete(shard))
                     .await?;
@@ -1110,18 +1127,7 @@ impl NetworkWideStateSync {
                 },
                 Ok(SnapshotEnd::Cancelled) => return Ok(Some(RoundEnd::Cancelled)),
                 Ok(SnapshotEnd::Abandoned(reason)) => {
-                    let abandoned = {
-                        let mut abandoned = self.abandoned_snapshots();
-                        let count = abandoned.entry(shard).or_default();
-                        *count += 1;
-                        *count
-                    };
-                    if abandoned >= MAX_ABANDONED_SNAPSHOTS {
-                        warn!(target: LOG_TARGET, "⚠️ {abandoned} snapshots of new shard {shard} in a row were abandoned, the last from {} because {reason}. Replaying the shard's history from its first version instead", session.peer_address());
-                    } else {
-                        info!(target: LOG_TARGET, "🌍️ Abandoned the snapshot of new shard {shard} from {} because {reason}. Taking it at a fresh leaf next round", session.peer_address());
-                    }
-                    return Ok(Some(RoundEnd::Pause("a new shard's snapshot was abandoned")));
+                    return Ok(Some(self.abandon_snapshot(shard, reason, session.peer_address())));
                 },
                 Err(err) if err.is_peer_fault() && !err.is_unverified_history() => {
                     warn!(target: LOG_TARGET, "⚠️ Snapshot of shard {shard} from {} failed: {}", session.peer_address(), err);
@@ -1131,6 +1137,23 @@ impl NetworkWideStateSync {
             }
         }
         Ok(None)
+    }
+
+    /// Counts an abandoned snapshot of `shard` towards [`MAX_ABANDONED_SNAPSHOTS`], and pauses the round so that the
+    /// next takes it at a fresh leaf, or replays the shard once too many were.
+    fn abandon_snapshot(&self, shard: Shard, reason: &str, peer: &PeerAddress) -> RoundEnd {
+        let abandoned = {
+            let mut abandoned = self.abandoned_snapshots();
+            let count = abandoned.entry(shard).or_default();
+            *count += 1;
+            *count
+        };
+        if abandoned >= MAX_ABANDONED_SNAPSHOTS {
+            warn!(target: LOG_TARGET, "⚠️ {abandoned} snapshots of new shard {shard} in a row were abandoned, the last from {peer} because {reason}. Replaying the shard's history from its first version instead");
+        } else {
+            info!(target: LOG_TARGET, "🌍️ Abandoned the snapshot of new shard {shard} from {peer} because {reason}. Taking it at a fresh leaf next round");
+        }
+        RoundEnd::Pause("a new shard's snapshot was abandoned")
     }
 
     /// Takes a snapshot of new shard `proved.leaf.shard` from `session` at the leaf's version, checks each page

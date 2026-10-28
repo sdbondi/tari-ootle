@@ -85,7 +85,7 @@ impl ShardSnapshot {
             let encoded = substate
                 .substate
                 .ok_or_else(|| SnapshotError::Malformed("a substate has no data".to_string()))?;
-            let data = SubstateData::try_from(encoded.clone()).map_err(|e| SnapshotError::Malformed(e.to_string()))?;
+            let data = SubstateData::try_from(encoded).map_err(|e| SnapshotError::Malformed(e.to_string()))?;
             let substate_id = data.substate_id.clone();
             let is_template = substate_id.is_template();
             if data.template_metadata.is_some() && !is_template {
@@ -98,6 +98,7 @@ impl ShardSnapshot {
             if is_indexed && !carries_value {
                 return Err(SnapshotError::ValueWithheld { substate_id });
             }
+            let staged_substate = is_indexed.then(|| rpc::SubstateData::from(data.clone()).encode_to_vec());
             let update = SubstateUpdateProof::Create(Box::new(SubstateCreate { substate: data }));
             let SubstateTreeChange::Up { id, value_hash } = streamed_tree_change(self.network, created_epoch, &update)
                 .map_err(|e| SnapshotError::Malformed(e.to_string()))?
@@ -108,11 +109,11 @@ impl ShardSnapshot {
             self.root
                 .push(leaf_key, &TreeHash::new(value_hash.into_array()))
                 .map_err(|e| SnapshotError::Malformed(e.to_string()))?;
-            if is_indexed {
+            if let Some(substate) = staged_substate {
                 staged.push(SnapshotSubstate {
                     epoch: created_epoch,
                     leaf_key,
-                    substate: encoded.encode_to_vec(),
+                    substate,
                 });
             }
         }
