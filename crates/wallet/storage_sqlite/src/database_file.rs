@@ -11,8 +11,8 @@ const SIDE_FILE_SUFFIXES: [&str; 3] = ["-wal", "-shm", "-journal"];
 /// Moves the wallet database at `from` to `to`, with the files SQLite keeps beside it. Returns `false` when there is no
 /// database at `from`.
 ///
-/// The write-ahead log holds commits not yet copied into the database, and a hot rollback journal holds the undo of an
-/// interrupted one, so each moves with it: one left at `from` would be applied to the next database opened there.
+/// The backup needs each of them: the write-ahead log holds commits not yet copied into the database, and a hot
+/// rollback journal holds the undo of a transaction the database file may hold in part.
 pub fn move_database<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> io::Result<bool> {
     let (from, to) = (from.as_ref(), to.as_ref());
     let moved = rename_if_exists(from.as_os_str().to_owned(), to.as_os_str().to_owned())?;
