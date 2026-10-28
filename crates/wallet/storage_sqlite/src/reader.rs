@@ -63,7 +63,7 @@ use tari_ootle_wallet_sdk::{
         WalletTransaction,
         WebauthnRegistrationPasskeyModel,
     },
-    storage::{UtxoProcessQueueBatch, UtxoProcessQueueCursor, WalletStorageError, WalletStoreReader},
+    storage::{QueuedUtxo, UtxoProcessQueueBatch, UtxoProcessQueueCursor, WalletStorageError, WalletStoreReader},
 };
 use tari_template_lib_types::{
     Amount,
@@ -2018,10 +2018,17 @@ impl WalletStoreReader for ReadTransaction<'_> {
                 item: "account_address",
                 details: format!("Corrupt db: invalid account address '{}': {}", account_addr, e),
             })?;
+            let unspent_at = row
+                .shard
+                .zip(row.state_version)
+                .map(|(shard, state_version)| (Shard::from(shard as u32), StateVersion::new(state_version as u64)));
             result
                 .entry(resource_address)
                 .or_insert_with(HashMap::new)
-                .insert((tag, public_nonce), account_addr);
+                .insert((tag, public_nonce), QueuedUtxo {
+                    account: account_addr,
+                    unspent_at,
+                });
         }
 
         Ok(UtxoProcessQueueBatch {

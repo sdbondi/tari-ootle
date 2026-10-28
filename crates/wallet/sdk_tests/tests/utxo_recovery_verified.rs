@@ -21,7 +21,7 @@ use tari_ootle_light_client::test_fixtures::{NETWORK, Signers, ValidatorSetFixtu
 use tari_ootle_wallet_sdk::{
     IndexerTrust,
     models::{AccountWithAddress, OutputStatus, ProvenUp, StealthOutputModel, UtxoUnspent},
-    storage::{ReadableWalletStore, WalletStoreReader, WalletStoreWriter, WriteableWalletStore},
+    storage::{QueuedUtxo, ReadableWalletStore, WalletStoreReader, WalletStoreWriter, WriteableWalletStore},
 };
 use tari_ootle_wallet_sdk_services::{account_monitor::AccountScanner, notify::Notify, utxo_scanner::UtxoRecovery};
 use tari_template_lib::types::{
@@ -102,10 +102,16 @@ fn mark_spent(test: &Test, id: UtxoId) {
 fn queue(test: &Test, network: &ProvingNetwork, account: &AccountWithAddress, id: UtxoId, utxo: &Utxo) {
     network.index_utxo(id, utxo.clone());
     let output = utxo.output().unwrap();
-    let item = (*account.account.component_address(), UtxoUnspent {
-        tag: output.tag,
-        public_nonce: output.output.public_nonce,
-    });
+    let item = (
+        UtxoUnspent {
+            tag: output.tag,
+            public_nonce: output.output.public_nonce,
+        },
+        QueuedUtxo {
+            account: *account.account.component_address(),
+            unspent_at: None,
+        },
+    );
     test.store()
         .with_write_tx(|tx| tx.utxo_process_queue_extend(&STEALTH_TARI_RESOURCE_ADDRESS, [item]))
         .unwrap();

@@ -50,9 +50,11 @@ use tari_ootle_common_types::{
     NodeHeight,
     NumPreshards,
     ShardGroup,
+    StateVersion,
     SubstateRequirementRef,
     SubstateVersion,
     optional::IsNotFoundError,
+    shard::Shard,
 };
 use tari_ootle_p2p::PeerAddress;
 use tari_ootle_storage::{StorageError, consensus_models::VerifiedBlockTip};
@@ -69,6 +71,41 @@ use crate::{
     store::{IndexerStore, IndexerStoreReadTransaction, IndexerStoreReader, IndexerStoreWriteTransaction},
     substate_cache::SqliteSubstateCache,
 };
+
+/// The answer to a lookup of UTXOs by tag and nonce pair.
+#[derive(Debug)]
+pub struct FetchedUtxos {
+    /// The unspent UTXOs matching a requested pair.
+    pub unspent: Vec<(UtxoId, Encoded<Utxo>)>,
+    /// The requested pairs whose UTXO is spent or burnt.
+    pub spent: Vec<(UtxoTag, RistrettoPublicKeyBytes)>,
+    /// The tombstone horizon of each requested shard that has one.
+    pub tombstone_horizons: Vec<(Shard, StateVersion)>,
+}
+
+impl FetchedUtxos {
+    fn read<TTx: IndexerStoreReadTransaction>(
+        tx: &mut TTx,
+        resource_address: &ResourceAddress,
+        public_nonce_and_tag: &[(UtxoTag, RistrettoPublicKeyBytes)],
+        tombstone_horizon_shards: &HashSet<Shard>,
+    ) -> Result<Self, StorageError> {
+        let unspent = tx.utxos_get_unspent_by_public_nonce_and_tag(resource_address, public_nonce_and_tag)?;
+        let spent = tx.utxos_get_spent_public_nonce_and_tag(resource_address, public_nonce_and_tag)?;
+        let tombstone_horizons = if tombstone_horizon_shards.is_empty() {
+            Vec::new()
+        } else {
+            let mut horizons = tx.utxo_tombstone_horizons()?;
+            horizons.retain(|(shard, _)| tombstone_horizon_shards.contains(shard));
+            horizons
+        };
+        Ok(Self {
+            unspent,
+            spent,
+            tombstone_horizons,
+        })
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SubstateResponse {
@@ -215,21 +252,21 @@ impl SubstateManager {
         }
     }
 
-    /// The unspent UTXOs matching `public_nonce_and_tag`, and the pairs of `public_nonce_and_tag` whose UTXO is spent
-    /// or burnt, read in one transaction.
+    /// The unspent UTXOs matching `public_nonce_and_tag`, the pairs of `public_nonce_and_tag` whose UTXO is spent or
+    /// burnt, and the tombstone horizon of each of `tombstone_horizon_shards` that has one, read in one transaction.
     pub async fn fetch_utxos(
         &self,
         resource_address: &ResourceAddress,
         public_nonce_and_tag: &[(UtxoTag, RistrettoPublicKeyBytes)],
-    ) -> Result<(Vec<(UtxoId, Encoded<Utxo>)>, Vec<(UtxoTag, RistrettoPublicKeyBytes)>), SubstateManagerError> {
+        tombstone_horizon_shards: &[Shard],
+    ) -> Result<FetchedUtxos, SubstateManagerError> {
         let resource_address = *resource_address;
         let public_nonce_and_tag = public_nonce_and_tag.to_vec();
+        let tombstone_horizon_shards = tombstone_horizon_shards.iter().copied().collect::<HashSet<_>>();
         let utxos = self
             .substate_store
             .with_read_tx(move |tx| {
-                let unspent = tx.utxos_get_unspent_by_public_nonce_and_tag(&resource_address, &public_nonce_and_tag)?;
-                let spent = tx.utxos_get_spent_public_nonce_and_tag(&resource_address, &public_nonce_and_tag)?;
-                Ok::<_, StorageError>((unspent, spent))
+                FetchedUtxos::read(tx, &resource_address, &public_nonce_and_tag, &tombstone_horizon_shards)
             })
             .await?;
         Ok(utxos)
@@ -553,6 +590,34 @@ mod tests {
         };
         assert_eq!(version, SubstateVersion::new(3));
         assert_eq!(proof.substate_down_proof, None);
+    }
+
+    #[tokio::test]
+    async fn a_utxo_fetch_reports_the_tombstone_horizons_of_the_requested_shards() {
+        let (_dir, store) = crate::storage_sqlite::temp_store().await;
+        store
+            .with_write_tx(|tx| {
+                tx.raise_utxo_tombstone_horizon(Shard::from(1u32), StateVersion::new(10))?;
+                tx.raise_utxo_tombstone_horizon(Shard::from(2u32), StateVersion::new(20))
+            })
+            .await
+            .unwrap();
+        let fetch = |shards: Vec<u32>| {
+            let store = store.clone();
+            async move {
+                let shards = shards.into_iter().map(Shard::from).collect::<HashSet<_>>();
+                store
+                    .with_read_tx(move |tx| {
+                        FetchedUtxos::read(tx, &crate::storage_sqlite::utxo_resource(), &[], &shards)
+                    })
+                    .await
+                    .unwrap()
+                    .tombstone_horizons
+            }
+        };
+
+        assert_eq!(fetch(vec![2, 3]).await, [(Shard::from(2u32), StateVersion::new(20))]);
+        assert!(fetch(vec![]).await.is_empty());
     }
 
     #[test]

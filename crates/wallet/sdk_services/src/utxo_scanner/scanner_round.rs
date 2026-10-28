@@ -39,9 +39,16 @@ use tari_ootle_wallet_sdk::{
         WalletUtxoUpdate,
     },
     network::{UtxoUpdateStream, WalletNetworkInterface},
-    storage::{ReadableWalletStore, WalletStorageError, WalletStoreReader, WalletStoreWriter, WriteableWalletStore},
+    storage::{
+        QueuedUtxo,
+        ReadableWalletStore,
+        WalletStorageError,
+        WalletStoreReader,
+        WalletStoreWriter,
+        WriteableWalletStore,
+    },
 };
-use tari_template_lib_types::{ComponentAddress, ResourceAddress, UtxoAddress};
+use tari_template_lib_types::{ResourceAddress, UtxoAddress};
 
 use crate::{notify::Notify, utxo_scanner::StealthScannerApiError};
 
@@ -77,7 +84,7 @@ pub struct UtxoScannerRound<'a, TSpec: WalletSdkSpec> {
     /// The shards the indexer flagged as possibly lacking spends below their cursors. The outputs the wallet holds in
     /// a flagged shard are checked once a round, before the shard's cursor is stored.
     flagged: HashSet<Shard>,
-    utxos_to_recover: Vec<(ComponentAddress, UtxoUnspent)>,
+    utxos_to_recover: Vec<(UtxoUnspent, QueuedUtxo)>,
     utxos_to_spend: Vec<UtxoSpent>,
     /// The spends of held outputs that the check of a flagged shard showed gone.
     checked_spends: Vec<UtxoSpent>,
@@ -291,7 +298,8 @@ where TSpec: WalletSdkSpec
 
             if let Some(update) = payload.update {
                 num_received += 1;
-                self.process_update(update)?;
+                // A UTXO a read reports unspent is unspent at the read's max state version
+                self.process_update(update, sos.as_ref().map(|sos| (sos.shard, sos.max_state_version)))?;
             }
 
             if payload.eos.is_some() {
@@ -357,7 +365,12 @@ where TSpec: WalletSdkSpec
         Ok(has_more)
     }
 
-    fn process_update(&mut self, update: WalletUtxoUpdate) -> Result<(), StealthScannerApiError> {
+    /// Processes one update of a read, `unspent_at` being the read's shard and max state version.
+    fn process_update(
+        &mut self,
+        update: WalletUtxoUpdate,
+        unspent_at: Option<(Shard, StateVersion)>,
+    ) -> Result<(), StealthScannerApiError> {
         match update {
             WalletUtxoUpdate::Unspent(unspent) => {
                 if self.check_if_tag_matches(&unspent)? {
@@ -366,7 +379,10 @@ where TSpec: WalletSdkSpec
                         "🏷️ Stealth output tag {} matches. Queueing for recovery.",
                         unspent.tag
                     );
-                    self.utxos_to_recover.push((*self.account.component_address(), unspent));
+                    self.utxos_to_recover.push((unspent, QueuedUtxo {
+                        account: *self.account.component_address(),
+                        unspent_at,
+                    }));
                 }
             },
             WalletUtxoUpdate::Spent(spent) => {

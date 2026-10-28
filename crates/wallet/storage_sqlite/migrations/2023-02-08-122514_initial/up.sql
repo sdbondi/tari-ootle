@@ -311,6 +311,9 @@ CREATE TABLE utxo_process_queue
     resource_address TEXT     NOT NULL,
     utxo_tag         INT      NOT NULL,
     public_nonce     TEXT     NOT NULL,
+    -- The shard the UTXO was streamed unspent in, and a state version it was unspent at. Both are NULL when unknown.
+    shard            INTEGER  NULL,
+    state_version    BIGINT   NULL,
     created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 

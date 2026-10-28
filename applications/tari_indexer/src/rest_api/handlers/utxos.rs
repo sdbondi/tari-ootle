@@ -134,13 +134,26 @@ pub async fn fetch_utxos(
     if req.tag_and_nonce_pairs.len() > 1000 {
         return Err(ErrorResponse::bad_request("cannot query more than 1000 UTXOs"));
     }
-    let (utxos, spent) = context
+    if req.tombstone_horizon_shards.len() > 1000 {
+        return Err(ErrorResponse::bad_request(
+            "cannot query the tombstone horizons of more than 1000 shards",
+        ));
+    }
+    let fetched = context
         .substate_manager()
-        .fetch_utxos(&req.resource_address, &req.tag_and_nonce_pairs)
+        .fetch_utxos(
+            &req.resource_address,
+            &req.tag_and_nonce_pairs,
+            &req.tombstone_horizon_shards,
+        )
         .await
         .map_err(ErrorResponse::anyhow)?;
 
-    Ok(Json(GetUtxosResponse { utxos, spent }))
+    Ok(Json(GetUtxosResponse {
+        utxos: fetched.unspent,
+        spent: fetched.spent,
+        tombstone_horizons: fetched.tombstone_horizons,
+    }))
 }
 
 #[utoipa::path(get, path = "/utxos", description = "List full UTXO data",

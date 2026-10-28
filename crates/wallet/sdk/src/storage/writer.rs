@@ -57,7 +57,7 @@ use crate::{
         WalletLockId,
         WalletTransactionUpdate,
     },
-    storage::{CommittableStore, WalletStorageError},
+    storage::{CommittableStore, QueuedUtxo, WalletStorageError},
 };
 
 pub trait WalletStoreWriter: CommittableStore {
@@ -390,7 +390,9 @@ pub trait WalletStoreWriter: CommittableStore {
         shards: I,
     ) -> Result<(), WalletStorageError>;
 
-    fn utxo_process_queue_extend<I: IntoIterator<Item = (ComponentAddress, UtxoUnspent)>>(
+    /// Queues each UTXO for recovery. A UTXO already queued for the account keeps one entry: it is unspent at the
+    /// higher state version when both name the same shard, and at an unknown version otherwise.
+    fn utxo_process_queue_extend<I: IntoIterator<Item = (UtxoUnspent, QueuedUtxo)>>(
         &mut self,
         resource_address: &ResourceAddress,
         items: I,

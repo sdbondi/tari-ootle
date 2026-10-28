@@ -122,12 +122,13 @@ pub trait WalletNetworkInterface {
         unspent_only: bool,
     ) -> impl Future<Output = Result<UtxoUpdateStream<Self::Error>, Self::Error>> + Send;
 
-    /// Fetches the unspent UTXOs of `resource_address` matching `tag_and_nonce_pairs`, and which of the pairs are spent
-    /// or burnt.
+    /// Fetches the unspent UTXOs of `resource_address` matching `tag_and_nonce_pairs`, which of the pairs are spent or
+    /// burnt, and the UTXO tombstone horizons of `tombstone_horizon_shards`.
     fn fetch_utxos(
         &self,
         resource_address: ResourceAddress,
         tag_and_nonce_pairs: Vec<(UtxoTag, RistrettoPublicKeyBytes)>,
+        tombstone_horizon_shards: Vec<Shard>,
     ) -> impl Future<Output = Result<FetchedUtxos, Self::Error>> + Send;
 
     fn list_watched_substates(
@@ -200,8 +201,12 @@ pub struct FetchedUtxos {
     /// The unspent UTXOs matching a requested tag and nonce pair.
     pub unspent: Vec<(UtxoId, Utxo)>,
     /// The requested tag and nonce pairs whose UTXO is spent or burnt. A requested pair in neither list is unknown to
-    /// the indexer that answered, which may not yet have indexed it.
+    /// the indexer that answered, which may not yet have indexed it, or may have pruned its tombstone.
     pub spent: Vec<(UtxoTag, RistrettoPublicKeyBytes)>,
+    /// The UTXO tombstone horizon of each requested shard that has one, as the indexer that answered reported it with
+    /// `unspent` and `spent`. A requested pair in neither list whose UTXO was unspent in the shard at a state version
+    /// at or below the shard's horizon has since been spent, and its tombstone pruned.
+    pub tombstone_horizons: HashMap<Shard, StateVersion>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

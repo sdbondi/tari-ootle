@@ -2201,6 +2201,15 @@
                 }
               ]
             }
+          },
+          "tombstone_horizon_shards": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "The shards whose UTXO tombstone horizons to report in `GetUtxosResponse::tombstone_horizons`, at most 1000."
           }
         }
       },
@@ -2226,7 +2235,27 @@
                 }
               ]
             },
-            "description": "The requested tag and nonce pairs this indexer holds as spent or burnt. A requested pair in neither list is\nunknown to this indexer, which may not yet have indexed it."
+            "description": "The requested tag and nonce pairs this indexer holds as spent or burnt. A requested pair in neither list is\nunknown to this indexer, which may not yet have indexed it, or may have pruned its tombstone."
+          },
+          "tombstone_horizons": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": false,
+              "prefixItems": [
+                {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                }
+              ]
+            },
+            "description": "The UTXO tombstone horizon of each shard of `GetUtxosRequest::tombstone_horizon_shards` that has one, read\nwith `utxos` and `spent`. This indexer has indexed each such shard up to at least its horizon and keeps every\nunspent UTXO, so a requested pair in neither list whose UTXO was unspent in the shard at a state version at or\nbelow the horizon has since been spent, and its tombstone pruned."
           },
           "utxos": {
             "type": "array",

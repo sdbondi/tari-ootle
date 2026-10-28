@@ -3,7 +3,10 @@
 
 mod support;
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use futures::StreamExt;
 use tari_engine_types::{Epoch, Utxo, substate::SubstateId};
@@ -27,7 +30,14 @@ use tari_ootle_wallet_sdk::{
         UtxoUpdateStream,
         WalletNetworkInterface,
     },
-    storage::{ReadableWalletStore, TagAndPublicNoncePair, WalletStoreReader, WalletStoreWriter, WriteableWalletStore},
+    storage::{
+        QueuedUtxo,
+        ReadableWalletStore,
+        TagAndPublicNoncePair,
+        WalletStoreReader,
+        WalletStoreWriter,
+        WriteableWalletStore,
+    },
 };
 use tari_ootle_wallet_sdk_services::{
     notify::Notify,
@@ -75,6 +85,8 @@ struct UtxoNetworkState {
     indexed: Vec<(UtxoId, Utxo)>,
     /// The pairs the full-UTXO lookup reports spent.
     spent: Vec<TagAndPublicNoncePair>,
+    /// The tombstone horizons the full-UTXO lookup reports.
+    tombstone_horizons: HashMap<Shard, StateVersion>,
 }
 
 /// An indexer whose UTXO stream and full-UTXO lookup can disagree, as two indexers at different heights do.
@@ -94,6 +106,10 @@ impl UtxoNetwork {
 
     fn spend(&self, utxo: &Utxo) {
         self.state.lock().unwrap().spent.push(tag_and_nonce(utxo));
+    }
+
+    fn prune_tombstones(&self, shard: Shard, horizon: StateVersion) {
+        self.state.lock().unwrap().tombstone_horizons.insert(shard, horizon);
     }
 }
 
@@ -195,6 +211,7 @@ impl WalletNetworkInterface for UtxoNetwork {
         &self,
         _resource_address: ResourceAddress,
         tag_and_nonce_pairs: Vec<TagAndPublicNoncePair>,
+        tombstone_horizon_shards: Vec<Shard>,
     ) -> Result<FetchedUtxos, Self::Error> {
         let state = self.state.lock().unwrap();
         Ok(FetchedUtxos {
@@ -209,6 +226,12 @@ impl WalletNetworkInterface for UtxoNetwork {
                 .iter()
                 .filter(|pair| tag_and_nonce_pairs.contains(pair))
                 .copied()
+                .collect(),
+            tombstone_horizons: state
+                .tombstone_horizons
+                .iter()
+                .filter(|(shard, _)| tombstone_horizon_shards.contains(shard))
+                .map(|(shard, horizon)| (*shard, *horizon))
                 .collect(),
         })
     }
@@ -377,7 +400,10 @@ async fn a_round_reaches_entries_queued_behind_more_than_a_batch_of_unknown_utxo
         .chain([&(id, utxo)])
         .map(|(_, utxo)| {
             let (tag, public_nonce) = tag_and_nonce(utxo);
-            (account_address, UtxoUnspent { tag, public_nonce })
+            (UtxoUnspent { tag, public_nonce }, QueuedUtxo {
+                account: account_address,
+                unspent_at: None,
+            })
         })
         .collect::<Vec<_>>();
     test.store()
@@ -395,4 +421,96 @@ async fn a_round_reaches_entries_queued_behind_more_than_a_batch_of_unknown_utxo
         is_stored(&test, id),
         "the entry behind the unknown ones is processed in the same round"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_utxo_the_lookup_pruned_as_spent_leaves_the_queue() {
+    let network = UtxoNetwork::default();
+    let (test, account) = new_test(network.clone());
+    let (pruned_id, pruned) = test.owned_utxo(&account, 100);
+    network.stream((pruned_id, pruned.clone()));
+    scan(&test, &account).await;
+    assert_eq!(queued(&test), 1);
+    network.prune_tombstones(Shard::from(0u32), StateVersion::from(1));
+
+    let mut recovery = UtxoRecovery::new(test.sdk().clone());
+    let num_unresolved = recovery.process_utxo_validation_queue().await.unwrap();
+    assert_eq!(num_unresolved, 0);
+    assert_eq!(
+        queued(&test),
+        0,
+        "an output streamed unspent at or below the shard's tombstone horizon, and now unknown, is spent"
+    );
+    assert!(!is_stored(&test, pruned_id));
+}
+
+fn queue_at(test: &Test, account: &AccountWithAddress, utxo: &Utxo, shard: u32, state_version: u64) {
+    let (tag, public_nonce) = tag_and_nonce(utxo);
+    let item = (UtxoUnspent { tag, public_nonce }, QueuedUtxo {
+        account: *account.account.component_address(),
+        unspent_at: Some((Shard::from(shard), StateVersion::from(state_version))),
+    });
+    test.store()
+        .with_write_tx(|tx| tx.utxo_process_queue_extend(&STEALTH_TARI_RESOURCE_ADDRESS, [item]))
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_utxo_queued_again_in_its_shard_is_unspent_at_the_later_version() {
+    let network = UtxoNetwork::default();
+    let (test, account) = new_test(network.clone());
+    let (_, utxo) = test.owned_utxo(&account, 100);
+    queue_at(&test, &account, &utxo, 0, 1);
+    queue_at(&test, &account, &utxo, 0, 3);
+    network.prune_tombstones(Shard::from(0u32), StateVersion::from(2));
+
+    let num_unresolved = UtxoRecovery::new(test.sdk().clone())
+        .process_utxo_validation_queue()
+        .await
+        .unwrap();
+    assert_eq!(num_unresolved, 1);
+    assert_eq!(queued(&test), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_utxo_queued_from_two_shards_is_unspent_at_an_unknown_version() {
+    let network = UtxoNetwork::default();
+    let (test, account) = new_test(network.clone());
+    let (_, utxo) = test.owned_utxo(&account, 100);
+    queue_at(&test, &account, &utxo, 1, 1);
+    queue_at(&test, &account, &utxo, 0, 1);
+    network.prune_tombstones(Shard::from(0u32), StateVersion::from(5));
+    network.prune_tombstones(Shard::from(1u32), StateVersion::from(5));
+
+    let num_unresolved = UtxoRecovery::new(test.sdk().clone())
+        .process_utxo_validation_queue()
+        .await
+        .unwrap();
+    assert_eq!(num_unresolved, 1);
+    assert_eq!(queued(&test), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_utxo_streamed_above_the_tombstone_horizon_stays_queued() {
+    let network = UtxoNetwork::default();
+    let (test, account) = new_test(network.clone());
+    let (id, utxo) = test.owned_utxo(&account, 100);
+    network.stream((id, utxo.clone()));
+    scan(&test, &account).await;
+    network.prune_tombstones(Shard::from(0u32), StateVersion::from(0));
+    network.prune_tombstones(Shard::from(1u32), StateVersion::from(1));
+
+    let mut recovery = UtxoRecovery::new(test.sdk().clone());
+    let num_unresolved = recovery.process_utxo_validation_queue().await.unwrap();
+    assert_eq!(num_unresolved, 1);
+    assert_eq!(
+        queued(&test),
+        1,
+        "the indexer may not yet have indexed an output streamed above its shard's horizon"
+    );
+
+    network.index((id, utxo));
+    let num_unresolved = recovery.process_utxo_validation_queue().await.unwrap();
+    assert_eq!(num_unresolved, 0);
+    assert!(is_stored(&test, id));
 }

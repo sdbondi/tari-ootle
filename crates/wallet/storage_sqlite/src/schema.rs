@@ -314,6 +314,8 @@ diesel::table! {
         resource_address -> Text,
         utxo_tag -> Integer,
         public_nonce -> Text,
+        shard -> Nullable<Integer>,
+        state_version -> Nullable<BigInt>,
         created_at -> Timestamp,
     }
 }

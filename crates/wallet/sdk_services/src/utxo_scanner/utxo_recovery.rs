@@ -167,23 +167,34 @@ where
                             .get(&(*resource_addr, **pair))
                             .is_none_or(|backoff| backoff.retry_at <= now)
                     })
-                    .map(|(pair, account)| (*pair, *account))
+                    .map(|(pair, queued)| (*pair, queued.account))
                     .collect::<HashMap<_, _>>();
                 num_unresolved += queued.len() - tag_and_nonce_to_view_key_map.len();
                 if tag_and_nonce_to_view_key_map.is_empty() {
                     continue;
                 }
                 let tag_and_nonce_pairs = tag_and_nonce_to_view_key_map.keys().copied().collect();
+                let unspent_at = |pair: &TagAndPublicNoncePair| queued.get(pair).and_then(|queued| queued.unspent_at);
+                let tombstone_horizon_shards = tag_and_nonce_to_view_key_map
+                    .keys()
+                    .filter_map(|pair| unspent_at(pair).map(|(shard, _)| shard))
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .collect();
 
                 // TODO(perf): we should check if any UTXOs are already known (by tag and nonce?) because we
                 // created/spent them locally, and skip querying those. This would also avoid having to deal with this
                 // downstream (previous bug caused spent to be marked as unspent).
 
                 // max 3.3kB per request (excl underlying protocol overhead *cough* json + hex)
-                let FetchedUtxos { unspent: utxos, spent } = self
+                let FetchedUtxos {
+                    unspent: utxos,
+                    spent,
+                    tombstone_horizons,
+                } = self
                     .sdk
                     .get_network_interface()
-                    .fetch_utxos(*resource_addr, tag_and_nonce_pairs)
+                    .fetch_utxos(*resource_addr, tag_and_nonce_pairs, tombstone_horizon_shards)
                     .await
                     .map_err(|e| StealthScannerApiError::NetworkInterfaceError(e.into()))?;
 
@@ -195,10 +206,34 @@ where
                 // A spent report names a (tag, nonce) pair, so it means some output with that pair is spent. The queue
                 // holds no commitment to tell outputs sharing a pair apart, and an unspent output with the pair
                 // resolves it first.
-                let spent = spent
+                let mut spent = spent
                     .into_iter()
                     .filter(|pair| tag_and_nonce_to_view_key_map.contains_key(pair) && !returned.contains(pair))
                     .collect::<HashSet<_>>();
+                // The indexer keeps every unspent UTXO, so a UTXO it neither returned nor reported spent, in a shard
+                // whose tombstone horizon is at or above a version the UTXO was unspent at, is spent and its tombstone
+                // pruned.
+                let pruned = tag_and_nonce_to_view_key_map
+                    .keys()
+                    .filter(|pair| !returned.contains(*pair) && !spent.contains(*pair))
+                    .filter(|pair| {
+                        unspent_at(pair).is_some_and(|(shard, state_version)| {
+                            tombstone_horizons
+                                .get(&shard)
+                                .is_some_and(|horizon| state_version <= *horizon)
+                        })
+                    })
+                    .copied()
+                    .collect::<Vec<_>>();
+                if !pruned.is_empty() {
+                    debug!(
+                        target: LOG_TARGET,
+                        "Removing {} UTXOs the indexer pruned as spent from the processing queue for resource {}",
+                        pruned.len(),
+                        resource_addr
+                    );
+                    spent.extend(pruned);
+                }
 
                 // A round that only retries unresolved entries publishes no round events
                 if !start_event_published && (!spent.is_empty() || !utxos.is_empty()) {
@@ -222,8 +257,8 @@ where
                     debug!(target: LOG_TARGET, "Removed {} spent UTXOs from the processing queue for resource {}", spent.len(), resource_addr);
                 }
 
-                // A pair the indexer neither returned nor reported spent may be one it has not indexed yet, so it
-                // stays queued for a later round.
+                // A pair the indexer neither returned nor reported spent, nor pruned, may be one it has not indexed
+                // yet, so it stays queued for a later round.
                 let unresolved = tag_and_nonce_to_view_key_map
                     .keys()
                     .filter(|pair| !returned.contains(*pair) && !spent.contains(*pair))

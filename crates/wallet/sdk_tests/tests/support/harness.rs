@@ -394,6 +394,7 @@ impl WalletNetworkInterface for CannedTransactionResultInterface {
         &self,
         _resource_address: ResourceAddress,
         _tag_and_nonce_pairs: Vec<TagAndPublicNoncePair>,
+        _tombstone_horizon_shards: Vec<Shard>,
     ) -> Result<FetchedUtxos, Self::Error> {
         panic!("CannedTransactionResultInterface called")
     }
@@ -516,6 +517,7 @@ impl WalletNetworkInterface for PanicNetworkInterface {
         &self,
         _resource_address: ResourceAddress,
         _tag_and_nonce_pairs: Vec<TagAndPublicNoncePair>,
+        _tombstone_horizon_shards: Vec<Shard>,
     ) -> Result<FetchedUtxos, Self::Error> {
         panic!("PanicNetworkInterface fetch_utxos called")
     }
