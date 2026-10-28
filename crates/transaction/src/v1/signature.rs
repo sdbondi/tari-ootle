@@ -97,12 +97,14 @@ impl TransactionSealSignature {
         }
     }
 
+    #[must_use]
     pub fn verify(&self, transaction: &UnsealedTransaction) -> bool {
         match transaction {
             UnsealedTransaction::V1(t) => self.verify_v1(t),
         }
     }
 
+    #[must_use]
     pub fn verify_v1(&self, transaction: &UnsealedTransactionV1) -> bool {
         self.verify_message(Self::create_message_v1(transaction))
     }
@@ -111,11 +113,13 @@ impl TransactionSealSignature {
     ///
     /// Deriving them hashes every blob payload, so a caller that also verifies the authorization
     /// signatures should derive [`BlobHashes`] once and use this for both.
+    #[must_use]
     pub fn verify_v1_with_blob_hashes(&self, transaction: &UnsealedTransactionV1, blob_hashes: &BlobHashes) -> bool {
         self.verify_message(Self::create_message_v1_with_blob_hashes(transaction, blob_hashes))
     }
 
     /// Verifies this seal against an already-derived signing message.
+    #[must_use]
     pub fn verify_message(&self, message: TransactionMessage) -> bool {
         TRANSACTION_SIGNING_CONTEXT.verify(&self.signature, &self.public_key, &message)
     }
@@ -210,6 +214,7 @@ impl TransactionSealSignature {
         )
     }
 
+    #[must_use]
     pub fn verify_v1_pruned(&self, transaction: &PrunedUnsealedTransactionV1) -> bool {
         self.verify_message(Self::create_message_v1_pruned(transaction))
     }
@@ -263,6 +268,7 @@ impl TransactionSignature {
         }
     }
 
+    #[must_use]
     pub fn verify_v1(&self, seal_signer: &RistrettoPublicKeyBytes, transaction: &UnsignedTransactionV1) -> bool {
         self.verify_message(Self::create_message_v1(seal_signer, transaction))
     }
@@ -274,6 +280,7 @@ impl TransactionSignature {
     /// more than one signature MUST derive the message once and use this: deriving it per signature
     /// makes verification cost `O(signatures × body bytes)`, which an attacker controls on both
     /// factors within a single transaction.
+    #[must_use]
     pub fn verify_message(&self, message: TransactionMessage) -> bool {
         TRANSACTION_SIGNING_CONTEXT.verify(&self.signature, &self.public_key, &message)
     }
@@ -376,6 +383,7 @@ impl TransactionSignature {
         )
     }
 
+    #[must_use]
     pub fn verify_v1_pruned(
         &self,
         seal_signer: &RistrettoPublicKeyBytes,
@@ -394,6 +402,7 @@ impl TransactionSignature {
     ///
     /// A caller verifying a sealed transaction should use [`verify_sealed_batch`] instead, which
     /// folds the seal into the same multiplication.
+    #[must_use]
     pub fn verify_all_against_message(signatures: &[Self], message: TransactionMessage) -> bool {
         if signatures.is_empty() {
             return true;
@@ -414,6 +423,7 @@ impl TransactionSignature {
 /// authorization signatures, and the authorization message commits to the seal signer's public key.
 /// Authorizations sign over the seal *key* and the seal signs over the finished *signatures*, so
 /// both digests are derivable before anything is verified, which is all the batch needs.
+#[must_use]
 pub fn verify_sealed_batch(
     seal: &TransactionSealSignature,
     seal_message: TransactionMessage,
@@ -449,6 +459,7 @@ pub fn verify_sealed_batch(
 /// measures both paths.
 ///
 /// [`SigningContext::verify_batch`]: tari_ootle_common_types::signature::SigningContext::verify_batch
+#[must_use]
 fn verify_batch<'a, I>(terms: I) -> bool
 where I: IntoIterator<
         Item = (

@@ -45,6 +45,7 @@ impl UnsealedTransaction {
         }
     }
 
+    #[must_use]
     pub fn verify_all_signatures(&self, seal_signer: &RistrettoPublicKeyBytes) -> bool {
         match self {
             Self::V1(t) => t.verify_all_signatures(seal_signer),

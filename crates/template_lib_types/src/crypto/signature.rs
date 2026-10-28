@@ -10,7 +10,7 @@ pub trait SignatureDomain {
     fn domain() -> &'static [u8];
 }
 
-/// A signature domain that is the empty byte string, under which no signature verifies.
+/// A signature domain that is the empty byte string. Verifying under it fails the transaction.
 ///
 /// A [`Signature`] carries no domain on the wire, so this type serves for passing a signature to a
 /// template that verifies it under a domain of its own. To verify, define a domain with the
@@ -37,7 +37,8 @@ pub enum SignatureScope {
     /// Only the template that verifies accepts the signature.
     #[n(1)]
     CurrentTemplate,
-    /// Only the component that verifies accepts the signature. Verification outside a component fails.
+    /// Only the component that verifies accepts the signature. Verifying outside a component method fails the
+    /// transaction.
     #[n(2)]
     CurrentComponent,
 }

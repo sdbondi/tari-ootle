@@ -144,6 +144,16 @@ pub enum RuntimeError {
          and indexers must be upgraded before it can be called."
     )]
     IntrinsicNotSupported { intrinsic: IntrinsicId },
+    #[error(
+        "A template verified a signature under an empty domain. A signature domain names what the signature is for; \
+         declare one with custom_signature_domain!"
+    )]
+    EmptySignatureDomain,
+    #[error(
+        "A template verified a signature scoped to the current component outside a component method. Only a method \
+         call has a component to bind the signature to."
+    )]
+    SignatureScopeOutsideComponent,
     #[error("Invalid number of arguments: expected {expected}, but got {len}")]
     InvalidNumberOfArguments { expected: usize, len: usize },
     #[error("Invalid amount '{amount}': {reason}")]
@@ -503,6 +513,8 @@ impl RuntimeError {
             Self::NoMainSigner { .. } |
             Self::InvalidArgument { .. } |
             Self::IntrinsicNotSupported { .. } |
+            Self::EmptySignatureDomain |
+            Self::SignatureScopeOutsideComponent |
             Self::InvalidNumberOfArguments { .. } |
             Self::InvalidMOfNThreshold { .. } |
             Self::DuplicateMOfNRequirement { .. } |

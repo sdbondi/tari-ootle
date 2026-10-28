@@ -220,12 +220,14 @@ hash_fns!(
 ///
 /// The engine binds the network, the resolved scope and the domain into what is signed, so a signature
 /// made for one never verifies under another — which is what stops one being replayed into a context it
-/// was not made for. An empty domain verifies nothing.
+/// was not made for. Verifying under an empty domain, or under [`SignatureScope::CurrentComponent`] outside a
+/// component method, fails the transaction.
 ///
 /// Templates normally reach this through [`Signature::verify`], which takes the domain from the
 /// signature's type parameter; call this directly when the domain is only known at runtime.
 ///
 /// [`Signature::verify`]: crate::models::Verifiable::verify
+#[must_use]
 pub fn verify_signature(
     public_key: &PublicKey,
     domain: &[u8],

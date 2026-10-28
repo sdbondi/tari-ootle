@@ -90,6 +90,7 @@ impl UnsealedTransactionV1 {
         &self.signatures
     }
 
+    #[must_use]
     pub fn verify_all_signatures(&self, seal_signer: &RistrettoPublicKeyBytes) -> bool {
         self.verify_all_signatures_with_blob_hashes(seal_signer, &self.transaction.blobs.hashes())
     }
@@ -99,6 +100,7 @@ impl UnsealedTransactionV1 {
     ///
     /// Deriving them hashes every blob payload, so a caller that also verifies the seal should
     /// derive [`Blobs::hashes`] once and use this for both.
+    #[must_use]
     pub fn verify_all_signatures_with_blob_hashes(
         &self,
         seal_signer: &RistrettoPublicKeyBytes,

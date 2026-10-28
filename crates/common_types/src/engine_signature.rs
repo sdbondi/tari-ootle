@@ -12,7 +12,7 @@
 //! identity and other protocol signatures, which sign under contexts of their own, verify as none.
 
 use blake2::Blake2b;
-use digest::consts::U64;
+use digest::{FixedOutput, consts::U64};
 use ootle_byte_type::{ConvertFromByteType, FromByteType, ToByteType};
 use ootle_network::Network;
 use tari_crypto::{
@@ -83,16 +83,13 @@ pub fn template_signature_message(binding: &TemplateSignatureBinding, domain: &[
         TemplateSignatureScope::Component(component) => (2, component.as_bytes()),
     };
     let mut out = [0u8; 64];
-    out.copy_from_slice(
-        TemplateSignatureHasher::new_with_label("message")
-            .chain([binding.network.as_byte()])
-            .chain([scope_tag])
-            .chain(scope_address)
-            .chain(domain)
-            .chain(message)
-            .finalize()
-            .as_ref(),
-    );
+    TemplateSignatureHasher::new_with_label("message")
+        .chain([binding.network.as_byte()])
+        .chain([scope_tag])
+        .chain(scope_address)
+        .chain(domain)
+        .chain(message)
+        .finalize_into((&mut out).into());
     out
 }
 
@@ -148,6 +145,7 @@ impl GetVerifier for SignaturePayload {
 /// The empty domain verifies nothing: a domain names what a signature is for, and the empty one names
 /// nothing a template could tell apart from another's.
 pub trait Verifier {
+    #[must_use]
     fn verify(
         &self,
         binding: &TemplateSignatureBinding,
@@ -172,14 +170,11 @@ impl RistrettoSchnorrBlake2bVerifier {
         nonce: &RistrettoPublicKeyBytes,
     ) -> [u8; 64] {
         let mut out = [0u8; 64];
-        out.copy_from_slice(
-            TemplateSignatureHasher::new_with_label("challenge")
-                .chain(nonce.as_bytes())
-                .chain(public_key.as_bytes())
-                .chain(template_signature_message(binding, domain, message))
-                .finalize()
-                .as_ref(),
-        );
+        TemplateSignatureHasher::new_with_label("challenge")
+            .chain(nonce.as_bytes())
+            .chain(public_key.as_bytes())
+            .chain(template_signature_message(binding, domain, message))
+            .finalize_into((&mut out).into());
         out
     }
 }

@@ -144,6 +144,7 @@ impl TransactionV1 {
         self.declared_main_signer().is_seal_signer_authorized()
     }
 
+    #[must_use]
     pub fn verify_all_signatures(&self) -> bool {
         // Derived once and shared between the seal and the authorization messages: deriving blob
         // commitments hashes every blob payload.

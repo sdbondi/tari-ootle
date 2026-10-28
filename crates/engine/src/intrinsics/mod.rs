@@ -107,13 +107,24 @@ pub trait IntrinsicEnv {
     fn current_component(&self) -> Option<ComponentAddress>;
 }
 
-/// Resolves a template's signature scope against the running call. `None` when the call has no
-/// component to bind to.
-fn resolve_signature_scope(scope: SignatureScope, env: &dyn IntrinsicEnv) -> Option<TemplateSignatureScope> {
+/// Resolves a template's signature scope against the running call.
+fn resolve_signature_scope(
+    scope: SignatureScope,
+    env: &dyn IntrinsicEnv,
+) -> Result<TemplateSignatureScope, RuntimeError> {
     match scope {
-        SignatureScope::Shared => Some(TemplateSignatureScope::Shared),
-        SignatureScope::CurrentTemplate => env.current_template().map(TemplateSignatureScope::Template),
-        SignatureScope::CurrentComponent => env.current_component().map(TemplateSignatureScope::Component),
+        SignatureScope::Shared => Ok(TemplateSignatureScope::Shared),
+        SignatureScope::CurrentTemplate => {
+            env.current_template()
+                .map(TemplateSignatureScope::Template)
+                .ok_or(RuntimeError::NotSupported {
+                    details: "verifying a template-scoped signature outside a template call".to_string(),
+                })
+        },
+        SignatureScope::CurrentComponent => env
+            .current_component()
+            .map(TemplateSignatureScope::Component)
+            .ok_or(RuntimeError::SignatureScopeOutsideComponent),
     }
 }
 
@@ -149,15 +160,16 @@ pub fn dispatch(
                 payload,
                 scope,
             } = args.assert_one_arg()?;
-            let is_valid = resolve_signature_scope(scope, env).is_some_and(|scope| {
-                let binding = TemplateSignatureBinding {
-                    network: env.network(),
-                    scope,
-                };
-                payload
-                    .get_verifier()
-                    .verify(&binding, &domain, &message, &public_key, &payload)
-            });
+            if domain.is_empty() {
+                return Err(RuntimeError::EmptySignatureDomain);
+            }
+            let binding = TemplateSignatureBinding {
+                network: env.network(),
+                scope: resolve_signature_scope(scope, env)?,
+            };
+            let is_valid = payload
+                .get_verifier()
+                .verify(&binding, &domain, &message, &public_key, &payload);
             Ok(InvokeResult::encode(&is_valid)?)
         },
         unknown => Err(RuntimeError::IntrinsicNotSupported { intrinsic: unknown }),

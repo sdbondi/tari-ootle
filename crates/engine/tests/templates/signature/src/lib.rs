@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use tari_template_lib::prelude::*;
+use tari_template_lib::{prelude::*, types::crypto::NoSignatureDomain};
 
 custom_signature_domain!(MyCustomDomain, b"tari.test.signature domain for tests");
 
@@ -48,12 +48,15 @@ mod template {
             signature.verify_for_template(&public_key, SOME_MESSAGE)
         }
 
-        /// A function call has no component, so a component-scoped signature verifies nowhere here.
         pub fn check_sig_for_component_outside_a_component(
             public_key: PublicKey,
             signature: Signature<MyCustomDomain>,
         ) -> bool {
             signature.verify_for_component(&public_key, SOME_MESSAGE)
+        }
+
+        pub fn check_sig_without_domain(public_key: PublicKey, signature: Signature<NoSignatureDomain>) -> bool {
+            signature.verify(&public_key, SOME_MESSAGE)
         }
 
         pub fn check_sig_for_component(&self, public_key: PublicKey, signature: Signature<MyCustomDomain>) -> bool {

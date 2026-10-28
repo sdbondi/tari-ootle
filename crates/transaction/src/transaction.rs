@@ -158,6 +158,7 @@ impl Transaction {
         }
     }
 
+    #[must_use]
     pub fn verify_all_signatures(&self) -> bool {
         match self {
             Self::V1(tx) => tx.verify_all_signatures(),
@@ -481,6 +482,7 @@ impl PrunedTransaction {
         }
     }
 
+    #[must_use]
     pub fn verify_all_signatures(&self) -> bool {
         match self {
             Self::V1(tx) => tx.verify_all_signatures(),

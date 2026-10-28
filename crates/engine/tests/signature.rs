@@ -4,6 +4,8 @@
 use ootle_byte_type::ToByteType;
 use ootle_network::Network;
 use tari_crypto::ristretto::RistrettoSecretKey;
+use tari_engine::runtime::RuntimeError;
+use tari_engine_types::commit_result::ExecutionFailureCode;
 use tari_ootle_common_types::{
     TemplateSignatureBinding,
     crypto::create_key_pair_from_seed,
@@ -21,7 +23,11 @@ use tari_template_lib::types::{
 };
 use tari_template_test_tooling::{
     TemplateTest,
-    support::{assert_error::assert_reject_reason, stealth, stealth::NO_INPUTS},
+    support::{
+        assert_error::{assert_reject_reason, assert_reject_reason_with_code},
+        stealth,
+        stealth::NO_INPUTS,
+    },
 };
 
 const TEMPLATE_PATHS: &[&str] = &["tests/templates/signature"];
@@ -290,7 +296,6 @@ fn a_scoped_signature_verifies_only_in_its_scope() {
         ("check_sig_for_component", for_other_component, false),
         ("check_sig_for_component", for_template, false),
         ("check_sig_for_component", shared, false),
-        ("check_sig_for_component_outside_a_component", for_component, false),
     ];
     let mut builder = test.transaction();
     for (name, binding, _) in &calls {
@@ -310,4 +315,58 @@ fn a_scoped_signature_verifies_only_in_its_scope() {
             "{name} with a signature bound to {binding:?}"
         );
     }
+}
+
+/// Verifying a component-scoped signature in a function call, which has no component, is a template bug, so
+/// it fails the transaction.
+#[test]
+fn a_component_scoped_verification_outside_a_component_fails_the_transaction() {
+    let (s1, p1) = create_key_pair_from_seed(1);
+    let p1 = PublicKey::from(p1.to_byte_type());
+    let (mut test, component) = setup(vec![p1]);
+    let template_addr = test.get_template_address(TEMPLATE_NAME);
+
+    let signature = sign_sr25519_bound(
+        &s1,
+        &TemplateSignatureBinding::component(Network::LocalNet, component),
+        TEST_DOMAIN,
+        MESSAGE,
+    );
+    let reason = test.execute_expect_failure(
+        test.transaction()
+            .call_function(template_addr, "check_sig_for_component_outside_a_component", args![
+                p1, signature
+            ])
+            .build_and_seal(test.secret_key()),
+        vec![],
+    );
+
+    assert_reject_reason_with_code(
+        reason,
+        RuntimeError::SignatureScopeOutsideComponent,
+        ExecutionFailureCode::InvalidArgument,
+    );
+}
+
+/// Verifying under the empty domain is a template bug, so it fails the transaction.
+#[test]
+fn a_verification_under_an_empty_domain_fails_the_transaction() {
+    let (s1, p1) = create_key_pair_from_seed(1);
+    let p1 = PublicKey::from(p1.to_byte_type());
+    let (mut test, _) = setup(vec![p1]);
+    let template_addr = test.get_template_address(TEMPLATE_NAME);
+
+    let signature = sign_sr25519(&s1, b"", MESSAGE);
+    let reason = test.execute_expect_failure(
+        test.transaction()
+            .call_function(template_addr, "check_sig_without_domain", args![p1, signature])
+            .build_and_seal(test.secret_key()),
+        vec![],
+    );
+
+    assert_reject_reason_with_code(
+        reason,
+        RuntimeError::EmptySignatureDomain,
+        ExecutionFailureCode::InvalidArgument,
+    );
 }

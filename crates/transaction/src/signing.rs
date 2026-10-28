@@ -67,6 +67,7 @@ impl TransactionSigningContext {
     }
 
     /// True when `signature` is `public_key`'s signature over `message`. See [`SigningContext::verify`].
+    #[must_use]
     pub fn verify(
         &self,
         signature: &Sr25519SignatureBytes,
@@ -77,6 +78,7 @@ impl TransactionSigningContext {
     }
 
     /// True when every item verifies. See [`SigningContext::verify_batch`].
+    #[must_use]
     pub fn verify_batch(
         &self,
         items: &[(&Sr25519SignatureBytes, &RistrettoPublicKeyBytes, &TransactionMessage)],
