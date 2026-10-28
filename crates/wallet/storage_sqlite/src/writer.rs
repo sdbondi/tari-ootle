@@ -915,6 +915,14 @@ impl WalletStoreWriter for WriteTransaction<'_> {
             });
         }
 
+        if let Some(submitted_at) = update.submitted_at {
+            diesel::update(transactions::table)
+                .set(transactions::submitted_at.eq(submitted_at))
+                .filter(transactions::transaction_id.eq(update.transaction_id.to_string()))
+                .execute(self.connection())
+                .map_err(|e| WalletStorageError::general(OPERATION, e))?;
+        }
+
         Ok(())
     }
 

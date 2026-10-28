@@ -22,5 +22,9 @@ export type WalletTransaction = {
   finalized_time: { secs: number; nanos: number } | null;
   new_account_info: NewAccountData | null;
   is_dry_run: boolean;
+  /**
+   * When the network accepted the transaction for consensus, or `None` before it did.
+   */
+  submitted_at: string | null;
   last_update_time: string;
 };

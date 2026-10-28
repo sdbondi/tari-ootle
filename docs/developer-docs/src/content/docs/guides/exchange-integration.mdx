@@ -530,11 +530,11 @@ with its value, status, spend authorization and decrypted memo.
 </Aside>
 
 <Aside type="note">
-  **Incoming outputs are proven.** With `indexer_trust = "verify"` (the default), the wallet stores a detected output
+  **Incoming outputs are proven.** With `indexer_trust = "verify"`, the wallet stores a detected output
   only once the indexer proves that the network holds it, and it stores the output and frozen flag that the proof
   shows. Until then the output is not listed, and the wallet asks for the proof again on later scans. An indexer that
   serves no proof, or a proof that does not verify, can delay a deposit but cannot invent one. Keep this setting on
-  the deposit wallet.
+  the deposit wallet. The default is `"trust"`, so set it explicitly.
 </Aside>
 
 ```javascript

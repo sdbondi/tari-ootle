@@ -274,6 +274,7 @@ diesel::table! {
         finalized_time -> Nullable<Timestamp>,
         new_account_info -> Nullable<Text>,
         invalid_reason -> Nullable<Text>,
+        submitted_at -> Nullable<Timestamp>,
         created_at -> Timestamp,
         updated_at -> Timestamp,
     }

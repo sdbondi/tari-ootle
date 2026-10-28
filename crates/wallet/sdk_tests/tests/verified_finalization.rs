@@ -35,7 +35,14 @@ use tari_ootle_wallet_sdk::{
         transaction::{Submission, TRANSACTION_EXPIRY_GRACE_EPOCHS, TransactionApiError},
         validator_set::ValidatorSetApiError,
     },
-    models::{TransactionContext, TransactionContextKind, TransactionStatus, ValidatorSetAnchor, WalletEvent},
+    models::{
+        TransactionContext,
+        TransactionContextKind,
+        TransactionStatus,
+        ValidatorSetAnchor,
+        WalletEvent,
+        WalletTransactionUpdate,
+    },
     network::{TransactionFinalizedResult, TransactionQueryResult},
     storage::{ReadableWalletStore, WalletStoreReader, WalletStoreWriter, WriteableWalletStore},
 };
@@ -388,6 +395,71 @@ async fn a_receipt_proven_before_the_anchor_stays_pending() {
         pending.is_none(),
         "the wallet anchored on epoch 3 and trusts no set for 2"
     );
+}
+
+fn mark_submitted(
+    test: &TestWithNetwork<ProvingNetwork>,
+    transaction_id: TransactionId,
+    submitted_at: PrimitiveDateTime,
+) {
+    test.store()
+        .with_write_tx(|tx| {
+            tx.transactions_update(
+                WalletTransactionUpdate::new(transaction_id)
+                    .with_new_status(TransactionStatus::Pending)
+                    .with_submitted_at(submitted_at),
+            )
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_transaction_submitted_before_the_anchor_takes_the_served_result_of_a_receipt_proven_before_it() {
+    let sets = sets();
+    let network = ProvingNetwork::new(&sets, 1);
+    let transaction = build_transaction();
+    let transaction_id = transaction.calculate_id();
+    network.set_result(committed_result(transaction_id, &sets[1]));
+    let test = wallet(network, &transaction);
+    mark_submitted(&test, transaction_id, now() - Duration::from_secs(3600));
+
+    let finalized = test
+        .sdk()
+        .transaction_api()
+        .check_and_store_finalized_transaction(transaction_id)
+        .await
+        .unwrap()
+        .expect("the result of a transaction submitted before the anchor is stored");
+    assert_eq!(finalized.status, TransactionStatus::Accepted);
+    assert_eq!(finalized.final_fee, Some(800));
+    let anchor = test.sdk().validator_set_api().anchor().unwrap().unwrap();
+    assert_eq!(anchor.validator_set.epoch(), Epoch(3));
+}
+
+#[tokio::test]
+async fn a_receipt_proven_before_the_anchor_of_a_transaction_submitted_after_it_stays_pending() {
+    let sets = sets();
+    let network = ProvingNetwork::new(&sets, 1);
+    let transaction = build_transaction();
+    let transaction_id = transaction.calculate_id();
+    network.set_result(committed_result(transaction_id, &sets[1]));
+    let test = wallet(network, &transaction);
+    test.sdk().validator_set_api().sync().await.unwrap();
+    mark_submitted(&test, transaction_id, now());
+
+    let pending = test
+        .sdk()
+        .transaction_api()
+        .check_and_store_finalized_transaction(transaction_id)
+        .await
+        .unwrap();
+    assert!(
+        pending.is_none(),
+        "a transaction submitted after the anchor commits in its epoch or later"
+    );
+    let stored = test.sdk().transaction_api().get(transaction_id).unwrap();
+    assert_eq!(stored.status, TransactionStatus::Pending);
+    assert!(stored.finalize.is_none());
 }
 
 /// A network whose history breaks after epoch 2: its checkpoint ending epoch 2 names a validator set whose committee is

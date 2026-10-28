@@ -59,6 +59,7 @@ CREATE TABLE transactions
     finalized_time        DATETIME NULL,
     new_account_info      TEXT     NULL,
     invalid_reason        TEXT     NULL,
+    submitted_at          DATETIME NULL,
     created_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
