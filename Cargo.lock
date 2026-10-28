@@ -12730,6 +12730,7 @@ dependencies = [
  "tari_ootle_wallet_sdk",
  "tari_template_lib_types",
  "tari_utilities",
+ "tempfile",
  "time",
  "webauthn-rs",
 ]

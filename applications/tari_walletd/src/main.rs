@@ -208,17 +208,15 @@ async fn main() -> Result<(), anyhow::Error> {
                 .context("System time is before the UNIX epoch")?
                 .as_secs();
             let bak_path = db_path.with_extension(format!("sqlite.{timestamp}.bak"));
-            match tokio::fs::rename(&db_path, &bak_path).await {
-                Ok(()) => println!(
+            let moved = tari_ootle_wallet_storage_sqlite::move_database(&db_path, &bak_path)
+                .context("Failed to move wallet database")?;
+            if moved {
+                println!(
                     "Wallet database moved to '{}'.\nThe wallet will be recreated on next startup.",
                     bak_path.display()
-                ),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    println!("No wallet database found at '{}'. Nothing to reset.", db_path.display());
-                },
-                Err(e) => {
-                    anyhow::bail!("Failed to move wallet database: {}", e);
-                },
+                );
+            } else {
+                println!("No wallet database found at '{}'. Nothing to reset.", db_path.display());
             }
 
             return Ok(());

@@ -3,6 +3,7 @@
 #[macro_use]
 extern crate diesel;
 
+mod database_file;
 mod models;
 mod reader;
 mod schema;
@@ -20,6 +21,7 @@ use diesel::{Connection, RunQueryDsl, SqliteConnection, sql_query};
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 use tari_ootle_wallet_sdk::storage::{ReadableWalletStore, WalletStorageError, WriteableWalletStore};
 
+pub use crate::database_file::move_database;
 use crate::{reader::ReadTransaction, writer::WriteTransaction};
 
 #[derive(Clone)]
@@ -36,9 +38,16 @@ impl SqliteWalletStore {
         let mut connection =
             SqliteConnection::establish(&database_url).map_err(|e| WalletStorageError::general("connect", e))?;
 
-        sql_query("PRAGMA foreign_keys = ON;")
-            .execute(&mut connection)
-            .map_err(|source| WalletStorageError::general("set pragma", source))?;
+        // WAL with synchronous = FULL keeps every commit durable across power loss at one fsync of the log per commit.
+        for pragma in [
+            "PRAGMA foreign_keys = ON;",
+            "PRAGMA journal_mode = WAL;",
+            "PRAGMA synchronous = FULL;",
+        ] {
+            sql_query(pragma)
+                .execute(&mut connection)
+                .map_err(|source| WalletStorageError::general("set pragma", source))?;
+        }
 
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
