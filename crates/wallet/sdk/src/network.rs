@@ -123,12 +123,11 @@ pub trait WalletNetworkInterface {
     ) -> impl Future<Output = Result<UtxoUpdateStream<Self::Error>, Self::Error>> + Send;
 
     /// Fetches the unspent UTXOs of `resource_address` matching `tag_and_nonce_pairs`, which of the pairs are spent or
-    /// burnt, and the UTXO tombstone horizons of `tombstone_horizon_shards`.
+    /// burnt, and the UTXO tombstone horizon of each shard that has one.
     fn fetch_utxos(
         &self,
         resource_address: ResourceAddress,
         tag_and_nonce_pairs: Vec<(UtxoTag, RistrettoPublicKeyBytes)>,
-        tombstone_horizon_shards: Vec<Shard>,
     ) -> impl Future<Output = Result<FetchedUtxos, Self::Error>> + Send;
 
     fn list_watched_substates(

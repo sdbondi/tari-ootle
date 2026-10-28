@@ -111,7 +111,6 @@ impl WalletNetworkInterface for ScriptedUtxoNetwork {
         &self,
         _: ResourceAddress,
         _: Vec<TagAndPublicNoncePair>,
-        _: Vec<Shard>,
     ) -> Result<FetchedUtxos, Self::Error> {
         panic!("ScriptedUtxoNetwork::fetch_utxos called")
     }

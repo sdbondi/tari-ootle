@@ -444,7 +444,6 @@ impl WalletNetworkInterface for ProvingNetwork {
         &self,
         _resource_address: ResourceAddress,
         tag_and_nonce_pairs: Vec<TagAndPublicNoncePair>,
-        _tombstone_horizon_shards: Vec<Shard>,
     ) -> Result<FetchedUtxos, Self::Error> {
         let state = self.state.lock().unwrap();
         let unspent = state

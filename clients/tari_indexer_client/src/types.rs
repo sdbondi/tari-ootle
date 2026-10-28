@@ -904,10 +904,6 @@ pub struct GetUtxosRequest {
     pub tag_and_nonce_pairs: Vec<(UtxoTag, RistrettoPublicKeyBytes)>,
     #[cfg_attr(feature = "utoipa", schema(value_type = String))]
     pub resource_address: ResourceAddress,
-    /// The shards whose UTXO tombstone horizons to report in `GetUtxosResponse::tombstone_horizons`, at most 1000.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[cfg_attr(feature = "utoipa", schema(value_type = Vec<u32>))]
-    pub tombstone_horizon_shards: Vec<Shard>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -923,10 +919,10 @@ pub struct GetUtxosResponse {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(value_type = Vec<(u32, String)>))]
     pub spent: Vec<(UtxoTag, RistrettoPublicKeyBytes)>,
-    /// The UTXO tombstone horizon of each shard of `GetUtxosRequest::tombstone_horizon_shards` that has one, read
-    /// with `utxos` and `spent`. This indexer has indexed each such shard up to at least its horizon and keeps every
-    /// unspent UTXO, so a requested pair in neither list whose UTXO was unspent in the shard at a state version at or
-    /// below the horizon has since been spent, and its tombstone pruned.
+    /// The UTXO tombstone horizon of each shard that has one, read with `utxos` and `spent`. This indexer has indexed
+    /// each such shard up to at least its horizon and keeps every unspent UTXO, so a requested pair in neither list
+    /// whose UTXO was unspent in the shard at a state version at or below the horizon has since been spent, and its
+    /// tombstone pruned.
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(value_type = Vec<(u32, u64)>))]
     pub tombstone_horizons: Vec<(Shard, StateVersion)>,

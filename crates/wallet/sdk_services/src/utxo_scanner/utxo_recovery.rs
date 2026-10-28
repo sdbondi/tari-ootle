@@ -176,12 +176,6 @@ where
                 }
                 let tag_and_nonce_pairs = tag_and_nonce_to_view_key_map.keys().copied().collect();
                 let unspent_at = |pair: &TagAndPublicNoncePair| queued.get(pair).and_then(|queued| queued.unspent_at);
-                let tombstone_horizon_shards = tag_and_nonce_to_view_key_map
-                    .keys()
-                    .filter_map(|pair| unspent_at(pair).map(|(shard, _)| shard))
-                    .collect::<HashSet<_>>()
-                    .into_iter()
-                    .collect();
 
                 // TODO(perf): we should check if any UTXOs are already known (by tag and nonce?) because we
                 // created/spent them locally, and skip querying those. This would also avoid having to deal with this
@@ -195,7 +189,7 @@ where
                 } = self
                     .sdk
                     .get_network_interface()
-                    .fetch_utxos(*resource_addr, tag_and_nonce_pairs, tombstone_horizon_shards)
+                    .fetch_utxos(*resource_addr, tag_and_nonce_pairs)
                     .await
                     .map_err(|e| StealthScannerApiError::NetworkInterfaceError(e.into()))?;
 

@@ -211,7 +211,6 @@ impl WalletNetworkInterface for UtxoNetwork {
         &self,
         _resource_address: ResourceAddress,
         tag_and_nonce_pairs: Vec<TagAndPublicNoncePair>,
-        tombstone_horizon_shards: Vec<Shard>,
     ) -> Result<FetchedUtxos, Self::Error> {
         let state = self.state.lock().unwrap();
         Ok(FetchedUtxos {
@@ -230,7 +229,6 @@ impl WalletNetworkInterface for UtxoNetwork {
             tombstone_horizons: state
                 .tombstone_horizons
                 .iter()
-                .filter(|(shard, _)| tombstone_horizon_shards.contains(shard))
                 .map(|(shard, horizon)| (*shard, *horizon))
                 .collect(),
         })

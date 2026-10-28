@@ -646,7 +646,6 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
         &self,
         resource_address: ResourceAddress,
         tag_and_nonce_pairs: Vec<(UtxoTag, RistrettoPublicKeyBytes)>,
-        tombstone_horizon_shards: Vec<Shard>,
     ) -> Result<FetchedUtxos, Self::Error> {
         let client = self.tracked_client();
         // TODO: Given the potential size of substates protobuf, json + hex encoding may be too inefficient. Consider
@@ -656,7 +655,6 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
             client.get_utxos(GetUtxosRequest {
                 resource_address,
                 tag_and_nonce_pairs,
-                tombstone_horizon_shards,
             }),
             |resp| {
                 let unspent = resp
