@@ -9,6 +9,7 @@
 
 use ootle_network::Network;
 use prost::Message;
+use tari_engine_types::{limits::MAX_CBOR_NESTING_DEPTH, substate::SubstateId};
 use tari_ootle_common_types::Epoch;
 use tari_ootle_p2p::proto::rpc;
 use tari_ootle_storage::consensus_models::{
@@ -21,6 +22,7 @@ use tari_state_tree::{
     JmtHashScheme,
     LeafKey,
     SortedLeafRootBuilder,
+    SparseMerkleProofExt,
     SubstateTreeChange,
     TreeHash,
     key_mapper::{DbKeyMapper, SpreadPrefixKeyMapper},
@@ -60,10 +62,20 @@ impl ShardSnapshot {
         self.root.num_leaves()
     }
 
-    /// Adds a page of the snapshot, which must continue in leaf key order from the last substate added. Returns the
-    /// substates to stage: those the value filters select, sent with their value or template metadata. The others
-    /// index nothing.
-    pub fn add_page(&mut self, substates: Vec<rpc::SnapshotSubstate>) -> Result<Vec<SnapshotSubstate>, SnapshotError> {
+    /// Adds a page of the snapshot, which must continue in leaf key order from the last substate added, and checks it
+    /// against the leaf's shard root through `last_leaf_proof`, the proof of its last substate's leaf. Returns the
+    /// substates to stage: those the value filters select. The others index nothing.
+    ///
+    /// The check covers every substate added so far, so a page that leaves out, adds or alters one fails as it
+    /// arrives. A selected substate other than a template must carry its value, which the snapshot indexes it from.
+    pub fn add_page(
+        &mut self,
+        substates: Vec<rpc::SnapshotSubstate>,
+        last_leaf_proof: &[u8],
+    ) -> Result<Vec<SnapshotSubstate>, SnapshotError> {
+        if substates.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut staged = Vec::new();
         for substate in substates {
             let created_epoch = substate
@@ -75,8 +87,10 @@ impl ShardSnapshot {
                 .ok_or_else(|| SnapshotError::Malformed("a substate has no data".to_string()))?;
             let data = SubstateData::try_from(encoded.clone()).map_err(|e| SnapshotError::Malformed(e.to_string()))?;
             let substate_id = data.substate_id.clone();
-            let is_indexed = self.value_filters.contains_substate(&substate_id) &&
-                (data.value.value().is_some() || data.template_metadata.is_some());
+            let is_indexed = self.value_filters.contains_substate(&substate_id);
+            if is_indexed && data.value.value().is_none() && data.template_metadata.is_none() {
+                return Err(SnapshotError::ValueWithheld { substate_id });
+            }
             let update = SubstateUpdateProof::Create(Box::new(SubstateCreate { substate: data }));
             let SubstateTreeChange::Up { id, value_hash } = streamed_tree_change(self.network, created_epoch, &update)
                 .map_err(|e| SnapshotError::Malformed(e.to_string()))?
@@ -94,6 +108,20 @@ impl ShardSnapshot {
                     substate: encoded.encode_to_vec(),
                 });
             }
+        }
+        let proof: SparseMerkleProofExt =
+            tari_bor::serde_codec::from_slice_with_max_depth(last_leaf_proof, MAX_CBOR_NESTING_DEPTH)
+                .map_err(|e| SnapshotError::Malformed(format!("undecodable last leaf proof: {e}")))?;
+        let built = self
+            .root
+            .root_through_last(proof.into_compact(JmtHashScheme::V1).siblings())
+            .map_err(|e| SnapshotError::Malformed(e.to_string()))?;
+        if built != self.leaf.shard_root {
+            return Err(SnapshotError::RootMismatch {
+                num_substates: self.root.num_leaves(),
+                built,
+                committed: self.leaf.shard_root,
+            });
         }
         Ok(staged)
     }
@@ -117,6 +145,8 @@ impl ShardSnapshot {
 pub enum SnapshotError {
     #[error("the snapshot is malformed: {0}")]
     Malformed(String),
+    #[error("the snapshot sends {substate_id} as its hash alone, though the value filters select it")]
+    ValueWithheld { substate_id: SubstateId },
     #[error("the snapshot's {num_substates} substates build root {built}, but the verified leaf commits {committed}")]
     RootMismatch {
         num_substates: usize,
@@ -135,7 +165,13 @@ mod tests {
     use tari_ootle_common_types::{StateVersion, SubstateVersion, VersionedSubstateId, shard::Shard};
     use tari_ootle_storage::consensus_models::SubstateValueOrHash;
     use tari_state_tree::{JellyfishMerkleTree, TransitionAccumulator, TreeStoreWriter, memory_store::MemoryTreeStore};
-    use tari_template_lib_types::{ComponentAddress, Hash32, ObjectKey, crypto::RistrettoPublicKeyBytes};
+    use tari_template_lib_types::{
+        ComponentAddress,
+        Hash32,
+        ObjectKey,
+        ResourceAddress,
+        crypto::RistrettoPublicKeyBytes,
+    };
 
     use super::*;
     use crate::network_state_sync::verified_stage::VerifiedShardLeaf;
@@ -199,51 +235,78 @@ mod tests {
         SpreadPrefixKeyMapper::map_to_leaf_key(&VersionedSubstateId::new(data.substate_id, data.version))
     }
 
-    /// The substates of a shard, in leaf key order, and the root of the tree holding them.
-    fn shard_state(value_filters: SubstateValueFilterFlags) -> (Vec<rpc::SnapshotSubstate>, TreeHash) {
-        let mut substates = (0..20u8)
-            .map(|seed| served(component(seed), Epoch(u64::from(seed % 3) + 1), value_filters))
-            .chain((0..3u8).map(|seed| served(template(seed), Epoch(2), value_filters)))
-            .chain((20..25u8).map(|seed| {
-                let mut hidden = served(component(seed), Epoch(1), value_filters);
-                let data = SubstateData::try_from(hidden.substate.take().unwrap()).unwrap();
-                hidden.substate = Some(
-                    SubstateData {
-                        value: SubstateValueOrHash::Hash(data.to_value_hash(NETWORK, Epoch(1))),
-                        ..data
-                    }
-                    .into(),
-                );
-                hidden
-            }))
-            .collect::<Vec<_>>();
-        substates.sort_by_key(leaf_key_of);
+    fn resource(seed: u8) -> (SubstateId, SubstateValue) {
+        let id = SubstateId::Resource(ResourceAddress::new(ObjectKey::from_array([seed; ObjectKey::LENGTH])));
+        (id, SubstateValue::NonFungible(NonFungibleContainer::no_data()))
+    }
 
-        let mut mem = MemoryTreeStore::new();
-        let values = substates.iter().map(|substate| {
-            let data = SubstateData::try_from(substate.substate.clone().unwrap()).unwrap();
-            let epoch = Epoch::from(substate.created_epoch.unwrap());
-            let value_hash = match &data.template_metadata {
-                Some(metadata) => tari_engine_types::substate::hash_published_template_metadata(
-                    NETWORK,
-                    metadata,
-                    data.version,
-                    epoch,
-                ),
-                None => data.to_value_hash(NETWORK, epoch),
-            };
-            (
-                leaf_key_of(substate),
-                Some((TreeHash::new(value_hash.into_array()), ())),
-            )
-        });
-        let (root, diff) = JellyfishMerkleTree::new(&mem, JmtHashScheme::V1)
-            .batch_put_value_set(values, None, 1)
-            .unwrap();
-        for (key, node) in diff.node_batch {
-            mem.insert_node(key, node).unwrap();
+    /// A shard's substates in leaf key order, as served under [`filters`], and the tree holding them.
+    struct ShardState {
+        substates: Vec<rpc::SnapshotSubstate>,
+        root: TreeHash,
+        tree: MemoryTreeStore<()>,
+    }
+
+    impl ShardState {
+        fn new() -> Self {
+            let mut substates = (0..20u8)
+                .map(|seed| served(component(seed), Epoch(u64::from(seed % 3) + 1), filters()))
+                .chain((0..3u8).map(|seed| served(template(seed), Epoch(2), filters())))
+                .chain((0..5u8).map(|seed| served(resource(seed), Epoch(1), filters())))
+                .collect::<Vec<_>>();
+            substates.sort_by_key(leaf_key_of);
+
+            let mut tree = MemoryTreeStore::new();
+            let values = substates
+                .iter()
+                .map(|substate| (leaf_key_of(substate), Some((value_hash_of(substate), ()))));
+            let (root, diff) = JellyfishMerkleTree::new(&tree, JmtHashScheme::V1)
+                .batch_put_value_set(values, None, 1)
+                .unwrap();
+            for (key, node) in diff.node_batch {
+                tree.insert_node(key, node).unwrap();
+            }
+            Self { substates, root, tree }
         }
-        (substates, root)
+
+        /// The encoded proof of `key`'s leaf in the tree, as a page that ends with it carries.
+        fn proof(&self, key: &LeafKey) -> Vec<u8> {
+            let (_, proof) = JellyfishMerkleTree::new(&self.tree, JmtHashScheme::V1)
+                .get_with_proof_ext(key.as_ref(), 1)
+                .unwrap();
+            tari_bor::serde_codec::to_vec(&proof).unwrap()
+        }
+
+        /// Adds `substates` to `snapshot` in pages of `page_size`, each carrying the tree's proof of its last leaf.
+        fn add_pages(
+            &self,
+            snapshot: &mut ShardSnapshot,
+            substates: &[rpc::SnapshotSubstate],
+            page_size: usize,
+        ) -> Result<Vec<SnapshotSubstate>, SnapshotError> {
+            let mut staged = Vec::new();
+            for page in substates.chunks(page_size) {
+                let proof = self.proof(&leaf_key_of(page.last().unwrap()));
+                staged.extend(snapshot.add_page(page.to_vec(), &proof)?);
+            }
+            Ok(staged)
+        }
+
+        fn snapshot(&self) -> ShardSnapshot {
+            ShardSnapshot::new(NETWORK, leaf_with_root(self.root), filters())
+        }
+    }
+
+    fn value_hash_of(substate: &rpc::SnapshotSubstate) -> TreeHash {
+        let data = SubstateData::try_from(substate.substate.clone().unwrap()).unwrap();
+        let epoch = Epoch::from(substate.created_epoch.unwrap());
+        let value_hash = match &data.template_metadata {
+            Some(metadata) => {
+                tari_engine_types::substate::hash_published_template_metadata(NETWORK, metadata, data.version, epoch)
+            },
+            None => data.to_value_hash(NETWORK, epoch),
+        };
+        TreeHash::new(value_hash.into_array())
     }
 
     fn leaf_with_root(shard_root: TreeHash) -> ProvedShardLeaf {
@@ -263,35 +326,35 @@ mod tests {
 
     #[test]
     fn a_snapshot_paged_in_order_rebuilds_the_committed_root() {
-        let (substates, root) = shard_state(filters());
+        let state = ShardState::new();
         for page_size in [1, 4, 28, 100] {
-            let mut snapshot = ShardSnapshot::new(NETWORK, leaf_with_root(root), filters());
-            let mut staged = Vec::new();
-            for page in substates.chunks(page_size) {
-                staged.extend(snapshot.add_page(page.to_vec()).unwrap());
-                assert_eq!(snapshot.last_key(), Some(&leaf_key_of(page.last().unwrap())));
-            }
+            let mut snapshot = state.snapshot();
+            let staged = state.add_pages(&mut snapshot, &state.substates, page_size).unwrap();
+            assert_eq!(snapshot.last_key(), Some(&leaf_key_of(state.substates.last().unwrap())));
             assert_eq!(snapshot.num_substates(), 28);
-            assert_eq!(snapshot.finish().unwrap(), leaf_with_root(root));
-            // The components sent with values and the templates sent with metadata are staged, the hidden ones are not
+            assert_eq!(snapshot.finish().unwrap(), leaf_with_root(state.root));
+            // The components and templates the filters select are staged, the resources are not
             assert_eq!(staged.len(), 23, "page size {page_size}");
         }
     }
 
     #[test]
-    fn a_snapshot_missing_altered_or_extra_substates_does_not_match() {
-        let (substates, root) = shard_state(filters());
-        let check = |substates: Vec<rpc::SnapshotSubstate>| {
-            let mut snapshot = ShardSnapshot::new(NETWORK, leaf_with_root(root), filters());
-            snapshot.add_page(substates)?;
-            snapshot.finish()
+    fn a_page_missing_altering_or_adding_a_substate_fails_as_it_arrives() {
+        let state = ShardState::new();
+        let first_page_fails = |substates: Vec<rpc::SnapshotSubstate>| {
+            let mut snapshot = state.snapshot();
+            let proof = state.proof(&leaf_key_of(&substates[9]));
+            matches!(
+                snapshot.add_page(substates[..10].to_vec(), &proof),
+                Err(SnapshotError::RootMismatch { .. } | SnapshotError::Malformed(_))
+            )
         };
 
-        let mut missing = substates.clone();
-        missing.remove(11);
-        assert!(matches!(check(missing), Err(SnapshotError::RootMismatch { .. })));
+        let mut missing = state.substates.clone();
+        missing.remove(4);
+        assert!(first_page_fails(missing));
 
-        let mut altered = substates.clone();
+        let mut altered = state.substates.clone();
         let index = altered
             .iter()
             .position(|substate| {
@@ -300,27 +363,95 @@ mod tests {
             })
             .unwrap();
         altered[index].created_epoch = Some(Epoch(99).into());
-        assert!(matches!(check(altered), Err(SnapshotError::RootMismatch { .. })));
+        assert!(first_page_fails(altered));
 
-        let mut extra = substates.clone();
-        extra.push(served(component(200), Epoch(1), filters()));
+        let added = served(component(200), Epoch(1), filters());
+        let mut extra = state.substates.clone();
+        extra.push(added.clone());
         extra.sort_by_key(leaf_key_of);
-        assert!(matches!(check(extra), Err(SnapshotError::RootMismatch { .. })));
+        let position = extra.iter().position(|substate| *substate == added).unwrap();
+        // The page ends at a substate the tree holds, so its proof is an inclusion proof
+        let end = if position + 1 < extra.len() {
+            position + 1
+        } else {
+            position - 1
+        };
+        let mut snapshot = state.snapshot();
+        let proof = state.proof(&leaf_key_of(&extra[end]));
+        assert!(matches!(
+            snapshot.add_page(extra[..=end].to_vec(), &proof),
+            Err(SnapshotError::RootMismatch { .. } | SnapshotError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn a_page_proved_by_another_leaf_does_not_match() {
+        let state = ShardState::new();
+        let mut snapshot = state.snapshot();
+        let proof = state.proof(&leaf_key_of(&state.substates[10]));
+        assert!(matches!(
+            snapshot.add_page(state.substates[..10].to_vec(), &proof),
+            Err(SnapshotError::RootMismatch { .. } | SnapshotError::Malformed(_))
+        ));
+        let mut snapshot = state.snapshot();
+        assert!(matches!(
+            snapshot.add_page(state.substates[..10].to_vec(), &[0xff]),
+            Err(SnapshotError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn a_snapshot_cut_short_does_not_match() {
+        let state = ShardState::new();
+        let mut snapshot = state.snapshot();
+        state.add_pages(&mut snapshot, &state.substates[..20], 10).unwrap();
+        assert!(matches!(snapshot.finish(), Err(SnapshotError::RootMismatch { .. })));
+    }
+
+    #[test]
+    fn a_selected_substate_sent_as_its_hash_is_withheld() {
+        let state = ShardState::new();
+        let mut withheld = state.substates.clone();
+        let index = withheld
+            .iter()
+            .position(|substate| {
+                let data = SubstateData::try_from(substate.substate.clone().unwrap()).unwrap();
+                data.value.value().is_some()
+            })
+            .unwrap();
+        let mut data = SubstateData::try_from(withheld[index].substate.take().unwrap()).unwrap();
+        let epoch = Epoch::from(withheld[index].created_epoch.unwrap());
+        data.value = SubstateValueOrHash::Hash(data.to_value_hash(NETWORK, epoch));
+        withheld[index].substate = Some(data.into());
+        let mut snapshot = state.snapshot();
+        assert!(matches!(
+            state.add_pages(&mut snapshot, &withheld, 100),
+            Err(SnapshotError::ValueWithheld { .. })
+        ));
     }
 
     #[test]
     fn a_snapshot_out_of_key_order_is_malformed() {
-        let (mut substates, root) = shard_state(filters());
-        substates.swap(3, 4);
-        let mut snapshot = ShardSnapshot::new(NETWORK, leaf_with_root(root), filters());
-        assert!(matches!(snapshot.add_page(substates), Err(SnapshotError::Malformed(_))));
-
-        let (substates, root) = shard_state(filters());
-        let mut snapshot = ShardSnapshot::new(NETWORK, leaf_with_root(root), filters());
-        snapshot.add_page(substates[5..].to_vec()).unwrap();
+        let state = ShardState::new();
+        let mut swapped = state.substates.clone();
+        swapped.swap(3, 4);
+        let mut snapshot = state.snapshot();
         assert!(matches!(
-            snapshot.add_page(substates[..5].to_vec()),
+            state.add_pages(&mut snapshot, &swapped, 100),
             Err(SnapshotError::Malformed(_))
+        ));
+
+        let mut snapshot = state.snapshot();
+        state.add_pages(&mut snapshot, &state.substates[..10], 100).unwrap();
+        assert!(matches!(
+            state.add_pages(&mut snapshot, &state.substates[5..10], 100),
+            Err(SnapshotError::Malformed(_))
+        ));
+        // A page that skips ahead leaves out the substates between, which its proof catches
+        let mut snapshot = state.snapshot();
+        assert!(matches!(
+            state.add_pages(&mut snapshot, &state.substates[5..], 100),
+            Err(SnapshotError::RootMismatch { .. })
         ));
     }
 
@@ -328,15 +459,16 @@ mod tests {
     fn an_empty_snapshot_matches_only_the_empty_root() {
         let snapshot = ShardSnapshot::new(NETWORK, leaf_with_root(TreeHash::zero()), filters());
         assert!(snapshot.finish().is_ok());
-        let (_, root) = shard_state(filters());
-        let snapshot = ShardSnapshot::new(NETWORK, leaf_with_root(root), filters());
-        assert!(matches!(snapshot.finish(), Err(SnapshotError::RootMismatch { .. })));
+        assert!(matches!(
+            ShardState::new().snapshot().finish(),
+            Err(SnapshotError::RootMismatch { .. })
+        ));
     }
 
     #[test]
     fn a_template_whose_metadata_disagrees_with_its_hash_is_malformed() {
-        let (substates, root) = shard_state(filters());
-        let mut tampered = substates.clone();
+        let state = ShardState::new();
+        let mut tampered = state.substates.clone();
         let index = tampered
             .iter()
             .position(|substate| !substate.substate.as_ref().unwrap().template_metadata.is_empty())
@@ -344,7 +476,10 @@ mod tests {
         let mut data = SubstateData::try_from(tampered[index].substate.take().unwrap()).unwrap();
         data.value = SubstateValueOrHash::Hash(Hash32::from_array([1; 32]));
         tampered[index].substate = Some(data.into());
-        let mut snapshot = ShardSnapshot::new(NETWORK, leaf_with_root(root), filters());
-        assert!(matches!(snapshot.add_page(tampered), Err(SnapshotError::Malformed(_))));
+        let mut snapshot = state.snapshot();
+        assert!(matches!(
+            state.add_pages(&mut snapshot, &tampered, 100),
+            Err(SnapshotError::Malformed(_))
+        ));
     }
 }

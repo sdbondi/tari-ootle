@@ -9,7 +9,15 @@ use tari_ootle_storage::{
     StorageError,
     consensus_models::SubstateValueFilterFlags,
 };
-use tari_state_tree::{JellyfishMerkleTree, JmtHashScheme, JmtStorageError, LeafKey, NodeKey, Version};
+use tari_state_tree::{
+    JellyfishMerkleTree,
+    JmtHashScheme,
+    JmtStorageError,
+    LeafKey,
+    NodeKey,
+    SparseMerkleProofExt,
+    Version,
+};
 
 /// The most substates one `GetShardSnapshot` page returns.
 pub const MAX_SNAPSHOT_PAGE_SUBSTATES: usize = 1000;
@@ -33,6 +41,8 @@ pub enum ShardSnapshotPage {
     Page {
         substates: Vec<proto::SnapshotSubstate>,
         is_last: bool,
+        /// The proof of the last substate's leaf, if the page has any.
+        last_leaf_proof: Option<SparseMerkleProofExt>,
     },
 }
 
@@ -59,21 +69,22 @@ pub fn read_shard_snapshot<TTx: StateStoreReadTransaction>(
         return Ok(ShardSnapshotPage::Unavailable);
     }
     let tree_store = ShardScopedTreeStoreReader::new(tx, shard);
-    let leaves =
-        match JellyfishMerkleTree::new(&tree_store, JmtHashScheme::V1).get_leaves_after(state_version, after, limit) {
-            Ok(leaves) => leaves,
-            Err(JmtStorageError::NotFound(_)) => return Ok(ShardSnapshotPage::Unavailable),
-            Err(e) => {
-                return Err(StorageError::QueryError {
-                    reason: format!("read the leaves of {shard} at state version {state_version}: {e}"),
-                });
-            },
-        };
+    let jmt = JellyfishMerkleTree::new(&tree_store, JmtHashScheme::V1);
+    let tree_error = |e: JmtStorageError| StorageError::QueryError {
+        reason: format!("read the tree of {shard} at state version {state_version}: {e}"),
+    };
+    let leaves = match jmt.get_leaves_after(state_version, after, limit) {
+        Ok(leaves) => leaves,
+        Err(JmtStorageError::NotFound(_)) => return Ok(ShardSnapshotPage::Unavailable),
+        Err(e) => return Err(tree_error(e)),
+    };
 
     let value_filters = value_filters | SubstateValueFilterFlags::ALL_HASHES;
     let num_leaves = leaves.len();
     let mut substates = Vec::with_capacity(num_leaves);
     let mut page_bytes = 0usize;
+    let mut last_key = None;
+    let mut is_full = false;
     for leaf in leaves {
         let record = tx.substates_get(leaf.payload())?;
         let created_epoch = record.created.at_epoch;
@@ -87,17 +98,25 @@ pub fn read_shard_snapshot<TTx: StateStoreReadTransaction>(
         };
         let substate_bytes = prost::encoding::message::encoded_len(SNAPSHOT_SUBSTATES_TAG, &substate);
         if !substates.is_empty() && page_bytes.saturating_add(substate_bytes) > MAX_SNAPSHOT_PAGE_BYTES {
-            return Ok(ShardSnapshotPage::Page {
-                substates,
-                is_last: false,
-            });
+            is_full = true;
+            break;
         }
         page_bytes = page_bytes.saturating_add(substate_bytes);
         substates.push(substate);
+        last_key = Some(*leaf.leaf_key());
     }
+    let last_leaf_proof = match last_key {
+        Some(key) => match jmt.get_with_proof_ext(key.as_ref(), state_version) {
+            Ok((_, proof)) => Some(proof),
+            Err(JmtStorageError::NotFound(_)) => return Ok(ShardSnapshotPage::Unavailable),
+            Err(e) => return Err(tree_error(e)),
+        },
+        None => None,
+    };
     Ok(ShardSnapshotPage::Page {
         substates,
-        is_last: num_leaves < limit,
+        is_last: !is_full && num_leaves < limit,
+        last_leaf_proof,
     })
 }
 
@@ -209,10 +228,12 @@ mod tests {
         (dir, store, roots)
     }
 
-    /// Pages through the global shard's snapshot at `state_version`, as a caller does, and rebuilds its root.
+    /// Pages through the global shard's snapshot at `state_version`, as a caller does, checking each page against
+    /// `root` through its last leaf, and rebuilds the root.
     fn page_through(
         store: &RocksDbStateStore<String>,
         state_version: Version,
+        root: TreeHash,
         limit: usize,
         value_filters: SubstateValueFilterFlags,
     ) -> (Vec<SubstateData>, TreeHash, usize) {
@@ -230,7 +251,12 @@ mod tests {
                 value_filters,
             )
             .unwrap();
-            let ShardSnapshotPage::Page { substates, is_last } = page else {
+            let ShardSnapshotPage::Page {
+                substates,
+                is_last,
+                last_leaf_proof,
+            } = page
+            else {
                 panic!("the tree at v{state_version} is held");
             };
             assert!(encoded_substates_len(&substates) <= MAX_SNAPSHOT_PAGE_BYTES || substates.len() == 1);
@@ -247,6 +273,10 @@ mod tests {
                     .unwrap();
                 all.push(data);
             }
+            if let Some(proof) = last_leaf_proof {
+                let proof = proof.into_compact(JmtHashScheme::V1);
+                assert_eq!(builder.root_through_last(proof.siblings()).unwrap(), root);
+            }
             if is_last {
                 return (all, builder.finish(), num_pages);
             }
@@ -258,12 +288,12 @@ mod tests {
         let (_dir, store, [root_v1, root_v2]) = store_with_templates(40, 15, 16);
         let filters = SubstateValueFilterFlags::TRANSACTION_RECEIPT;
         for limit in [1, 7, 40, 41, 1000] {
-            let (substates, root, num_pages) = page_through(&store, 1, limit, filters);
+            let (substates, root, num_pages) = page_through(&store, 1, root_v1, limit, filters);
             assert_eq!(substates.len(), 40, "limit {limit}");
             assert_eq!(root, root_v1, "limit {limit}");
             assert_eq!(num_pages, 40 / limit + 1, "limit {limit}");
         }
-        let (substates, root, _) = page_through(&store, 2, 6, filters);
+        let (substates, root, _) = page_through(&store, 2, root_v2, 6, filters);
         assert_eq!(substates.len(), 25);
         assert_eq!(root, root_v2);
         // Unselected substates are served as their hash alone
@@ -273,12 +303,12 @@ mod tests {
     #[test]
     fn it_serves_selected_substates_in_the_form_the_filters_select() {
         let (_dir, store, [root_v1, _]) = store_with_templates(5, 0, 16);
-        let (substates, root, _) = page_through(&store, 1, 100, SubstateValueFilterFlags::TEMPLATE_METADATA);
+        let (substates, root, _) = page_through(&store, 1, root_v1, 100, SubstateValueFilterFlags::TEMPLATE_METADATA);
         assert_eq!(root, root_v1);
         assert!(substates.iter().all(|data| data.template_metadata.is_some()));
         assert!(substates.iter().all(|data| data.value.hash().is_some()));
 
-        let (substates, root, _) = page_through(&store, 1, 100, SubstateValueFilterFlags::TEMPLATE);
+        let (substates, root, _) = page_through(&store, 1, root_v1, 100, SubstateValueFilterFlags::TEMPLATE);
         assert_eq!(root, root_v1);
         assert!(substates.iter().all(|data| data.value.value().is_some()));
     }
@@ -287,7 +317,7 @@ mod tests {
     fn a_page_is_bounded_by_its_byte_budget() {
         const BINARY_LEN: usize = 1024 * 1024;
         let (_dir, store, [root_v1, _]) = store_with_templates(9, 0, BINARY_LEN);
-        let (substates, root, num_pages) = page_through(&store, 1, 1000, SubstateValueFilterFlags::TEMPLATE);
+        let (substates, root, num_pages) = page_through(&store, 1, root_v1, 1000, SubstateValueFilterFlags::TEMPLATE);
         assert_eq!(substates.len(), 9);
         assert_eq!(root, root_v1);
         assert!(num_pages > 2, "9 MiB of templates take {num_pages} pages");

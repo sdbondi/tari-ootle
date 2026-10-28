@@ -1097,14 +1097,22 @@ impl<TStateStore: StateStore + Clone + Send + Sync + 'static> ValidatorNodeRpcSe
 
         Ok(Response::new(match page {
             ShardSnapshotPage::Unavailable => GetShardSnapshotResponse {
-                substates: Vec::new(),
-                is_last: false,
                 version_unavailable: true,
+                ..Default::default()
             },
-            ShardSnapshotPage::Page { substates, is_last } => GetShardSnapshotResponse {
+            ShardSnapshotPage::Page {
+                substates,
+                is_last,
+                last_leaf_proof,
+            } => GetShardSnapshotResponse {
                 substates,
                 is_last,
                 version_unavailable: false,
+                last_leaf_proof: last_leaf_proof
+                    .map(|proof| tari_bor::serde_codec::to_vec(&proof))
+                    .transpose()
+                    .map_err(RpcStatus::log_internal_error(LOG_TARGET))?
+                    .unwrap_or_default(),
             },
         }))
     }

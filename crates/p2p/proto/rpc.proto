@@ -450,6 +450,10 @@ message GetShardSnapshotResponse {
   // The responder does not hold the shard's tree at state_version: the version is no longer kept, or not yet
   // reached. No substates are returned.
   bool version_unavailable = 3;
+  // CBOR-encoded SparseMerkleProofExt of the last substate's leaf in the shard's tree at state_version. Empty if no
+  // substates are returned. With the leaves of every page so far, its siblings to the right of the leaf's path
+  // rebuild the shard's root, which checks each page as it arrives.
+  bytes last_leaf_proof = 4;
 }
 
 // A substate a shard's tree holds, as SyncStateRequest.value_filters select its form.
