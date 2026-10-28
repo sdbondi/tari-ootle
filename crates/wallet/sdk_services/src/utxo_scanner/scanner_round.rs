@@ -326,7 +326,7 @@ where TSpec: WalletSdkSpec
 
                 self.stats.num_received += num_received;
                 num_received = 0;
-                self.commit_progress().await?;
+                self.commit_updates().await?;
             }
         }
 
@@ -382,6 +382,15 @@ where TSpec: WalletSdkSpec
             },
         }
         Ok(())
+    }
+
+    /// Commits the pending progress if any outputs or spends are pending. Cursors alone wait for
+    /// [`Self::commit_progress`], so a pass over shards that deliver nothing commits once rather than once a shard.
+    async fn commit_updates(&mut self) -> Result<bool, StealthScannerApiError> {
+        if self.utxos_to_recover.is_empty() && self.utxos_to_spend.is_empty() && self.checked_spends.is_empty() {
+            return Ok(false);
+        }
+        self.commit_progress().await
     }
 
     async fn commit_progress(&mut self) -> Result<bool, StealthScannerApiError> {
