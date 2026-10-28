@@ -140,9 +140,13 @@ CREATE INDEX utxos_resource_unspent_idx ON utxos (resource_address) WHERE is_spe
 -- Finds a resource's spent or burnt UTXOs by public nonce and tag, as fetching UTXOs by key does to report which of
 -- the requested outputs are spent. Queries must repeat this condition as SQL literals for SQLite to use the index.
 CREATE INDEX utxos_resource_public_nonce_utxo_tag_spent_idx ON utxos (resource_address, public_nonce, utxo_tag) WHERE is_spent = true OR is_burnt = true;
+-- Spent UTXOs by the epoch they were spent in, as the tombstone pruner reads them oldest first. Queries must repeat
+-- this condition as an SQL literal for SQLite to use the index.
+CREATE INDEX utxos_spent_epoch_idx ON utxos (epoch) WHERE is_spent = true;
 
 -- Per shard, the state version at and below which this indexer may lack the tombstone of a spent UTXO. A shard
--- synced from its live substates rather than from its first version does not see the spends before them. The UTXO
+-- synced from its live substates rather than from its first version does not see the spends before them, and the
+-- tombstone pruner raises the horizon over every tombstone it deletes. The UTXO
 -- stream tells a client resuming from below a shard's horizon that its spends are incomplete. A shard with no row has
 -- every tombstone.
 create table utxo_tombstone_horizons

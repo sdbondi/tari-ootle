@@ -1820,7 +1820,16 @@
                 }
               ]
             },
-            "description": "Per shard, the state version at and below which this indexer may lack the tombstone of a spent\nUTXO, ascending by shard. A shard's first sync fetches only its live substates, so a spend\nbefore it is not seen. A shard not listed has every tombstone. The UTXO stream sets\n`StartOfShard::spends_incomplete` for a shard whose cursor is below its horizon. This is sync\nstate, and rises while the indexer runs."
+            "description": "Per shard, the state version at and below which this indexer may lack the tombstone of a spent\nUTXO, ascending by shard. A shard's first sync fetches only its live substates, so a spend\nbefore it is not seen, and pruning a tombstone raises the horizon over it. A shard not listed\nhas every tombstone. The UTXO stream sets\n`StartOfShard::spends_incomplete` for a shard whose cursor is below its horizon. This is sync\nstate, and rises while the indexer runs."
+          },
+          "utxo_tombstone_retention_epochs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many epochs past the epoch a UTXO was spent in this indexer retains its tombstone before\npruning it. `None` means tombstones are retained indefinitely. Pruning raises the shard's\nentry in `utxo_tombstone_horizons`, so a UTXO stream resuming from further back is told its\nspends are incomplete.",
+            "minimum": 0
           },
           "verify_substate_proofs": {
             "type": "boolean",

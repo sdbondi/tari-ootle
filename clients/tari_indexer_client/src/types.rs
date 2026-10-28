@@ -1009,9 +1009,15 @@ pub struct GetIndexerInfoResponse {
     /// Whether this indexer stores every event on the network. When false it is configured with event
     /// filters, so event queries answer over a subset and absence is not proof an event did not occur.
     pub indexes_all_events: bool,
+    /// How many epochs past the epoch a UTXO was spent in this indexer retains its tombstone before
+    /// pruning it. `None` means tombstones are retained indefinitely. Pruning raises the shard's
+    /// entry in `utxo_tombstone_horizons`, so a UTXO stream resuming from further back is told its
+    /// spends are incomplete.
+    pub utxo_tombstone_retention_epochs: Option<u64>,
     /// Per shard, the state version at and below which this indexer may lack the tombstone of a spent
     /// UTXO, ascending by shard. A shard's first sync fetches only its live substates, so a spend
-    /// before it is not seen. A shard not listed has every tombstone. The UTXO stream sets
+    /// before it is not seen, and pruning a tombstone raises the horizon over it. A shard not listed
+    /// has every tombstone. The UTXO stream sets
     /// `StartOfShard::spends_incomplete` for a shard whose cursor is below its horizon. This is sync
     /// state, and rises while the indexer runs.
     #[cfg_attr(feature = "utoipa", schema(value_type = Vec<(u32, u64)>))]

@@ -404,17 +404,22 @@ pub async fn spawn_services(
     // to see what changed underneath them in their own logs.
     info!(
         target: LOG_TARGET,
-        "⚙️ Storage: gossip indexing {}, retention: transactions {}, receipts {}, events {}",
+        "⚙️ Storage: gossip indexing {}, retention: transactions {}, receipts {}, events {}, UTXO tombstones {}",
         if config.indexer.index_gossiped_transactions { "ON" } else { "OFF" },
         display_retention(config.indexer.transaction_retention_epochs),
         display_retention(receipt_retention_epochs),
         display_retention(config.indexer.event_retention_epochs),
+        display_retention(config.indexer.utxo_tombstone_retention_epochs),
     );
 
     for (target, retention_epochs) in [
         (PruneTarget::Transactions, config.indexer.transaction_retention_epochs),
         (PruneTarget::TransactionReceipts, receipt_retention_epochs),
         (PruneTarget::Events, config.indexer.event_retention_epochs),
+        (
+            PruneTarget::UtxoTombstones,
+            config.indexer.utxo_tombstone_retention_epochs,
+        ),
     ] {
         let Some(retention_epochs) = retention_epochs else {
             continue;

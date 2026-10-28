@@ -2,12 +2,13 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use std::{
+    collections::HashMap,
     ops::{Deref, DerefMut},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use diesel::{OptionalExtension, QueryDsl, RunQueryDsl, SqliteConnection};
+use diesel::{OptionalExtension, QueryDsl, RunQueryDsl, SqliteConnection, dsl, sql_types};
 use log::{debug, info, warn};
 use serde::Serialize;
 use tari_engine_types::{
@@ -646,6 +647,46 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
             Optional::optional(self.key_value_get_value::<_, i64>(Key::EventsPrunedThroughId))?.unwrap_or(0);
         if batch_max_id > pruned_through {
             self.key_value_set(Key::EventsPrunedThroughId, batch_max_id)?;
+        }
+
+        Ok(num_deleted)
+    }
+
+    fn prune_utxo_tombstones_before_epoch(&mut self, cutoff: Epoch, limit: usize) -> Result<usize, StorageError> {
+        const OPERATION: &str = "prune_utxo_tombstones_before_epoch";
+        use crate::storage_sqlite::schema::utxos;
+
+        // The literal condition and the order by the filtered column let the select be served from
+        // `utxos_spent_epoch_idx`.
+        let rows = utxos::table
+            .select((utxos::id, utxos::shard, utxos::state_version))
+            .filter(dsl::sql::<sql_types::Bool>(r#""utxos"."is_spent" = true"#))
+            .filter(utxos::epoch.lt(encode_retention_epoch(cutoff)))
+            .order_by(utxos::epoch.asc())
+            .limit(limit as i64)
+            .load::<(i64, i32, i64)>(self.connection())
+            .map_err(|e| StorageError::general(OPERATION, e))?;
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        // Versions from 2^63 up are stored negative, so the highest version of each shard is found on the decoded
+        // versions rather than in SQL.
+        let mut horizons = HashMap::<Shard, StateVersion>::new();
+        for &(_, shard, state_version) in &rows {
+            let state_version = StateVersion::new(state_version as u64);
+            horizons
+                .entry(Shard::from(shard as u32))
+                .and_modify(|horizon| *horizon = (*horizon).max(state_version))
+                .or_insert(state_version);
+        }
+
+        let ids = rows.into_iter().map(|(id, _, _)| id).collect::<Vec<_>>();
+        let num_deleted = diesel::delete(utxos::table.filter(utxos::id.eq_any(ids)))
+            .execute(self.connection())
+            .map_err(|e| StorageError::general(OPERATION, e))?;
+        for (shard, state_version) in horizons {
+            self.raise_utxo_tombstone_horizon(shard, state_version)?;
         }
 
         Ok(num_deleted)

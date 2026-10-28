@@ -384,6 +384,11 @@ pub trait IndexerStoreWriteTransaction {
     /// Deletes up to `limit` events emitted by transactions that committed before `cutoff`, oldest
     /// first, returning the number deleted.
     fn prune_events_before_epoch(&mut self, cutoff: Epoch, limit: usize) -> Result<usize, StorageError>;
+    /// Deletes up to `limit` tombstones of UTXOs spent before `cutoff`, oldest first, returning the number deleted.
+    /// Each shard's [tombstone horizon](IndexerStoreReadTransaction::utxo_tombstone_horizon) is raised to the
+    /// highest state version deleted from it in the same transaction, so that a client resuming from below a pruned
+    /// tombstone is told its spends are incomplete.
+    fn prune_utxo_tombstones_before_epoch(&mut self, cutoff: Epoch, limit: usize) -> Result<usize, StorageError>;
     fn insert_or_ignore_epoch_checkpoint(&mut self, epoch_checkpoint: &EpochCheckpoint) -> Result<(), StorageError>;
     fn upsert_template_catalogue(
         &mut self,
