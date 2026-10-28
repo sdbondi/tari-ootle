@@ -220,7 +220,7 @@ impl WalletNetworkInterface for FixedSubstateNetwork {
         })
     }
 
-    async fn get_substates(&self, _: Vec<SubstateId>, _: bool) -> Result<FetchedSubstates, Self::Error> {
+    async fn get_substates(&self, _: &[SubstateId], _: bool) -> Result<FetchedSubstates, Self::Error> {
         panic!("FixedSubstateNetwork called")
     }
 

@@ -121,7 +121,7 @@ impl WalletNetworkInterface for OneUtxoNetwork {
         Err(FakeError::NotFound)
     }
 
-    async fn get_substates(&self, _: Vec<SubstateId>, _: bool) -> Result<FetchedSubstates, Self::Error> {
+    async fn get_substates(&self, _: &[SubstateId], _: bool) -> Result<FetchedSubstates, Self::Error> {
         panic!("OneUtxoNetwork::get_substates called")
     }
 

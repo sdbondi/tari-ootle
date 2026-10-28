@@ -115,7 +115,7 @@ impl WalletNetworkInterface for UtxoNetwork {
         panic!("UtxoNetwork::query_substate called")
     }
 
-    async fn get_substates(&self, _: Vec<SubstateId>, _: bool) -> Result<FetchedSubstates, Self::Error> {
+    async fn get_substates(&self, _: &[SubstateId], _: bool) -> Result<FetchedSubstates, Self::Error> {
         panic!("UtxoNetwork::get_substates called")
     }
 

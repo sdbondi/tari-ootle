@@ -132,10 +132,10 @@ where TSpec: WalletSdkSpec
             .vault_ids()
             .iter()
             .map(|vault_id| SubstateId::Vault(*vault_id))
-            .collect::<HashSet<_>>();
-        let latest_vaults = substate_api
-            .get_substates_from_network(vault_substate_ids.into_iter().collect())
-            .await?;
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let latest_vaults = substate_api.get_substates_from_network(&vault_substate_ids).await?;
         for vault_id in indexed_value.vault_ids() {
             let vault_substate_id = SubstateId::Vault(*vault_id);
             let Some(substate) = latest_vaults.get(&vault_substate_id) else {
@@ -306,7 +306,7 @@ where TSpec: WalletSdkSpec
             let mut substates = self
                 .wallet_sdk
                 .substate_api()
-                .get_substates_from_network(ids_to_fetch)
+                .get_substates_from_network(&ids_to_fetch)
                 .await?;
 
             let mut outputs = Vec::with_capacity(substates.len());
@@ -997,7 +997,7 @@ where TSpec: WalletSdkSpec
         let reads = match self
             .wallet_sdk
             .substate_api()
-            .get_each_substate_from_network(addresses.iter().cloned().map(Into::into).collect())
+            .get_each_substate_from_network(&addresses.iter().cloned().map(Into::into).collect::<Vec<_>>())
             .await
         {
             Ok(reads) => reads,

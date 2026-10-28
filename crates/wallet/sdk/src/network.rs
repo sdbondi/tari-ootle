@@ -77,7 +77,7 @@ pub trait WalletNetworkInterface {
     /// proof of each substate a committee member could prove.
     fn get_substates(
         &self,
-        substate_ids: Vec<SubstateId>,
+        substate_ids: &[SubstateId],
         include_proofs: bool,
     ) -> impl Future<Output = Result<FetchedSubstates, Self::Error>> + Send;
 

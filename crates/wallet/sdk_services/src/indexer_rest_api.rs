@@ -380,7 +380,7 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
 
     async fn get_substates(
         &self,
-        substate_ids: Vec<SubstateId>,
+        substate_ids: &[SubstateId],
         include_proofs: bool,
     ) -> Result<FetchedSubstates, Self::Error> {
         // The indexer's substates/fetch endpoint accepts at most MAX_SUBSTATES_PER_FETCH IDs per request, so
@@ -1321,7 +1321,7 @@ mod tests {
         .unwrap();
         let network = network_answering_with(body).await;
 
-        let err = network.get_substates(vec![component_id()], false).await.unwrap_err();
+        let err = network.get_substates(&[component_id()], false).await.unwrap_err();
 
         assert!(matches!(
             err,

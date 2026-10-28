@@ -365,8 +365,8 @@ where
         let ids = to_prove
             .iter()
             .map(|found| UtxoAddress::new(resource_address, found.id).into())
-            .collect();
-        let reads = match self.sdk.substate_api().get_each_substate_from_network(ids).await {
+            .collect::<Vec<_>>();
+        let reads = match self.sdk.substate_api().get_each_substate_from_network(&ids).await {
             Ok(reads) => reads,
             Err(SubstateApiError::StoreError(err)) => return Err(err.into()),
             Err(err) => {

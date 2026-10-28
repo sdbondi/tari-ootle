@@ -1879,7 +1879,7 @@ impl DeclaredInputPricing {
         let started = tokio::time::Instant::now();
         let mut interval = Duration::from_millis(250);
         let substates = loop {
-            match sdk.substate_api().get_substates_from_network(ids.clone()).await {
+            match sdk.substate_api().get_substates_from_network(&ids).await {
                 Err(SubstateApiError::SubstateUnproven { substate_id })
                     if started.elapsed() < Self::UNPROVEN_READ_RETRY_WINDOW =>
                 {
