@@ -1057,7 +1057,7 @@ impl NetworkWideStateSync {
             })
             .await?;
         for ((shard, verified, cursor), tail) in recorded.into_iter().zip(tails) {
-            let head = tail.last().map_or(verified.0, |staged| staged.state_version);
+            let head = tail.last().map_or(verified.version, |staged| staged.state_version);
             if cursor.unwrap_or(StateVersion::new(0)) != head {
                 return Err(NetworkStateSyncError::InvariantError {
                     details: format!(
@@ -1169,7 +1169,7 @@ impl NetworkWideStateSync {
         loop {
             // The progress lock is held until the snapshot is written, as `SharedSyncProgress` requires.
             let mut progress = progress.lock().await;
-            let from = progress.verified(shard).0;
+            let from = progress.verified(shard).version;
             if from >= through {
                 return Ok(());
             }
@@ -1197,7 +1197,7 @@ impl NetworkWideStateSync {
     ) -> Result<(StateVersion, Vec<PeerAddress>), NetworkStateSyncError> {
         // The progress lock is held until the snapshot is written, as `SharedSyncProgress` requires.
         let mut progress = progress.lock().await;
-        let verified = progress.verified(shard).0;
+        let verified = progress.verified(shard).version;
         progress.rewind_to_verified(shard);
         let snapshot = progress.clone();
         let peers = self
@@ -2769,7 +2769,7 @@ mod tests {
             let progress = progress.clone();
             store
                 .with_write_tx(move |tx| {
-                    let from = progress.verified(SHARD).0;
+                    let from = progress.verified(SHARD).version;
                     promote_staged(tx, SHARD, from, v(through), progress, &[], &HashSet::new())
                 })
                 .await

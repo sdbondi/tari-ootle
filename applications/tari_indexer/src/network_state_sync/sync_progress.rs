@@ -10,6 +10,8 @@ use tari_ootle_common_types::{Epoch, ShardGroup, StateVersion, shard::Shard};
 use tari_state_tree::TransitionAccumulator;
 use tokio::sync::{Mutex, MutexGuard};
 
+use crate::network_state_sync::verified_stage::AccumulatedVersion;
+
 #[serde_as]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SyncProgress {
@@ -52,12 +54,13 @@ impl SyncProgress {
         self.last_state_versions.insert(shard, (state_version, epoch));
     }
 
-    /// `shard`'s last verified version and the accumulator after it: v0 and zero for a shard nothing is verified of.
-    pub fn verified(&self, shard: Shard) -> (StateVersion, TransitionAccumulator) {
+    /// `shard`'s last verified version and the accumulator after it, or the origin for a shard nothing is verified of.
+    pub fn verified(&self, shard: Shard) -> AccumulatedVersion {
         self.verified
             .get(&shard)
-            .map_or((StateVersion::new(0), TransitionAccumulator::zero()), |verified| {
-                (verified.state_version, verified.transition_acc)
+            .map_or(AccumulatedVersion::ORIGIN, |verified| AccumulatedVersion {
+                version: verified.state_version,
+                acc: verified.transition_acc,
             })
     }
 
