@@ -551,8 +551,8 @@ where TSpec: WalletSdkSpec
         let ids = held
             .iter()
             .map(|output| SubstateId::Utxo(output.to_utxo_address()))
-            .collect();
-        let reads = substate_api.get_each_substate_from_network(ids).await?;
+            .collect::<Vec<_>>();
+        let reads = substate_api.get_each_substate_from_network(&ids).await?;
         let verify = self.sdk.sdk_config().indexer_trust.is_verify();
         for (output, (_, read)) in held.into_iter().zip(reads) {
             let address = output.to_utxo_address();
