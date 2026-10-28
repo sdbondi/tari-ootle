@@ -15,6 +15,7 @@ use log::*;
 use ootle_network::Network;
 use prost::Message;
 use tari_engine_types::{
+    SubstateVersion,
     published_template::PublishedTemplateMetadata,
     substate::{SubstateId, SubstateValue},
     transaction_receipt::TransactionReceipt,
@@ -2270,8 +2271,8 @@ struct VersionBuf {
     validator_fee_pools: Vec<SubstateData>,
     template_catalogue: Vec<(TemplateAddress, PublishedTemplateMetadata)>,
     xtr_claimed: Amount,
-    /// UTXOs this version brings up burnt.
-    burnt_utxos: HashSet<UtxoAddress>,
+    /// The UTXO versions this version burns: each is taken down as the next version comes up with no output.
+    burnt_utxos: HashSet<(UtxoAddress, SubstateVersion)>,
 }
 
 /// What committing a [`VersionBuf`] wrote, for the caller to announce once the write transaction
@@ -2390,15 +2391,16 @@ impl VersionBuf {
         Ok(buf)
     }
 
-    /// Marks each spend of a UTXO this version brings up burnt as a burn. A burn takes a version down and brings the
-    /// next one up in the same transaction, and a UTXO's versions share its shard, so both are in this version.
+    /// Marks each spend of a UTXO version whose next version this version brings up with no output as a burn. A burn
+    /// takes a version down and brings the next one up in the same transaction, and a UTXO's versions share its shard,
+    /// so both are in this version.
     fn mark_burns(&mut self) {
         if self.burnt_utxos.is_empty() {
             return;
         }
         for update in &mut self.utxos {
             if let UtxoUpdateRecord::Spent(spent) = update &&
-                self.burnt_utxos.contains(&spent.address)
+                self.burnt_utxos.contains(&(spent.address.clone(), spent.version))
             {
                 *update = UtxoUpdateRecord::Burnt(spent.clone());
             }
@@ -2538,7 +2540,9 @@ impl VersionBuf {
                                     })));
                                 },
                                 None => {
-                                    self.burnt_utxos.insert(address);
+                                    if let Some(burnt) = update.version().previous() {
+                                        self.burnt_utxos.insert((address, burnt));
+                                    }
                                 },
                             }
                         } else {
@@ -2650,7 +2654,7 @@ mod tests {
     }
 
     mod burns {
-        use tari_engine_types::{SubstateVersion, Utxo, UtxoOutput};
+        use tari_engine_types::{Utxo, UtxoOutput};
         use tari_ootle_storage::consensus_models::{SubstateCreate, SubstateDestroy, SubstateValueOrHash};
 
         use super::*;
@@ -2713,6 +2717,30 @@ mod tests {
                     buf.utxos[0]
                 );
             }
+        }
+
+        /// Only the version taken down by the burn is burnt when an unfreeze and a burn share a state version.
+        #[test]
+        fn a_burn_marks_only_the_version_it_takes_down() {
+            let (address, output) = output();
+
+            let buf = sorted(vec![
+                down(&address, 0),
+                up(&address, 1, Some(output)),
+                down(&address, 1),
+                up(&address, 2, None),
+            ]);
+
+            let downs = buf
+                .utxos
+                .iter()
+                .filter_map(|update| match update {
+                    UtxoUpdateRecord::Spent(spent) => Some((false, spent.version)),
+                    UtxoUpdateRecord::Burnt(burnt) => Some((true, burnt.version)),
+                    UtxoUpdateRecord::Unspent(_) => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(downs, [(false, SubstateVersion::ZERO), (true, SubstateVersion::new(1))]);
         }
 
         /// A freeze takes the output's version down and brings the next one up with the output.
