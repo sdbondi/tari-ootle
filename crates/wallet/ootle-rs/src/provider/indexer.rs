@@ -256,6 +256,7 @@ impl<Wallet> IndexerProvider<Wallet> {
                 .get_utxos(GetUtxosRequest {
                     resource_address,
                     tag_and_nonce_pairs: chunk.to_vec(),
+                    unspent_at: Vec::new(),
                 })
                 .await?;
             for (id, utxo) in resp.utxos {

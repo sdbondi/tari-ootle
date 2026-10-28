@@ -58,6 +58,7 @@ use tari_ootle_wallet_sdk::{
     network::{
         FetchedSubstates,
         FetchedUtxos,
+        PlacedTagAndNoncePair,
         SubstateQueryResult,
         TransactionFinalizedNotification,
         TransactionFinalizedResult,
@@ -67,12 +68,7 @@ use tari_ootle_wallet_sdk::{
         WalletNetworkInterface,
     },
 };
-use tari_template_lib_types::{
-    ResourceAddress,
-    TemplateAddress,
-    UtxoId,
-    crypto::{RistrettoPublicKeyBytes, UtxoTag},
-};
+use tari_template_lib_types::{ResourceAddress, TemplateAddress, UtxoId, crypto::RistrettoPublicKeyBytes};
 use time::{OffsetDateTime, PrimitiveDateTime};
 use url::ParseError;
 
@@ -645,9 +641,13 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
     async fn fetch_utxos(
         &self,
         resource_address: ResourceAddress,
-        tag_and_nonce_pairs: Vec<(UtxoTag, RistrettoPublicKeyBytes)>,
+        tag_and_nonce_pairs: Vec<PlacedTagAndNoncePair>,
     ) -> Result<FetchedUtxos, Self::Error> {
         let client = self.tracked_client();
+        let (tag_and_nonce_pairs, mut unspent_at): (Vec<_>, Vec<_>) = tag_and_nonce_pairs.into_iter().unzip();
+        if unspent_at.iter().all(Option::is_none) {
+            unspent_at.clear();
+        }
         // TODO: Given the potential size of substates protobuf, json + hex encoding may be too inefficient. Consider
         // supporting the application/x-protobuf content type in the indexer REST API.
         self.observe_read(
@@ -655,6 +655,7 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
             client.get_utxos(GetUtxosRequest {
                 resource_address,
                 tag_and_nonce_pairs,
+                unspent_at,
             }),
             |resp| {
                 let unspent = resp

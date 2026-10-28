@@ -904,6 +904,13 @@ pub struct GetUtxosRequest {
     pub tag_and_nonce_pairs: Vec<(UtxoTag, RistrettoPublicKeyBytes)>,
     #[cfg_attr(feature = "utoipa", schema(value_type = String))]
     pub resource_address: ResourceAddress,
+    /// Empty, or for each pair of `tag_and_nonce_pairs` in order, the shard and state version the client saw its UTXO
+    /// unspent at, or `null` when it does not know them. A pair with no unspent UTXO is reported in `spent` once this
+    /// indexer has indexed its shard through that state version, as this indexer keeps every unspent UTXO.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(optional, as = "Option<_>"))]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Vec<Option<(u32, u64)>>))]
+    pub unspent_at: Vec<Option<(Shard, StateVersion)>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

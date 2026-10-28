@@ -174,7 +174,10 @@ where
                 if tag_and_nonce_to_view_key_map.is_empty() {
                     continue;
                 }
-                let tag_and_nonce_pairs = tag_and_nonce_to_view_key_map.keys().copied().collect();
+                let tag_and_nonce_pairs = tag_and_nonce_to_view_key_map
+                    .keys()
+                    .map(|pair| (*pair, queued.get(pair).and_then(|queued| queued.unspent_at)))
+                    .collect();
 
                 // TODO(perf): we should check if any UTXOs are already known (by tag and nonce?) because we
                 // created/spent them locally, and skip querying those. This would also avoid having to deal with this

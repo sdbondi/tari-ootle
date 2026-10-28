@@ -121,6 +121,29 @@ enum EventRange {
 }
 
 impl SqliteStoreReadTransaction<'_> {
+    /// The distinct tag and nonce pairs of the rows `query` matches.
+    fn utxo_tag_and_nonce_pairs(
+        &mut self,
+        operation: &str,
+        query: crate::storage_sqlite::schema::utxos::BoxedQuery<'_, diesel::sqlite::Sqlite>,
+    ) -> Result<Vec<(UtxoTag, RistrettoPublicKeyBytes)>, StorageError> {
+        use crate::storage_sqlite::schema::utxos;
+
+        let rows = query
+            .select((utxos::utxo_tag, utxos::public_nonce))
+            .distinct()
+            .get_results::<(Option<i32>, Option<String>)>(self.connection())
+            .map_err(|e| StorageError::QueryError {
+                reason: format!("{operation}: {}", e),
+            })?;
+
+        // The queries match on both columns, so neither is NULL in a returned row.
+        rows.into_iter()
+            .filter_map(|(tag, public_nonce)| Some((tag?, public_nonce?)))
+            .map(|(tag, public_nonce)| Ok((UtxoTag::new(tag as u32), deserialize_hex_try_from(public_nonce)?)))
+            .collect()
+    }
+
     fn query_events(
         &mut self,
         query: &EventQuery,
@@ -955,27 +978,24 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
         Ok(utxos)
     }
 
+    fn utxos_get_unspent_public_nonce_and_tag(
+        &mut self,
+        resource_address: &ResourceAddress,
+        tag_and_nonce_pairs: &[(UtxoTag, RistrettoPublicKeyBytes)],
+    ) -> Result<Vec<(UtxoTag, RistrettoPublicKeyBytes)>, StorageError> {
+        const OPERATION: &str = "utxos_get_unspent_public_nonce_and_tag";
+        let query = unspent_utxos_by_tag_and_nonce_query(resource_address, tag_and_nonce_pairs);
+        self.utxo_tag_and_nonce_pairs(OPERATION, query)
+    }
+
     fn utxos_get_spent_public_nonce_and_tag(
         &mut self,
         resource_address: &ResourceAddress,
         tag_and_nonce_pairs: &[(UtxoTag, RistrettoPublicKeyBytes)],
     ) -> Result<Vec<(UtxoTag, RistrettoPublicKeyBytes)>, StorageError> {
         const OPERATION: &str = "utxos_get_spent_public_nonce_and_tag";
-        use crate::storage_sqlite::schema::utxos;
-
-        let rows = spent_utxos_by_tag_and_nonce_query(resource_address, tag_and_nonce_pairs)
-            .select((utxos::utxo_tag, utxos::public_nonce))
-            .distinct()
-            .get_results::<(Option<i32>, Option<String>)>(self.connection())
-            .map_err(|e| StorageError::QueryError {
-                reason: format!("{OPERATION}: {}", e),
-            })?;
-
-        // The query matches on both columns, so neither is NULL in a returned row.
-        rows.into_iter()
-            .filter_map(|(tag, public_nonce)| Some((tag?, public_nonce?)))
-            .map(|(tag, public_nonce)| Ok((UtxoTag::new(tag as u32), deserialize_hex_try_from(public_nonce)?)))
-            .collect()
+        let query = spent_utxos_by_tag_and_nonce_query(resource_address, tag_and_nonce_pairs);
+        self.utxo_tag_and_nonce_pairs(OPERATION, query)
     }
 
     fn utxo_tombstone_horizon(&mut self, shard: Shard) -> Result<Option<StateVersion>, StorageError> {

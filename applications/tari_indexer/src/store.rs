@@ -204,6 +204,13 @@ pub trait IndexerStoreReadTransaction {
         public_nonce_and_tag: &[(UtxoTag, RistrettoPublicKeyBytes)],
     ) -> Result<Vec<(UtxoId, Encoded<Utxo>)>, StorageError>;
 
+    /// The pairs of `public_nonce_and_tag` with an unspent UTXO.
+    fn utxos_get_unspent_public_nonce_and_tag(
+        &mut self,
+        resource_address: &ResourceAddress,
+        public_nonce_and_tag: &[(UtxoTag, RistrettoPublicKeyBytes)],
+    ) -> Result<Vec<(UtxoTag, RistrettoPublicKeyBytes)>, StorageError>;
+
     /// The pairs of `public_nonce_and_tag` whose UTXO is spent or burnt.
     fn utxos_get_spent_public_nonce_and_tag(
         &mut self,

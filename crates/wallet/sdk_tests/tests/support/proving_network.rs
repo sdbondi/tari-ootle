@@ -35,13 +35,13 @@ use tari_ootle_wallet_sdk::{
     network::{
         FetchedSubstates,
         FetchedUtxos,
+        PlacedTagAndNoncePair,
         SubstateQueryResult,
         TransactionFinalizedStream,
         TransactionQueryResult,
         UtxoUpdateStream,
         WalletNetworkInterface,
     },
-    storage::TagAndPublicNoncePair,
 };
 use tari_template_abi::TemplateDef;
 use tari_template_lib::types::{ResourceAddress, TemplateAddress, UtxoId};
@@ -443,8 +443,12 @@ impl WalletNetworkInterface for ProvingNetwork {
     async fn fetch_utxos(
         &self,
         _resource_address: ResourceAddress,
-        tag_and_nonce_pairs: Vec<TagAndPublicNoncePair>,
+        tag_and_nonce_pairs: Vec<PlacedTagAndNoncePair>,
     ) -> Result<FetchedUtxos, Self::Error> {
+        let tag_and_nonce_pairs = tag_and_nonce_pairs
+            .into_iter()
+            .map(|(pair, _)| pair)
+            .collect::<Vec<_>>();
         let state = self.state.lock().unwrap();
         let unspent = state
             .indexed_utxos

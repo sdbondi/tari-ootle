@@ -3,7 +3,10 @@
 
 mod support;
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use futures::StreamExt;
 use tari_engine_types::{Epoch, Utxo, substate::SubstateId};
@@ -17,18 +20,11 @@ use tari_ootle_common_types::{
 };
 use tari_ootle_transaction::{Transaction, TransactionEnvelope, TransactionId};
 use tari_ootle_wallet_sdk::{
-    models::{
-        AccountWithAddress,
-        EndOfShard,
-        StartOfShard,
-        UtxoUnspent,
-        UtxoUpdatePayload,
-        WalletEvent,
-        WalletUtxoUpdate,
-    },
+    models::{AccountWithAddress, StartOfShard, UtxoUnspent, UtxoUpdatePayload, WalletEvent, WalletUtxoUpdate},
     network::{
         FetchedSubstates,
         FetchedUtxos,
+        PlacedTagAndNoncePair,
         SubstateQueryResult,
         TransactionFinalizedStream,
         TransactionQueryResult,
@@ -84,15 +80,15 @@ impl TransactionStatusResponseError for FakeError {
 
 #[derive(Debug, Default)]
 struct UtxoNetworkState {
-    /// The UTXOs streamed as unspent in shard 1 at state version 1.
+    /// The UTXOs streamed as unspent in shard 0 at state version 1.
     streamed: Vec<(UtxoId, Utxo)>,
     /// The UTXOs the full-UTXO lookup returns.
     indexed: Vec<(UtxoId, Utxo)>,
     /// The pairs the full-UTXO lookup reports spent.
     spent: Vec<TagAndPublicNoncePair>,
-    /// Whether the stream flags shard 1 as possibly lacking spends below the cursor it resumes from, and reads nothing
-    /// past it.
-    spends_incomplete: bool,
+    /// The state version the full-UTXO lookup has indexed each shard through. A requested pair placed at or below it
+    /// that the lookup does not return is reported spent.
+    indexed_through: HashMap<Shard, StateVersion>,
 }
 
 /// An indexer whose UTXO stream and full-UTXO lookup can disagree, as two indexers at different heights do.
@@ -114,8 +110,12 @@ impl UtxoNetwork {
         self.state.lock().unwrap().spent.push(tag_and_nonce(utxo));
     }
 
-    fn flag_spends_incomplete(&self) {
-        self.state.lock().unwrap().spends_incomplete = true;
+    fn index_through(&self, shard: u32, state_version: u64) {
+        self.state
+            .lock()
+            .unwrap()
+            .indexed_through
+            .insert(Shard::from(shard), StateVersion::from(state_version));
     }
 }
 
@@ -172,26 +172,7 @@ impl WalletNetworkInterface for UtxoNetwork {
         shard_state_versions: Vec<(Shard, StateVersion)>,
         _unspent_only: bool,
     ) -> Result<UtxoUpdateStream<Self::Error>, Self::Error> {
-        let shard = Shard::from(1u32);
-        if self.state.lock().unwrap().spends_incomplete {
-            let cursor = shard_state_versions
-                .iter()
-                .find(|(s, _)| *s == shard)
-                .map_or_else(StateVersion::zero, |(_, v)| *v);
-            let payload = UtxoUpdatePayload {
-                sos: Some(StartOfShard {
-                    shard,
-                    max_state_version: cursor,
-                    has_more: false,
-                    spends_incomplete: true,
-                }),
-                update: None,
-                eos: Some(EndOfShard {
-                    max_state_version: cursor,
-                }),
-            };
-            return Ok(futures::stream::iter([Ok(payload)]).boxed());
-        }
+        let shard = Shard::from(0u32);
         let synced = shard_state_versions
             .iter()
             .any(|(s, v)| *s == shard && *v >= StateVersion::from(1));
@@ -235,23 +216,33 @@ impl WalletNetworkInterface for UtxoNetwork {
     async fn fetch_utxos(
         &self,
         _resource_address: ResourceAddress,
-        tag_and_nonce_pairs: Vec<TagAndPublicNoncePair>,
+        tag_and_nonce_pairs: Vec<PlacedTagAndNoncePair>,
     ) -> Result<FetchedUtxos, Self::Error> {
         let state = self.state.lock().unwrap();
-        Ok(FetchedUtxos {
-            unspent: state
-                .indexed
-                .iter()
-                .filter(|(_, utxo)| tag_and_nonce_pairs.contains(&tag_and_nonce(utxo)))
-                .cloned()
-                .collect(),
-            spent: state
-                .spent
-                .iter()
-                .filter(|pair| tag_and_nonce_pairs.contains(pair))
-                .copied()
-                .collect(),
-        })
+        let requested =
+            |pair: &TagAndPublicNoncePair| tag_and_nonce_pairs.iter().any(|(requested, _)| requested == pair);
+        let unspent = state
+            .indexed
+            .iter()
+            .filter(|(_, utxo)| requested(&tag_and_nonce(utxo)))
+            .cloned()
+            .collect::<Vec<_>>();
+        let held = unspent.iter().map(|(_, utxo)| tag_and_nonce(utxo)).collect::<Vec<_>>();
+        let gone = tag_and_nonce_pairs
+            .iter()
+            .filter(|(pair, unspent_at)| {
+                !held.contains(pair) &&
+                    !state.spent.contains(pair) &&
+                    unspent_at.is_some_and(|(shard, state_version)| {
+                        state
+                            .indexed_through
+                            .get(&shard)
+                            .is_some_and(|indexed_through| *indexed_through >= state_version)
+                    })
+            })
+            .map(|(pair, _)| *pair);
+        let spent = state.spent.iter().copied().filter(requested).chain(gone).collect();
+        Ok(FetchedUtxos { unspent, spent })
     }
 
     async fn get_latest_epoch_checkpoint(&self, _shard: Shard) -> Result<EpochCheckpointEntry, Self::Error> {
@@ -452,18 +443,6 @@ fn queue_at(test: &Test, account: &AccountWithAddress, utxo: &Utxo, unspent_at: 
         .unwrap();
 }
 
-/// Stores `cursor` as the account's scan cursor of shard 1.
-fn set_cursor(test: &Test, account: &AccountWithAddress, cursor: u64) {
-    test.store()
-        .with_write_tx(|tx| {
-            tx.shard_state_version_set_many(account.account.component_address(), &STEALTH_TARI_RESOURCE_ADDRESS, [(
-                Shard::from(1u32),
-                StateVersion::from(cursor),
-            )])
-        })
-        .unwrap();
-}
-
 fn second_account(test: &Test) -> AccountWithAddress {
     let address = test.sdk().key_manager_api().next_account_address().unwrap();
     test.sdk()
@@ -472,121 +451,88 @@ fn second_account(test: &Test) -> AccountWithAddress {
         .unwrap()
 }
 
+async fn recover(test: &Test) -> usize {
+    UtxoRecovery::new(test.sdk().clone())
+        .process_utxo_validation_queue()
+        .await
+        .unwrap()
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn a_pair_placed_at_the_flagged_cursor_that_the_indexer_does_not_know_leaves_the_queue() {
+async fn a_utxo_the_lookup_has_indexed_past_and_does_not_hold_leaves_the_queue() {
     let network = UtxoNetwork::default();
     let (test, account) = new_test(network.clone());
-    let (_, utxo) = test.owned_utxo(&account, 100);
-    queue_at(&test, &account, &utxo, Some((1, 3)));
-    set_cursor(&test, &account, 3);
-    network.flag_spends_incomplete();
-
+    let (id, utxo) = test.owned_utxo(&account, 100);
+    network.stream((id, utxo));
     scan(&test, &account).await;
+    assert_eq!(queued(&test), 1);
+    network.index_through(0, 1);
+
+    assert_eq!(recover(&test).await, 0);
     assert_eq!(
         queued(&test),
         0,
-        "an output unspent at or below a cursor the indexer resumed below its tombstone horizon, and now unknown, is \
-         spent"
+        "an output streamed unspent at a version the lookup has indexed through, and not held unspent, is spent"
     );
+    assert!(!is_stored(&test, id));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_pair_in_a_shard_the_stream_does_not_flag_stays_queued() {
-    let network = UtxoNetwork::default();
-    let (test, account) = new_test(network.clone());
-    let (_, utxo) = test.owned_utxo(&account, 100);
-    queue_at(&test, &account, &utxo, Some((1, 3)));
-    set_cursor(&test, &account, 3);
-
-    scan(&test, &account).await;
-    assert_eq!(queued(&test), 1);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_pair_placed_above_the_flagged_cursor_stays_queued() {
+async fn a_utxo_in_a_shard_the_lookup_has_not_indexed_through_its_version_stays_queued() {
     let network = UtxoNetwork::default();
     let (test, account) = new_test(network.clone());
     let (_, utxo) = test.owned_utxo(&account, 100);
     queue_at(&test, &account, &utxo, Some((1, 4)));
-    set_cursor(&test, &account, 3);
-    network.flag_spends_incomplete();
+    network.index_through(1, 3);
 
-    scan(&test, &account).await;
-    assert_eq!(
-        queued(&test),
-        1,
-        "the indexer's horizon may be below a version above the cursor it resumed from"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_pair_the_indexer_serves_stays_queued_for_recovery() {
-    let network = UtxoNetwork::default();
-    let (test, account) = new_test(network.clone());
-    let (id, utxo) = test.owned_utxo(&account, 100);
-    network.index((id, utxo.clone()));
-    queue_at(&test, &account, &utxo, Some((1, 3)));
-    set_cursor(&test, &account, 3);
-    network.flag_spends_incomplete();
-
-    scan(&test, &account).await;
+    assert_eq!(recover(&test).await, 1);
     assert_eq!(queued(&test), 1);
-
-    let num_unresolved = UtxoRecovery::new(test.sdk().clone())
-        .process_utxo_validation_queue()
-        .await
-        .unwrap();
-    assert_eq!(num_unresolved, 0);
-    assert!(is_stored(&test, id));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_pair_with_an_unknown_placement_stays_queued() {
+async fn a_utxo_with_an_unknown_placement_stays_queued() {
     let network = UtxoNetwork::default();
     let (test, account) = new_test(network.clone());
     let (_, utxo) = test.owned_utxo(&account, 100);
     queue_at(&test, &account, &utxo, None);
-    set_cursor(&test, &account, 3);
-    network.flag_spends_incomplete();
+    network.index_through(1, 100);
 
-    scan(&test, &account).await;
+    assert_eq!(recover(&test).await, 1);
     assert_eq!(queued(&test), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_pair_queued_for_two_accounts_in_two_shards_stays_queued() {
+async fn a_utxo_queued_again_in_its_shard_is_placed_at_the_later_version() {
+    let network = UtxoNetwork::default();
+    let (test, account) = new_test(network.clone());
+    let (_, utxo) = test.owned_utxo(&account, 100);
+    queue_at(&test, &account, &utxo, Some((1, 4)));
+    queue_at(&test, &account, &utxo, Some((1, 2)));
+    network.index_through(1, 3);
+
+    assert_eq!(recover(&test).await, 1);
+    assert_eq!(queued(&test), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_utxo_queued_for_two_accounts_in_two_shards_stays_queued() {
     let network = UtxoNetwork::default();
     let (test, account) = new_test(network.clone());
     let other = second_account(&test);
     let (_, utxo) = test.owned_utxo(&account, 100);
     queue_at(&test, &other, &utxo, Some((2, 1)));
     queue_at(&test, &account, &utxo, Some((1, 1)));
-    set_cursor(&test, &account, 3);
-    network.flag_spends_incomplete();
+    network.index_through(1, 5);
 
-    scan(&test, &account).await;
+    assert_eq!(recover(&test).await, 1);
     assert_eq!(
         test.store()
             .with_read_tx(|tx| tx.utxo_process_queue_fetch_batch(None, 1000))
             .unwrap()
             .len(),
         1,
-        "the other account's entry may be in a shard the indexer has not indexed yet"
+        "the other account's entry may be in a shard the lookup has not indexed yet"
     );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_pair_queued_again_in_its_shard_is_placed_at_the_later_version() {
-    let network = UtxoNetwork::default();
-    let (test, account) = new_test(network.clone());
-    let (_, utxo) = test.owned_utxo(&account, 100);
-    queue_at(&test, &account, &utxo, Some((1, 4)));
-    queue_at(&test, &account, &utxo, Some((1, 2)));
-    set_cursor(&test, &account, 3);
-    network.flag_spends_incomplete();
-
-    scan(&test, &account).await;
-    assert_eq!(queued(&test), 1);
 }
 
 #[test]
@@ -594,8 +540,8 @@ fn a_batch_places_a_pair_by_every_queued_entry_of_it_beyond_the_batch() {
     let (test, account) = new_test(UtxoNetwork::default());
     let other = second_account(&test);
     let (_, utxo) = test.owned_utxo(&account, 100);
-    queue_at(&test, &account, &utxo, Some((0, 1)));
-    queue_at(&test, &other, &utxo, Some((1, 100)));
+    queue_at(&test, &account, &utxo, Some((1, 1)));
+    queue_at(&test, &other, &utxo, Some((2, 100)));
 
     let batch = test
         .store()

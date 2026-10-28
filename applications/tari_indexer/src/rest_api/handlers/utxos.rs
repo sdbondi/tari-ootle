@@ -134,9 +134,14 @@ pub async fn fetch_utxos(
     if req.tag_and_nonce_pairs.len() > 1000 {
         return Err(ErrorResponse::bad_request("cannot query more than 1000 UTXOs"));
     }
+    if !req.unspent_at.is_empty() && req.unspent_at.len() != req.tag_and_nonce_pairs.len() {
+        return Err(ErrorResponse::bad_request(
+            "unspent_at must be empty or hold one entry for each tag and nonce pair",
+        ));
+    }
     let (utxos, spent) = context
         .substate_manager()
-        .fetch_utxos(&req.resource_address, &req.tag_and_nonce_pairs)
+        .fetch_utxos(&req.resource_address, &req.tag_and_nonce_pairs, &req.unspent_at)
         .await
         .map_err(ErrorResponse::anyhow)?;
 

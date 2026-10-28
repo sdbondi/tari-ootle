@@ -20,13 +20,14 @@ use tari_ootle_wallet_sdk::{
     network::{
         FetchedSubstates,
         FetchedUtxos,
+        PlacedTagAndNoncePair,
         SubstateQueryResult,
         TransactionFinalizedStream,
         TransactionQueryResult,
         UtxoUpdateStream,
         WalletNetworkInterface,
     },
-    storage::{ReadableWalletStore, TagAndPublicNoncePair, WalletStoreReader},
+    storage::{ReadableWalletStore, WalletStoreReader},
 };
 use tari_ootle_wallet_sdk_services::{notify::Notify, utxo_scanner::UtxoScanner};
 use tari_template_abi::TemplateDef;
@@ -110,7 +111,7 @@ impl WalletNetworkInterface for ScriptedUtxoNetwork {
     async fn fetch_utxos(
         &self,
         _: ResourceAddress,
-        _: Vec<TagAndPublicNoncePair>,
+        _: Vec<PlacedTagAndNoncePair>,
     ) -> Result<FetchedUtxos, Self::Error> {
         panic!("ScriptedUtxoNetwork::fetch_utxos called")
     }
