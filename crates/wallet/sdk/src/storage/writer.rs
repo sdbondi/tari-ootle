@@ -390,8 +390,8 @@ pub trait WalletStoreWriter: CommittableStore {
         shards: I,
     ) -> Result<(), WalletStorageError>;
 
-    /// Queues each UTXO for recovery. A UTXO already queued for the account keeps one entry: it is unspent at the
-    /// higher state version when both name the same shard, and at an unknown version otherwise.
+    /// Queues each UTXO for recovery. A UTXO already queued for the account keeps one entry, unspent where
+    /// [`QueuedUtxo::merge_unspent_at`] places both.
     fn utxo_process_queue_extend<I: IntoIterator<Item = (UtxoUnspent, QueuedUtxo)>>(
         &mut self,
         resource_address: &ResourceAddress,

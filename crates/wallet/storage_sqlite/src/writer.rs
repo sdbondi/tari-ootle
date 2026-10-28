@@ -3029,9 +3029,7 @@ impl WalletStoreWriter for WriteTransaction<'_> {
                 .map_err(|e| WalletStorageError::general(OPERATION, e))?;
             let utxo_tag = unspent.tag.value() as i32;
             let public_nonce = serialize_hex(unspent.public_nonce);
-            let unspent_at = queued
-                .unspent_at
-                .map(|(shard, state_version)| (shard.as_u32() as i32, state_version.as_u64()));
+            let unspent_at = queued.unspent_at;
 
             let entry = utxo_process_queue::table
                 .filter(utxo_process_queue::account_id.eq(account_id))
@@ -3055,25 +3053,24 @@ impl WalletStoreWriter for WriteTransaction<'_> {
                             utxo_process_queue::utxo_tag.eq(utxo_tag),
                             utxo_process_queue::public_nonce.eq(public_nonce),
                             utxo_process_queue::resource_address.eq(resource_address.to_string()),
-                            utxo_process_queue::shard.eq(unspent_at.map(|(shard, _)| shard)),
-                            utxo_process_queue::state_version.eq(unspent_at.map(|(_, version)| version as i64)),
+                            utxo_process_queue::shard.eq(unspent_at.map(|(shard, _)| shard.as_u32() as i32)),
+                            utxo_process_queue::state_version
+                                .eq(unspent_at.map(|(_, version)| version.as_u64() as i64)),
                         ))
                         .execute(self.connection())
                         .map_err(|e| WalletStorageError::general(OPERATION, e))?;
                 },
                 Some((id, shard, state_version)) => {
-                    let held = shard.zip(state_version.map(|version| version as u64));
-                    let merged = match (held, unspent_at) {
-                        (Some((held_shard, held_version)), Some((shard, version))) if held_shard == shard => {
-                            Some((shard, held_version.max(version)))
-                        },
-                        _ => None,
-                    };
+                    let held = shard
+                        .zip(state_version)
+                        .map(|(shard, version)| (Shard::from(shard as u32), StateVersion::new(version as u64)));
+                    let merged = QueuedUtxo::merge_unspent_at(held, unspent_at);
                     if merged != held {
                         diesel::update(utxo_process_queue::table.filter(utxo_process_queue::id.eq(id)))
                             .set((
-                                utxo_process_queue::shard.eq(merged.map(|(shard, _)| shard)),
-                                utxo_process_queue::state_version.eq(merged.map(|(_, version)| version as i64)),
+                                utxo_process_queue::shard.eq(merged.map(|(shard, _)| shard.as_u32() as i32)),
+                                utxo_process_queue::state_version
+                                    .eq(merged.map(|(_, version)| version.as_u64() as i64)),
                             ))
                             .execute(self.connection())
                             .map_err(|e| WalletStorageError::general(OPERATION, e))?;

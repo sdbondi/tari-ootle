@@ -10,7 +10,7 @@ pub struct UtxoProcessQueue {
     pub resource_address: String,
     pub utxo_tag: i32,
     pub public_nonce: String,
-    pub shard: Option<i32>,
-    pub state_version: Option<i64>,
+    pub _shard: Option<i32>,
+    pub _state_version: Option<i64>,
     pub _created_at: time::PrimitiveDateTime,
 }

@@ -460,8 +460,8 @@ async fn a_utxo_queued_again_in_its_shard_is_unspent_at_the_later_version() {
     let network = UtxoNetwork::default();
     let (test, account) = new_test(network.clone());
     let (_, utxo) = test.owned_utxo(&account, 100);
-    queue_at(&test, &account, &utxo, 0, 1);
     queue_at(&test, &account, &utxo, 0, 3);
+    queue_at(&test, &account, &utxo, 0, 1);
     network.prune_tombstones(Shard::from(0u32), StateVersion::from(2));
 
     let num_unresolved = UtxoRecovery::new(test.sdk().clone())
@@ -513,4 +513,53 @@ async fn a_utxo_streamed_above_the_tombstone_horizon_stays_queued() {
     let num_unresolved = recovery.process_utxo_validation_queue().await.unwrap();
     assert_eq!(num_unresolved, 0);
     assert!(is_stored(&test, id));
+}
+
+fn second_account(test: &Test) -> AccountWithAddress {
+    let address = test.sdk().key_manager_api().next_account_address().unwrap();
+    test.sdk()
+        .accounts_api()
+        .create_account(Some("second"), false, address)
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_utxo_queued_for_two_accounts_in_two_shards_is_unspent_at_an_unknown_version() {
+    let network = UtxoNetwork::default();
+    let (test, account) = new_test(network.clone());
+    let other = second_account(&test);
+    let (_, utxo) = test.owned_utxo(&account, 100);
+    queue_at(&test, &other, &utxo, 1, 100);
+    queue_at(&test, &account, &utxo, 0, 1);
+    network.prune_tombstones(Shard::from(0u32), StateVersion::from(1));
+
+    let num_unresolved = UtxoRecovery::new(test.sdk().clone())
+        .process_utxo_validation_queue()
+        .await
+        .unwrap();
+    assert_eq!(num_unresolved, 1);
+    assert_eq!(
+        test.store()
+            .with_read_tx(|tx| tx.utxo_process_queue_fetch_batch(None, 1000))
+            .unwrap()
+            .len(),
+        1,
+        "the other account's entry may be in a shard the indexer has not indexed yet"
+    );
+}
+
+#[test]
+fn a_batch_places_a_pair_by_every_queued_entry_of_it_beyond_the_batch() {
+    let (test, account) = new_test(UtxoNetwork::default());
+    let other = second_account(&test);
+    let (_, utxo) = test.owned_utxo(&account, 100);
+    queue_at(&test, &account, &utxo, 0, 1);
+    queue_at(&test, &other, &utxo, 1, 100);
+
+    let batch = test
+        .store()
+        .with_read_tx(|tx| tx.utxo_process_queue_fetch_batch(None, 1))
+        .unwrap();
+    let queued = batch.entries[&STEALTH_TARI_RESOURCE_ADDRESS][&tag_and_nonce(&utxo)];
+    assert_eq!(queued.unspent_at, None);
 }

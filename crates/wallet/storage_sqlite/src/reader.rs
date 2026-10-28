@@ -2003,6 +2003,29 @@ impl WalletStoreReader for ReadTransaction<'_> {
             .get_results::<(models::UtxoProcessQueue, String)>(self.connection())
             .map_err(|e| WalletStorageError::general(OPERATION, e))?;
 
+        // Every queued row of the batch's pairs, of any account and in any batch
+        let pair_rows = utxo_process_queue::table
+            .select((
+                utxo_process_queue::resource_address,
+                utxo_process_queue::utxo_tag,
+                utxo_process_queue::public_nonce,
+                utxo_process_queue::shard,
+                utxo_process_queue::state_version,
+            ))
+            .filter(utxo_process_queue::public_nonce.eq_any(rows.iter().map(|(row, _)| &row.public_nonce)))
+            .get_results::<(String, i32, String, Option<i32>, Option<i64>)>(self.connection())
+            .map_err(|e| WalletStorageError::general(OPERATION, e))?;
+        let mut pair_unspent_at = HashMap::<(String, i32, String), Option<(Shard, StateVersion)>>::new();
+        for (resource_address, tag, public_nonce, shard, state_version) in pair_rows {
+            let unspent_at = shard
+                .zip(state_version)
+                .map(|(shard, state_version)| (Shard::from(shard as u32), StateVersion::new(state_version as u64)));
+            pair_unspent_at
+                .entry((resource_address, tag, public_nonce))
+                .and_modify(|merged| *merged = QueuedUtxo::merge_unspent_at(*merged, unspent_at))
+                .or_insert(unspent_at);
+        }
+
         let mut result = HashMap::new();
         for (row, account_addr) in &rows {
             let resource_address =
@@ -2018,10 +2041,10 @@ impl WalletStoreReader for ReadTransaction<'_> {
                 item: "account_address",
                 details: format!("Corrupt db: invalid account address '{}': {}", account_addr, e),
             })?;
-            let unspent_at = row
-                .shard
-                .zip(row.state_version)
-                .map(|(shard, state_version)| (Shard::from(shard as u32), StateVersion::new(state_version as u64)));
+            let unspent_at = pair_unspent_at
+                .get(&(row.resource_address.clone(), row.utxo_tag, row.public_nonce.clone()))
+                .copied()
+                .flatten();
             result
                 .entry(resource_address)
                 .or_insert_with(HashMap::new)
