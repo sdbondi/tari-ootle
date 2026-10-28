@@ -320,6 +320,9 @@ CREATE TABLE utxo_process_queue
 CREATE UNIQUE INDEX utxo_process_queue_account_resource_tag_nonce_uniq
     ON utxo_process_queue (account_id, resource_address, utxo_tag, public_nonce);
 
+-- Serves the lookup of every account's queued rows of a batch's pairs
+CREATE INDEX utxo_process_queue_public_nonce_idx ON utxo_process_queue (public_nonce);
+
 CREATE TABLE wallet_events
 (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
