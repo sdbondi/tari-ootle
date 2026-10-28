@@ -842,12 +842,10 @@ pub(crate) mod tests {
     /// UTXO under the write lock on each pass, including the common one that prunes nothing.
     #[tokio::test]
     async fn tombstone_prune_select_is_served_by_the_spent_epoch_index() {
+        use crate::storage_sqlite::writer::spent_utxos_before_epoch_query;
+
         let (_dir, store) = temp_store().await;
-        let plan = query_plan(
-            &store,
-            r#"select id, shard, state_version from utxos where "utxos"."is_spent" = true and epoch < 100 order by epoch asc limit 500"#,
-        )
-        .await;
+        let plan = query_plan(&store, sql_of(&spent_utxos_before_epoch_query(Epoch(100), 500))).await;
 
         assert!(
             plan.contains("utxos_spent_epoch_idx"),

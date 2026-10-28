@@ -671,9 +671,10 @@ impl<T: IndexerStoreReader> ReadOnlyStore<T> {
     /// A shard's UTXO updates past `from_state_version`, with the shard's tombstone horizon read in the same
     /// transaction, so that no tombstone the read lacks is pruned below a horizon it does not report.
     ///
-    /// A read that reaches the end of the shard's rows reports at least the horizon as its `max_state_version`. Every
-    /// row at or below the horizon was committed with it, so the read has seen them all, and it lets a client whose
-    /// resource has no rows near the horizon resume from above it.
+    /// A read that reaches the end of the resource's rows in the shard reports at least the shard's last verified
+    /// version, and its horizon, as its `max_state_version`. Every row of the shard at or below the verified version
+    /// was promoted with it, so the read has seen them all. A client of a resource that is quiet in the shard then
+    /// resumes above every tombstone of other resources there, and pruning one does not flag it.
     pub async fn get_utxo_updates(
         &self,
         resource_address: ResourceAddress,
@@ -694,10 +695,14 @@ impl<T: IndexerStoreReader> ReadOnlyStore<T> {
                     limit,
                 )?;
                 let horizon = tx.utxo_tombstone_horizon(shard)?;
-                if !updates.has_more &&
-                    let Some(horizon) = horizon
-                {
-                    updates.max_state_version = updates.max_state_version.max(horizon);
+                if !updates.has_more {
+                    let verified = tx
+                        .key_value_get_value::<_, SyncProgress>(Key::SyncProgress)
+                        .optional()?
+                        .map(|progress| progress.verified(shard).version);
+                    for bound in [verified, horizon].into_iter().flatten() {
+                        updates.max_state_version = updates.max_state_version.max(bound);
+                    }
                 }
                 Ok((updates, horizon))
             })

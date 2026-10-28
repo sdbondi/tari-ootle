@@ -1017,9 +1017,8 @@ pub struct GetIndexerInfoResponse {
     /// Per shard, the state version at and below which this indexer may lack the tombstone of a spent
     /// UTXO, ascending by shard. A shard's first sync fetches only its live substates, so a spend
     /// before it is not seen, and pruning a tombstone raises the horizon over it. A shard not listed
-    /// has every tombstone. The UTXO stream sets
-    /// `StartOfShard::spends_incomplete` for a shard whose cursor is below its horizon. This is sync
-    /// state, and rises while the indexer runs.
+    /// has every tombstone. The UTXO stream sets `StartOfShard::spends_incomplete` for a shard whose
+    /// cursor is below its horizon. This is sync state, and rises while the indexer runs.
     #[cfg_attr(feature = "utoipa", schema(value_type = Vec<(u32, u64)>))]
     pub utxo_tombstone_horizons: Vec<(Shard, StateVersion)>,
 }

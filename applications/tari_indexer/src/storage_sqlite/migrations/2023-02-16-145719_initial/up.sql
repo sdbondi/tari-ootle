@@ -146,9 +146,8 @@ CREATE INDEX utxos_spent_epoch_idx ON utxos (epoch) WHERE is_spent = true;
 
 -- Per shard, the state version at and below which this indexer may lack the tombstone of a spent UTXO. A shard
 -- synced from its live substates rather than from its first version does not see the spends before them, and the
--- tombstone pruner raises the horizon over every tombstone it deletes. The UTXO
--- stream tells a client resuming from below a shard's horizon that its spends are incomplete. A shard with no row has
--- every tombstone.
+-- tombstone pruner raises the horizon over every tombstone it deletes. The UTXO stream tells a client resuming from
+-- below a shard's horizon that its spends are incomplete. A shard with no row has every tombstone.
 create table utxo_tombstone_horizons
 (
     shard         int    not null primary key,

@@ -78,6 +78,27 @@ pub struct SqliteStoreWriteTransaction<'a> {
     transaction: Option<SqliteStoreReadTransaction<'a>>,
 }
 
+/// The id, shard and state version of up to `limit` spent UTXOs spent before `cutoff`, oldest first. The literal
+/// condition and the order by the filtered column let SQLite serve it from `utxos_spent_epoch_idx`.
+pub(super) fn spent_utxos_before_epoch_query(
+    cutoff: Epoch,
+    limit: usize,
+) -> crate::storage_sqlite::schema::utxos::BoxedQuery<
+    'static,
+    diesel::sqlite::Sqlite,
+    (sql_types::BigInt, sql_types::Integer, sql_types::BigInt),
+> {
+    use crate::storage_sqlite::schema::utxos;
+
+    utxos::table
+        .select((utxos::id, utxos::shard, utxos::state_version))
+        .filter(dsl::sql::<sql_types::Bool>(r#""utxos"."is_spent" = true"#))
+        .filter(utxos::epoch.lt(encode_retention_epoch(cutoff)))
+        .order_by(utxos::epoch.asc())
+        .limit(limit as i64)
+        .into_boxed()
+}
+
 impl<'a> SqliteStoreWriteTransaction<'a> {
     pub fn new(transaction: SqliteTransaction<&'a mut SqliteConnection>) -> Self {
         Self {
@@ -656,14 +677,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
         const OPERATION: &str = "prune_utxo_tombstones_before_epoch";
         use crate::storage_sqlite::schema::utxos;
 
-        // The literal condition and the order by the filtered column let the select be served from
-        // `utxos_spent_epoch_idx`.
-        let rows = utxos::table
-            .select((utxos::id, utxos::shard, utxos::state_version))
-            .filter(dsl::sql::<sql_types::Bool>(r#""utxos"."is_spent" = true"#))
-            .filter(utxos::epoch.lt(encode_retention_epoch(cutoff)))
-            .order_by(utxos::epoch.asc())
-            .limit(limit as i64)
+        let rows = spent_utxos_before_epoch_query(cutoff, limit)
             .load::<(i64, i32, i64)>(self.connection())
             .map_err(|e| StorageError::general(OPERATION, e))?;
         if rows.is_empty() {

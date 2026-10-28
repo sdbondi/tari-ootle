@@ -292,6 +292,64 @@ mod tests {
         assert!(frames.is_empty(), "{frames:?}");
     }
 
+    /// Another resource's spend in the shard, newer than every row of the client's resource, ages out. A client that
+    /// read to the end of its resource's rows resumes from the shard's verified version, above that spend, so pruning
+    /// it does not flag the client.
+    #[tokio::test]
+    async fn pruning_another_resources_tombstone_does_not_flag_a_caught_up_client() {
+        use std::str::FromStr;
+
+        use tari_ootle_common_types::SubstateVersion;
+        use tari_state_tree::TransitionAccumulator;
+        use tari_template_lib_types::{ResourceAddress, UtxoAddress, UtxoId};
+
+        use crate::{
+            network_state_sync::{SyncProgress, VerifiedShardVersion},
+            storage_sqlite::models::{Key, UtxoSpent, UtxoUpdateRecord},
+        };
+
+        let shard = Shard::from(1u32);
+        let (_dir, store) = store_with_utxos(&[(10, 1)]).await;
+        let other_resource =
+            ResourceAddress::from_str("resource_0101010101010101010101010101010101010101010101010101010101010101")
+                .unwrap();
+        let other_spend = UtxoUpdateRecord::Spent(UtxoSpent {
+            address: UtxoAddress::new(other_resource, UtxoId::from_array([9; 32])),
+            version: SubstateVersion::ZERO,
+            shard,
+            state_version: StateVersion::new(50),
+        });
+        let mut progress = SyncProgress::default();
+        progress.record_verified(shard, VerifiedShardVersion {
+            state_version: StateVersion::new(50),
+            epoch: Epoch(5),
+            transition_acc: TransitionAccumulator::zero(),
+        });
+        store
+            .with_write_tx(move |tx| {
+                tx.batch_insert_utxo_updates(Epoch(5), [other_spend])?;
+                tx.key_value_set(Key::SyncProgress, progress)
+            })
+            .await
+            .unwrap();
+
+        let frames = stream_frames(&store, &[(1, 0)], false).await;
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].num_updates, 1);
+        assert_eq!(
+            frames[0].max_state_version, 50,
+            "the read resumes from the verified version"
+        );
+
+        let num_pruned = store
+            .with_write_tx(|tx| tx.prune_utxo_tombstones_before_epoch(Epoch(10), 100))
+            .await
+            .unwrap();
+        assert_eq!(num_pruned, 1);
+        let frames = stream_frames(&store, &[(1, 50)], false).await;
+        assert!(frames.is_empty(), "the caught-up client is not flagged: {frames:?}");
+    }
+
     #[test]
     fn a_cursor_below_the_tombstone_horizon_reads_incomplete_spends() {
         let v = StateVersion::new;
