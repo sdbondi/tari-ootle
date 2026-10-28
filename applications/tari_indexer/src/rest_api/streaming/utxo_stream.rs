@@ -18,7 +18,7 @@ use tari_indexer_client::{
     protobuf,
     types::{GetUtxoUpdatesRequest, UtxoStateUpdateSet, WalletUtxoUpdate},
 };
-use tari_ootle_common_types::{StateVersion, shard::Shard};
+use tari_ootle_common_types::{StateVersion, optional::Optional, shard::Shard};
 
 use crate::{
     rest_api::{encoder::Encoder, error::ErrorResponse, streaming::encoding::MimeTypeEncoder},
@@ -42,6 +42,9 @@ impl UtxoUpdateStream {
         let content_type = encoder.media_type();
         let inner = try_stream! {
             let mut buffer = BytesMut::with_capacity(1024);
+            // Read once before the shard reads. A verified version only rises, and commits with the rows it covers,
+            // so one read earlier than a shard's rows is still covered by them.
+            let sync_progress = store.get_sync_progress().await.optional().map_err(anyhow::Error::from)?;
             for &(shard, state_version) in &request.shard_state_versions {
                 debug!(
                     target: LOG_TARGET,
@@ -63,6 +66,7 @@ impl UtxoUpdateStream {
                         state_version,
                         request.unspent_only,
                         request.per_shard_limit,
+                        sync_progress.as_ref().map(|progress| progress.verified(shard).version),
                     )
                     .await
                     .map_err(anyhow::Error::from)?;

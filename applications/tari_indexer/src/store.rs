@@ -671,10 +671,11 @@ impl<T: IndexerStoreReader> ReadOnlyStore<T> {
     /// A shard's UTXO updates past `from_state_version`, with the shard's tombstone horizon read in the same
     /// transaction, so that no tombstone the read lacks is pruned below a horizon it does not report.
     ///
-    /// A read that reaches the end of the resource's rows in the shard reports at least the shard's last verified
-    /// version, and its horizon, as its `max_state_version`. Every row of the shard at or below the verified version
-    /// was promoted with it, so the read has seen them all. A client of a resource that is quiet in the shard then
-    /// resumes above every tombstone of other resources there, and pruning one does not flag it.
+    /// A read that reaches the end of the resource's rows in the shard reports at least `verified`, and the horizon,
+    /// as its `max_state_version`. `verified` must be a version of the shard read as verified no later than this
+    /// read: every row at or below it was promoted with it, so the read has seen them all. A client of a resource
+    /// that is quiet in the shard then resumes above every tombstone of other resources there, and pruning one does
+    /// not flag it.
     pub async fn get_utxo_updates(
         &self,
         resource_address: ResourceAddress,
@@ -683,6 +684,7 @@ impl<T: IndexerStoreReader> ReadOnlyStore<T> {
         from_state_version: StateVersion,
         unspent_only: bool,
         limit: u32,
+        verified: Option<StateVersion>,
     ) -> Result<(UtxoStateUpdateSet, Option<StateVersion>), StorageError> {
         self.inner
             .with_read_tx(move |tx| {
@@ -696,10 +698,6 @@ impl<T: IndexerStoreReader> ReadOnlyStore<T> {
                 )?;
                 let horizon = tx.utxo_tombstone_horizon(shard)?;
                 if !updates.has_more {
-                    let verified = tx
-                        .key_value_get_value::<_, SyncProgress>(Key::SyncProgress)
-                        .optional()?
-                        .map(|progress| progress.verified(shard).version);
                     for bound in [verified, horizon].into_iter().flatten() {
                         updates.max_state_version = updates.max_state_version.max(bound);
                     }
