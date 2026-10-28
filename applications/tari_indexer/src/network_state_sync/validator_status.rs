@@ -14,6 +14,7 @@ use tari_epoch_manager::{EpochManagerReader, service::EpochManagerHandle};
 use tari_ootle_common_types::{Epoch, NodeHeight, ShardGroup, StateVersion, shard::Shard};
 use tari_ootle_p2p::{PeerAddress, proto::rpc};
 use tari_ootle_storage::consensus_models::{CommittedBlockProof, ShardStateLeaf, VerifiedBlockTip};
+use tari_state_tree::TreeHash;
 use tokio::sync::RwLock;
 
 use crate::network_state_sync::{committee_client::ValidatorRpcSession, verified_stage::VerifiedShardLeaf};
@@ -99,7 +100,14 @@ pub struct VerifiedProbe {
     pub tip: VerifiedBlockTip,
     /// The requested shards' leaves, in ascending shard order. A shard outside the validator's shard group has
     /// none, and there are none at all when the tip is of another shard group than the one probed.
-    pub leaves: Vec<VerifiedShardLeaf>,
+    pub leaves: Vec<ProvedShardLeaf>,
+}
+
+/// A shard's leaf as a probed block's state merkle root commits it, with the root of the shard's tree the leaf holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProvedShardLeaf {
+    pub leaf: VerifiedShardLeaf,
+    pub shard_root: TreeHash,
 }
 
 /// In-memory, lazily-populated map of the latest probe of each validator the indexer has contacted.
@@ -264,7 +272,7 @@ fn verify_shard_leaves(
     probed_shard_group: ShardGroup,
     requested: &BTreeSet<Shard>,
     leaves: Vec<rpc::ShardStateLeaf>,
-) -> Result<Vec<VerifiedShardLeaf>, ProbeError> {
+) -> Result<Vec<ProvedShardLeaf>, ProbeError> {
     let mut previous = None;
     let leaves = leaves
         .into_iter()
@@ -286,10 +294,13 @@ fn verify_shard_leaves(
             previous = Some(leaf.shard);
             leaf.verify(network, proof)
                 .map_err(|e| ProbeError::InvalidProof(format!("shard leaf: {e}")))?;
-            Ok(VerifiedShardLeaf {
-                shard: leaf.shard,
-                state_version: StateVersion::new(leaf.state_version),
-                transition_acc: leaf.transition_acc,
+            Ok(ProvedShardLeaf {
+                leaf: VerifiedShardLeaf {
+                    shard: leaf.shard,
+                    state_version: StateVersion::new(leaf.state_version),
+                    transition_acc: leaf.transition_acc,
+                },
+                shard_root: leaf.shard_root,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -361,7 +372,7 @@ mod tests {
 
     mod shard_leaves {
         use tari_engine_types::ProtocolVersion;
-        use tari_state_tree::{ShardGroupRootTree, TransitionAccumulator, TreeHash};
+        use tari_state_tree::{ShardGroupRootTree, TransitionAccumulator};
 
         use super::*;
 
@@ -439,7 +450,7 @@ mod tests {
             shards.iter().copied().collect()
         }
 
-        fn rejection(result: Result<Vec<VerifiedShardLeaf>, ProbeError>) -> String {
+        fn rejection(result: Result<Vec<ProvedShardLeaf>, ProbeError>) -> String {
             match result {
                 Err(ProbeError::InvalidProof(details)) => details,
                 other => panic!("expected an invalid proof, got {other:?}"),
@@ -455,14 +466,29 @@ mod tests {
 
             let verified = verified
                 .iter()
-                .map(|leaf| (leaf.shard, leaf.state_version.as_u64(), leaf.transition_acc))
+                .map(|ProvedShardLeaf { leaf, shard_root }| {
+                    (
+                        leaf.shard,
+                        leaf.state_version.as_u64(),
+                        leaf.transition_acc,
+                        *shard_root,
+                    )
+                })
                 .collect::<Vec<_>>();
+            let expected = |shard, n: u8| {
+                (
+                    shard,
+                    u64::from(n),
+                    TransitionAccumulator::new([n + 100; 32]),
+                    TreeHash::new([n; 32]),
+                )
+            };
             assert_eq!(verified, vec![
-                (Shard::global(), 0, TransitionAccumulator::new([100; 32])),
-                (shard(1), 1, TransitionAccumulator::new([101; 32])),
-                (shard(2), 2, TransitionAccumulator::new([102; 32])),
-                (shard(3), 0, TransitionAccumulator::new([100; 32])),
-                (shard(4), 4, TransitionAccumulator::new([104; 32])),
+                expected(Shard::global(), 0),
+                expected(shard(1), 1),
+                expected(shard(2), 2),
+                expected(shard(3), 0),
+                expected(shard(4), 4),
             ]);
         }
 

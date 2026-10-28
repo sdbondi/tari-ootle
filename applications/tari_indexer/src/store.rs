@@ -38,6 +38,7 @@ use tari_ootle_storage::{
 };
 use tari_ootle_transaction::{Transaction, TransactionId};
 use tari_sidechain::FixedHash;
+use tari_state_tree::LeafKey;
 use tari_template_lib_types::{
     Amount,
     ResourceAddress,
@@ -55,6 +56,7 @@ use crate::{
         CheckpointShardLeaf,
         Key,
         KeyValue,
+        SnapshotSubstate,
         StagedAccumulator,
         StagedVersion,
         SubstateCacheInvalidation,
@@ -250,6 +252,15 @@ pub trait IndexerStoreReadTransaction {
         state_version: StateVersion,
     ) -> Result<Option<StagedVersion>, StorageError>;
 
+    /// The first `limit` staged snapshot substates of `shard` after `after`, ascending by creation epoch and then leaf
+    /// key.
+    fn snapshot_substates_page(
+        &mut self,
+        shard: Shard,
+        after: Option<(Epoch, LeafKey)>,
+        limit: usize,
+    ) -> Result<Vec<SnapshotSubstate>, StorageError>;
+
     // -------------------------------- Template Catalogue -------------------------------- //
 
     fn list_template_catalogue(
@@ -353,6 +364,10 @@ pub trait IndexerStoreWriteTransaction {
         shard: Shard,
         state_version: Option<StateVersion>,
     ) -> Result<Vec<Vec<u8>>, StorageError>;
+    /// Stages substates of a snapshot of `shard`.
+    fn snapshot_substates_insert(&mut self, shard: Shard, substates: &[SnapshotSubstate]) -> Result<(), StorageError>;
+    /// Deletes every staged snapshot substate of `shard`.
+    fn snapshot_substates_delete(&mut self, shard: Shard) -> Result<(), StorageError>;
     fn upsert_substate(&mut self, substate: &SubstateData) -> Result<(), StorageError>;
     /// Inserts each receipt with its events, skipping any whose address already holds a receipt.
     /// A receipt address is written once on the network, so the stored receipt is kept: replacing

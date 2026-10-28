@@ -33,6 +33,7 @@ use tari_ootle_storage::{
     StorageError,
     consensus_models::{
         EpochCheckpoint,
+        SubstateCreate,
         SubstateData,
         SubstateUpdateProof,
         SubstateValueFilterFlags,
@@ -64,12 +65,14 @@ use crate::{
         config::NetworkWideStateSyncConfig,
         consensus_epoch::ConsensusEpoch,
         error::NetworkStateSyncError,
+        shard_snapshot::ShardSnapshot,
         shard_watermarks::ShardWatermarks,
         stats::SyncStats,
         sync_plan::SyncPlan,
         sync_progress::{SharedSyncProgress, SyncProgress, VerifiedShardVersion},
-        validator_status::ValidatorStatusMonitor,
+        validator_status::{ProvedShardLeaf, ValidatorStatusMonitor},
         verified_stage::{
+            AccumulatedVersion,
             MAX_ACCUMULATOR_HISTORY,
             StageError,
             Staged,
@@ -148,6 +151,10 @@ const MAX_PROMOTED_VERSIONS: usize = 1024;
 /// The most encoded bytes of staged versions promoted in one write transaction, which bounds what it decodes and
 /// announces at once.
 const MAX_PROMOTED_BYTES: usize = 64 * 1024 * 1024;
+/// The most staged snapshot substates a promotion reads and commits at a time.
+const MAX_PROMOTED_SNAPSHOT_SUBSTATES: usize = 1024;
+/// The most substates one snapshot page asks for. The responder caps it too.
+const SNAPSHOT_PAGE_SUBSTATES: u32 = 1000;
 
 /// The substate values a followed stream carries. The rest arrive as an id and a value hash, which with the values is
 /// every transition: what the accumulator needs, and what lets the substate cache tell a superseded or destroyed entry
@@ -777,7 +784,8 @@ impl NetworkWideStateSync {
                     self.consensus_epoch.observe(probe.tip.shard_group, probe.tip.epoch);
                     // A full queue drops these leaves: the stream has yet to take the ones queued before them, and
                     // the next probe asks again.
-                    if !probe.leaves.is_empty() && leaves.try_send(probe.leaves).is_err() {
+                    let probed = probe.leaves.iter().map(|proved| proved.leaf).collect::<Vec<_>>();
+                    if !probed.is_empty() && leaves.try_send(probed).is_err() {
                         debug!(target: LOG_TARGET, "The stream of shard group {shard_group} has not taken the leaves of earlier probes. Dropped this probe's");
                     }
                     if let Err(e) = self.persist_verified_tip(probe.tip).await {
@@ -916,7 +924,10 @@ impl NetworkWideStateSync {
                 return Ok(RoundEnd::Pause("no session"));
             },
         };
-        let leaf_shards = self.leaf_shards(shard_group, shards.contains(&Shard::global()));
+        let new_shards = new_shards(shards, &*progress.lock().await);
+        let mut leaf_shards = self.leaf_shards(shard_group, shards.contains(&Shard::global()));
+        leaf_shards.extend(new_shards.iter().copied());
+        let mut snapshot_leaves = Vec::new();
         match self
             .validator_status
             .probe(&mut session, shard_group, &leaf_shards)
@@ -924,15 +935,20 @@ impl NetworkWideStateSync {
         {
             Ok(Some(probe)) => {
                 self.consensus_epoch.observe(probe.tip.shard_group, probe.tip.epoch);
+                let tip_epoch = probe.tip.epoch;
                 // Record the quorum-signed state root so the read path can skip re-validating
                 // commit proofs for this tip. A failure here must not abort the state sync.
                 if let Err(e) = self.persist_verified_tip(probe.tip).await {
                     warn!(target: LOG_TARGET, "⚠️ Failed to record verified state root for shard group {}: {}", shard_group, e);
                 }
                 let peer = *session.peer_address();
-                for leaf in probe.leaves {
-                    self.apply_leaf(leaf, format!("the tip leaf from {peer}"), progress)
-                        .await?;
+                for proved in probe.leaves {
+                    if new_shards.contains(&proved.leaf.shard) {
+                        snapshot_leaves.push((proved, tip_epoch));
+                    } else {
+                        self.apply_leaf(proved.leaf, format!("the tip leaf from {peer}"), progress)
+                            .await?;
+                    }
                 }
             },
             Ok(None) => {},
@@ -941,6 +957,13 @@ impl NetworkWideStateSync {
                 warn!(target: LOG_TARGET, "⚠️ Validator {} for shard group {} served an INVALID commit proof: {}", session.peer_address(), shard_group, e);
                 return Ok(RoundEnd::Pause("invalid commit proof"));
             },
+        }
+
+        if let Some(end) = self
+            .snapshot_new_shards(new_shards, &snapshot_leaves, &mut session, progress)
+            .await?
+        {
+            return Ok(end);
         }
 
         // A responder that cannot serve these shards - it left the committee, or the epoch this
@@ -1033,6 +1056,158 @@ impl NetworkWideStateSync {
             leaves,
         )
         .await
+    }
+
+    /// Takes a snapshot of each of `new_shards` from `session` at its leaf in `leaves`, proved in a block of the epoch
+    /// paired with it, and promotes it. Returns how the round ends if one cannot be taken.
+    async fn snapshot_new_shards(
+        &self,
+        new_shards: BTreeSet<Shard>,
+        leaves: &[(ProvedShardLeaf, Epoch)],
+        session: &mut ValidatorRpcSession,
+        progress: &SharedSyncProgress,
+    ) -> Result<Option<RoundEnd>, NetworkStateSyncError> {
+        for shard in new_shards {
+            let Some(&(proved, tip_epoch)) = leaves.iter().find(|(proved, _)| proved.leaf.shard == shard) else {
+                return Ok(Some(RoundEnd::Pause(
+                    "a new shard has no verified leaf to take a snapshot at",
+                )));
+            };
+            // A shard with no state at the leaf is followed from its first version, which is all its history
+            if proved.leaf.state_version.as_u64() == 0 {
+                continue;
+            }
+            match self.snapshot_shard(proved, tip_epoch, session, progress).await {
+                Ok(SnapshotEnd::Promoted) => {},
+                Ok(SnapshotEnd::Unavailable) => {
+                    info!(target: LOG_TARGET, "🌍️ {} does not hold shard {shard}'s tree at v{}. Taking the snapshot at a fresh leaf next round", session.peer_address(), proved.leaf.state_version);
+                    return Ok(Some(RoundEnd::Pause(
+                        "the peer does not hold a new shard's tree at its leaf",
+                    )));
+                },
+                Err(err) if err.is_peer_fault() && !err.is_unverified_history() => {
+                    warn!(target: LOG_TARGET, "⚠️ Snapshot of shard {shard} from {} failed: {}", session.peer_address(), err);
+                    return Ok(Some(RoundEnd::Pause("the peer failed")));
+                },
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(None)
+    }
+
+    /// Takes a snapshot of new shard `proved.leaf.shard` from `session` at the leaf's version, checks it against the
+    /// shard root the leaf commits, and promotes it, so that the shard's stream follows from that version rather than
+    /// replaying its history. `epoch` is the epoch of the block the leaf was proved in.
+    async fn snapshot_shard(
+        &self,
+        proved: ProvedShardLeaf,
+        epoch: Epoch,
+        session: &mut ValidatorRpcSession,
+        progress: &SharedSyncProgress,
+    ) -> Result<SnapshotEnd, NetworkStateSyncError> {
+        let VerifiedShardLeaf {
+            shard,
+            state_version,
+            transition_acc,
+        } = proved.leaf;
+        let peer = *session.peer_address();
+        info!(target: LOG_TARGET, "🌍️ Taking a snapshot of new shard {shard} at v{state_version} from {peer}");
+        // A snapshot interrupted by a restart is started again
+        self.store
+            .with_write_tx(move |tx| tx.snapshot_substates_delete(shard))
+            .await?;
+        let faulty = |details: String| NetworkStateSyncError::UnverifiedHistory {
+            details: format!("Peer {peer} served a snapshot of shard {shard} at v{state_version} that {details}"),
+            blamed: vec![peer],
+            diverged_from: Some((shard, StateVersion::new(0))),
+        };
+
+        let value_filters = stream_value_filters();
+        let mut snapshot = ShardSnapshot::new(self.network, proved, value_filters);
+        loop {
+            let page = session
+                .get_shard_snapshot(rpc::GetShardSnapshotRequest {
+                    shard: shard.as_u32(),
+                    state_version: state_version.as_u64(),
+                    after_leaf_key: snapshot.last_key().map(|key| key.bytes.to_vec()).unwrap_or_default(),
+                    limit: SNAPSHOT_PAGE_SUBSTATES,
+                    value_filters: value_filters.bits(),
+                })
+                .await?;
+            if page.version_unavailable {
+                return Ok(SnapshotEnd::Unavailable);
+            }
+            if page.substates.is_empty() && !page.is_last {
+                return Err(faulty("returns an empty page before its last".to_string()));
+            }
+            let staged = snapshot
+                .add_page(page.substates)
+                .map_err(|e| faulty(format!("is invalid: {e}")))?;
+            if !staged.is_empty() {
+                self.store
+                    .with_write_tx(move |tx| tx.snapshot_substates_insert(shard, &staged))
+                    .await?;
+            }
+            if page.is_last {
+                break;
+            }
+        }
+        let num_substates = snapshot.num_substates();
+        if let Err(e) = snapshot.finish() {
+            self.record_leaf_check("snapshot_mismatch");
+            self.store
+                .with_write_tx(move |tx| tx.snapshot_substates_delete(shard))
+                .await?;
+            return Err(faulty(format!("does not match its verified leaf: {e}")));
+        }
+
+        let verified = VerifiedShardVersion {
+            state_version,
+            epoch,
+            transition_acc,
+        };
+        let promoted = {
+            // The progress lock is held until the snapshot is written, as `SharedSyncProgress` requires.
+            let mut progress = progress.lock().await;
+            let snapshot = progress.clone();
+            let event_filters = self.config.event_filters.clone();
+            let watched_templates = self.config.watched_templates.clone();
+            let promoted = self
+                .store
+                .with_write_tx(move |tx| {
+                    promote_snapshot(tx, shard, verified, snapshot, &event_filters, &watched_templates)
+                })
+                .await?;
+            progress.record_verified(shard, verified);
+            progress.record_state_version(shard, state_version, epoch);
+            promoted
+        };
+        self.announce(shard, promoted);
+        self.record_leaf_check("snapshot");
+        info!(target: LOG_TARGET, "🌍️ Indexed new shard {shard} from a verified snapshot of {num_substates} substates at v{state_version}");
+
+        let verdict = self
+            .verified_stage()
+            .restore(
+                shard,
+                AccumulatedVersion {
+                    version: state_version,
+                    acc: transition_acc,
+                },
+                Vec::new(),
+            )
+            .map_err(|e| NetworkStateSyncError::InvariantError {
+                details: format!("shard {shard}'s stage does not restore to its snapshot: {e}"),
+            })?;
+        if let Some(verdict) = verdict {
+            self.act_on_verdict(shard, verdict, "the leaf it was waiting for", progress)
+                .await?;
+        }
+        if let Some(verdict) = self.check_stored_leaves(shard, progress).await? {
+            self.act_on_verdict(shard, verdict, "a stored checkpoint leaf", progress)
+                .await?;
+        }
+        Ok(SnapshotEnd::Promoted)
     }
 
     /// The shards of `shard_group` whose leaf the next probe asks for: those a leaf would verify.
@@ -1774,6 +1949,23 @@ fn cursors_for(shards: &[Shard], progress: &SyncProgress) -> Vec<rpc::ShardCurso
         .collect()
 }
 
+/// The shards of `shards` nothing was staged or verified of. Each is indexed from a snapshot at a verified leaf.
+fn new_shards(shards: &[Shard], progress: &SyncProgress) -> BTreeSet<Shard> {
+    shards
+        .iter()
+        .copied()
+        .filter(|&shard| progress.last_state_version(shard).is_none() && progress.verified.get(&shard).is_none())
+        .collect()
+}
+
+/// How a shard snapshot ended.
+enum SnapshotEnd {
+    /// The snapshot matched its leaf and was promoted.
+    Promoted,
+    /// The peer does not hold the shard's tree at the leaf's version.
+    Unavailable,
+}
+
 /// Enforces the ordering a followed `sync_state` stream promises across the shards it carries: a
 /// shard's versions follow one another from its cursor, and a version split across chunks is
 /// delivered whole before anything else.
@@ -2407,6 +2599,53 @@ fn promote_staged(
     Ok((verified, promoted))
 }
 
+/// Promotes the staged snapshot of `shard` at `verified`'s version to the indexed tables, and records `verified` as the
+/// shard's verified version and stream cursor in `progress`, which is written with them.
+///
+/// Every substate is committed at the snapshot's version, in one commit per creation epoch, which the indexed UTXOs
+/// record. The snapshot is read [`MAX_PROMOTED_SNAPSHOT_SUBSTATES`] at a time, so it is never held in memory whole.
+fn promote_snapshot(
+    tx: &mut SqliteStoreWriteTransaction<'_>,
+    shard: Shard,
+    verified: VerifiedShardVersion,
+    mut progress: SyncProgress,
+    event_filters: &[EventFilter],
+    watched_templates: &HashSet<TemplateAddress>,
+) -> Result<PromotedVersions, StorageError> {
+    let state_version = verified.state_version;
+    let value_filters = stream_value_filters();
+    let invalid = |details: String| StorageError::DataInconsistency {
+        details: format!("a staged snapshot substate of shard {shard} does not decode: {details}"),
+    };
+    let mut promoted = PromotedVersions::default();
+    let mut after = None;
+    loop {
+        let page = tx.snapshot_substates_page(shard, after, MAX_PROMOTED_SNAPSHOT_SUBSTATES)?;
+        let Some(last) = page.last() else {
+            break;
+        };
+        after = Some((last.epoch, last.leaf_key));
+        for epoch_substates in page.chunk_by(|a, b| a.epoch == b.epoch) {
+            let epoch = epoch_substates[0].epoch;
+            let mut buf = VersionBuf::default();
+            for staged in epoch_substates {
+                let data = rpc::SubstateData::decode(staged.substate.as_slice()).map_err(|e| invalid(e.to_string()))?;
+                let substate = SubstateData::try_from(data).map_err(|e| invalid(e.to_string()))?;
+                let update = SubstateUpdateProof::Create(Box::new(SubstateCreate { substate }));
+                buf.extend_from_substate_update(shard, state_version, update, value_filters);
+            }
+            let committed = buf.commit(tx, shard, state_version, epoch, event_filters, watched_templates)?;
+            promoted.add(state_version, committed);
+        }
+    }
+    tx.snapshot_substates_delete(shard)?;
+    tx.checkpoint_shard_leaves_delete_through(shard, state_version)?;
+    progress.record_verified(shard, verified);
+    progress.record_state_version(shard, state_version, verified.epoch);
+    tx.key_value_set(Key::SyncProgress, progress)?;
+    Ok(promoted)
+}
+
 impl VersionBuf {
     /// Decodes a staged version from its encoded `SubstateBatch` chunks.
     fn decode_staged(shard: Shard, state_version: StateVersion, mut batch: &[u8]) -> Result<Self, StorageError> {
@@ -2801,7 +3040,7 @@ mod tests {
         use tari_template_lib_types::{Hash32, crypto::RistrettoPublicKeyBytes};
 
         use super::*;
-        use crate::store::IndexerStore;
+        use crate::{storage_sqlite::models::SnapshotSubstate, store::IndexerStore};
 
         const SHARD: Shard = Shard::from_u32(1);
 
@@ -3216,6 +3455,118 @@ mod tests {
             let buf = VersionBuf::decode_staged(SHARD, v(1), &encoded_receipt_version(1, 1, 10)).unwrap();
             assert_eq!(buf.transactions.len(), 2);
             assert!(VersionBuf::decode_staged(SHARD, v(1), &[0xff, 0xff]).is_err());
+        }
+
+        /// A staged snapshot substate creating the receipt of transaction `n`, paying `n` in fees, at `epoch`.
+        fn snapshot_receipt(n: u64, epoch: u64) -> SnapshotSubstate {
+            let mut leaf_key = [0; 32];
+            leaf_key[..8].copy_from_slice(&n.to_be_bytes());
+            SnapshotSubstate {
+                epoch: Epoch(epoch),
+                leaf_key: tari_state_tree::LeafKey::new(tari_state_tree::TreeHash::new(leaf_key)),
+                substate: rpc::SubstateData::from(SubstateData {
+                    substate_id: SubstateId::TransactionReceipt(receipt_address(n)),
+                    version: tari_engine_types::SubstateVersion::ZERO,
+                    value: SubstateValueOrHash::Value(Box::new(SubstateValue::TransactionReceipt(receipt(
+                        FinalizeOutcome::Commit,
+                        n,
+                    )))),
+                    template_metadata: None,
+                })
+                .encode_to_vec(),
+            }
+        }
+
+        #[tokio::test]
+        async fn a_promoted_snapshot_is_indexed_and_verified_at_its_version() {
+            let (_dir, store) = store().await;
+            let num_substates = MAX_PROMOTED_SNAPSHOT_SUBSTATES as u64 + 5;
+            store
+                .with_write_tx(move |tx| {
+                    let substates = (1..=num_substates)
+                        .map(|n| snapshot_receipt(n, n % 3 + 1))
+                        .collect::<Vec<_>>();
+                    tx.snapshot_substates_insert(SHARD, &substates)?;
+                    tx.checkpoint_shard_leaves_insert(&[checkpoint_leaf(40), checkpoint_leaf(60)])?;
+                    // Another shard's snapshot is left alone
+                    tx.snapshot_substates_insert(Shard::from_u32(2), &[snapshot_receipt(9999, 1)])
+                })
+                .await
+                .unwrap();
+
+            let verified = VerifiedShardVersion {
+                state_version: v(50),
+                epoch: Epoch(4),
+                transition_acc: acc(50),
+            };
+            let promoted = store
+                .with_write_tx(move |tx| {
+                    promote_snapshot(tx, SHARD, verified, SyncProgress::default(), &[], &HashSet::new())
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(promoted.finalized.len(), usize::try_from(num_substates).unwrap());
+            assert_eq!(total_fees(&store).await, Amount::from((1..=num_substates).sum::<u64>()));
+            for n in [1, num_substates] {
+                store
+                    .with_read_tx(move |tx| tx.get_transaction_receipt(&receipt_address(n)))
+                    .await
+                    .unwrap();
+            }
+            let stored = stored_progress(&store).await;
+            assert_eq!(stored.verified.get(&SHARD), Some(&verified));
+            assert_eq!(stored.last_state_version(SHARD), Some(v(50)));
+            assert_eq!(cursors_for(&[SHARD], &stored)[0].start_state_version, 51);
+            assert!(
+                store
+                    .with_read_tx(|tx| tx.snapshot_substates_page(SHARD, None, 10))
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(
+                store
+                    .with_read_tx(|tx| tx.snapshot_substates_page(Shard::from_u32(2), None, 10))
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(checkpoint_leaves_above(&store, 0, 10).await, [60]);
+        }
+
+        #[tokio::test]
+        async fn snapshot_substates_are_paged_by_epoch_then_leaf_key() {
+            let (_dir, store) = store().await;
+            store
+                .with_write_tx(|tx| {
+                    tx.snapshot_substates_insert(SHARD, &[
+                        snapshot_receipt(3, 1),
+                        snapshot_receipt(1, 2),
+                        snapshot_receipt(2, 1),
+                        snapshot_receipt(4, 2),
+                    ])
+                })
+                .await
+                .unwrap();
+            let mut seen = Vec::new();
+            let mut after = None;
+            loop {
+                let page = store
+                    .with_read_tx(move |tx| tx.snapshot_substates_page(SHARD, after, 3))
+                    .await
+                    .unwrap();
+                let Some(last) = page.last() else {
+                    break;
+                };
+                after = Some((last.epoch, last.leaf_key));
+                seen.extend(
+                    page.iter()
+                        .map(|substate| (substate.epoch.as_u64(), substate.leaf_key.bytes[7])),
+                );
+            }
+            assert_eq!(seen, [(1, 2), (1, 3), (2, 1), (2, 4)]);
         }
     }
 

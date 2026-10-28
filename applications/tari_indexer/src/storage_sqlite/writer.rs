@@ -44,6 +44,7 @@ use crate::{
             NewTransaction,
             NewVerifiedStateRoot,
             NewWatchedSubstate,
+            SnapshotSubstate,
             StagedVersion,
             SubstateCacheInvalidation,
             SubstateRecord,
@@ -352,6 +353,34 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
             .execute(self.connection())
             .map_err(|e| StorageError::general(OPERATION, e))?;
         Ok(peers)
+    }
+
+    fn snapshot_substates_insert(&mut self, shard: Shard, substates: &[SnapshotSubstate]) -> Result<(), StorageError> {
+        const OPERATION: &str = "snapshot_substates_insert";
+        use crate::storage_sqlite::schema::snapshot_substates;
+
+        for substate in substates {
+            diesel::insert_into(snapshot_substates::table)
+                .values((
+                    snapshot_substates::shard.eq(shard.as_u32() as i32),
+                    snapshot_substates::epoch.eq(substate.epoch.as_u64() as i64),
+                    snapshot_substates::leaf_key.eq(substate.leaf_key.bytes.as_slice()),
+                    snapshot_substates::substate.eq(&substate.substate),
+                ))
+                .execute(self.connection())
+                .map_err(|e| StorageError::general(OPERATION, e))?;
+        }
+        Ok(())
+    }
+
+    fn snapshot_substates_delete(&mut self, shard: Shard) -> Result<(), StorageError> {
+        const OPERATION: &str = "snapshot_substates_delete";
+        use crate::storage_sqlite::schema::snapshot_substates;
+
+        diesel::delete(snapshot_substates::table.filter(snapshot_substates::shard.eq(shard.as_u32() as i32)))
+            .execute(self.connection())
+            .map_err(|e| StorageError::general(OPERATION, e))?;
+        Ok(())
     }
 
     fn upsert_substate(&mut self, substate: &SubstateData) -> Result<(), StorageError> {

@@ -60,6 +60,15 @@ diesel::table! {
 }
 
 diesel::table! {
+    snapshot_substates (shard, epoch, leaf_key) {
+        shard -> Integer,
+        epoch -> BigInt,
+        leaf_key -> Binary,
+        substate -> Binary,
+    }
+}
+
+diesel::table! {
     staged_versions (shard, state_version) {
         shard -> Integer,
         state_version -> BigInt,
@@ -192,6 +201,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     substate_cache,
     substate_cache_invalidations,
     substate_cache_proofs,
+    snapshot_substates,
     staged_versions,
     substates,
     template_catalogue,

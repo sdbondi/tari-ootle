@@ -79,8 +79,9 @@ impl NetworkStateMetrics {
                  promote (matched, staged versions promoted), mismatch (staged versions discarded), conflict (two \
                  verified leaves disagree), invalid_version (a streamed version whose accumulator cannot be \
                  computed), withheld or unverified (a stream peer blamed for withholding versions a leaf names or for \
-                 staging versions no leaf reaches), or circuit_breaker (every committee member mismatched from the \
-                 same verified version, and the shard group halted)",
+                 staging versions no leaf reaches), circuit_breaker (every committee member mismatched from the same \
+                 verified version, and the shard group halted), snapshot (a new shard's snapshot rebuilt its leaf's \
+                 root and was promoted) or snapshot_mismatch (a snapshot that did not rebuild its leaf's root)",
                 registry,
             ),
         }

@@ -2850,7 +2850,7 @@ dependencies = [
  "mime_guess",
  "serde",
  "serde_json",
- "tari_jellyfish 7.0.0",
+ "tari_jellyfish 7.1.0",
  "tari_ootle_common_types",
  "tari_ootle_p2p",
  "tari_ootle_storage",
@@ -12093,20 +12093,6 @@ dependencies = [
 [[package]]
 name = "tari_jellyfish"
 version = "7.0.0"
-dependencies = [
- "blake2 0.10.6",
- "borsh",
- "digest 0.10.7",
- "minicbor",
- "serde",
- "serde_json",
- "tari_crypto",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "tari_jellyfish"
-version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe7acf105d2cc232162b381072cd17dbfe753705aac44d2b6a24da86fa6356cb"
 dependencies = [
@@ -12114,6 +12100,20 @@ dependencies = [
  "borsh",
  "digest 0.10.7",
  "serde",
+ "tari_crypto",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "tari_jellyfish"
+version = "7.1.0"
+dependencies = [
+ "blake2 0.10.6",
+ "borsh",
+ "digest 0.10.7",
+ "minicbor",
+ "serde",
+ "serde_json",
  "tari_crypto",
  "thiserror 2.0.18",
 ]
@@ -12377,7 +12377,7 @@ dependencies = [
  "tari_consensus_types",
  "tari_crypto",
  "tari_engine_types",
- "tari_jellyfish 7.0.0",
+ "tari_jellyfish 7.1.0",
  "tari_networking",
  "tari_ootle_common_types",
  "tari_ootle_storage",
@@ -12989,7 +12989,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tari_crypto",
- "tari_jellyfish 7.0.0",
+ "tari_jellyfish 7.1.0",
  "tari_utilities",
  "thiserror 2.0.18",
 ]
@@ -13007,7 +13007,7 @@ dependencies = [
  "log",
  "serde",
  "tari_crypto",
- "tari_jellyfish 7.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tari_jellyfish 7.0.0",
  "tari_utilities",
  "thiserror 2.0.18",
 ]
@@ -13056,7 +13056,7 @@ dependencies = [
  "serde_json",
  "tari_bor",
  "tari_engine_types",
- "tari_jellyfish 7.0.0",
+ "tari_jellyfish 7.1.0",
  "tari_ootle_common_types",
  "tari_template_lib_types",
  "thiserror 2.0.18",

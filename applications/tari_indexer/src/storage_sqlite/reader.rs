@@ -4,6 +4,7 @@
 use std::{collections::HashMap, fmt::Write, str::FromStr};
 
 use diesel::{
+    BoolExpressionMethods,
     EscapeExpressionMethods,
     ExpressionMethods,
     JoinOnDsl,
@@ -38,7 +39,7 @@ use tari_ootle_storage::{Ordering, StorageError, consensus_models::EpochCheckpoi
 use tari_ootle_storage_sqlite::SqliteTransaction;
 use tari_ootle_transaction::{Transaction, TransactionId};
 use tari_sidechain::FixedHash;
-use tari_state_tree::TransitionAccumulator;
+use tari_state_tree::{LeafKey, TransitionAccumulator, TreeHash};
 use tari_template_lib_types::{
     Amount,
     Hash32,
@@ -58,6 +59,7 @@ use crate::{
             CheckpointShardLeaf,
             EventRecord,
             KeyValue,
+            SnapshotSubstate,
             StagedAccumulator,
             StagedAccumulatorRow,
             StagedVersion,
@@ -1112,6 +1114,53 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
                             ),
                         }
                     })?,
+                })
+            })
+            .collect()
+    }
+
+    fn snapshot_substates_page(
+        &mut self,
+        shard: Shard,
+        after: Option<(Epoch, LeafKey)>,
+        limit: usize,
+    ) -> Result<Vec<SnapshotSubstate>, StorageError> {
+        const OPERATION: &str = "snapshot_substates_page";
+        use crate::storage_sqlite::schema::snapshot_substates;
+
+        let mut query = snapshot_substates::table
+            .select((
+                snapshot_substates::epoch,
+                snapshot_substates::leaf_key,
+                snapshot_substates::substate,
+            ))
+            .filter(snapshot_substates::shard.eq(shard.as_u32() as i32))
+            .into_boxed();
+        if let Some((epoch, leaf_key)) = after {
+            let epoch = epoch.as_u64() as i64;
+            query = query.filter(
+                snapshot_substates::epoch.gt(epoch).or(snapshot_substates::epoch
+                    .eq(epoch)
+                    .and(snapshot_substates::leaf_key.gt(leaf_key.bytes.into_array().to_vec()))),
+            );
+        }
+        let rows = query
+            .order_by((snapshot_substates::epoch.asc(), snapshot_substates::leaf_key.asc()))
+            .limit(i64::try_from(limit).unwrap_or(i64::MAX))
+            .get_results::<(i64, Vec<u8>, Vec<u8>)>(self.connection())
+            .map_err(|e| StorageError::QueryError {
+                reason: format!("{OPERATION}: {}", e),
+            })?;
+        rows.into_iter()
+            .map(|(epoch, leaf_key, substate)| {
+                Ok(SnapshotSubstate {
+                    epoch: Epoch(epoch as u64),
+                    leaf_key: LeafKey::new(TreeHash::try_from_bytes(&leaf_key).map_err(|e| {
+                        StorageError::DataInconsistency {
+                            details: format!("a snapshot substate of shard {shard} has an invalid leaf key: {e}"),
+                        }
+                    })?),
+                    substate,
                 })
             })
             .collect()

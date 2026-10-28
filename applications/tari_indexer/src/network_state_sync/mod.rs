@@ -8,6 +8,7 @@ mod error;
 mod event_filter;
 #[cfg(feature = "metrics")]
 mod metrics;
+mod shard_snapshot;
 mod shard_watermarks;
 mod stats;
 mod sync_plan;

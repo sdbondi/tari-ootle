@@ -183,6 +183,20 @@ create table checkpoint_shard_leaves
     primary key (shard, state_version)
 );
 
+-- The substates a shard's tree holds at a verified version, for those the indexer indexes, staged while a snapshot of
+-- the shard is downloaded. They are promoted together once the snapshot rebuilds the root the version's leaf commits.
+create table snapshot_substates
+(
+    shard    int    not null,
+    -- The epoch the substate was created in.
+    epoch    bigint not null,
+    -- The substate's key in the shard's tree.
+    leaf_key blob   not null,
+    -- The prost-encoded `SubstateData`.
+    substate blob   not null,
+    primary key (shard, epoch, leaf_key)
+);
+
 -- Lightweight template metadata received from validators via the TEMPLATE_METADATA sync flag. This
 -- lets the indexer serve a searchable template catalogue without storing full WASM binaries.
 CREATE TABLE template_catalogue

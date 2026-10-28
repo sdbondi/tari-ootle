@@ -3,7 +3,7 @@
 
 use tari_ootle_common_types::{Epoch, StateVersion, shard::Shard};
 use tari_ootle_storage::StorageError;
-use tari_state_tree::TransitionAccumulator;
+use tari_state_tree::{LeafKey, TransitionAccumulator};
 
 /// The lowest state version above `state_version`, as a column value: v0 when `state_version` is `None`, which is below
 /// it. Versions above a verified one are staged contiguously from a shard's first, so they stay far below 2^63 and
@@ -37,6 +37,17 @@ pub struct CheckpointShardLeaf {
     pub shard: Shard,
     pub state_version: StateVersion,
     pub transition_acc: TransitionAccumulator,
+}
+
+/// A substate of a shard snapshot, staged until the snapshot rebuilds the shard's verified root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotSubstate {
+    /// The epoch the substate was created in.
+    pub epoch: Epoch,
+    /// The substate's key in the shard's tree.
+    pub leaf_key: LeafKey,
+    /// The prost-encoded `SubstateData`.
+    pub substate: Vec<u8>,
 }
 
 /// A row of `staged_versions` as read: `(state_version, epoch, transition_acc, streamed_by)`.
