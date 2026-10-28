@@ -32,7 +32,7 @@ pub struct WalletTransaction {
     pub finalized_time: Option<Duration>,
     pub new_account_info: Option<NewAccountData>,
     pub is_dry_run: bool,
-    /// When the network accepted the transaction for consensus, or `None` before it did.
+    /// When the wallet's indexer accepted the transaction, or `None` before it did.
     #[cfg_attr(feature = "ts", ts(type = "string | null"))]
     pub submitted_at: Option<PrimitiveDateTime>,
     #[cfg_attr(feature = "ts", ts(type = "string"))]

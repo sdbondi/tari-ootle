@@ -859,7 +859,7 @@ own deposit and withdrawal path. See [Burn Minotari for TARI](/guides/burn-minot
 6. **Spendable deposits only:** never credit an output that is `Invalid`, frozen, or not a key-path (`Key`) output.
 7. **Idempotency:** credit deposits once per UTXO address, and record withdrawal transaction IDs before you wait for
    the result.
-8. **Verify the indexer:** keep `indexer_trust = "verify"` in every wallet daemon, so that deposits, receipts and
+8. **Verify the indexer:** set `indexer_trust = "verify"` in every wallet daemon, so that deposits, receipts and
    spends are all proven. Point the wallets at an indexer you run, so that another operator cannot delay them.
 9. **Audit logging:** log every credit with the UTXO address, the destination tag, the amount and the time.
 

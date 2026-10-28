@@ -789,7 +789,17 @@ async fn the_transaction_service_submits_a_held_back_transaction_once_the_wallet
     .expect("the service never submitted the held-back transaction");
     let submitted = test.sdk().transaction_api().get(transaction_id).unwrap();
     assert_eq!(submitted.status, TransactionStatus::Pending);
-    assert!(test.sdk().validator_set_api().anchor().unwrap().is_some());
+    let anchor = test
+        .sdk()
+        .validator_set_api()
+        .anchor()
+        .unwrap()
+        .expect("the wallet anchored");
+    let submitted_at = submitted.submitted_at.expect("the submission time is recorded");
+    assert!(
+        submitted_at >= anchor.anchored_at,
+        "a transaction held back for the anchor is submitted after it"
+    );
 }
 
 #[tokio::test]

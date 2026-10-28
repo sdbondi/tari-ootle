@@ -23,7 +23,7 @@ export type WalletTransaction = {
   new_account_info: NewAccountData | null;
   is_dry_run: boolean;
   /**
-   * When the network accepted the transaction for consensus, or `None` before it did.
+   * When the wallet's indexer accepted the transaction, or `None` before it did.
    */
   submitted_at: string | null;
   last_update_time: string;

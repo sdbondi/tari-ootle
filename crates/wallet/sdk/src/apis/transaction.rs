@@ -449,8 +449,10 @@ where
     /// A receipt proven in an epoch before the wallet's anchor can never verify, because the wallet trusts no set
     /// before it. When `transaction` was also submitted before the wallet anchored, its result is
     /// [`CommittedResult::PredatesAnchor`] and is taken from the indexer, as the anchor itself was. A transaction
-    /// submitted after the anchor commits in its epoch or later, so a proof in an earlier epoch is back-dated, and its
-    /// result stays [`CommittedResult::Unproven`].
+    /// submitted after the anchor gets no such fallback, because the indexer chooses the epoch it proves a receipt in
+    /// and could back-date any proof past verification. Its result stays [`CommittedResult::Unproven`], including when
+    /// it committed in the epoch before the anchor's, in a shard group that had not yet ended that epoch when the
+    /// wallet anchored.
     async fn verify_committed_result(
         &self,
         transaction: &WalletTransaction,
