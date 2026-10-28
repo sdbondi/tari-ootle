@@ -102,9 +102,9 @@ pub fn price(intrinsic: IntrinsicId, args: &EngineArgs) -> Result<u64, RuntimeEr
 pub trait IntrinsicEnv {
     fn network(&self) -> Network;
     /// The template whose code is running.
-    fn current_template(&self) -> Option<TemplateAddress>;
+    fn current_template(&self) -> Result<TemplateAddress, RuntimeError>;
     /// The component in scope, when the running call has one.
-    fn current_component(&self) -> Option<ComponentAddress>;
+    fn current_component(&self) -> Result<Option<ComponentAddress>, RuntimeError>;
 }
 
 /// Resolves a template's signature scope against the running call.
@@ -114,15 +114,9 @@ fn resolve_signature_scope(
 ) -> Result<TemplateSignatureScope, RuntimeError> {
     match scope {
         SignatureScope::Shared => Ok(TemplateSignatureScope::Shared),
-        SignatureScope::CurrentTemplate => {
-            env.current_template()
-                .map(TemplateSignatureScope::Template)
-                .ok_or(RuntimeError::NotSupported {
-                    details: "verifying a template-scoped signature outside a template call".to_string(),
-                })
-        },
+        SignatureScope::CurrentTemplate => env.current_template().map(TemplateSignatureScope::Template),
         SignatureScope::CurrentComponent => env
-            .current_component()
+            .current_component()?
             .map(TemplateSignatureScope::Component)
             .ok_or(RuntimeError::SignatureScopeOutsideComponent),
     }
@@ -380,12 +374,12 @@ mod tests {
             Network::LocalNet
         }
 
-        fn current_template(&self) -> Option<TemplateAddress> {
-            None
+        fn current_template(&self) -> Result<TemplateAddress, RuntimeError> {
+            Err(RuntimeError::NoActiveCallFrame)
         }
 
-        fn current_component(&self) -> Option<ComponentAddress> {
-            None
+        fn current_component(&self) -> Result<Option<ComponentAddress>, RuntimeError> {
+            Err(RuntimeError::NoActiveCallFrame)
         }
     }
 

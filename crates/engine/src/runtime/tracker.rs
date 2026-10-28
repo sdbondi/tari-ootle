@@ -158,12 +158,12 @@ impl<TStore: StateReader> IntrinsicEnv for StateTracker<TStore> {
         self.read_with(|state| state.network())
     }
 
-    fn current_template(&self) -> Option<TemplateAddress> {
-        self.read_with(|state| state.current_template().ok().copied())
+    fn current_template(&self) -> Result<TemplateAddress, RuntimeError> {
+        self.read_with(|state| state.current_template().copied())
     }
 
-    fn current_component(&self) -> Option<ComponentAddress> {
-        self.read_with(|state| state.current_component().ok().flatten())
+    fn current_component(&self) -> Result<Option<ComponentAddress>, RuntimeError> {
+        self.read_with(|state| state.current_component())
     }
 }
 
