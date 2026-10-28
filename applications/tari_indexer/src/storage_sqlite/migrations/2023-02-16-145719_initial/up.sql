@@ -167,6 +167,17 @@ create table staged_versions
     primary key (shard, state_version)
 );
 
+-- The shard leaves of every quorum-signed checkpoint stored, above each shard's last verified version. A stream
+-- catching up checks its staged versions against each in turn, so that no more than an epoch's versions are staged
+-- unchecked.
+create table checkpoint_shard_leaves
+(
+    shard          int    not null,
+    state_version  bigint not null,
+    transition_acc blob   not null,
+    primary key (shard, state_version)
+);
+
 -- Lightweight template metadata received from validators via the TEMPLATE_METADATA sync flag. This
 -- lets the indexer serve a searchable template catalogue without storing full WASM binaries.
 CREATE TABLE template_catalogue

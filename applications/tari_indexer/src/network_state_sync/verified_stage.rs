@@ -23,7 +23,8 @@ pub const MAX_ACCUMULATOR_HISTORY: usize = 256;
 
 /// The most leaves a shard holds ahead of the stream. A catch-up meets a checkpoint leaf per epoch on its way to the
 /// tip, and each one it holds promotes what was staged below it; past this many, those between the lowest and the
-/// highest are dropped first.
+/// highest are dropped first. Checkpoint leaves are stored as well, and the next few above a shard's verified version
+/// are checked again after each promotion, so a dropped one still checks the versions below it.
 pub const MAX_WAITING_LEAVES: usize = 64;
 
 /// A shard's state version and transition accumulator as a quorum committed them.

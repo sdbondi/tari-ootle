@@ -35,6 +35,7 @@ use crate::{
     network_state_sync::EventFilter,
     storage_sqlite::{
         models::{
+            CheckpointShardLeaf,
             Key,
             NewEvent,
             NewSubstate,
@@ -247,6 +248,42 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
             ))
             .execute(self.connection())
             .map_err(|e| StorageError::general(OPERATION, e))?;
+        Ok(())
+    }
+
+    fn checkpoint_shard_leaves_insert(&mut self, leaves: &[CheckpointShardLeaf]) -> Result<(), StorageError> {
+        const OPERATION: &str = "checkpoint_shard_leaves_insert";
+        use crate::storage_sqlite::schema::checkpoint_shard_leaves;
+
+        for leaf in leaves {
+            diesel::insert_into(checkpoint_shard_leaves::table)
+                .values((
+                    checkpoint_shard_leaves::shard.eq(leaf.shard.as_u32() as i32),
+                    checkpoint_shard_leaves::state_version.eq(leaf.state_version.as_u64() as i64),
+                    checkpoint_shard_leaves::transition_acc.eq(leaf.transition_acc.as_slice()),
+                ))
+                .on_conflict_do_nothing()
+                .execute(self.connection())
+                .map_err(|e| StorageError::general(OPERATION, e))?;
+        }
+        Ok(())
+    }
+
+    fn checkpoint_shard_leaves_delete_through(
+        &mut self,
+        shard: Shard,
+        state_version: StateVersion,
+    ) -> Result<(), StorageError> {
+        const OPERATION: &str = "checkpoint_shard_leaves_delete_through";
+        use crate::storage_sqlite::schema::checkpoint_shard_leaves;
+
+        diesel::delete(
+            checkpoint_shard_leaves::table
+                .filter(checkpoint_shard_leaves::shard.eq(shard.as_u32() as i32))
+                .filter(checkpoint_shard_leaves::state_version.le(state_version.as_u64() as i64)),
+        )
+        .execute(self.connection())
+        .map_err(|e| StorageError::general(OPERATION, e))?;
         Ok(())
     }
 

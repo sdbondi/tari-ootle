@@ -34,7 +34,7 @@ mod watched_substate;
 
 pub use events::*;
 pub use key_value::*;
-pub use staged_version::{StagedAccumulator, StagedVersion};
+pub use staged_version::{CheckpointShardLeaf, StagedAccumulator, StagedVersion};
 pub(crate) use staged_version::{StagedAccumulatorRow, decode_staged_accumulator};
 pub use substate::*;
 pub use substate_cache::SubstateCacheInvalidation;

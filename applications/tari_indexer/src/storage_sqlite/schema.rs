@@ -52,6 +52,14 @@ diesel::table! {
 }
 
 diesel::table! {
+    checkpoint_shard_leaves (shard, state_version) {
+        shard -> Integer,
+        state_version -> BigInt,
+        transition_acc -> Binary,
+    }
+}
+
+diesel::table! {
     staged_versions (shard, state_version) {
         shard -> Integer,
         state_version -> BigInt,
@@ -177,6 +185,7 @@ diesel::table! {
 }
 
 diesel::allow_tables_to_appear_in_same_query!(
+    checkpoint_shard_leaves,
     epoch_checkpoints,
     events,
     key_values,

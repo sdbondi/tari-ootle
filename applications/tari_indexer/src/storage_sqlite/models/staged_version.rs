@@ -1,7 +1,7 @@
 //   Copyright 2026 The Tari Project
 //   SPDX-License-Identifier: BSD-3-Clause
 
-use tari_ootle_common_types::{Epoch, StateVersion};
+use tari_ootle_common_types::{Epoch, StateVersion, shard::Shard};
 use tari_ootle_storage::StorageError;
 use tari_state_tree::TransitionAccumulator;
 
@@ -22,6 +22,14 @@ pub struct StagedVersion {
     pub accumulator: StagedAccumulator,
     /// The version's length-delimited, prost-encoded `SubstateBatch` chunks, in the order they were streamed.
     pub batch: Vec<u8>,
+}
+
+/// A shard's state version and transition accumulator as a quorum-signed checkpoint states them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckpointShardLeaf {
+    pub shard: Shard,
+    pub state_version: StateVersion,
+    pub transition_acc: TransitionAccumulator,
 }
 
 /// A row of `staged_versions` as read: `(state_version, epoch, transition_acc, streamed_by)`.

@@ -84,6 +84,7 @@ use crate::{
         SqliteIndexerStore,
         SqliteStoreWriteTransaction,
         models::{
+            CheckpointShardLeaf,
             Key,
             StagedAccumulator,
             StagedVersion,
@@ -138,6 +139,8 @@ const MAX_UNCOVERED_BYTES: usize = 2 * MAX_BUFFERED_VERSION_BYTES;
 /// The most versions a stream stages above every verified leaf of its shards before it stops reading until a leaf
 /// covers them.
 const MAX_UNCOVERED_VERSIONS: usize = 200_000;
+/// The most stored checkpoint leaves of a shard checked at once above its verified version.
+const CHECKPOINT_LEAVES_AHEAD: usize = 4;
 /// The most staged versions promoted in one write transaction.
 const MAX_PROMOTED_VERSIONS: usize = 1024;
 /// The most encoded bytes of staged versions promoted in one write transaction, which bounds what it decodes and
@@ -620,6 +623,14 @@ impl NetworkWideStateSync {
             progress.record_checkpoint(shard_group, checkpoint_epoch);
             progress.clone()
         });
+        let stored_leaves = leaves
+            .iter()
+            .map(|leaf| CheckpointShardLeaf {
+                shard: leaf.shard,
+                state_version: leaf.state_version,
+                transition_acc: leaf.transition_acc,
+            })
+            .collect::<Vec<_>>();
         self.store
             .with_write_tx(move |tx| {
                 write_checkpoint(
@@ -627,6 +638,7 @@ impl NetworkWideStateSync {
                     &checkpoint,
                     checkpoint_shard_group,
                     xtr_exhausted,
+                    &stored_leaves,
                     sync_progress_snapshot,
                 )
             })
@@ -1082,9 +1094,15 @@ impl NetworkWideStateSync {
                     details: format!("the staged versions of shard {shard} do not restore: {e}"),
                 }
             })?;
+            let (verdict, checked_on) = match verdict {
+                Some(verdict) => (Some(verdict), "the leaf it was waiting for"),
+                None => (
+                    self.check_stored_leaves(shard, progress).await?,
+                    "a stored checkpoint leaf",
+                ),
+            };
             if let Some(verdict) = verdict {
-                self.act_on_verdict(shard, verdict, "the leaf it was waiting for", progress)
-                    .await?;
+                self.act_on_verdict(shard, verdict, checked_on, progress).await?;
             }
         }
         Ok(())
@@ -1104,6 +1122,9 @@ impl NetworkWideStateSync {
     /// Logs and counts `verdict` on `shard`, then promotes the staged versions it authenticates, or discards those
     /// staged above the shard's last verified version when it mismatches. A mismatch is returned as an error that
     /// blames every peer whose staged version was discarded. Returns the version promoted to.
+    ///
+    /// Each promotion moves the verified version past the stored checkpoint leaves checked so far, so the next ones
+    /// above it are checked in turn.
     async fn act_on_verdict(
         &self,
         shard: Shard,
@@ -1111,44 +1132,85 @@ impl NetworkWideStateSync {
         checked_on: impl Display,
         progress: &SharedSyncProgress,
     ) -> Result<Option<StateVersion>, NetworkStateSyncError> {
-        let outcome = match verdict {
-            Verdict::Promote(version) => {
-                debug!(target: LOG_TARGET, "🌍️ Shard {shard} verified to v{version} by {checked_on}");
-                self.record_leaf_check("promote");
-                self.promote(shard, version, progress).await?;
-                return Ok(Some(version));
-            },
-            Verdict::Mismatch {
-                version,
-                epoch,
-                computed,
-                verified,
-                streamed_by,
-            } => {
-                self.record_leaf_check("mismatch");
-                let (rewound_to, blamed) = self.discard_staged(shard, progress).await?;
-                return Err(NetworkStateSyncError::UnverifiedHistory {
-                    details: format!(
-                        "Transition accumulator mismatch: shard {shard} v{version} at {epoch} streamed by \
-                         {streamed_by} computes {computed}, but the verified leaf has {verified} (checked on \
-                         {checked_on}). Discarded every version staged above v{rewound_to}"
-                    ),
-                    blamed,
-                    diverged_from: Some((shard, rewound_to)),
-                });
-            },
-            Verdict::Conflict {
-                version,
-                held,
-                verified,
-            } => {
-                error!(target: LOG_TARGET, "⚠️ Verified leaves conflict: shard {shard} v{version} was verified at transition accumulator {held}, but {checked_on} has {verified}");
-                "conflict"
-            },
-            Verdict::Wait | Verdict::Stale => return Ok(None),
-        };
-        self.record_leaf_check(outcome);
-        Ok(None)
+        let mut verdict = verdict;
+        let mut checked_on = checked_on.to_string();
+        let mut promoted = None;
+        loop {
+            match verdict {
+                Verdict::Promote(version) => {
+                    debug!(target: LOG_TARGET, "🌍️ Shard {shard} verified to v{version} by {checked_on}");
+                    self.record_leaf_check("promote");
+                    self.promote(shard, version, progress).await?;
+                    promoted = Some(version);
+                    match self.check_stored_leaves(shard, progress).await? {
+                        Some(next) => {
+                            verdict = next;
+                            checked_on = "a stored checkpoint leaf".to_string();
+                        },
+                        None => return Ok(promoted),
+                    }
+                },
+                Verdict::Mismatch {
+                    version,
+                    epoch,
+                    computed,
+                    verified,
+                    streamed_by,
+                } => {
+                    self.record_leaf_check("mismatch");
+                    let (rewound_to, blamed) = self.discard_staged(shard, progress).await?;
+                    return Err(NetworkStateSyncError::UnverifiedHistory {
+                        details: format!(
+                            "Transition accumulator mismatch: shard {shard} v{version} at {epoch} streamed by \
+                             {streamed_by} computes {computed}, but the verified leaf has {verified} (checked on \
+                             {checked_on}). Discarded every version staged above v{rewound_to}"
+                        ),
+                        blamed,
+                        diverged_from: Some((shard, rewound_to)),
+                    });
+                },
+                Verdict::Conflict {
+                    version,
+                    held,
+                    verified,
+                } => {
+                    error!(target: LOG_TARGET, "⚠️ Verified leaves conflict: shard {shard} v{version} was verified at transition accumulator {held}, but {checked_on} has {verified}");
+                    self.record_leaf_check("conflict");
+                    return Ok(promoted);
+                },
+                Verdict::Wait | Verdict::Stale => return Ok(promoted),
+            }
+        }
+    }
+
+    /// Checks the first [`CHECKPOINT_LEAVES_AHEAD`] stored checkpoint leaves above `shard`'s verified version,
+    /// returning the verdict of the last that checks anything, or of the first that mismatches. Those ahead of the
+    /// stream wait for it.
+    async fn check_stored_leaves(
+        &self,
+        shard: Shard,
+        progress: &SharedSyncProgress,
+    ) -> Result<Option<Verdict<PeerAddress>>, NetworkStateSyncError> {
+        let verified = progress.lock().await.verified(shard).version;
+        let leaves = self
+            .store
+            .with_read_tx(move |tx| tx.checkpoint_shard_leaves_above(shard, verified, CHECKPOINT_LEAVES_AHEAD))
+            .await?;
+        let mut stage = self.verified_stage();
+        let mut checked = None;
+        for leaf in leaves {
+            let verdict = stage.on_leaf(VerifiedShardLeaf {
+                shard: leaf.shard,
+                state_version: leaf.state_version,
+                transition_acc: leaf.transition_acc,
+            });
+            match verdict {
+                mismatch @ Verdict::Mismatch { .. } => return Ok(Some(mismatch)),
+                Verdict::Wait | Verdict::Stale => {},
+                verdict => checked = Some(verdict),
+            }
+        }
+        Ok(checked)
     }
 
     fn record_leaf_check(&self, outcome: &'static str) {
@@ -2105,19 +2167,21 @@ fn check_validator_set(
     Ok(())
 }
 
-/// Stores `checkpoint` of `shard_group`, adding `xtr_exhausted` to the accumulated exhaust burn the first time it is
-/// stored, and `progress` when given.
+/// Stores `checkpoint` of `shard_group` with its verified `leaves`, adding `xtr_exhausted` to the accumulated exhaust
+/// burn the first time it is stored, and `progress` when given.
 fn write_checkpoint(
     tx: &mut SqliteStoreWriteTransaction<'_>,
     checkpoint: &EpochCheckpoint,
     shard_group: ShardGroup,
     xtr_exhausted: Amount,
+    leaves: &[CheckpointShardLeaf],
     progress: Option<SyncProgress>,
 ) -> Result<(), StorageError> {
     if !tx.epoch_checkpoint_exists(shard_group, checkpoint.epoch())? {
         tx.insert_or_ignore_epoch_checkpoint(checkpoint)?;
         add_to_total(tx, Key::TariAccumulatedExhaustBurn, xtr_exhausted)?;
     }
+    tx.checkpoint_shard_leaves_insert(leaves)?;
     if let Some(progress) = progress {
         tx.key_value_set(Key::SyncProgress, progress)?;
     }
@@ -2294,6 +2358,7 @@ fn promote_staged(
         details: format!("promoting shard {shard} from v{from} through v{through} promotes nothing"),
     })?;
     tx.staged_versions_delete_through(shard, last.state_version)?;
+    tx.checkpoint_shard_leaves_delete_through(shard, last.state_version)?;
     let verified = VerifiedShardVersion {
         state_version: last.state_version,
         epoch: last.epoch,
@@ -2888,6 +2953,45 @@ mod tests {
             }
         }
 
+        fn checkpoint_leaf(n: u64) -> CheckpointShardLeaf {
+            CheckpointShardLeaf {
+                shard: SHARD,
+                state_version: v(n),
+                transition_acc: acc(n),
+            }
+        }
+
+        async fn checkpoint_leaves_above(store: &SqliteIndexerStore, n: u64, limit: usize) -> Vec<u64> {
+            store
+                .with_read_tx(move |tx| tx.checkpoint_shard_leaves_above(SHARD, v(n), limit))
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|leaf| leaf.state_version.as_u64())
+                .collect()
+        }
+
+        /// A catch-up checks its staged versions against every stored checkpoint leaf in turn, the next few above the
+        /// verified version at a time, and promotion drops those it has passed.
+        #[tokio::test]
+        async fn stored_checkpoint_leaves_are_read_in_order_above_the_verified_version_and_dropped_once_promoted() {
+            let (_dir, store) = store().await;
+            let progress = stage(&store, 6).await;
+            store
+                .with_write_tx(|tx| {
+                    tx.checkpoint_shard_leaves_insert(&[2, 4, 6, 9].map(checkpoint_leaf))?;
+                    tx.checkpoint_shard_leaves_insert(&[checkpoint_leaf(4)])
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(checkpoint_leaves_above(&store, 0, 3).await, [2, 4, 6]);
+            assert_eq!(checkpoint_leaves_above(&store, 4, 3).await, [6, 9]);
+
+            promote(&store, &progress, 4).await.unwrap();
+            assert_eq!(checkpoint_leaves_above(&store, 0, 10).await, [6, 9]);
+        }
+
         #[test]
         fn rewinding_a_shard_nothing_is_verified_of_restarts_it_from_its_first_version() {
             let mut progress = SyncProgress::default();
@@ -2980,7 +3084,7 @@ mod tests {
 
             let ahead = head.clone();
             store
-                .with_write_tx(move |tx| write_checkpoint(tx, &ahead, shard_group, burn, None))
+                .with_write_tx(move |tx| write_checkpoint(tx, &ahead, shard_group, burn, &[], None))
                 .await
                 .unwrap();
             let progress = store
@@ -2993,7 +3097,7 @@ mod tests {
             let mut backfilled = SyncProgress::default();
             backfilled.record_checkpoint(shard_group, Epoch(250));
             store
-                .with_write_tx(move |tx| write_checkpoint(tx, &head, shard_group, burn, Some(backfilled)))
+                .with_write_tx(move |tx| write_checkpoint(tx, &head, shard_group, burn, &[], Some(backfilled)))
                 .await
                 .unwrap();
             let progress = store

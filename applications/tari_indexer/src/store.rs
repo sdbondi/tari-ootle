@@ -52,6 +52,7 @@ use tari_validator_node_rpc::client::SubstateProofData;
 use crate::{
     network_state_sync::{EventFilter, SyncProgress},
     storage_sqlite::models::{
+        CheckpointShardLeaf,
         Key,
         KeyValue,
         StagedAccumulator,
@@ -222,6 +223,14 @@ pub trait IndexerStoreReadTransaction {
     /// The accumulators of the last `limit` versions of `shard` staged, ascending by version.
     fn staged_accumulators_tail(&mut self, shard: Shard, limit: usize) -> Result<Vec<StagedAccumulator>, StorageError>;
 
+    /// The first `limit` stored checkpoint leaves of `shard` above `state_version`, ascending.
+    fn checkpoint_shard_leaves_above(
+        &mut self,
+        shard: Shard,
+        state_version: StateVersion,
+        limit: usize,
+    ) -> Result<Vec<CheckpointShardLeaf>, StorageError>;
+
     /// The staged `state_version` of `shard`, if it is staged.
     fn staged_version_get(
         &mut self,
@@ -314,6 +323,14 @@ pub trait IndexerStoreWriteTransaction {
     fn raise_utxo_tombstone_horizon(&mut self, shard: Shard, state_version: StateVersion) -> Result<(), StorageError>;
     /// Stages a streamed version of `shard` until a verified leaf covers it.
     fn staged_version_insert(&mut self, shard: Shard, version: &StagedVersion) -> Result<(), StorageError>;
+    /// Stores the shard leaves of a quorum-signed checkpoint, keeping any already stored.
+    fn checkpoint_shard_leaves_insert(&mut self, leaves: &[CheckpointShardLeaf]) -> Result<(), StorageError>;
+    /// Deletes the stored checkpoint leaves of `shard` at or below `state_version`.
+    fn checkpoint_shard_leaves_delete_through(
+        &mut self,
+        shard: Shard,
+        state_version: StateVersion,
+    ) -> Result<(), StorageError>;
     /// Deletes the versions of `shard` staged at or below `state_version`.
     fn staged_versions_delete_through(&mut self, shard: Shard, state_version: StateVersion)
     -> Result<(), StorageError>;
