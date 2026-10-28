@@ -1937,6 +1937,7 @@ impl WalletStoreWriter for WriteTransaction<'_> {
             )
             // We have the key to spend
             .filter(stealth_outputs::owner_key_id.is_not_null())
+            // Rows stored before the Burnt status hold a burnt output as Unspent with is_burnt set.
             .filter(stealth_outputs::is_burnt.eq(false))
             .filter(stealth_outputs::is_frozen.eq(false))
             .filter(stealth_outputs::is_condition_spendable.eq(true))

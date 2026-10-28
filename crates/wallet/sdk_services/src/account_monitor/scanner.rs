@@ -21,7 +21,10 @@ use tari_ootle_transaction::TransactionId;
 use tari_ootle_wallet_sdk::{
     WalletSdk,
     WalletSdkSpec,
-    apis::substate::{ReadSubstate, SubstateApiError, ValidatorScanResult},
+    apis::{
+        stealth_outputs::UpdatedOutputs,
+        substate::{ReadSubstate, SubstateApiError, ValidatorScanResult},
+    },
     models::{
         AccountChangedEvent,
         AccountCreatedEvent,
@@ -29,6 +32,7 @@ use tari_ootle_wallet_sdk::{
         BalanceChangeSource,
         NewAccountData,
         NonFungibleToken,
+        UtxoBurntEvent,
         WalletEvent,
     },
 };
@@ -696,7 +700,16 @@ where TSpec: WalletSdkSpec
             .up_iter()
             .filter_map(|(id, s)| Some((id.as_utxo_address()?, s.substate_value().as_utxo()?)));
 
-        let touched_stealth_balances = stealth_outputs_api.verify_and_update_outputs(utxos)?;
+        let UpdatedOutputs {
+            touched_balances: touched_stealth_balances,
+            burnt,
+        } = stealth_outputs_api.verify_and_update_outputs(utxos)?;
+        for (account_address, address) in burnt {
+            self.notify.notify(UtxoBurntEvent {
+                account_address,
+                address,
+            });
+        }
         self.prove_held_outputs(diff.up_iter().filter_map(|(id, _)| id.as_utxo_address()))
             .await?;
 
@@ -1019,7 +1032,10 @@ where TSpec: WalletSdkSpec
             match read {
                 Ok(read) if read.proven_up.is_some() && read.is_burnt_utxo() => {
                     if let Some(account_address) = stealth_outputs_api.mark_burnt(address)? {
-                        self.record_stealth_balance_change(account_address, *address.resource_address())?;
+                        self.notify.notify(UtxoBurntEvent {
+                            account_address,
+                            address: address.clone(),
+                        });
                     }
                     num_proven += 1;
                 },

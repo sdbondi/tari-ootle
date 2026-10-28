@@ -9,7 +9,7 @@ mod support;
 
 use tari_engine_types::{
     Utxo,
-    substate::{SubstateId, SubstateValue},
+    substate::{Substate, SubstateDiff, SubstateId, SubstateValue},
 };
 use tari_ootle_common_types::{
     Epoch,
@@ -20,10 +20,12 @@ use tari_ootle_common_types::{
     shard::Shard,
 };
 use tari_ootle_light_client::test_fixtures::{ValidatorSetFixture, substate_down_proof, substate_proof};
+use tari_ootle_transaction::TransactionId;
 use tari_ootle_wallet_sdk::{
     IndexerTrust,
     models::{
         AccountWithAddress,
+        BalanceChangeSource,
         EndOfShard,
         OutputStatus,
         ProvenUp,
@@ -214,6 +216,49 @@ fn assert_burnt(test: &Wallet, account: &AccountWithAddress, id: UtxoId) {
     assert_eq!(balance(test, account), Amount::zero());
 }
 
+/// The number of [`WalletEvent::UtxoBurnt`] events received, asserting that no [`WalletEvent::UtxoSpent`] is.
+fn count_burnt_events(events: &mut tokio::sync::broadcast::Receiver<WalletEvent>) -> usize {
+    let mut burnt_events = 0;
+    while let Ok(event) = events.try_recv() {
+        assert!(!matches!(event, WalletEvent::UtxoSpent(_)), "a burn is not a spend");
+        if matches!(event, WalletEvent::UtxoBurnt(_)) {
+            burnt_events += 1;
+        }
+    }
+    burnt_events
+}
+
+/// The indexer returns `reported` to the full-UTXO lookup of the output at `id`, and the wallet runs its recovery.
+async fn recover_reported(
+    test: &Wallet,
+    network: &ProvingNetwork,
+    account: &AccountWithAddress,
+    id: UtxoId,
+    reported: &Utxo,
+) {
+    network.index_utxo(id, reported.clone());
+    let output = reported.output().unwrap();
+    let item = (*account.account.component_address(), UtxoUnspent {
+        tag: output.tag,
+        public_nonce: output.output.public_nonce,
+    });
+    test.store()
+        .with_write_tx(|tx| tx.utxo_process_queue_extend(&STEALTH_TARI_RESOURCE_ADDRESS, [item]))
+        .unwrap();
+
+    let unresolved = UtxoRecovery::new(test.sdk().clone())
+        .process_utxo_validation_queue()
+        .await
+        .unwrap();
+    assert_eq!(unresolved, 0);
+    let queued = test
+        .store()
+        .with_read_tx(|tx| tx.utxo_process_queue_fetch_batch(None, 1000))
+        .unwrap()
+        .len();
+    assert_eq!(queued, 0);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_trusting_wallet_records_a_reported_burn() {
     let (_, network, test, account) = wallet(IndexerTrust::Trust).await;
@@ -227,14 +272,7 @@ async fn a_trusting_wallet_records_a_reported_burn() {
     assert_eq!(stats.num_burnt, 1);
     assert_eq!(stats.num_spent, 0);
     assert_burnt(&test, &account, id);
-    let mut burnt_events = 0;
-    while let Ok(event) = events.try_recv() {
-        assert!(!matches!(event, WalletEvent::UtxoSpent(_)), "a burn is not a spend");
-        if matches!(event, WalletEvent::UtxoBurnt(_)) {
-            burnt_events += 1;
-        }
-    }
-    assert_eq!(burnt_events, 1);
+    assert_eq!(count_burnt_events(&mut events), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -395,13 +433,16 @@ async fn a_held_output_without_a_proof_read_burnt_is_recorded_burnt() {
     let (id, utxo) = test.owned_utxo(&account, VALUE);
     hold(&test, &account, id, &utxo, None, OutputStatus::Unspent);
     serve_latest(&sets, &network, id, &burnt(&utxo), true);
+    let notify = Notify::new(100);
+    let mut events = notify.subscribe();
 
-    AccountScanner::new(Notify::new(1), test.sdk().clone())
+    AccountScanner::new(notify, test.sdk().clone())
         .prove_unproven_held_outputs()
         .await
         .unwrap();
     assert_burnt(&test, &account, id);
     assert!(stored(&test, id).proven_up.is_none());
+    assert_eq!(count_burnt_events(&mut events), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -410,26 +451,74 @@ async fn a_reported_output_held_without_a_proof_read_burnt_is_recorded_burnt() {
     let (id, utxo) = test.owned_utxo(&account, VALUE);
     hold(&test, &account, id, &utxo, None, OutputStatus::Unspent);
     serve_latest(&sets, &network, id, &burnt(&utxo), true);
-    network.index_utxo(id, utxo.clone());
-    let output = utxo.output().unwrap();
-    let item = (*account.account.component_address(), UtxoUnspent {
-        tag: output.tag,
-        public_nonce: output.output.public_nonce,
-    });
-    test.store()
-        .with_write_tx(|tx| tx.utxo_process_queue_extend(&STEALTH_TARI_RESOURCE_ADDRESS, [item]))
-        .unwrap();
 
-    let unresolved = UtxoRecovery::new(test.sdk().clone())
-        .process_utxo_validation_queue()
+    recover_reported(&test, &network, &account, id, &utxo).await;
+    assert_burnt(&test, &account, id);
+}
+
+/// A report that a held unfrozen output is frozen is checked against a read of the output, which a burn leaves without
+/// an output.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_output_reported_frozen_and_read_burnt_is_recorded_burnt() {
+    let (sets, network, test, account) = wallet(IndexerTrust::Verify).await;
+    let (id, utxo) = test.owned_utxo(&account, VALUE);
+    hold(&test, &account, id, &utxo, Some(3), OutputStatus::Unspent);
+    serve_latest(&sets, &network, id, &burnt(&utxo), true);
+    let mut frozen = utxo.clone();
+    frozen.freeze();
+
+    recover_reported(&test, &network, &account, id, &frozen).await;
+    assert_burnt(&test, &account, id);
+    assert_eq!(
+        stored(&test, id).proven_up.map(|proven_up| proven_up.version),
+        Some(VERSION),
+        "the burnt version is not held as a live one"
+    );
+}
+
+/// The wallet's own transaction burnt an output it holds, so the transaction's diff brings up the burnt UTXO.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_transaction_diff_with_the_burnt_utxo_of_a_held_output_records_it_burnt() {
+    let (_, _, test, account) = wallet(IndexerTrust::Trust).await;
+    let (id, utxo) = test.owned_utxo(&account, VALUE);
+    hold(&test, &account, id, &utxo, None, OutputStatus::Unspent);
+    let accounts_api = test.sdk().accounts_api();
+    accounts_api
+        .update_vault_balance_and_record_change(
+            Test::test_vault_address(),
+            VERSION,
+            Amount::zero(),
+            Amount::from(VALUE),
+            BalanceChangeSource::Scan,
+        )
+        .unwrap();
+    let mut diff = SubstateDiff::new();
+    diff.up(
+        substate_id(id),
+        Substate::new(BURNT_VERSION, SubstateValue::Utxo(burnt(&utxo))),
+    );
+    let notify = Notify::new(100);
+    let mut events = notify.subscribe();
+    let transaction_id = TransactionId::default();
+
+    AccountScanner::new(notify, test.sdk().clone())
+        .process_result(transaction_id, &diff, None)
         .await
         .unwrap();
-    assert_eq!(unresolved, 0);
     assert_burnt(&test, &account, id);
-    let queued = test
-        .store()
-        .with_read_tx(|tx| tx.utxo_process_queue_fetch_batch(None, 1000))
-        .unwrap()
-        .len();
-    assert_eq!(queued, 0);
+    assert_eq!(count_burnt_events(&mut events), 1);
+    assert_eq!(
+        accounts_api
+            .get_vault_balance(&Test::test_vault_address())
+            .unwrap()
+            .confidential,
+        Amount::zero()
+    );
+    let changes = accounts_api
+        .get_balance_changes(&Test::test_account_address(), 0, 10, None, Some(&transaction_id), None)
+        .unwrap();
+    assert_eq!(
+        changes.total, 1,
+        "the burn is recorded as the transaction's balance change"
+    );
 }
