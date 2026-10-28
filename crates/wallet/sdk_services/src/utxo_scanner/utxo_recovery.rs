@@ -3,7 +3,7 @@
 
 use std::{
     array,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map::Entry},
     time::Duration,
 };
 
@@ -622,11 +622,10 @@ where
         // Loading an account's keys decrypts imported keys, so it is done once per account in the batch
         let mut keys_by_account = HashMap::new();
         for utxo in utxos_to_recover {
-            if !keys_by_account.contains_key(&utxo.account_addr) {
-                let keys = self.load_account_keys(&utxo.account_addr)?;
-                keys_by_account.insert(utxo.account_addr, keys);
-            }
-            let keys = &keys_by_account[&utxo.account_addr];
+            let keys = match keys_by_account.entry(utxo.account_addr) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => entry.insert(self.load_account_keys(&utxo.account_addr)?),
+            };
             if self.check_unspent_utxo_and_store(self.sdk.network(), resource_address, keys, utxo)? {
                 num_recovered += 1;
             }

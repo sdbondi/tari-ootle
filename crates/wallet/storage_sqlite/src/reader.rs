@@ -2225,12 +2225,11 @@ impl Drop for ReadTransaction<'_> {
 
 #[cfg(test)]
 mod tests {
-    use tari_ootle_wallet_sdk::storage::{
-        CommittableStore,
-        ReadableWalletStore,
-        WalletStoreWriter,
-        WriteableWalletStore,
+    use tari_ootle_wallet_sdk::{
+        models::KeyId,
+        storage::{CommittableStore, ReadableWalletStore, WalletStoreWriter, WriteableWalletStore},
     };
+    use tari_template_lib_types::{EncryptedData, stealth::SpendAuthorization};
 
     use super::*;
     use crate::SqliteWalletStore;
@@ -2330,19 +2329,69 @@ mod tests {
         }
     }
 
+    fn locked_stealth_output(
+        owner_account: ComponentAddress,
+        resource_address: ResourceAddress,
+        commitment_byte: u8,
+        key_ids: (KeyId, Option<KeyId>),
+        lock_id: WalletLockId,
+    ) -> StealthOutputModel {
+        let (view_only_key_id, owner_key_id) = key_ids;
+        StealthOutputModel {
+            owner_account,
+            resource_address,
+            commitment: PedersenCommitmentBytes::from_array([commitment_byte; 32]),
+            value: 100,
+            sender_public_nonce: RistrettoPublicKeyBytes::default(),
+            view_only_key_id,
+            owner_key_id,
+            encrypted_data: EncryptedData::try_from(vec![0u8; EncryptedData::min_size()]).unwrap(),
+            tag_byte: UtxoTag::new(0),
+            memo: None,
+            auth: SpendAuthorization::Key(RistrettoPublicKeyBytes::default()),
+            minimum_value_promise: 0,
+            status: OutputStatus::LockedForSpend,
+            is_burnt: false,
+            is_frozen: false,
+            is_on_chain: true,
+            is_condition_spendable: true,
+            lock_id: Some(lock_id),
+            proven_up: None,
+            spent_version: None,
+        }
+    }
+
+    fn locked_confidential_output(
+        account_address: ComponentAddress,
+        vault_id: VaultId,
+        commitment_byte: u8,
+        key_ids: (KeyId, Option<KeyId>),
+        lock_id: WalletLockId,
+    ) -> ConfidentialOutputModel {
+        let (view_only_key_id, owner_key_id) = key_ids;
+        ConfidentialOutputModel {
+            account_address,
+            vault_id,
+            commitment: PedersenCommitmentBytes::from_array([commitment_byte; 32]),
+            value: Amount::from(100u64),
+            sender_public_nonce: None,
+            view_only_key_id,
+            owner_key_id,
+            encrypted_data: EncryptedData::try_from(vec![0u8; EncryptedData::min_size()]).unwrap(),
+            public_asset_tag: None,
+            memo: None,
+            status: OutputStatus::LockedForSpend,
+            lock_id: Some(lock_id),
+        }
+    }
+
     #[test]
     fn get_locked_by_lock_id_preserves_each_outputs_account_across_multiple_accounts() {
         use std::collections::HashSet;
 
         use tari_ootle_common_types::{Epoch, SubstateVersion};
-        use tari_ootle_wallet_sdk::models::{KeyBranch, KeyId, LockOwner};
-        use tari_template_lib_types::{
-            EncryptedData,
-            ObjectKey,
-            ResourceType,
-            crypto::{PedersenCommitmentBytes, RistrettoPublicKeyBytes, UtxoTag},
-            stealth::SpendAuthorization,
-        };
+        use tari_ootle_wallet_sdk::models::{KeyBranch, LockOwner};
+        use tari_template_lib_types::{ObjectKey, ResourceType};
 
         let store = SqliteWalletStore::try_open(":memory:").unwrap();
         store.run_migrations().unwrap();
@@ -2354,7 +2403,6 @@ mod tests {
         let resource = ResourceAddress::new(ObjectKey::from_array([9u8; ObjectKey::LENGTH]));
         let view_key = KeyId::derived(KeyBranch::ViewOnlyKey, 0);
         let owner_key = Some(KeyId::derived(KeyBranch::Account, 0));
-        let encrypted_data = EncryptedData::try_from(vec![0u8; EncryptedData::min_size()]).unwrap();
 
         let lock_id = {
             let mut tx = store.create_write_tx().unwrap();
@@ -2387,43 +2435,21 @@ mod tests {
             }
             let lock_id = tx.locks_create(None, LockOwner::Wallet).unwrap();
             for (byte, addr, vault) in [(1u8, acct_a, vault_a), (2u8, acct_b, vault_b)] {
-                tx.stealth_outputs_insert(&StealthOutputModel {
-                    owner_account: addr,
-                    resource_address: resource,
-                    commitment: PedersenCommitmentBytes::from_array([byte; 32]),
-                    value: 100,
-                    sender_public_nonce: RistrettoPublicKeyBytes::default(),
-                    view_only_key_id: view_key,
-                    owner_key_id: owner_key,
-                    encrypted_data: encrypted_data.clone(),
-                    tag_byte: UtxoTag::new(0),
-                    memo: None,
-                    auth: SpendAuthorization::Key(RistrettoPublicKeyBytes::default()),
-                    minimum_value_promise: 0,
-                    status: OutputStatus::LockedForSpend,
-                    is_burnt: false,
-                    is_frozen: false,
-                    is_on_chain: true,
-                    is_condition_spendable: true,
-                    lock_id: Some(lock_id),
-                    proven_up: None,
-                    spent_version: None,
-                })
+                tx.stealth_outputs_insert(&locked_stealth_output(
+                    addr,
+                    resource,
+                    byte,
+                    (view_key, owner_key),
+                    lock_id,
+                ))
                 .unwrap();
-                tx.confidential_outputs_insert(ConfidentialOutputModel {
-                    account_address: addr,
-                    vault_id: vault,
-                    commitment: PedersenCommitmentBytes::from_array([byte + 10; 32]),
-                    value: Amount::from(100u64),
-                    sender_public_nonce: None,
-                    view_only_key_id: view_key,
-                    owner_key_id: owner_key,
-                    encrypted_data: encrypted_data.clone(),
-                    public_asset_tag: None,
-                    memo: None,
-                    status: OutputStatus::LockedForSpend,
-                    lock_id: Some(lock_id),
-                })
+                tx.confidential_outputs_insert(locked_confidential_output(
+                    addr,
+                    vault,
+                    byte + 10,
+                    (view_key, owner_key),
+                    lock_id,
+                ))
                 .unwrap();
             }
             tx.commit().unwrap();
