@@ -49,9 +49,9 @@ CRATES = [
     ("tari_engine_types", "crates/engine_types", 3),
     ("tari_ootle_common_types", "crates/common_types", 3),
     ("tari_state_tree", "crates/state_tree", 3),
-    ("tari_ootle_wallet_crypto", "crates/wallet/crypto", 4),
     ("tari_ootle_address", "crates/ootle_address", 1),
     ("tari_ootle_transaction", "crates/transaction", 3),
+    ("tari_ootle_wallet_crypto", "crates/wallet/crypto", 4),
     # Tier 2, not tier 3: its only build dependency is tari_template_lib_types, so it has no build-time coupling to
     # the core cohort (its tari_engine_types / tari_ootle_transaction deps are dev-only) and carries its own version.
     ("tari_template_builtin", "crates/template_builtin", 2),

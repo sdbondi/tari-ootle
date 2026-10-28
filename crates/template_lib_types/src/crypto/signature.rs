@@ -64,6 +64,11 @@ macro_rules! custom_signature_domain {
 
 /// A signature with an associated signature domain.
 ///
+/// The engine verifies it over a message it derives from the network, the scope, the domain and the
+/// template's message (`tari_ootle_common_types::template_signature_message`), so a signer computes that
+/// message first. An sr25519 signer must also accept the template signing context; one fixed to
+/// `substrate` cannot produce a template signature.
+///
 /// # Example
 /// ```rust,ignore
 /// // Define a custom signature domain
@@ -93,12 +98,16 @@ impl<D: SignatureDomain, T: Into<SignaturePayload>> From<T> for Signature<D> {
 #[derive(Debug, Clone, Encode, Decode, CborLen)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SignaturePayload {
+    /// A Ristretto Schnorr signature whose challenge is
+    /// `tari_ootle_common_types::RistrettoSchnorrBlake2bVerifier::compute_challenge`: a hash under the
+    /// template signature domain over the public nonce, the public key and the template signature message.
     #[n(0)]
     RistrettoSchnorrBlake2b(#[n(0)] SchnorrSignatureBytes),
     /// A standard sr25519 (schnorrkel) signature under the engine's template signing context, over a
     /// message the engine derives from the network, the scope, the signature domain and the template's
     /// message (`tari_ootle_common_types::template_signature_message`). Transaction, node identity and
-    /// other protocol signatures sign under contexts of their own, so none of them verifies as one.
+    /// other protocol signatures sign under contexts of their own, so none of them verifies as one. A
+    /// signer fixed to the `substrate` context cannot produce one.
     #[n(1)]
     Sr25519(#[n(0)] Sr25519SignatureBytes),
 }

@@ -7,10 +7,10 @@ use rand::{CryptoRng, Rng};
 use signature::{hazmat::PrehashSigner, Keypair};
 use tari_crypto::{
     keys::{PublicKey, SecretKey},
-    ristretto::{RistrettoPublicKey, RistrettoSecretKey},
+    ristretto::{RistrettoPublicKey, RistrettoSchnorr, RistrettoSecretKey},
 };
 use tari_ootle_address::OotleAddress;
-use tari_ootle_common_types::{Network, signature::Sr25519SignatureBytes};
+use tari_ootle_common_types::Network;
 use tari_ootle_transaction::{
     Signable,
     TransactionSealSignature,
@@ -55,7 +55,7 @@ impl LocalSigner<OotleSecretKey> {
 
 #[async_trait]
 impl<C> TransactionSigner for LocalSigner<C>
-where C: PrehashSigner<(Sr25519SignatureBytes, RistrettoPublicKey)> + Send + Sync
+where C: PrehashSigner<(RistrettoSchnorr, RistrettoPublicKey)> + Send + Sync
 {
     fn address(&self) -> &Address {
         &self.address
@@ -64,7 +64,7 @@ where C: PrehashSigner<(Sr25519SignatureBytes, RistrettoPublicKey)> + Send + Syn
     async fn sign_transaction(&self, message: &UnsealedTransactionV1) -> signer::Result<TransactionSealSignature> {
         let message = message.to_signing_message(());
         let (signature, public_key) = self.credentials.sign_prehash(&message)?;
-        let sig = TransactionSealSignature::new(public_key.to_byte_type(), signature);
+        let sig = TransactionSealSignature::new(public_key.to_byte_type(), signature.to_byte_type());
         Ok(sig)
     }
 
@@ -75,7 +75,7 @@ where C: PrehashSigner<(Sr25519SignatureBytes, RistrettoPublicKey)> + Send + Syn
     ) -> signer::Result<TransactionAuthorization> {
         let message = tx.to_signing_message(seal_signer);
         let (signature, public_key) = self.credentials.sign_prehash(&message)?;
-        let sig = TransactionSignature::new(public_key.to_byte_type(), signature);
+        let sig = TransactionSignature::new(public_key.to_byte_type(), signature.to_byte_type());
         Ok(sig.into())
     }
 }
