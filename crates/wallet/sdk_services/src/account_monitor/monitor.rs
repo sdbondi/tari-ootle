@@ -19,7 +19,7 @@ use tari_ootle_wallet_sdk::{
         substate::SubstateApiError,
         transaction::TransactionApiError,
     },
-    models::{BalanceChangeSource, NewAccountData, WalletEvent},
+    models::{BalanceChangeSource, NewAccountData, UtxoBurntEvent, UtxoSpentEvent, WalletEvent},
 };
 use tari_shutdown::ShutdownSignal;
 use tari_template_lib_types::{ComponentAddress, ResourceAddress};
@@ -330,9 +330,16 @@ where
                 self.scanner
                     .record_stealth_balance_change(event.account_address, *event.address.resource_address())?;
             },
-            WalletEvent::UtxoSpent(event) => {
+            WalletEvent::UtxoSpent(UtxoSpentEvent {
+                account_address,
+                address,
+            }) |
+            WalletEvent::UtxoBurnt(UtxoBurntEvent {
+                account_address,
+                address,
+            }) => {
                 self.scanner
-                    .record_stealth_balance_change(event.account_address, *event.address.resource_address())?;
+                    .record_stealth_balance_change(account_address, *address.resource_address())?;
             },
             WalletEvent::AccountCreatedOnChain(_) |
             WalletEvent::AccountChangedOnChain(_) |

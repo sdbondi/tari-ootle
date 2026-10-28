@@ -148,6 +148,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
 
         let mut skipped = Vec::new();
         for update in updates {
+            let is_burnt = matches!(update, UtxoUpdateRecord::Burnt(_));
             match update {
                 UtxoUpdateRecord::Unspent(unspent) => {
                     let resource_address = unspent.address.resource_address().to_string();
@@ -179,7 +180,8 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
                         skipped.push(unspent.address);
                     }
                 },
-                UtxoUpdateRecord::Spent(spent) => {
+                // A burnt output is spent as well, so it leaves the unspent set and is pruned as a spend is.
+                UtxoUpdateRecord::Spent(spent) | UtxoUpdateRecord::Burnt(spent) => {
                     let resource_address = spent.address.resource_address().to_string();
                     let commitment = spent.address.id().to_commitment_hex_string();
                     let update = UtxoRecordUpdate {
@@ -189,7 +191,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
                         // Update to deleted state version
                         state_version: Some(spent.state_version.as_u64() as i64),
                         is_spent: Some(true),
-                        ..Default::default()
+                        is_burnt: Some(is_burnt),
                     };
                     // A re-versioned output (freeze, unfreeze) keeps its commitment, so each version has its own
                     // row and only the version this transition takes down is marked spent.
@@ -214,7 +216,7 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
                             utxo_tag: None,
                             epoch: epoch.as_u64() as i64,
                             is_spent: true,
-                            is_burnt: false,
+                            is_burnt,
                         };
                         diesel::insert_into(utxos::table)
                             .values(tombstone)

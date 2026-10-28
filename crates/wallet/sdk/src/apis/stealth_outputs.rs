@@ -649,11 +649,13 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
                     // EDGE-CASE: scanning picks up a local UTXO that we know was spent
                     _ => None,
                 };
+                // A burn is final, so a burnt output stays burnt.
+                let is_burnt = prev_utxo.is_burnt || utxo.is_burnt;
                 let changed = new_status.is_some_and(|status| status != prev_utxo.status) ||
-                    prev_utxo.is_burnt != utxo.is_burnt ||
+                    prev_utxo.is_burnt != is_burnt ||
                     prev_utxo.is_frozen != utxo.is_frozen;
                 let address = utxo.to_utxo_address();
-                tx.stealth_outputs_update(&address, Some(utxo.is_burnt), new_status, Some(utxo.is_frozen))?;
+                tx.stealth_outputs_update(&address, Some(is_burnt), new_status, Some(utxo.is_frozen))?;
                 Ok::<_, WalletStorageError>(changed)
             } else {
                 tx.stealth_outputs_insert(utxo)?;
@@ -681,6 +683,25 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
             Ok(Some(prev_utxo.is_frozen != is_frozen))
         })?;
         Ok(changed)
+    }
+
+    /// Marks the output the wallet holds at `address` burnt, unless it is spent or burnt already. Returns the account
+    /// that holds it when it was marked.
+    pub fn mark_burnt(&self, address: &UtxoAddress) -> Result<Option<ComponentAddress>, StealthOutputsApiError> {
+        let marked = self.store.with_write_tx(|tx| {
+            let Some(held) = tx
+                .stealth_outputs_get_by_commitment(address.resource_address(), &address.id().into_commitment_bytes())
+                .optional()?
+            else {
+                return Ok::<_, WalletStorageError>(None);
+            };
+            let marked = tx.stealth_outputs_mark_as_burnt(address)?;
+            Ok(marked.then_some(held.owner_account))
+        })?;
+        if marked.is_some() {
+            info!(target: LOG_TARGET, "🔥 Stealth output {} is burnt", address);
+        }
+        Ok(marked)
     }
 
     /// Records that a verified proof showed the output at `address` up, unless the wallet holds a proof of the same or
@@ -805,7 +826,7 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
     pub fn verify_and_update_outputs<'i, I: IntoIterator<Item = (UtxoAddress, &'i Utxo)>>(
         &self,
         outputs: I,
-    ) -> Result<HashSet<(ComponentAddress, ResourceAddress)>, StealthOutputsApiError> {
+    ) -> Result<UpdatedOutputs, StealthOutputsApiError> {
         // The keys are only loaded once an output needs validating
         let mut all_used_view_only_keys = None;
         let network = self.config_api.get_network()?;
@@ -813,6 +834,7 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
         let mut found_utxos_count = 0usize;
         let mut num_outputs = 0usize;
         let mut touched_balances = HashSet::new();
+        let mut burnt = Vec::new();
         for (addr, utxo) in outputs {
             num_outputs += 1;
             let commitment = addr.id().into_commitment_bytes();
@@ -825,19 +847,18 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
 
             // The keys are read through the store, so they are loaded outside the write transaction and the
             // output is checked again
-            let (mut tx, exists) = loop {
+            let (mut tx, held) = loop {
                 let mut tx = self.store.create_write_tx()?;
-                let exists = tx
+                let held = tx
                     .stealth_outputs_get_by_commitment(resource_address, &commitment)
-                    .optional()?
-                    .is_some();
-                if exists || utxo.output().is_none() || all_used_view_only_keys.is_some() {
-                    break (tx, exists);
+                    .optional()?;
+                if held.is_some() || utxo.output().is_none() || all_used_view_only_keys.is_some() {
+                    break (tx, held);
                 }
                 drop(tx);
                 all_used_view_only_keys = Some(self.all_used_view_only_keys()?);
             };
-            if exists {
+            if let Some(held) = held {
                 info!(
                     target: LOG_TARGET,
                     "Output already exists in the wallet. Updating. (commitment: {})",
@@ -858,8 +879,11 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
                     );
                 }
 
-                // Update is_burnt and is_frozen status to false->true or true->false
-                tx.stealth_outputs_update(&addr, Some(utxo.is_burnt()), None, Some(utxo.is_frozen()))?;
+                tx.stealth_outputs_update(&addr, None, None, Some(utxo.is_frozen()))?;
+                if utxo.is_burnt() && tx.stealth_outputs_mark_as_burnt(&addr)? {
+                    touched_balances.insert((held.owner_account, held.resource_address));
+                    burnt.push((held.owner_account, addr));
+                }
             } else {
                 let is_frozen = utxo.is_frozen();
                 let Some(output) = utxo.output() else {
@@ -916,7 +940,10 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
             );
         }
 
-        Ok(touched_balances)
+        Ok(UpdatedOutputs {
+            touched_balances,
+            burnt,
+        })
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1209,6 +1236,15 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
             .encrypt_value_and_mask(amount, &mask.key, public_key, &nonce_secret, memo)?;
         Ok((public_nonce, data))
     }
+}
+
+/// What [`StealthOutputsApi::verify_and_update_outputs`] changed.
+#[derive(Debug, Clone, Default)]
+pub struct UpdatedOutputs {
+    /// The `(account, resource)` pairs whose unspent stealth balance changed.
+    pub touched_balances: HashSet<(ComponentAddress, ResourceAddress)>,
+    /// The held outputs marked burnt, with the account that holds each.
+    pub burnt: Vec<(ComponentAddress, UtxoAddress)>,
 }
 
 pub struct TransferStatementParams<'a, I> {

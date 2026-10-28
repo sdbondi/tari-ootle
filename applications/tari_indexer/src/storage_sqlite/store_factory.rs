@@ -658,6 +658,10 @@ pub(crate) mod tests {
                     spent.version = SubstateVersion::new(version);
                     UtxoUpdateRecord::Spent(spent)
                 },
+                UtxoUpdateRecord::Burnt(mut burnt) => {
+                    burnt.version = SubstateVersion::new(version);
+                    UtxoUpdateRecord::Burnt(burnt)
+                },
             }
         }
 
@@ -695,6 +699,59 @@ pub(crate) mod tests {
         assert_eq!(set.max_state_version, StateVersion::new(30));
         assert_eq!(spent_versions(&set), [SubstateVersion::new(1)]);
         assert!(matches!(set.updates[1], WalletUtxoUpdate::Unspent(_)));
+    }
+
+    fn burnt_at(seq: u8, state_version: u64) -> crate::storage_sqlite::models::UtxoUpdateRecord {
+        use crate::storage_sqlite::models::UtxoUpdateRecord;
+
+        let UtxoUpdateRecord::Spent(spent) = spent_at(seq, state_version) else {
+            unreachable!()
+        };
+        UtxoUpdateRecord::Burnt(spent)
+    }
+
+    /// A burn reports the version it took down as burnt, and the output leaves the unspent set.
+    #[tokio::test]
+    async fn a_burn_reports_the_version_it_took_down_burnt() {
+        use tari_indexer_client::types::WalletUtxoUpdate;
+
+        let (_dir, store) = store_with_utxos(&[(10, 2)]).await;
+        store
+            .with_write_tx(|tx| tx.batch_insert_utxo_updates(Epoch(1), [burnt_at(1, 20)]))
+            .await
+            .unwrap();
+
+        let set = read_updates(&store, 10, 10).await;
+        assert_eq!(set.updates.len(), 1);
+        assert!(
+            matches!(&set.updates[0], WalletUtxoUpdate::Burnt(burnt) if burnt.version == SubstateVersion::ZERO),
+            "{:?}",
+            set.updates[0]
+        );
+
+        let set = read_filtered_updates(&store, Epoch(0), true, 0, 10).await;
+        assert_eq!(set.updates.len(), 1);
+        assert!(matches!(set.updates[0], WalletUtxoUpdate::Unspent(_)));
+    }
+
+    /// A burn of an output this indexer never held unspent is reported burnt all the same.
+    #[tokio::test]
+    async fn a_burn_of_an_output_never_held_unspent_is_reported_burnt() {
+        use tari_indexer_client::types::WalletUtxoUpdate;
+
+        let (_dir, store) = temp_store().await;
+        store
+            .with_write_tx(|tx| tx.batch_insert_utxo_updates(Epoch(1), [burnt_at(1, 20)]))
+            .await
+            .unwrap();
+
+        let set = read_updates(&store, 0, 10).await;
+        assert_eq!(set.updates.len(), 1);
+        assert!(
+            matches!(&set.updates[0], WalletUtxoUpdate::Burnt(burnt) if burnt.version == SubstateVersion::ZERO),
+            "{:?}",
+            set.updates[0]
+        );
     }
 
     #[tokio::test]

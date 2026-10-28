@@ -1164,7 +1164,7 @@ impl WalletStoreReader for ReadTransaction<'_> {
             .select(stealth_outputs::value)
             .filter(stealth_outputs::resource_address.eq(resource_address.to_string()))
             .filter(stealth_outputs::status.eq(OutputStatus::Unspent.as_key_str()))
-            // Burnt outputs keep status = Unspent but their value is destroyed on-chain.
+            // Rows stored before the Burnt status hold a burnt output as Unspent with is_burnt set.
             .filter(stealth_outputs::is_burnt.eq(false))
             .load::<i64>(self.connection())
             .map_err(|e| WalletStorageError::general(OPERATION, e))?;
@@ -1224,7 +1224,7 @@ impl WalletStoreReader for ReadTransaction<'_> {
                     .assume_not_null()),
             )
             .filter(stealth_outputs::status.eq(OutputStatus::Unspent.as_key_str()))
-            // Burnt outputs keep status = Unspent but their value is destroyed on-chain.
+            // Rows stored before the Burnt status hold a burnt output as Unspent with is_burnt set.
             .filter(stealth_outputs::is_burnt.eq(false))
             .into_boxed();
 
@@ -1275,6 +1275,7 @@ impl WalletStoreReader for ReadTransaction<'_> {
                         .and(stealth_outputs::lock_id.eq(lock_id))),
             )
             .filter(stealth_outputs::owner_key_id.is_not_null())
+            // Rows stored before the Burnt status hold a burnt output as Unspent with is_burnt set.
             .filter(stealth_outputs::is_burnt.eq(false))
             .filter(stealth_outputs::is_condition_spendable.eq(true))
             .filter(stealth_outputs::is_frozen.eq(false))

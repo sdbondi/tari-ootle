@@ -31,6 +31,8 @@ use tari_ootle_wallet_sdk::{
         OutputStatus,
         StartOfShard,
         StealthOutputModel,
+        UtxoBurnt,
+        UtxoBurntEvent,
         UtxoSpent,
         UtxoSpentEvent,
         UtxoUnspent,
@@ -48,7 +50,7 @@ use tari_ootle_wallet_sdk::{
         WriteableWalletStore,
     },
 };
-use tari_template_lib_types::{ResourceAddress, UtxoAddress};
+use tari_template_lib_types::{ResourceAddress, UtxoAddress, UtxoId};
 
 use crate::{notify::Notify, utxo_scanner::StealthScannerApiError};
 
@@ -88,6 +90,10 @@ pub struct UtxoScannerRound<'a, TSpec: WalletSdkSpec> {
     utxos_to_spend: Vec<UtxoSpent>,
     /// The spends of held outputs that the check of a flagged shard showed gone.
     checked_spends: Vec<UtxoSpent>,
+    /// The burns the indexer reported, which are settled before they are recorded.
+    utxos_to_burn: Vec<UtxoBurnt>,
+    /// The held outputs that a read of their latest version showed burnt.
+    checked_burns: Vec<UtxoId>,
     notify: &'a Notify<WalletEvent>,
 }
 
@@ -117,6 +123,8 @@ where TSpec: WalletSdkSpec
             utxos_to_recover: Vec::new(),
             utxos_to_spend: Vec::new(),
             checked_spends: Vec::new(),
+            utxos_to_burn: Vec::new(),
+            checked_burns: Vec::new(),
             notify,
             stats: UtxoScanRoundStats::default(),
         }
@@ -389,12 +397,7 @@ where TSpec: WalletSdkSpec
                 self.utxos_to_spend.push(spent);
             },
             WalletUtxoUpdate::Burnt(burnt) => {
-                // NOTE: we treat burnt outputs the same as spent for now. In future, we may want to track them
-                // separately
-                self.utxos_to_spend.push(UtxoSpent {
-                    id: burnt.id,
-                    version: burnt.version,
-                });
+                self.utxos_to_burn.push(burnt);
             },
         }
         Ok(())
@@ -403,27 +406,33 @@ where TSpec: WalletSdkSpec
     /// Commits the pending progress if any outputs or spends are pending. Cursors alone wait for
     /// [`Self::commit_progress`], so a pass over shards that deliver nothing commits once rather than once a shard.
     async fn commit_updates(&mut self) -> Result<bool, StealthScannerApiError> {
-        if self.utxos_to_recover.is_empty() && self.utxos_to_spend.is_empty() && self.checked_spends.is_empty() {
+        if !self.has_pending_updates() {
             return Ok(false);
         }
         self.commit_progress().await
     }
 
+    fn has_pending_updates(&self) -> bool {
+        !self.utxos_to_recover.is_empty() ||
+            !self.utxos_to_spend.is_empty() ||
+            !self.checked_spends.is_empty() ||
+            !self.utxos_to_burn.is_empty() ||
+            !self.checked_burns.is_empty()
+    }
+
     async fn commit_progress(&mut self) -> Result<bool, StealthScannerApiError> {
-        if self.utxos_to_recover.is_empty() &&
-            self.utxos_to_spend.is_empty() &&
-            self.checked_spends.is_empty() &&
-            self.shard_state_versions_to_set.is_empty()
-        {
+        if !self.has_pending_updates() && self.shard_state_versions_to_set.is_empty() {
             return Ok(false);
         }
 
         if self.sdk.sdk_config().indexer_trust.is_verify() {
             self.retain_proven_spends().await?;
         }
+        self.settle_burns().await?;
         self.utxos_to_spend.append(&mut self.checked_spends);
 
         let mut num_spent = 0;
+        let mut num_burnt = 0;
         let num_recovered = self.utxos_to_recover.len();
         self.stats.num_potential_recoveries += num_recovered;
         self.sdk.store().with_write_tx(|tx| {
@@ -435,6 +444,18 @@ where TSpec: WalletSdkSpec
                         address: UtxoAddress::new(*self.resource_address, spent.id),
                     });
                     num_spent += 1;
+                }
+            }
+
+            for id in self.checked_burns.drain(..) {
+                let address = UtxoAddress::new(*self.resource_address, id);
+                if tx.stealth_outputs_mark_as_burnt(&address)? {
+                    info!(target: LOG_TARGET, "🔥 Marked stealth output {} as burnt", address);
+                    self.notify.notify(UtxoBurntEvent {
+                        account_address: *self.account.component_address(),
+                        address,
+                    });
+                    num_burnt += 1;
                 }
             }
 
@@ -481,7 +502,110 @@ where TSpec: WalletSdkSpec
         })?;
 
         self.stats.num_spent += num_spent;
+        self.stats.num_burnt += num_burnt;
         Ok(true)
+    }
+
+    /// Settles each reported burn of an output the wallet holds as neither spent nor burnt, and queues it to be
+    /// recorded as a burn or, failing that, as a spend.
+    ///
+    /// Under [`IndexerTrust::Verify`](tari_ootle_wallet_sdk::IndexerTrust::Verify) the indexer must prove that the
+    /// reported version has gone down, as for a spend (see [`Self::retain_proven_spends`]). That shows the version
+    /// gone, not that a burn took it down, so the outputs proven gone are read once more, in one fetch. A proven read
+    /// of a burnt UTXO records the burn. A proven read of a live UTXO shows a re-versioning, and the output is kept at
+    /// the proven version. An answer that refuses the read for good records the spend of the reported version. Any
+    /// other failure fails the round before it stores its progress, so the next scan asks for the burn again.
+    async fn settle_burns(&mut self) -> Result<(), StealthScannerApiError> {
+        if self.utxos_to_burn.is_empty() {
+            return Ok(());
+        }
+        let mut burns = Vec::with_capacity(self.utxos_to_burn.len());
+        for burnt in mem::take(&mut self.utxos_to_burn) {
+            let held = self
+                .sdk
+                .store()
+                .with_read_tx(|tx| {
+                    tx.stealth_outputs_get_by_commitment(self.resource_address, &burnt.id.into_commitment_bytes())
+                })
+                .optional()?;
+            let Some(held) = held.filter(|output| !output.status.is_final()) else {
+                continue;
+            };
+            let reported = UtxoSpent {
+                id: burnt.id,
+                version: burnt.version,
+            };
+            if Self::is_superseded(&held, &reported) {
+                continue;
+            }
+            burns.push((held, reported));
+        }
+
+        if !self.sdk.sdk_config().indexer_trust.is_verify() {
+            self.checked_burns.extend(burns.into_iter().map(|(_, burnt)| burnt.id));
+            return Ok(());
+        }
+
+        let substate_api = self.sdk.substate_api();
+        let mut proven_down = Vec::with_capacity(burns.len());
+        for (held, burnt) in burns {
+            let address = UtxoAddress::new(*self.resource_address, burnt.id);
+            match substate_api
+                .verify_down(&address.clone().into(), burnt.version, held.proven_up)
+                .await
+            {
+                Ok(()) => proven_down.push(burnt),
+                Err(err) if is_refusal(&err) => {
+                    warn!(
+                        target: LOG_TARGET,
+                        "⚠️ The indexer reported stealth output {} burnt at v{} without proving it gone ({}). Keeping the output.",
+                        address,
+                        burnt.version,
+                        err
+                    );
+                },
+                Err(err) => return Err(err.into()),
+            }
+        }
+        if proven_down.is_empty() {
+            return Ok(());
+        }
+
+        let ids = proven_down
+            .iter()
+            .map(|burnt| SubstateId::Utxo(UtxoAddress::new(*self.resource_address, burnt.id)))
+            .collect::<Vec<_>>();
+        let reads = substate_api.get_each_substate_from_network(&ids).await?;
+        for (burnt, (_, read)) in proven_down.into_iter().zip(reads) {
+            let address = UtxoAddress::new(*self.resource_address, burnt.id);
+            match read {
+                Ok(read) if read.is_burnt_utxo() => self.checked_burns.push(burnt.id),
+                Ok(read) => {
+                    debug!(
+                        target: LOG_TARGET,
+                        "The indexer reported stealth output {} burnt at v{}, but proved it live at v{}. Keeping the output.",
+                        address,
+                        burnt.version,
+                        read.substate.version()
+                    );
+                    if let Some(proven_up) = read.proven_up {
+                        self.sdk.stealth_outputs_api().record_proven_up(&address, proven_up)?;
+                    }
+                },
+                Err(err) if is_refusal(&err) => {
+                    warn!(
+                        target: LOG_TARGET,
+                        "⚠️ The indexer proved stealth output {} gone at v{}, but did not prove it burnt ({}). Recording it spent.",
+                        address,
+                        burnt.version,
+                        err
+                    );
+                    self.checked_spends.push(burnt);
+                },
+                Err(err) => return Err(err.into()),
+            }
+        }
+        Ok(())
     }
 
     /// Drops each reported spend of an output the wallet holds as not spent, unless the indexer proves that the output
@@ -506,7 +630,7 @@ where TSpec: WalletSdkSpec
                     tx.stealth_outputs_get_by_commitment(self.resource_address, &spent.id.into_commitment_bytes())
                 })
                 .optional()?;
-            let Some(held) = held.filter(|output| !matches!(output.status, OutputStatus::Spent)) else {
+            let Some(held) = held.filter(|output| !output.status.is_final()) else {
                 retained.push(spent);
                 continue;
             };
@@ -537,10 +661,11 @@ where TSpec: WalletSdkSpec
     }
 
     /// Queues the spend of each output the wallet holds as live and on chain in one of `shards`, which the indexer may
-    /// lack spends for below the cursor, once the indexer shows that it is gone. The outputs are read in one fetch, and
-    /// one the indexer serves live is kept. Under [`IndexerTrust::Verify`](tari_ootle_wallet_sdk::IndexerTrust::Verify)
-    /// the read must be proven, and the indexer must prove gone the version of each other output the wallet holds
-    /// proven up (see [`SubstatesApi::verify_down`]). Otherwise an output the indexer does not serve is gone.
+    /// lack spends for below the cursor, once the indexer shows that it is gone. The outputs are read in one fetch. One
+    /// the indexer serves live is kept, and one it serves without an output is recorded burnt. Under
+    /// [`IndexerTrust::Verify`](tari_ootle_wallet_sdk::IndexerTrust::Verify) the read must be proven, and the
+    /// indexer must prove gone the version of each other output the wallet holds proven up (see
+    /// [`SubstatesApi::verify_down`]). Otherwise an output the indexer does not serve is gone.
     ///
     /// The indexer keeps every unspent output, so the scan of the shard still delivers each new one. A spend after the
     /// check lands above the indexer's tombstone horizon, so a later scan delivers it.
@@ -582,6 +707,10 @@ where TSpec: WalletSdkSpec
         for (output, (_, read)) in held.into_iter().zip(reads) {
             let address = output.to_utxo_address();
             match read {
+                Ok(read) if read.is_burnt_utxo() => {
+                    self.checked_burns.push(output.commitment.into());
+                    continue;
+                },
                 Ok(read) => {
                     // An output a freeze or unfreeze took to a later version is live at it, and later checks prove
                     // that version gone.
@@ -706,8 +835,8 @@ where TSpec: WalletSdkSpec
             );
             return Ok(false);
         };
-        if output.status == OutputStatus::Spent {
-            debug!(target: LOG_TARGET, "Stealth output {} is already spent", spent.id);
+        if output.status.is_final() {
+            debug!(target: LOG_TARGET, "Stealth output {} is already {:?}", spent.id, output.status);
             return Ok(false);
         }
         if Self::is_superseded(&output, spent) {
@@ -822,6 +951,8 @@ pub struct UtxoScanRoundStats {
     pub num_potential_recoveries: usize,
     /// Number of UTXOs that were marked as spent
     pub num_spent: usize,
+    /// Number of UTXOs that were marked as burnt
+    pub num_burnt: usize,
     /// Number of shards the indexer flagged as possibly lacking spends below their cursors, whose held outputs were
     /// checked
     pub num_flagged_shards: usize,
