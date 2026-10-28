@@ -512,7 +512,7 @@ where TSpec: WalletSdkSpec
                     tx.stealth_outputs_get_by_commitment(self.resource_address, &burnt.id.into_commitment_bytes())
                 })
                 .optional()?;
-            let Some(held) = held.filter(|output| !is_final(output.status)) else {
+            let Some(held) = held.filter(|output| !output.status.is_final()) else {
                 continue;
             };
             let reported = UtxoSpent {
@@ -614,7 +614,7 @@ where TSpec: WalletSdkSpec
                     tx.stealth_outputs_get_by_commitment(self.resource_address, &spent.id.into_commitment_bytes())
                 })
                 .optional()?;
-            let Some(held) = held.filter(|output| !is_final(output.status)) else {
+            let Some(held) = held.filter(|output| !output.status.is_final()) else {
                 retained.push(spent);
                 continue;
             };
@@ -819,7 +819,7 @@ where TSpec: WalletSdkSpec
             );
             return Ok(false);
         };
-        if is_final(output.status) {
+        if output.status.is_final() {
             debug!(target: LOG_TARGET, "Stealth output {} is already {:?}", spent.id, output.status);
             return Ok(false);
         }
@@ -845,11 +845,6 @@ fn is_refusal(err: &SubstateApiError) -> bool {
             SubstateApiError::SubstateUnverified { .. } |
             SubstateApiError::SubstateProvenBeforeAnchor { .. }
     )
-}
-
-/// Whether the wallet holds an output in `status` for good, so no later report changes it.
-fn is_final(status: OutputStatus) -> bool {
-    matches!(status, OutputStatus::Spent | OutputStatus::Burnt)
 }
 
 fn shard_of(output: &StealthOutputModel) -> Shard {

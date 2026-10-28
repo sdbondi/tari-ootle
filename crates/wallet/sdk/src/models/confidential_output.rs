@@ -52,6 +52,11 @@ pub enum OutputStatus {
 }
 
 impl OutputStatus {
+    /// Whether the wallet holds an output in this status for good, so no later report changes it.
+    pub fn is_final(&self) -> bool {
+        matches!(self, Self::Spent | Self::Burnt)
+    }
+
     pub fn as_key_str(&self) -> &'static str {
         match self {
             Self::Unspent => "Unspent",
