@@ -969,7 +969,7 @@ impl NetworkWideStateSync {
         }
 
         if let Some(end) = self
-            .snapshot_new_shards(new_shards, &snapshot_leaves, &mut session, progress, cancel, epoch)
+            .snapshot_new_shards(new_shards, &snapshot_leaves, &mut session, progress, cancel)
             .await?
         {
             return Ok(end);
@@ -1086,7 +1086,6 @@ impl NetworkWideStateSync {
         session: &mut ValidatorRpcSession,
         progress: &SharedSyncProgress,
         cancel: &CancellationToken,
-        epoch: &mut watch::Receiver<Epoch>,
     ) -> Result<Option<RoundEnd>, NetworkStateSyncError> {
         for shard in new_shards {
             let Some(&(proved, tip_epoch)) = leaves.iter().find(|(proved, _)| proved.leaf.shard == shard) else {
@@ -1098,9 +1097,7 @@ impl NetworkWideStateSync {
             if proved.leaf.state_version.as_u64() == 0 {
                 continue;
             }
-            let end = self
-                .snapshot_shard(proved, tip_epoch, session, progress, cancel, epoch)
-                .await;
+            let end = self.snapshot_shard(proved, tip_epoch, session, progress, cancel).await;
             if !matches!(end, Ok(SnapshotEnd::Promoted)) {
                 // A snapshot that ends unpromoted is started again from its first page, or not at all
                 self.store
@@ -1112,7 +1109,6 @@ impl NetworkWideStateSync {
                     self.abandoned_snapshots().remove(&shard);
                 },
                 Ok(SnapshotEnd::Cancelled) => return Ok(Some(RoundEnd::Cancelled)),
-                Ok(SnapshotEnd::EpochAdvanced) => return Ok(Some(RoundEnd::Reopen)),
                 Ok(SnapshotEnd::Abandoned(reason)) => {
                     let abandoned = {
                         let mut abandoned = self.abandoned_snapshots();
@@ -1143,7 +1139,8 @@ impl NetworkWideStateSync {
     ///
     /// A page that does not match the root blames the peer. Each page builds on genuine substates of the shard, so
     /// what is staged is bounded by the shard's live state, and [`MAX_SNAPSHOT_DURATION`] bounds how long the peer
-    /// holds the round.
+    /// holds the round. The snapshot reads one quorum-proved version, which an epoch change leaves as valid, so the
+    /// round sees the change only once the snapshot ends.
     async fn snapshot_shard(
         &self,
         proved: ProvedShardLeaf,
@@ -1151,7 +1148,6 @@ impl NetworkWideStateSync {
         session: &mut ValidatorRpcSession,
         progress: &SharedSyncProgress,
         cancel: &CancellationToken,
-        epoch_watch: &mut watch::Receiver<Epoch>,
     ) -> Result<SnapshotEnd, NetworkStateSyncError> {
         let VerifiedShardLeaf {
             shard,
@@ -1184,7 +1180,6 @@ impl NetworkWideStateSync {
             let page = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => return Ok(SnapshotEnd::Cancelled),
-                Ok(()) = epoch_watch.changed() => return Ok(SnapshotEnd::EpochAdvanced),
                 () = time::sleep_until(deadline) => {
                     return Ok(SnapshotEnd::Abandoned("it outlasted its time budget"));
                 },
@@ -2041,8 +2036,6 @@ enum SnapshotEnd {
     Promoted,
     /// The plan is being wound down.
     Cancelled,
-    /// The epoch moved on.
-    EpochAdvanced,
     /// The peer could not serve the whole snapshot, for the reason given. Every page it served matched the leaf.
     Abandoned(&'static str),
 }

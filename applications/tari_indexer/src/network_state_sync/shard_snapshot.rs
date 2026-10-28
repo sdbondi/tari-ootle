@@ -87,8 +87,15 @@ impl ShardSnapshot {
                 .ok_or_else(|| SnapshotError::Malformed("a substate has no data".to_string()))?;
             let data = SubstateData::try_from(encoded.clone()).map_err(|e| SnapshotError::Malformed(e.to_string()))?;
             let substate_id = data.substate_id.clone();
+            let is_template = substate_id.is_template();
+            if data.template_metadata.is_some() && !is_template {
+                return Err(SnapshotError::Malformed(format!(
+                    "{substate_id} carries template metadata, though it is not a template"
+                )));
+            }
             let is_indexed = self.value_filters.contains_substate(&substate_id);
-            if is_indexed && data.value.value().is_none() && data.template_metadata.is_none() {
+            let carries_value = data.value.value().is_some() || (is_template && data.template_metadata.is_some());
+            if is_indexed && !carries_value {
                 return Err(SnapshotError::ValueWithheld { substate_id });
             }
             let update = SubstateUpdateProof::Create(Box::new(SubstateCreate { substate: data }));
@@ -427,6 +434,37 @@ mod tests {
         assert!(matches!(
             state.add_pages(&mut snapshot, &withheld, 100),
             Err(SnapshotError::ValueWithheld { .. })
+        ));
+    }
+
+    #[test]
+    fn template_metadata_on_another_substate_is_malformed() {
+        let state = ShardState::new();
+        let template_metadata = state
+            .substates
+            .iter()
+            .find_map(|substate| {
+                let data = SubstateData::try_from(substate.substate.clone().unwrap()).unwrap();
+                data.template_metadata
+            })
+            .unwrap();
+        let mut disguised = state.substates.clone();
+        let index = disguised
+            .iter()
+            .position(|substate| {
+                let data = SubstateData::try_from(substate.substate.clone().unwrap()).unwrap();
+                data.value.value().is_some()
+            })
+            .unwrap();
+        let mut data = SubstateData::try_from(disguised[index].substate.take().unwrap()).unwrap();
+        let epoch = Epoch::from(disguised[index].created_epoch.unwrap());
+        data.value = SubstateValueOrHash::Hash(data.to_value_hash(NETWORK, epoch));
+        data.template_metadata = Some(template_metadata);
+        disguised[index].substate = Some(data.into());
+        let mut snapshot = state.snapshot();
+        assert!(matches!(
+            state.add_pages(&mut snapshot, &disguised, 100),
+            Err(SnapshotError::Malformed(_))
         ));
     }
 
