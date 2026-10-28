@@ -455,11 +455,7 @@ impl WalletNetworkInterface for ProvingNetwork {
             })
             .map(|(id, utxo)| (*id, utxo.clone()))
             .collect();
-        Ok(FetchedUtxos {
-            unspent,
-            spent: vec![],
-            tombstone_horizons: HashMap::new(),
-        })
+        Ok(FetchedUtxos { unspent, spent: vec![] })
     }
 
     async fn get_latest_epoch_checkpoint(&self, shard: Shard) -> Result<EpochCheckpointEntry, Self::Error> {

@@ -673,7 +673,6 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
                 Ok::<_, IndexerRestApiNetworkInterfaceError>(FetchedUtxos {
                     unspent,
                     spent: resp.spent,
-                    tombstone_horizons: resp.tombstone_horizons.into_iter().collect(),
                 })
             },
         )

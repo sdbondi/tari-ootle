@@ -50,11 +50,9 @@ use tari_ootle_common_types::{
     NodeHeight,
     NumPreshards,
     ShardGroup,
-    StateVersion,
     SubstateRequirementRef,
     SubstateVersion,
     optional::IsNotFoundError,
-    shard::Shard,
 };
 use tari_ootle_p2p::PeerAddress;
 use tari_ootle_storage::{StorageError, consensus_models::VerifiedBlockTip};
@@ -71,34 +69,6 @@ use crate::{
     store::{IndexerStore, IndexerStoreReadTransaction, IndexerStoreReader, IndexerStoreWriteTransaction},
     substate_cache::SqliteSubstateCache,
 };
-
-/// The answer to a lookup of UTXOs by tag and nonce pair.
-#[derive(Debug)]
-pub struct FetchedUtxos {
-    /// The unspent UTXOs matching a requested pair.
-    pub unspent: Vec<(UtxoId, Encoded<Utxo>)>,
-    /// The requested pairs whose UTXO is spent or burnt.
-    pub spent: Vec<(UtxoTag, RistrettoPublicKeyBytes)>,
-    /// The tombstone horizon of each shard that has one.
-    pub tombstone_horizons: Vec<(Shard, StateVersion)>,
-}
-
-impl FetchedUtxos {
-    fn read<TTx: IndexerStoreReadTransaction>(
-        tx: &mut TTx,
-        resource_address: &ResourceAddress,
-        public_nonce_and_tag: &[(UtxoTag, RistrettoPublicKeyBytes)],
-    ) -> Result<Self, StorageError> {
-        let unspent = tx.utxos_get_unspent_by_public_nonce_and_tag(resource_address, public_nonce_and_tag)?;
-        let spent = tx.utxos_get_spent_public_nonce_and_tag(resource_address, public_nonce_and_tag)?;
-        let tombstone_horizons = tx.utxo_tombstone_horizons()?;
-        Ok(Self {
-            unspent,
-            spent,
-            tombstone_horizons,
-        })
-    }
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SubstateResponse {
@@ -245,18 +215,22 @@ impl SubstateManager {
         }
     }
 
-    /// The unspent UTXOs matching `public_nonce_and_tag`, the pairs of `public_nonce_and_tag` whose UTXO is spent or
-    /// burnt, and the tombstone horizon of each shard that has one, read in one transaction.
+    /// The unspent UTXOs matching `public_nonce_and_tag`, and the pairs of `public_nonce_and_tag` whose UTXO is spent
+    /// or burnt, read in one transaction.
     pub async fn fetch_utxos(
         &self,
         resource_address: &ResourceAddress,
         public_nonce_and_tag: &[(UtxoTag, RistrettoPublicKeyBytes)],
-    ) -> Result<FetchedUtxos, SubstateManagerError> {
+    ) -> Result<(Vec<(UtxoId, Encoded<Utxo>)>, Vec<(UtxoTag, RistrettoPublicKeyBytes)>), SubstateManagerError> {
         let resource_address = *resource_address;
         let public_nonce_and_tag = public_nonce_and_tag.to_vec();
         let utxos = self
             .substate_store
-            .with_read_tx(move |tx| FetchedUtxos::read(tx, &resource_address, &public_nonce_and_tag))
+            .with_read_tx(move |tx| {
+                let unspent = tx.utxos_get_unspent_by_public_nonce_and_tag(&resource_address, &public_nonce_and_tag)?;
+                let spent = tx.utxos_get_spent_public_nonce_and_tag(&resource_address, &public_nonce_and_tag)?;
+                Ok::<_, StorageError>((unspent, spent))
+            })
             .await?;
         Ok(utxos)
     }
@@ -579,30 +553,6 @@ mod tests {
         };
         assert_eq!(version, SubstateVersion::new(3));
         assert_eq!(proof.substate_down_proof, None);
-    }
-
-    #[tokio::test]
-    async fn a_utxo_fetch_reports_the_tombstone_horizon_of_every_shard() {
-        let (_dir, store) = crate::storage_sqlite::temp_store().await;
-        store
-            .with_write_tx(|tx| {
-                tx.raise_utxo_tombstone_horizon(Shard::from(1u32), StateVersion::new(10))?;
-                tx.raise_utxo_tombstone_horizon(Shard::from(2u32), StateVersion::new(20))
-            })
-            .await
-            .unwrap();
-
-        let mut horizons = store
-            .with_read_tx(|tx| FetchedUtxos::read(tx, &crate::storage_sqlite::utxo_resource(), &[]))
-            .await
-            .unwrap()
-            .tombstone_horizons;
-        horizons.sort();
-
-        assert_eq!(horizons, [
-            (Shard::from(1u32), StateVersion::new(10)),
-            (Shard::from(2u32), StateVersion::new(20))
-        ]);
     }
 
     #[test]

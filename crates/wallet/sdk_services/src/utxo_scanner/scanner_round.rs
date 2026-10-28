@@ -57,6 +57,8 @@ use crate::{notify::Notify, utxo_scanner::StealthScannerApiError};
 const LOG_TARGET: &str = "tari::ootle::wallet_services::scanner_round";
 // TODO: either fetch num preshards from the network or we should hardcode it to a single value for all apps
 const NUM_PRESHARDS: NumPreshards = NumPreshards::P256;
+/// The most tag and nonce pairs an indexer looks up in one fetch.
+const MAX_PAIRS_PER_FETCH: usize = 1000;
 
 /// A claim expires once the wallet verifies a checkpoint at least this many epochs after the latest one it had verified
 /// when the claim began. The network may have ended one more epoch than the wallet had verified by then, so the
@@ -84,7 +86,8 @@ pub struct UtxoScannerRound<'a, TSpec: WalletSdkSpec> {
     resumed_from_claim: HashSet<Shard>,
     shard_state_versions_to_set: HashMap<Shard, StateVersion>,
     /// The shards the indexer flagged as possibly lacking spends below their cursors. The outputs the wallet holds in
-    /// a flagged shard are checked once a round, before the shard's cursor is stored.
+    /// a flagged shard, and the pairs queued for recovery in it, are checked once a round, before the shard's cursor
+    /// is stored.
     flagged: HashSet<Shard>,
     utxos_to_recover: Vec<(UtxoUnspent, QueuedUtxo)>,
     utxos_to_spend: Vec<UtxoSpent>,
@@ -283,9 +286,9 @@ where TSpec: WalletSdkSpec
         let mut num_received = 0usize;
         let mut sos: Option<StartOfShard> = None;
         let mut has_more = false;
-        // The shards this stream flagged first, and the cursors they reached, which are stored only once their held
-        // outputs are checked.
-        let mut newly_flagged = HashSet::new();
+        // The shards this stream flagged first, with the cursors their reads resumed from, and the cursors they
+        // reached, which are stored only once their held outputs and queued pairs are checked.
+        let mut newly_flagged = HashMap::new();
         let mut awaiting_check = HashMap::new();
 
         while let Some(result) = stream.next().await {
@@ -293,7 +296,13 @@ where TSpec: WalletSdkSpec
             if let Some(recv_sos) = payload.sos {
                 debug!(target: LOG_TARGET, "Received StartOfShard for {}", recv_sos.shard);
                 if recv_sos.spends_incomplete && self.flagged.insert(recv_sos.shard) {
-                    newly_flagged.insert(recv_sos.shard);
+                    // A shard's cursor moves at its EndOfShard, so it is still the one this read resumed from
+                    let resumed_from = self
+                        .cursors
+                        .get(&recv_sos.shard)
+                        .copied()
+                        .unwrap_or_else(StateVersion::zero);
+                    newly_flagged.insert(recv_sos.shard, resumed_from);
                 }
                 if let Some(unterminated) = sos.replace(recv_sos) {
                     warn!(
@@ -323,7 +332,7 @@ where TSpec: WalletSdkSpec
                     self.account.component_address(),
                     sos.max_state_version
                 );
-                let to_set = if newly_flagged.contains(&sos.shard) {
+                let to_set = if newly_flagged.contains_key(&sos.shard) {
                     &mut awaiting_check
                 } else {
                     &mut self.shard_state_versions_to_set
@@ -356,6 +365,7 @@ where TSpec: WalletSdkSpec
 
         if !newly_flagged.is_empty() {
             self.check_held_outputs(&newly_flagged).await?;
+            self.remove_pruned_pairs(&newly_flagged).await?;
             self.stats.num_flagged_shards += newly_flagged.len();
             self.shard_state_versions_to_set.extend(awaiting_check);
         }
@@ -671,7 +681,10 @@ where TSpec: WalletSdkSpec
     /// check lands above the indexer's tombstone horizon, so a later scan delivers it.
     ///
     /// [`SubstatesApi::verify_down`]: tari_ootle_wallet_sdk::apis::substate::SubstatesApi::verify_down
-    async fn check_held_outputs(&mut self, shards: &HashSet<Shard>) -> Result<(), StealthScannerApiError> {
+    async fn check_held_outputs(
+        &mut self,
+        shards: &HashMap<Shard, StateVersion>,
+    ) -> Result<(), StealthScannerApiError> {
         let account = self.account.component_address();
         let held = self
             .sdk
@@ -684,7 +697,7 @@ where TSpec: WalletSdkSpec
                 Ok::<_, WalletStorageError>(held)
             })?
             .into_iter()
-            .filter(|output| output.is_on_chain && shards.contains(&shard_of(output)))
+            .filter(|output| output.is_on_chain && shards.contains_key(&shard_of(output)))
             .collect::<Vec<_>>();
         if held.is_empty() {
             return Ok(());
@@ -766,6 +779,78 @@ where TSpec: WalletSdkSpec
             }
         }
         Ok(())
+    }
+
+    /// Removes from the recovery queue each pair of the resource that is placed in one of `shards` at or below the
+    /// cursor the shard's read resumed from, and that the indexer neither serves nor reports spent. The indexer flags a
+    /// read that resumes below its tombstone horizon, has indexed the shard up to that horizon, and keeps every unspent
+    /// UTXO, so such a pair is spent and its tombstone pruned. A pair the indexer serves or reports spent, and a pair
+    /// with an unknown placement, is left for recovery. Neither the flag nor the lookup is proven, so an indexer can
+    /// hide an unspent output this way until a rescan finds it.
+    async fn remove_pruned_pairs(&self, shards: &HashMap<Shard, StateVersion>) -> Result<(), StealthScannerApiError> {
+        let mut after = None;
+        loop {
+            let batch = self
+                .sdk
+                .store()
+                .with_read_tx(|tx| tx.utxo_process_queue_fetch_batch(after, MAX_PAIRS_PER_FETCH))?;
+            let Some(last) = batch.last else {
+                return Ok(());
+            };
+            after = Some(last);
+            let candidates = batch
+                .entries
+                .get(self.resource_address)
+                .into_iter()
+                .flatten()
+                .filter(|(_, queued)| {
+                    queued.unspent_at.is_some_and(|(shard, state_version)| {
+                        shards
+                            .get(&shard)
+                            .is_some_and(|resumed_from| state_version <= *resumed_from)
+                    })
+                })
+                .map(|(pair, _)| *pair)
+                .collect::<Vec<_>>();
+            if candidates.is_empty() {
+                continue;
+            }
+
+            let fetched = self
+                .sdk
+                .get_network_interface()
+                .fetch_utxos(*self.resource_address, candidates.clone())
+                .await
+                .map_err(|e| StealthScannerApiError::NetworkInterfaceError(e.into()))?;
+            let known = fetched
+                .unspent
+                .iter()
+                .filter_map(|(_, utxo)| utxo.output())
+                .map(|output| (output.tag, output.output.public_nonce))
+                .chain(fetched.spent)
+                .collect::<HashSet<_>>();
+            let pruned = candidates
+                .into_iter()
+                .filter(|pair| !known.contains(pair))
+                .collect::<Vec<_>>();
+            if pruned.is_empty() {
+                continue;
+            }
+            info!(
+                target: LOG_TARGET,
+                "🗑️ Removing {} queued stealth output(s) of resource {} that the indexer pruned as spent",
+                pruned.len(),
+                self.resource_address,
+            );
+            self.sdk.store().with_write_tx(|tx| {
+                for (tag, public_nonce) in pruned {
+                    // Recovery may have removed the pair since the batch was read
+                    tx.utxo_process_queue_remove_item(*self.resource_address, tag, public_nonce)
+                        .optional()?;
+                }
+                Ok::<_, WalletStorageError>(())
+            })?;
+        }
     }
 
     /// Whether the wallet holds `held` proven up at a later version than `spent` takes down. A version is taken down by

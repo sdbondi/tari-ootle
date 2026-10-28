@@ -134,17 +134,13 @@ pub async fn fetch_utxos(
     if req.tag_and_nonce_pairs.len() > 1000 {
         return Err(ErrorResponse::bad_request("cannot query more than 1000 UTXOs"));
     }
-    let fetched = context
+    let (utxos, spent) = context
         .substate_manager()
         .fetch_utxos(&req.resource_address, &req.tag_and_nonce_pairs)
         .await
         .map_err(ErrorResponse::anyhow)?;
 
-    Ok(Json(GetUtxosResponse {
-        utxos: fetched.unspent,
-        spent: fetched.spent,
-        tombstone_horizons: fetched.tombstone_horizons,
-    }))
+    Ok(Json(GetUtxosResponse { utxos, spent }))
 }
 
 #[utoipa::path(get, path = "/utxos", description = "List full UTXO data",
