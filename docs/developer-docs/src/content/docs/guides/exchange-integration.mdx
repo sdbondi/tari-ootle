@@ -77,7 +77,8 @@ secret key and account public key, and no spend key. The recommended structure i
 [Watch-only Accounts](/guides/watch-only-accounts/) describes the watch-only calls in detail. If you would rather not
 run a wallet daemon for deposits, the Ootle SDK can scan with the same two keys (`ootle-rs`:
 `IndexerProvider::watch_stealth_utxos`; `ootle_sdk_core`: `stealth::scan_stealth_output`), but you then build and
-maintain the monitor yourself.
+maintain the monitor yourself. That includes checking the outputs you hold in a shard that an indexer flags with `spends_incomplete`, when
+it may lack spends below your cursor.
 
 ## Ootle networks and release methodology
 

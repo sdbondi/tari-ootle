@@ -142,8 +142,8 @@ CREATE INDEX utxos_resource_unspent_idx ON utxos (resource_address) WHERE is_spe
 CREATE INDEX utxos_resource_public_nonce_utxo_tag_spent_idx ON utxos (resource_address, public_nonce, utxo_tag) WHERE is_spent = true OR is_burnt = true;
 
 -- Per shard, the state version at and below which this indexer may lack the tombstone of a spent UTXO. A shard's first
--- sync fetches only its live substates, so the spends before it are not seen. The UTXO stream asks a client resuming
--- from below a shard's horizon to resync it. A shard with no row has every tombstone.
+-- sync fetches only its live substates, so the spends before it are not seen. The UTXO stream tells a client resuming
+-- from below a shard's horizon that its spends are incomplete. A shard with no row has every tombstone.
 create table utxo_tombstone_horizons
 (
     shard         int    not null primary key,

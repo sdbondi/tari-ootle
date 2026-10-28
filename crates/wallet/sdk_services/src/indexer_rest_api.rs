@@ -592,6 +592,7 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
                     shard: Shard::from(sos.shard),
                     max_state_version: StateVersion::from(sos.max_state_version),
                     has_more: sos.has_more,
+                    spends_incomplete: sos.spends_incomplete,
                 });
                 let update = res
                     .update

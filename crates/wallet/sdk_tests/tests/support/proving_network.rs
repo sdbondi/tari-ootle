@@ -46,8 +46,8 @@ use tari_ootle_wallet_sdk::{
 use tari_template_abi::TemplateDef;
 use tari_template_lib::types::{ResourceAddress, TemplateAddress, UtxoId};
 
-/// Answers a stealth UTXO stream request, given the cursor of each shard it asks from.
-type UtxoStreamAnswer = Arc<dyn Fn(&[(Shard, StateVersion)]) -> Vec<UtxoUpdatePayload> + Send + Sync>;
+/// Answers a stealth UTXO stream request of the given shard cursors and `unspent_only` flag.
+type UtxoStreamAnswer = Arc<dyn Fn(&[(Shard, StateVersion)], bool) -> Vec<UtxoUpdatePayload> + Send + Sync>;
 
 /// An indexer that serves a chain of signed end-of-epoch checkpoints, the committees of every epoch's validator set,
 /// one transaction result, and the substates it is given to serve.
@@ -271,9 +271,10 @@ impl ProvingNetwork {
         self.state.lock().unwrap().listed_shard_group_checkpoints = Some(checkpoints);
     }
 
-    /// Answers every stealth UTXO stream request with what `answer` returns for the request's shard cursors.
+    /// Answers every stealth UTXO stream request with what `answer` returns for the request's shard cursors and
+    /// `unspent_only` flag.
     pub fn answer_utxo_streams<F>(&self, answer: F)
-    where F: Fn(&[(Shard, StateVersion)]) -> Vec<UtxoUpdatePayload> + Send + Sync + 'static {
+    where F: Fn(&[(Shard, StateVersion)], bool) -> Vec<UtxoUpdatePayload> + Send + Sync + 'static {
         self.state.lock().unwrap().utxo_stream_answer = Some(Arc::new(answer));
     }
 
@@ -399,14 +400,14 @@ impl WalletNetworkInterface for ProvingNetwork {
         _from_epoch: Epoch,
         _resource_address: ResourceAddress,
         shard_state_versions: Vec<(Shard, StateVersion)>,
-        _unspent_only: bool,
+        unspent_only: bool,
     ) -> Result<UtxoUpdateStream<Self::Error>, Self::Error> {
         let mut state = self.state.lock().unwrap();
         let answer = state
             .utxo_stream_answer
             .clone()
             .expect("ProvingNetwork answers no UTXO stream");
-        let payloads = answer(&shard_state_versions);
+        let payloads = answer(&shard_state_versions, unspent_only);
         state.utxo_stream_requests.push(shard_state_versions);
         Ok(futures::stream::iter(payloads.into_iter().map(Ok)).boxed())
     }

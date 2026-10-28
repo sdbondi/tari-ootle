@@ -80,7 +80,7 @@ export type GetIndexerInfoResponse = {
    * Per shard, the state version at and below which this indexer may lack the tombstone of a spent
    * UTXO, ascending by shard. A shard's first sync fetches only its live substates, so a spend
    * before it is not seen. A shard not listed has every tombstone. The UTXO stream sets
-   * `StartOfShard::resync_required` for a shard whose cursor is below its horizon. This is sync
+   * `StartOfShard::spends_incomplete` for a shard whose cursor is below its horizon. This is sync
    * state, and rises while the indexer runs.
    */
   utxo_tombstone_horizons: Array<[Shard, StateVersion]>;

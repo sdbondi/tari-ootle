@@ -177,6 +177,7 @@ fn start_of_shard(shard: Shard, max_state_version: u64, utxo: UtxoUnspent) -> Ut
             shard,
             max_state_version: StateVersion::from(max_state_version),
             has_more: false,
+            spends_incomplete: false,
         }),
         update: Some(WalletUtxoUpdate::Unspent(utxo)),
         eos: None,

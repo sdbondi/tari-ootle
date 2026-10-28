@@ -1820,7 +1820,7 @@
                 }
               ]
             },
-            "description": "Per shard, the state version at and below which this indexer may lack the tombstone of a spent\nUTXO, ascending by shard. A shard's first sync fetches only its live substates, so a spend\nbefore it is not seen. A shard not listed has every tombstone. The UTXO stream sets\n`StartOfShard::resync_required` for a shard whose cursor is below its horizon. This is sync\nstate, and rises while the indexer runs."
+            "description": "Per shard, the state version at and below which this indexer may lack the tombstone of a spent\nUTXO, ascending by shard. A shard's first sync fetches only its live substates, so a spend\nbefore it is not seen. A shard not listed has every tombstone. The UTXO stream sets\n`StartOfShard::spends_incomplete` for a shard whose cursor is below its horizon. This is sync\nstate, and rises while the indexer runs."
           },
           "verify_substate_proofs": {
             "type": "boolean",
