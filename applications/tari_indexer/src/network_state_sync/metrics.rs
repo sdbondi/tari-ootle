@@ -75,9 +75,12 @@ impl NetworkStateMetrics {
             ),
             shard_leaf_checks: Family::default().register_at(
                 "shard_leaf_checks",
-                "Streamed shard transition accumulators checked against quorum-verified shard leaves, by outcome: \
-                 promote (matched), adopt (tracking started at the leaf), mismatch, conflict (two verified leaves \
-                 disagree), or invalid_version (a streamed version whose accumulator cannot be computed)",
+                "Staged shard transition accumulators checked against quorum-verified shard leaves, by outcome: \
+                 promote (matched, staged versions promoted), mismatch (staged versions discarded), conflict (two \
+                 verified leaves disagree), invalid_version (a streamed version whose accumulator cannot be \
+                 computed), withheld or unverified (a stream peer blamed for withholding versions a leaf names or for \
+                 staging versions no leaf reaches), or circuit_breaker (every committee member mismatched from the \
+                 same verified version, and the shard group halted)",
                 registry,
             ),
         }
