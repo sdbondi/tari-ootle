@@ -2702,7 +2702,8 @@ fn promote_staged(
 /// Every substate is committed at the snapshot's version, in one commit per creation epoch, which the indexed UTXOs
 /// record. The snapshot is read [`MAX_PROMOTED_SNAPSHOT_SUBSTATES`] at a time, so it is never held in memory whole.
 /// The receipts and events it indexes are history rather than news, so they are counted but not announced: a
-/// subscriber reads them from the store.
+/// subscriber reads them from the store. The snapshot holds no tombstone of a UTXO spent at or below its version, so
+/// the shard's UTXO tombstone horizon is raised to that version.
 fn promote_snapshot(
     tx: &mut SqliteStoreWriteTransaction<'_>,
     shard: Shard,
@@ -2743,6 +2744,7 @@ fn promote_snapshot(
     }
     tx.snapshot_substates_delete(shard)?;
     tx.checkpoint_shard_leaves_delete_through(shard, state_version)?;
+    tx.raise_utxo_tombstone_horizon(shard, state_version)?;
     progress.record_verified(shard, verified);
     progress.record_state_version(shard, state_version, verified.epoch);
     tx.key_value_set(Key::SyncProgress, progress)?;
@@ -3637,6 +3639,10 @@ mod tests {
                 1
             );
             assert_eq!(checkpoint_leaves_above(&store, 0, 10).await, [60]);
+            assert_eq!(
+                store.with_read_tx(|tx| tx.utxo_tombstone_horizon(SHARD)).await.unwrap(),
+                Some(v(50))
+            );
         }
 
         #[tokio::test]
