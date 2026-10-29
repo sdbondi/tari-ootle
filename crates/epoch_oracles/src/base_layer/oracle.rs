@@ -78,6 +78,7 @@ struct ScanPosition {
     tip: FixedHash,
     block_hash: FixedHash,
     height: u64,
+    /// The last boundary crossed at or below `height`, in this batch or an earlier one.
     epoch_hash: Option<FixedHash>,
 }
 
@@ -886,8 +887,9 @@ impl<TStore: EpochOracleStore + BaseLayerBlockHeaderStore, TClient: BaseNodeClie
 
     /// Persists the scan position the last batch reached. Called once the consumer has taken every
     /// event of that batch: the consumer applies an event before it polls for the next. A failed
-    /// write drops the position rather than retrying it, leaving an older persisted position that a
-    /// restart re-scans from; the epoch manager tolerates the replayed events.
+    /// write drops the position rather than retrying it. The next batch to persist writes a complete
+    /// position that covers the dropped one; a restart before then re-scans from the older persisted
+    /// position, and the epoch manager tolerates the replayed events.
     fn persist_scan_position(&mut self) -> Result<(), BaseLayerOracleError> {
         let Some(ScanPosition {
             tip,
@@ -1090,7 +1092,11 @@ enum BlockchainProgression {
 mod tests {
     use std::{
         collections::{HashMap, VecDeque},
-        sync::{Arc, Mutex, atomic::AtomicU64},
+        sync::{
+            Arc,
+            Mutex,
+            atomic::{AtomicBool, AtomicU64, Ordering},
+        },
         task::{Context, Waker},
         time::Duration,
     };
@@ -1118,7 +1124,7 @@ mod tests {
             BaseLayerBlockHeaderStore,
             config::{BaseLayerEpochOracleConfig, BaseLayerEpochOracleFeatures},
         },
-        store::EpochOracleStore,
+        store::{EpochOracleStore, StoreKey},
     };
 
     const NETWORK: Network = Network::LocalNet;
@@ -1130,6 +1136,8 @@ mod tests {
     struct InMemoryStore {
         metadata: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
         headers: Arc<Mutex<Vec<BlockHeaderModel>>>,
+        /// When true, `set` returns an error instead of writing.
+        fail_sets: Arc<AtomicBool>,
     }
 
     impl InMemoryStore {
@@ -1159,6 +1167,9 @@ mod tests {
         }
 
         fn set<T: serde::Serialize>(&self, key: &[u8], value: &T) -> anyhow::Result<()> {
+            if self.fail_sets.load(Ordering::Relaxed) {
+                anyhow::bail!("store write failed");
+            }
             self.metadata
                 .lock()
                 .unwrap()
@@ -1570,6 +1581,47 @@ mod tests {
             epoch_changes(&events),
             vec![],
             "an applied batch must not be replayed; got {events:?}"
+        );
+    }
+
+    /// A batch whose position fails to persist leaves its boundary hash unpersisted. The next batch
+    /// to persist must write that hash too, even when it crosses no boundary of its own, or the
+    /// stored epoch hash trails the stored scan height.
+    #[tokio::test]
+    async fn a_failed_persist_is_healed_by_the_next_batch() {
+        let store = InMemoryStore::default();
+        let client = MockBaseNode::new(linear_chain(0..=20));
+        let chain = linear_chain(0..=23);
+        let mut oracle = BaseLayerOracle::new(store.clone(), client.clone(), make_config(5), NETWORK);
+
+        // The first batch scans 1..=15 and crosses the epoch 3 boundary at 15.
+        next_events_until(&mut oracle, |e| matches!(e, EpochEvent::DoneForNow { .. })).await;
+        store.fail_sets.store(true, Ordering::Relaxed);
+        let event = oracle.next_epoch_event().await.expect("oracle stopped");
+        assert!(
+            matches!(event, EpochEvent::Error(_)),
+            "expected the failed persist; got {event:?}"
+        );
+        store.fail_sets.store(false, Ordering::Relaxed);
+
+        // The second batch scans 16..=18, crossing no boundary.
+        client.set_chain(chain.clone());
+        next_events_until(&mut oracle, |e| matches!(e, EpochEvent::DoneForNow { .. })).await;
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(oracle.poll_next_event(&mut cx).is_pending());
+
+        assert_eq!(
+            store
+                .get::<u64>(StoreKey::BaseLayerLastScannedBlockHeight.as_key_bytes())
+                .unwrap(),
+            Some(18)
+        );
+        assert_eq!(
+            store
+                .get::<FixedHash>(StoreKey::BaseLayerLastEpochHash.as_key_bytes())
+                .unwrap(),
+            Some(hash_header(NETWORK, &chain[15])),
+            "the stored epoch hash must be the last boundary at or below the stored scan height"
         );
     }
 
