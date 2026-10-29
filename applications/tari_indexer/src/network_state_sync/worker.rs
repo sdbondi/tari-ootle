@@ -1118,6 +1118,16 @@ impl NetworkWideStateSync {
         cancel: &CancellationToken,
     ) -> Result<Option<RoundEnd>, NetworkStateSyncError> {
         let checkpoint = self.pinned_checkpoint(shard_group, current_epoch).await?;
+        if !new_shards.is_empty() {
+            match &checkpoint {
+                Some(checkpoint) => {
+                    info!(target: LOG_TARGET, "🌍️ Taking snapshots of {} new shards of shard group {shard_group} at the checkpoint of {}", new_shards.len(), checkpoint.epoch());
+                },
+                None => {
+                    info!(target: LOG_TARGET, "🌍️ Taking snapshots of {} new shards of shard group {shard_group} at probed tip leaves: no checkpoint of the {SNAPSHOT_CHECKPOINT_EPOCHS} epochs before {current_epoch} is stored", new_shards.len());
+                },
+            }
+        }
         for shard in new_shards {
             if let Some((proved, epoch)) = checkpoint
                 .as_ref()
