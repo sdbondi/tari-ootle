@@ -2,7 +2,6 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use std::{
-    collections::{HashMap, hash_map::Entry},
     ops::Deref,
     sync::{Arc, Mutex},
     time::Duration,
@@ -957,6 +956,8 @@ fn now() -> PrimitiveDateTime {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use tari_consensus_types::Decision;
     use tari_crypto::ristretto::RistrettoSecretKey;
     use tari_engine_types::{
