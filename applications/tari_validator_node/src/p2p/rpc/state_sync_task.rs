@@ -707,7 +707,6 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
         .await
     }
 
-    /// Sends `transitions` in batches.
     /// Streams v0 of `shard` with no updates. A shard's history starts at v0, which holds its genesis state, so a shard
     /// with none has no v0 record but is still streamed one: its accumulator after v0 is zero, which a verified leaf
     /// at v0 or later checks.
@@ -724,6 +723,7 @@ impl<TStateStore: StateStore> StateSyncTask<TStateStore> {
         .await
     }
 
+    /// Sends `transitions` in batches.
     async fn send_batches(&mut self, transitions: StateVersionTransitions) -> Result<(), ()> {
         let batches = match into_batches(transitions, self.batch_size) {
             Ok(batches) => batches,

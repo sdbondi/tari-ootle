@@ -1004,7 +1004,7 @@ impl NetworkWideStateSync {
     }
 
     /// Follows every given shard from `session`, which serves them all over a single stream, from the version after
-    /// the last one staged. A shard never synced follows from version one.
+    /// the last one staged. A shard never synced follows from v0.
     #[expect(clippy::too_many_arguments)]
     async fn sync_shard_group_state(
         &mut self,
@@ -2967,9 +2967,8 @@ mod tests {
             TransitionAccumulator::new(acc)
         }
 
-        /// Stages v1..=`num_versions` of [`SHARD`], each creating the receipt of transaction `n` with `n` in fees, as a
-        /// stream would, and records the cursor at the last.
-        /// Stages v1 to `num_versions` of a shard whose empty v0 is verified.
+        /// Stages v1..=`num_versions` of [`SHARD`], whose empty v0 is verified, each creating the receipt of
+        /// transaction `n` with `n` in fees, as a stream would, and records the cursor at the last.
         async fn stage(store: &SqliteIndexerStore, num_versions: u64) -> SyncProgress {
             let mut progress = SyncProgress::default();
             progress.record_verified(SHARD, VerifiedShardVersion {

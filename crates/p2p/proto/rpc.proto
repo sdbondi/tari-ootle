@@ -205,8 +205,10 @@ message TreeRootSummary {
 // changes, so a shard range cannot share a single start version - each shard carries its own.
 message ShardCursor {
   uint32 shard = 1;
-  // The first version to stream. A shard's history starts at v0, which holds its genesis state; a stream from v0
-  // sends a v0 for every shard, with no updates for a shard that has no genesis state.
+  // The first version to stream. A shard's history starts at v0, which holds its genesis state. A stream from v0
+  // sends an empty v0 for a shard with no genesis state, and the genesis transitions the caller's value filters
+  // select for one with it, so a caller that requests every transition, as values or hashes, receives a v0 for
+  // every shard.
   uint64 start_state_version = 2;
 }
 
