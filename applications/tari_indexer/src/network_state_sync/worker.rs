@@ -140,7 +140,7 @@ const VERIFICATION_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const BURST_PROBE_MIN_INTERVAL: Duration = Duration::from_secs(1);
 /// The soonest a shard group syncs a missing checkpoint again once its stream shows the committee has entered the
 /// epoch after it. Committee members commit the checkpoint within moments of each other, and one that has not yet costs
-/// a reopen, so this bounds the reopens to one a period.
+/// a reopen, so this bounds the reopens to one a period. See [`CheckpointRetryBackoff`] for how it grows.
 const CHECKPOINT_RETRY_MIN_INTERVAL: Duration = Duration::from_secs(2);
 /// The most probes' leaves queued for a shard group's stream.
 const PROBED_LEAVES_CAPACITY: usize = 4;
@@ -854,6 +854,7 @@ impl NetworkWideStateSync {
             .chain(shard_group.shard_iter())
             .collect::<Vec<_>>();
         let mut breaker = MismatchBreaker::default();
+        let mut checkpoint_backoff = CheckpointRetryBackoff::new(self.config.work_interval);
         while !cancel.is_cancelled() {
             let round = self
                 .follow_round(
@@ -864,6 +865,7 @@ impl NetworkWideStateSync {
                     &cancel,
                     &mut epoch,
                     &mut leaves,
+                    &mut checkpoint_backoff,
                 )
                 .await;
             match round {
@@ -930,6 +932,7 @@ impl NetworkWideStateSync {
         cancel: &CancellationToken,
         epoch: &mut watch::Receiver<Epoch>,
         leaves: &mut GroupLeaves,
+        checkpoint_backoff: &mut CheckpointRetryBackoff,
     ) -> Result<RoundEnd, NetworkStateSyncError> {
         let current_epoch = *epoch.borrow_and_update();
         self.restore_stage(shards, progress).await?;
@@ -949,9 +952,8 @@ impl NetworkWideStateSync {
             return Ok(RoundEnd::Cancelled);
         }
         // Wallets verify the validator set of an epoch through the checkpoint that ends the epoch
-        // before it, so a missing checkpoint is fetched again as soon as the stream shows it exists.
-        let checkpoints_due = (!checkpoints_reached_epoch)
-            .then(|| CheckpointsDue::new(current_epoch, time::Instant::now(), self.config.work_interval));
+        // before it, so a missing checkpoint is fetched again soon after the stream shows it exists.
+        let checkpoints_due = checkpoint_backoff.checkpoints_due(checkpoints_reached_epoch, current_epoch);
         let mut session = match pool.new_stream_session().await {
             Ok(s) => s,
             Err(e) => {
@@ -2080,8 +2082,7 @@ enum StreamEnd {
 ///
 /// Consensus enters an epoch only once it has committed the checkpoint that ends the one before, so a streamed version
 /// committed in `epoch` or later, or a completion marker its responder makes as of `epoch` or later, shows the
-/// checkpoint exists. The sync is due [`CHECKPOINT_RETRY_MIN_INTERVAL`] after the round started then, and otherwise
-/// after the work interval.
+/// checkpoint exists. The sync is due `soonest_after` the round started then, and otherwise after the work interval.
 #[derive(Debug, Clone, Copy)]
 struct CheckpointsDue {
     epoch: Epoch,
@@ -2090,11 +2091,11 @@ struct CheckpointsDue {
 }
 
 impl CheckpointsDue {
-    fn new(epoch: Epoch, now: time::Instant, work_interval: Duration) -> Self {
+    fn new(epoch: Epoch, now: time::Instant, soonest_after: Duration, work_interval: Duration) -> Self {
         Self {
             epoch,
             at: now + work_interval,
-            soonest: now + CHECKPOINT_RETRY_MIN_INTERVAL.min(work_interval),
+            soonest: now + soonest_after.min(work_interval),
         }
     }
 
@@ -2107,6 +2108,55 @@ impl CheckpointsDue {
         if msg_epoch >= self.epoch {
             self.at = self.at.min(self.soonest);
         }
+    }
+}
+
+/// How soon after a round starts a shard group's stream may bring forward the sync of a checkpoint the round found
+/// missing (see [`CheckpointsDue`]).
+///
+/// A committee can enter an epoch with no checkpoint ending the one before, as in the first epoch consensus runs or
+/// after an epoch it never ran, and its stream then shows the epoch on every round while the sync keeps falling short.
+/// So the interval starts at [`CHECKPOINT_RETRY_MIN_INTERVAL`] and doubles with each round of the same epoch that finds
+/// the checkpoint missing, up to the work interval.
+#[derive(Debug)]
+struct CheckpointRetryBackoff {
+    work_interval: Duration,
+    last: Option<(Epoch, Duration)>,
+}
+
+impl CheckpointRetryBackoff {
+    fn new(work_interval: Duration) -> Self {
+        Self {
+            work_interval,
+            last: None,
+        }
+    }
+
+    /// The interval for a round of `epoch` that found the checkpoint ending the epoch before it missing.
+    fn next(&mut self, epoch: Epoch) -> Duration {
+        let interval = match self.last {
+            Some((last_epoch, last_interval)) if last_epoch == epoch => last_interval.saturating_mul(2),
+            _ => CHECKPOINT_RETRY_MIN_INTERVAL,
+        }
+        .min(self.work_interval);
+        self.last = Some((epoch, interval));
+        interval
+    }
+
+    /// When a round of `epoch` starting now syncs its checkpoints again: never once they `reached` the epoch before
+    /// it, which starts the backoff over.
+    fn checkpoints_due(&mut self, reached: bool, epoch: Epoch) -> Option<CheckpointsDue> {
+        if reached {
+            self.last = None;
+            return None;
+        }
+        let soonest_after = self.next(epoch);
+        Some(CheckpointsDue::new(
+            epoch,
+            time::Instant::now(),
+            soonest_after,
+            self.work_interval,
+        ))
     }
 }
 
@@ -3099,11 +3149,12 @@ mod tests {
         use super::*;
 
         const WORK_INTERVAL: Duration = Duration::from_secs(60);
+        const SOONEST_AFTER: Duration = Duration::from_secs(2);
 
         #[test]
         fn it_waits_the_work_interval_until_the_stream_shows_the_epoch() {
             let now = time::Instant::now();
-            let mut due = CheckpointsDue::new(Epoch(5), now, WORK_INTERVAL);
+            let mut due = CheckpointsDue::new(Epoch(5), now, SOONEST_AFTER, WORK_INTERVAL);
             due.observe(Epoch(4));
             assert_eq!(due.at(), now + WORK_INTERVAL);
         }
@@ -3112,11 +3163,11 @@ mod tests {
         fn it_is_due_soon_once_the_stream_shows_the_epoch_or_later() {
             for msg_epoch in [Epoch(5), Epoch(6)] {
                 let now = time::Instant::now();
-                let mut due = CheckpointsDue::new(Epoch(5), now, WORK_INTERVAL);
+                let mut due = CheckpointsDue::new(Epoch(5), now, SOONEST_AFTER, WORK_INTERVAL);
                 due.observe(msg_epoch);
-                assert_eq!(due.at(), now + CHECKPOINT_RETRY_MIN_INTERVAL);
+                assert_eq!(due.at(), now + SOONEST_AFTER);
                 due.observe(Epoch(4));
-                assert_eq!(due.at(), now + CHECKPOINT_RETRY_MIN_INTERVAL);
+                assert_eq!(due.at(), now + SOONEST_AFTER);
             }
         }
 
@@ -3124,9 +3175,64 @@ mod tests {
         fn it_is_never_later_than_the_work_interval() {
             let now = time::Instant::now();
             let work_interval = Duration::from_secs(1);
-            let mut due = CheckpointsDue::new(Epoch(5), now, work_interval);
+            let mut due = CheckpointsDue::new(Epoch(5), now, SOONEST_AFTER, work_interval);
             due.observe(Epoch(5));
             assert_eq!(due.at(), now + work_interval);
+        }
+    }
+
+    mod checkpoint_retry_backoff {
+        use super::*;
+
+        const WORK_INTERVAL: Duration = Duration::from_secs(60);
+
+        fn secs(n: u64) -> Duration {
+            Duration::from_secs(n)
+        }
+
+        #[test]
+        fn it_doubles_with_each_round_of_an_epoch_that_falls_short_up_to_the_work_interval() {
+            let mut backoff = CheckpointRetryBackoff::new(WORK_INTERVAL);
+            let intervals = (0..7).map(|_| backoff.next(Epoch(5))).collect::<Vec<_>>();
+            assert_eq!(intervals, [
+                CHECKPOINT_RETRY_MIN_INTERVAL,
+                secs(4),
+                secs(8),
+                secs(16),
+                secs(32),
+                WORK_INTERVAL,
+                WORK_INTERVAL
+            ]);
+        }
+
+        #[test]
+        fn it_starts_over_in_a_new_epoch() {
+            let mut backoff = CheckpointRetryBackoff::new(WORK_INTERVAL);
+            backoff.next(Epoch(5));
+            backoff.next(Epoch(5));
+            assert_eq!(backoff.next(Epoch(6)), CHECKPOINT_RETRY_MIN_INTERVAL);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_round_that_falls_short_brings_the_sync_forward_by_the_grown_interval() {
+            let mut backoff = CheckpointRetryBackoff::new(WORK_INTERVAL);
+            backoff.next(Epoch(5));
+            let now = time::Instant::now();
+            let mut due = backoff
+                .checkpoints_due(false, Epoch(5))
+                .expect("a round that falls short is due again");
+            assert_eq!(due.at(), now + WORK_INTERVAL);
+            due.observe(Epoch(5));
+            assert_eq!(due.at(), now + secs(4));
+        }
+
+        #[test]
+        fn it_starts_over_once_a_round_finds_the_checkpoint() {
+            let mut backoff = CheckpointRetryBackoff::new(WORK_INTERVAL);
+            backoff.next(Epoch(5));
+            backoff.next(Epoch(5));
+            assert!(backoff.checkpoints_due(true, Epoch(5)).is_none());
+            assert_eq!(backoff.next(Epoch(5)), CHECKPOINT_RETRY_MIN_INTERVAL);
         }
     }
 
