@@ -334,9 +334,13 @@ let tokens = ResourceBuilder::public_fungible()
 ```
 
 The hook returns `()` and takes `(ResourceAuthAction, AuthHookCaller)`; the engine rejects the resource at creation
-otherwise. It is skipped when the acting component *is* the hook's own component, and when the hook's component does
-not exist yet — which is what lets a template allocate the address, build the resource, and create the component
-afterwards.
+otherwise. It is skipped when the acting component *is* the hook's own component, and while the hook's component is
+still an unused address allocation in the current transaction — which is what lets a template allocate the address,
+build the resource, and create the component afterwards.
+
+Execution can only read substates the transaction declares, so a transaction that acts on a hooked resource must
+declare the hook's component as an input: a read input, or a write input if the hook updates its own state. If it
+does not, the engine rejects the action with `AuthHookComponentNotDeclared`.
 
 On stealth and confidential resources, every stealth transfer runs the hook as `Withdraw`, freezing or unfreezing
 UTXOs or confidential outputs runs it as `Freeze`, and burning a UTXO runs it as `Burn`. A stealth transfer submitted

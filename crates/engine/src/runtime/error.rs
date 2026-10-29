@@ -242,6 +242,14 @@ pub enum RuntimeError {
     },
     #[error("Resource Auth Hook Denied Access for action {action_ident}: {details}")]
     AccessDeniedAuthHook { action_ident: ActionIdent, details: String },
+    #[error(
+        "Resource {resource_address} has an auth hook on component {component_address}, which the transaction did not \
+         declare as an input. Declare the hook component as an input to act on this resource."
+    )]
+    AuthHookComponentNotDeclared {
+        resource_address: ResourceAddress,
+        component_address: ComponentAddress,
+    },
     #[error("Access Denied: You must be the owner to perform this action: {action}")]
     AccessDeniedOwnerRequired { action: ActionIdent },
     #[error("Write attempted in a read-only execution context")]
@@ -540,6 +548,7 @@ impl RuntimeError {
             Self::SubstateNotFound { .. } |
             Self::RootSubstateNotFound { .. } |
             Self::ReferencedSubstateNotFound { .. } |
+            Self::AuthHookComponentNotDeclared { .. } |
             Self::NonExistentSubstateReturned { .. } |
             Self::ComponentReferencedUnknownSubstate { .. } |
             Self::LayerOneCommitmentNotFound { .. } |

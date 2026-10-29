@@ -515,19 +515,30 @@ impl<TStore: StateReader + Clone + 'static, TTemplateProvider: TemplateProvider<
         action: ResourceAuthAction,
     ) -> Result<(), RuntimeError> {
         self.invoke_modules_on_runtime_call("invoke_resource_access_hook")?;
-        // Check if the component exist
         let skip_hook = self.tracker.read_with(|state| {
             let current_component = auth_caller.component().copied();
             // Only execute hooks if the resource is being acted upon by an external component
             if current_component == Some(auth_hook.component_address) {
                 return Ok::<_, RuntimeError>(true);
             }
-            // We know that the auth hook has been validated before this is called. However, the component may not yet
-            // exist if it is being created in the same call as the resource action is taking place. For
-            // example, commonly a user creates a resource with initial supply and deposits it into a bucket
-            // before creating the component. In this case, we "skip" the hook.
-            let exists = state.store().exists(&auth_hook.component_address.into())?;
-            Ok::<_, RuntimeError>(!exists)
+            // The hook component may still be an unused address allocation when the resource is acted upon in the
+            // same call that creates it. For example, commonly a user creates a resource with initial supply and
+            // deposits it into a vault before creating the component. In this case, we "skip" the hook.
+            if state
+                .get_allocated_address_by_address(auth_hook.component_address)
+                .is_some()
+            {
+                return Ok(true);
+            }
+            // Any other hook component already exists on the network, and execution can only read it if the
+            // transaction declared it as an input.
+            if !state.store().exists(&auth_hook.component_address.into())? {
+                return Err(RuntimeError::AuthHookComponentNotDeclared {
+                    resource_address: *auth_caller.resource(),
+                    component_address: auth_hook.component_address,
+                });
+            }
+            Ok(false)
         })?;
 
         if skip_hook {
