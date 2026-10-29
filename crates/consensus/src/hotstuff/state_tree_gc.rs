@@ -62,7 +62,7 @@ impl<TStore: StateStore + Send + Sync + Clone + 'static> PeriodicTask for StateT
 
         match result {
             Ok(Ok(n)) => {
-                info!(target: LOG_TARGET, "🗑️ State tree GC task completed successfully. Deleted {n} stale rows");
+                info!(target: LOG_TARGET, "🗑️ State tree GC task completed successfully. Wrote {n} rows deleting or keeping stale nodes");
             },
             Ok(Err(err)) => {
                 error!(target: LOG_TARGET, "Failed to run state tree GC: {}", err);

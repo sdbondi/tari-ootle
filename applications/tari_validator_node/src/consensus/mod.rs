@@ -78,8 +78,8 @@ pub async fn spawn(
         consensus_constants: consensus_constants.clone(),
         state_history_length,
         pinned_checkpoint_epochs,
-        // TODO: make these configurable (defaults should probably be longer than 1 hour)
-        state_tree_cleanup_interval: Duration::from_secs(60 * 60),
+        state_tree_cleanup_interval: Duration::from_secs(consensus_config.state_tree_cleanup_interval_secs.max(1)),
+        // TODO: make this configurable (default should probably be longer than 1 hour)
         epoch_gc_interval: Duration::from_secs(60 * 60),
         // NOTE: This value should be greater than the epoch oracle's scanning interval to avoid leader failure by race
         // condition.

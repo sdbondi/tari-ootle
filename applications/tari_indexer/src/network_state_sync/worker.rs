@@ -161,8 +161,7 @@ const SNAPSHOT_PAGE_SUBSTATES: u32 = 1000;
 /// The longest a shard snapshot is paged in for before it is abandoned. Each page is checked as it arrives, so this
 /// bounds only how long a slow peer holds the shard group's round.
 const MAX_SNAPSHOT_DURATION: Duration = Duration::from_secs(30 * 60);
-/// How many of the most recent epoch checkpoints a snapshot may be taken at: as many as validators keep the trees of
-/// by default.
+/// How many of the most recent epoch checkpoints a snapshot may be taken at: the fewest validators keep the trees of.
 const SNAPSHOT_CHECKPOINT_EPOCHS: u64 = 2;
 /// How many snapshots of a new shard may be abandoned in a row before the shard replays its history instead.
 const MAX_ABANDONED_SNAPSHOTS: usize = 3;
