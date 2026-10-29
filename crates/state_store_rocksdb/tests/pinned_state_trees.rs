@@ -191,6 +191,35 @@ fn node_keys_at(store: &impl StateStore, version: Version) -> Vec<NodeKey> {
         .unwrap()
 }
 
+/// A pinned tree is released across as many bounded calls as it takes, each resuming where the last stopped.
+#[test]
+fn a_released_pin_is_freed_across_bounded_calls() {
+    const PIN: Version = 10;
+    const MAX_WRITES: usize = 3;
+    let (store, _tmp) = create_store();
+    write_tree(&store);
+    let recent = read_tree(&store, LATEST).unwrap();
+    clear_stale(&store, &[PIN]);
+
+    let mut calls = 0;
+    loop {
+        let num_written = store
+            .with_write_tx(|tx| {
+                let mut retention = StateTreeRetention::default();
+                retention.add_shard(SHARD, LATEST);
+                tx.state_tree_nodes_clear_stale(&retention, MAX_WRITES)
+            })
+            .unwrap();
+        calls += 1;
+        if num_written < MAX_WRITES {
+            break;
+        }
+    }
+    assert!(calls > 1, "the release fit in one call, so the bound was not exercised");
+    assert!(read_tree(&store, PIN).is_none());
+    assert_eq!(read_tree(&store, LATEST), Some(recent));
+}
+
 #[test]
 fn pins_are_released_oldest_first() {
     const OLDER: Version = 6;

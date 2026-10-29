@@ -1772,6 +1772,9 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
                 deferred_cf.delete(&key, OPERATION)?;
                 num_written += nodes.len() + 1;
             }
+            if num_written >= max_writes {
+                break;
+            }
 
             let Some(to_version) = shard_retention
                 .latest_version
