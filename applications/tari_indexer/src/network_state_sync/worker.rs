@@ -872,9 +872,11 @@ impl NetworkWideStateSync {
                     diverged_from,
                 }) => {
                     warn!(target: LOG_TARGET, "⚠️ Shard group {shard_group}: {details}. Excluding {} for the rest of the epoch", display_peers(&blamed));
+                    // The pool excludes a blamed peer for the epoch manager's current epoch, so the blame is
+                    // recorded under the same one
                     self.sync_status.record_blame(
                         shard_group,
-                        *epoch.borrow(),
+                        self.epoch_manager.get_current_epoch(),
                         blamed.clone(),
                         &details,
                         diverged_from.map(|(shard, _)| shard),
