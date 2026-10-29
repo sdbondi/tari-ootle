@@ -116,12 +116,14 @@ struct Script {
     extra_downs: Vec<VersionedSubstateId>,
     /// Substates the execution reports reading at version zero besides the inputs it is given.
     extra_reads: Vec<SubstateId>,
-    /// A committed execution settles a fee intent that creates only the receipt.
+    /// A committed execution settles a fee intent that creates the receipt and `fee_intent_creations`.
     fee_intent: bool,
     /// Inputs the transaction is given and leaves unchanged.
     untouched: Vec<SubstateId>,
     /// The state of each substate in `new_outputs`.
     output_state: i128,
+    /// Substates the fee intent creates. The execution is rejected if the creation check reports one taken.
+    fee_intent_creations: Vec<SubstateId>,
 }
 
 /// Stands in for the engine: a transaction executes as its script says, writing every input it is given that is not
@@ -157,7 +159,7 @@ impl BlockTransactionExecutor<TestStore> for ScriptedExecutor {
         _input_fanout: u32,
         resolved_inputs: &HashMap<SubstateRequirement, Substate>,
         _templates: &UncommittedChainTemplates,
-        _creation_check: &dyn CreationCheck,
+        creation_check: &dyn CreationCheck,
     ) -> Result<TransactionExecution, BlockTransactionExecutorError> {
         let id = transaction.calculate_id();
         *self.num_executions.lock().unwrap().entry(id).or_default() += 1;
@@ -195,10 +197,16 @@ impl BlockTransactionExecutor<TestStore> for ScriptedExecutor {
             }))
             .collect::<Vec<_>>();
 
-        if !script.commit {
+        // The engine rejects a transaction whose fee intent creates a taken substate before its main intent runs
+        let taken = script
+            .fee_intent_creations
+            .iter()
+            .find(|id| creation_check.is_creation_taken(id).expect("creation check"));
+        if !script.commit || taken.is_some() {
+            let reason = taken.map_or_else(|| "scripted abort".to_string(), |id| format!("{id} is taken"));
             let result = execute_result(
                 transaction,
-                TransactionResult::Reject(RejectReason::execution_failure_unclassified("scripted abort")),
+                TransactionResult::Reject(RejectReason::execution_failure_unclassified(reason)),
             );
             return Ok(TransactionExecution::new(result, inputs, Vec::new()));
         }
@@ -220,12 +228,12 @@ impl BlockTransactionExecutor<TestStore> for ScriptedExecutor {
         for id in script.extra_downs {
             diff.down(id.substate_id().clone(), id.version());
         }
-        for id in script.new_outputs {
+        for id in script.fee_intent_creations.iter().chain(&script.new_outputs) {
             diff.up(
                 id.clone(),
                 component_with_state(SubstateVersion::ZERO, script.output_state),
             );
-            outputs.push(VersionedSubstateId::new(id, SubstateVersion::ZERO));
+            outputs.push(VersionedSubstateId::new(id.clone(), SubstateVersion::ZERO));
         }
         let receipt_substate = Substate::new(SubstateVersion::ZERO, TransactionReceipt {
             outcome: FinalizeOutcome::Commit,
@@ -240,6 +248,12 @@ impl BlockTransactionExecutor<TestStore> for ScriptedExecutor {
         outputs.push(VersionedSubstateId::new(receipt.clone(), SubstateVersion::ZERO));
         let fee_intent = script.fee_intent.then(|| {
             let mut fee_intent_diff = SubstateDiff::new();
+            for id in &script.fee_intent_creations {
+                fee_intent_diff.up(
+                    id.clone(),
+                    component_with_state(SubstateVersion::ZERO, script.output_state),
+                );
+            }
             fee_intent_diff.up(receipt, receipt_substate);
             FeeIntentFallback {
                 diff: fee_intent_diff,
@@ -2027,6 +2041,54 @@ mod speculation {
     }
 
     #[test]
+    fn a_fee_intent_creating_what_an_earlier_unit_creates_is_executed_in_block_order() {
+        let created = component_id(0x40);
+        let (expected, speculated, replica) = evaluate_both(|replica| {
+            let creator_input = component_id(0x20);
+            replica.add_substate(&creator_input);
+            let creator = replica.pool_transaction(1, &[&creator_input], Script {
+                commit: true,
+                new_outputs: vec![created.clone()],
+                ..Default::default()
+            });
+            // The fee intent's creation is not declared, so the transaction shares no unit with the creator
+            let input = component_id(0x21);
+            replica.add_substate(&input);
+            let late = (2..)
+                .map(|seed| {
+                    replica.pool_transaction(seed, &[&input], Script {
+                        commit: true,
+                        fee_intent: true,
+                        fee_intent_creations: vec![created.clone()],
+                        ..Default::default()
+                    })
+                })
+                .find(|late| *late > creator)
+                .unwrap();
+            vec![committing(creator), aborting(late, AbortReason::ExecutionFailure)]
+        });
+
+        assert!(expected.no_vote.is_none(), "{:?}", expected.no_vote);
+        assert_eq!(speculated.outcome(), expected.outcome());
+        assert_eq!(speculated.memo_hits, 1, "only the creator's speculation is taken");
+        assert_eq!(speculated.memo_misses, 1);
+        let mut executions = replica
+            .executor
+            .num_executions
+            .lock()
+            .unwrap()
+            .values()
+            .copied()
+            .collect::<Vec<_>>();
+        executions.sort_unstable();
+        assert_eq!(
+            executions,
+            [1, 2],
+            "the late transaction is executed again in block order"
+        );
+    }
+
+    #[test]
     fn a_snapshot_behind_the_write_transaction_misses_and_the_block_is_unchanged() {
         let input = component_id(0x20);
         let setup = |replica: &Replica| {
@@ -2169,11 +2231,14 @@ mod speculation {
     }
 
     /// Pools transactions that write random substates among a few, one of them written by many as a faucet's vault
-    /// is. Some use substates created by an earlier transaction in the block without that transaction declaring them.
+    /// is. Some use substates created by an earlier transaction in the block without that transaction declaring them,
+    /// and some have a fee intent that creates a substate other transactions' fee intents may also create, which
+    /// aborts every one after the first in block order.
     fn random_block(replica: &Replica, seed: u64) -> Vec<LocalOnlyAtom> {
         const NUM_SUBSTATES: u8 = 5;
         const NUM_TRANSACTIONS: u64 = 10;
         const NUM_CREATED: u8 = 3;
+        const NUM_CONTESTED: u8 = 2;
         let mut rng = XorShift(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
         let existing = (0..NUM_SUBSTATES).map(|n| component_id(0x20 + n)).collect::<Vec<_>>();
         for id in &existing {
@@ -2216,7 +2281,28 @@ mod speculation {
             scripts.get_mut(creator).unwrap().new_outputs.push(substate.clone());
         }
 
-        transactions.into_iter().map(|(id, _)| committing(id)).collect()
+        let contested = (0..NUM_CONTESTED).map(|n| component_id(0x60 + n)).collect::<Vec<_>>();
+        let mut taken = Vec::new();
+        transactions
+            .into_iter()
+            .map(|(id, _)| {
+                let mut scripts = replica.executor.scripts.lock().unwrap();
+                let script = scripts.get_mut(&id).unwrap();
+                // An aborted creator would leave its substates' users without inputs
+                if rng.below(3) != 0 || !script.new_outputs.is_empty() {
+                    return committing(id);
+                }
+                let substate = &contested[rng.below(u64::from(NUM_CONTESTED)) as usize];
+                script.fee_intent = true;
+                script.fee_intent_creations.push(substate.clone());
+                if taken.contains(substate) {
+                    aborting(id, AbortReason::ExecutionFailure)
+                } else {
+                    taken.push(substate.clone());
+                    committing(id)
+                }
+            })
+            .collect()
     }
 
     #[test]
@@ -2224,6 +2310,7 @@ mod speculation {
         let (mut total_hits, mut total_misses) = (0, 0);
         for seed in 1..=24 {
             let (expected, speculated, _replica) = evaluate_both(|replica| random_block(replica, seed));
+            assert!(expected.no_vote.is_none(), "seed {seed}: {:?}", expected.no_vote);
             assert_eq!(speculated.outcome(), expected.outcome(), "seed {seed}");
             total_hits += speculated.memo_hits;
             total_misses += speculated.memo_misses;

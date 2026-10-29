@@ -4,7 +4,10 @@
 use std::{collections::HashMap, fmt, time::Duration};
 
 use tari_consensus_types::BlockId;
-use tari_engine_types::substate::Substate;
+use tari_engine_types::{
+    creation_check::CreationCheck,
+    substate::{Substate, SubstateId},
+};
 use tari_ootle_common_types::SubstateRequirement;
 use tari_ootle_storage::consensus_models::{LockedEpoch, TransactionExecution};
 use tari_ootle_transaction::TransactionId;
@@ -12,10 +15,11 @@ use tari_ootle_transaction::TransactionId;
 /// Executions speculated for one block before it is evaluated in order, each usable only by an evaluation that gives
 /// the transaction the inputs it was speculated with.
 ///
-/// The engine is a pure function of the transaction, its input substates, the locked epoch, the input fanout and the
-/// templates of the chain the block builds on. The fanout and templates are the same for every transaction of the
-/// block the memo was speculated for, so a lookup names that block, and compares the input substates, value and
-/// version, and the locked epoch.
+/// The engine is a pure function of the transaction, its input substates, the locked epoch, the input fanout, the
+/// templates of the chain the block builds on, and the creation check's answers. The fanout and templates are the
+/// same for every transaction of the block the memo was speculated for, so a lookup names that block, and compares
+/// the input substates, value and version, the locked epoch, and the answer the block gives to each creation check
+/// the execution made.
 ///
 /// A version alone does not name a value here. Speculation applies changes the block may never make, so two
 /// speculated transactions can create the same substate at the same version with different values, and a block
@@ -33,6 +37,7 @@ pub struct ExecutionMemo {
 struct SpeculatedExecution {
     inputs: SpeculatedInputs,
     locked_epoch: LockedEpoch,
+    creations: CreationAnswers,
     execution: TransactionExecution,
 }
 
@@ -59,6 +64,28 @@ impl SpeculatedInputs {
                     .get(req)
                     .is_some_and(|encoded| tari_bor::encode(substate).is_ok_and(|bytes| bytes == *encoded))
             })
+    }
+}
+
+/// The creation checks an execution made, in order, each with the answer it was given.
+///
+/// The engine asks about a substate only after the answers before it, so an execution given the same answer to each of
+/// these checks asks no others and runs as it ran here.
+#[derive(Debug, Default)]
+pub struct CreationAnswers(Vec<(SubstateId, bool)>);
+
+impl CreationAnswers {
+    pub fn record(&mut self, id: SubstateId, is_taken: bool) {
+        self.0.push((id, is_taken));
+    }
+
+    /// Whether `creation_check` gives every recorded answer. A check that fails gives none.
+    fn matches(&self, creation_check: &dyn CreationCheck) -> bool {
+        self.0.iter().all(|(id, is_taken)| {
+            creation_check
+                .is_creation_taken(id)
+                .is_ok_and(|answer| answer == *is_taken)
+        })
     }
 }
 
@@ -93,17 +120,19 @@ impl ExecutionMemo {
         Self::new(BlockId::zero())
     }
 
-    /// Records the execution of `transaction_id` against `inputs` at `locked_epoch`.
+    /// Records the execution of `transaction_id` against `inputs` at `locked_epoch`, given the answers in `creations`.
     pub fn insert(
         &mut self,
         transaction_id: TransactionId,
         inputs: SpeculatedInputs,
         locked_epoch: LockedEpoch,
+        creations: CreationAnswers,
         execution: TransactionExecution,
     ) {
         self.entries.insert(transaction_id, SpeculatedExecution {
             inputs,
             locked_epoch,
+            creations,
             execution,
         });
     }
@@ -118,19 +147,24 @@ impl ExecutionMemo {
     }
 
     /// The execution speculated for `transaction_id` in the block that builds on `parent_block`, if it was speculated
-    /// with exactly `inputs` at `locked_epoch`. An execution is taken at most once.
+    /// with exactly `inputs` at `locked_epoch` and `creation_check` gives each answer it was given. An execution is
+    /// taken at most once.
     pub fn take(
         &mut self,
         parent_block: &BlockId,
         transaction_id: &TransactionId,
         inputs: &HashMap<SubstateRequirement, Substate>,
         locked_epoch: &LockedEpoch,
+        creation_check: &dyn CreationCheck,
     ) -> Option<TransactionExecution> {
         if *parent_block != self.parent_block {
             return None;
         }
         let entry = self.entries.remove(transaction_id)?;
-        if entry.locked_epoch == *locked_epoch && entry.inputs.matches(inputs) {
+        if entry.locked_epoch == *locked_epoch &&
+            entry.inputs.matches(inputs) &&
+            entry.creations.matches(creation_check)
+        {
             self.num_hits += 1;
             Some(entry.execution)
         } else {
@@ -184,7 +218,11 @@ impl fmt::Display for ExecutionMemo {
 
 #[cfg(test)]
 mod tests {
-    use tari_engine_types::{commit_result::RejectReason, non_fungible::NonFungibleContainer, substate::SubstateId};
+    use tari_engine_types::{
+        commit_result::RejectReason,
+        creation_check::{CreationCheckError, NoCreationCheck},
+        non_fungible::NonFungibleContainer,
+    };
     use tari_ootle_common_types::{Epoch, SubstateVersion};
     use tari_template_lib_types::{ComponentAddress, ObjectKey};
 
@@ -208,6 +246,14 @@ mod tests {
     }
 
     fn memo_with(inputs: &HashMap<SubstateRequirement, Substate>, locked_epoch: LockedEpoch) -> ExecutionMemo {
+        memo_answering(inputs, locked_epoch, CreationAnswers::default())
+    }
+
+    fn memo_answering(
+        inputs: &HashMap<SubstateRequirement, Substate>,
+        locked_epoch: LockedEpoch,
+        creations: CreationAnswers,
+    ) -> ExecutionMemo {
         let mut memo = ExecutionMemo::new(BlockId::zero());
         let execution = TransactionExecution::abort(
             &TransactionId::default(),
@@ -217,6 +263,7 @@ mod tests {
             TransactionId::default(),
             SpeculatedInputs::encode(inputs).unwrap(),
             locked_epoch,
+            creations,
             execution,
         );
         memo
@@ -227,7 +274,80 @@ mod tests {
         inputs: &HashMap<SubstateRequirement, Substate>,
         locked_epoch: LockedEpoch,
     ) -> Option<TransactionExecution> {
-        memo.take(&BlockId::zero(), &TransactionId::default(), inputs, &locked_epoch)
+        memo.take(
+            &BlockId::zero(),
+            &TransactionId::default(),
+            inputs,
+            &locked_epoch,
+            &NoCreationCheck,
+        )
+    }
+
+    fn created(seed: u8) -> SubstateId {
+        SubstateId::from(ComponentAddress::from_array([seed; ObjectKey::LENGTH]))
+    }
+
+    fn answering(taken: Vec<SubstateId>) -> impl Fn(&SubstateId) -> bool {
+        move |id| taken.contains(id)
+    }
+
+    #[test]
+    fn the_same_creation_answers_hit() {
+        let mut answers = CreationAnswers::default();
+        answers.record(created(7), false);
+        answers.record(created(8), true);
+        let mut memo = memo_answering(&inputs_at(3), pinned_to(5), answers);
+        let check = answering(vec![created(8)]);
+        let hit = memo.take(
+            &BlockId::zero(),
+            &TransactionId::default(),
+            &inputs_at(3),
+            &pinned_to(5),
+            &check,
+        );
+        assert!(hit.is_some());
+        assert_eq!(memo.num_hits(), 1);
+    }
+
+    #[test]
+    fn a_creation_the_block_has_taken_misses() {
+        let mut answers = CreationAnswers::default();
+        answers.record(created(7), false);
+        let mut memo = memo_answering(&inputs_at(3), pinned_to(5), answers);
+        let check = answering(vec![created(7)]);
+        let hit = memo.take(
+            &BlockId::zero(),
+            &TransactionId::default(),
+            &inputs_at(3),
+            &pinned_to(5),
+            &check,
+        );
+        assert!(hit.is_none());
+        assert_eq!(memo.num_misses(), 1);
+    }
+
+    #[test]
+    fn a_creation_check_that_fails_misses() {
+        struct Failing;
+        impl CreationCheck for Failing {
+            fn is_creation_taken(&self, id: &SubstateId) -> Result<bool, CreationCheckError> {
+                Err(CreationCheckError {
+                    id: id.clone(),
+                    details: "test".to_string(),
+                })
+            }
+        }
+        let mut answers = CreationAnswers::default();
+        answers.record(created(7), false);
+        let mut memo = memo_answering(&inputs_at(3), pinned_to(5), answers);
+        let hit = memo.take(
+            &BlockId::zero(),
+            &TransactionId::default(),
+            &inputs_at(3),
+            &pinned_to(5),
+            &Failing,
+        );
+        assert!(hit.is_none());
     }
 
     #[test]
@@ -277,7 +397,13 @@ mod tests {
     fn a_lookup_for_another_block_misses() {
         let mut memo = memo_with(&inputs_at(3), pinned_to(5));
         let other = BlockId::from([1u8; 32]);
-        let hit = memo.take(&other, &TransactionId::default(), &inputs_at(3), &pinned_to(5));
+        let hit = memo.take(
+            &other,
+            &TransactionId::default(),
+            &inputs_at(3),
+            &pinned_to(5),
+            &NoCreationCheck,
+        );
         assert!(hit.is_none());
     }
 }

@@ -455,11 +455,13 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
             // Artifacts are stored alongside the execution
             return Ok(execution);
         }
+        let creation_check = LocalCreationCheck::new(store, local_committee_info, transaction.id());
         if let Some(execution) = memo.take(
             store.parent_block().block_id(),
             transaction.id(),
             resolved_inputs,
             &execution_locked_epoch,
+            &creation_check,
         ) {
             debug!(
                 target: LOG_TARGET,
@@ -480,7 +482,7 @@ impl<TStateStore: StateStore, TExecutor: BlockTransactionExecutor<TStateStore>>
             input_fanout(transaction.transaction(), local_committee_info),
             resolved_inputs,
             &self.uncommitted_templates.templates_for(store)?,
-            &LocalCreationCheck::new(store, local_committee_info, transaction.id()),
+            &creation_check,
         )
     }
 

@@ -4,8 +4,15 @@
 use std::collections::HashMap;
 
 use tari_engine_types::substate::{Substate, SubstateDiff, SubstateId};
-use tari_ootle_common_types::{SubstateRequirement, SubstateVersion, VersionedSubstateIdRef, optional::Optional};
+use tari_ootle_common_types::{
+    SubstateRequirement,
+    SubstateVersion,
+    ToSubstateAddress,
+    VersionedSubstateIdRef,
+    optional::Optional,
+};
 use tari_ootle_storage::{StateStoreReadTransaction, consensus_models::SubstateChange};
+use tari_ootle_transaction::TransactionId;
 
 use super::{
     LatestSubstateVersion,
@@ -62,6 +69,20 @@ impl<'base, 'store, TTx: StateStoreReadTransaction> SubstateOverlay<'base, 'stor
 
     pub fn lock_assert_is_up(&self, id: VersionedSubstateIdRef<'_>) -> Result<(), SubstateStoreError> {
         self.log.lock_assert_is_up(self.base, id)
+    }
+
+    /// Whether `transaction_id` cannot create `id`, by the rules of [`PendingSubstateStore::is_creation_taken`], with
+    /// this overlay's changes applied over the base. Locks are those of the base, since an overlay takes none.
+    pub fn is_creation_taken(
+        &self,
+        transaction_id: &TransactionId,
+        id: &SubstateId,
+    ) -> Result<bool, SubstateStoreError> {
+        let address = VersionedSubstateIdRef::new(id, SubstateVersion::ZERO).to_substate_address();
+        if self.log.get_pending(&address).is_some() {
+            return Ok(true);
+        }
+        self.base.is_creation_taken(transaction_id, id)
     }
 
     /// The changes made in this overlay, oldest first. An in-place update of a substate the store's block already

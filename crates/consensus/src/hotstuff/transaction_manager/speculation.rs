@@ -8,16 +8,21 @@
 //! parallel, each against the store as phase 0 left it plus the changes of the transactions before it in its
 //! [`ExecutionUnit`](super::ExecutionUnit), and records each execution in an [`ExecutionMemo`]. Phase 2 is the
 //! evaluation itself, in block order, which takes an execution from the memo only where the transaction resolves to the
-//! inputs it was speculated with, and executes it otherwise. Every consensus rule is decided in phase 2, so a
-//! speculation that read state the block does not have costs the time it took and changes no result.
+//! inputs it was speculated with and the block gives each creation check it made the same answer, and executes it
+//! otherwise. Every consensus rule is decided in phase 2, so a speculation that read state the block does not have
+//! costs the time it took and changes no result.
 
 use std::{
+    cell::RefCell,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Instant,
 };
 
 use log::*;
-use tari_engine_types::{creation_check::NoCreationCheck, substate::SubstateId};
+use tari_engine_types::{
+    creation_check::{CreationCheck, CreationCheckError},
+    substate::SubstateId,
+};
 use tari_ootle_common_types::{Epoch, SubstateVersion, committee::CommitteeInfo, optional::IsNotFoundError};
 use tari_ootle_storage::{
     StateStore,
@@ -28,6 +33,7 @@ use tari_ootle_transaction::{Transaction, TransactionId};
 
 use super::{
     ConsensusTransactionManager,
+    CreationAnswers,
     DeclaredAccess,
     ExecutionMemo,
     ExecutionPlan,
@@ -37,7 +43,7 @@ use super::{
     manager::{declared_lock_intent, input_fanout},
 };
 use crate::{
-    hotstuff::substate_store::{PendingSubstateStore, SubstateStoreError},
+    hotstuff::substate_store::{PendingSubstateStore, SubstateOverlay, SubstateStoreError},
     traits::{BlockTransactionExecutor, UncommittedChainTemplates, WriteableSubstateStore},
 };
 
@@ -115,6 +121,7 @@ struct Speculated {
     transaction_id: TransactionId,
     inputs: SpeculatedInputs,
     locked_epoch: LockedEpoch,
+    creations: CreationAnswers,
     execution: TransactionExecution,
 }
 
@@ -209,10 +216,11 @@ where
             transaction_id,
             inputs,
             locked_epoch,
+            creations,
             execution,
         } in speculated.into_iter().flatten()
         {
-            memo.insert(transaction_id, inputs, locked_epoch, execution);
+            memo.insert(transaction_id, inputs, locked_epoch, creations, execution);
         }
 
         let longest = plan.units().iter().max_by_key(|unit| unit.members().len());
@@ -281,13 +289,14 @@ where
                     break;
                 },
             };
+            let creation_check = RecordingCreationCheck::new(&overlay, local_committee_info, record.id());
             let execution = match self.executor().execute(
                 transaction,
                 locked_epoch.clone(),
                 input_fanout(transaction, local_committee_info),
                 &inputs,
                 templates,
-                &NoCreationCheck,
+                &creation_check,
             ) {
                 Ok(execution) => execution,
                 Err(err) => {
@@ -295,6 +304,7 @@ where
                     break;
                 },
             };
+            let creations = creation_check.into_answers();
             spending.add(&execution);
 
             // A commit changes the block's state when all its outputs are local. A cross-shard one takes locks.
@@ -318,10 +328,54 @@ where
                 transaction_id: *record.id(),
                 inputs,
                 locked_epoch: locked_epoch.clone(),
+                creations,
                 execution,
             });
         }
         speculated
+    }
+}
+
+/// Answers the engine's creation checks for a transaction in a unit by the rules the block's evaluation answers them
+/// with, from the unit's overlay, and records each answer for the evaluation to give again.
+struct RecordingCreationCheck<'a, 'base, 'store, TTx: StateStoreReadTransaction> {
+    overlay: &'a SubstateOverlay<'base, 'store, TTx>,
+    local_committee_info: &'a CommitteeInfo,
+    transaction_id: &'a TransactionId,
+    answers: RefCell<CreationAnswers>,
+}
+
+impl<'a, 'base, 'store, TTx: StateStoreReadTransaction> RecordingCreationCheck<'a, 'base, 'store, TTx> {
+    fn new(
+        overlay: &'a SubstateOverlay<'base, 'store, TTx>,
+        local_committee_info: &'a CommitteeInfo,
+        transaction_id: &'a TransactionId,
+    ) -> Self {
+        Self {
+            overlay,
+            local_committee_info,
+            transaction_id,
+            answers: RefCell::default(),
+        }
+    }
+
+    fn into_answers(self) -> CreationAnswers {
+        self.answers.into_inner()
+    }
+}
+
+impl<TTx: StateStoreReadTransaction> CreationCheck for RecordingCreationCheck<'_, '_, '_, TTx> {
+    fn is_creation_taken(&self, id: &SubstateId) -> Result<bool, CreationCheckError> {
+        // A substate of another shard group is free here, as it is to the evaluation
+        let is_taken = self.local_committee_info.includes_substate_id(id) &&
+            self.overlay
+                .is_creation_taken(self.transaction_id, id)
+                .map_err(|err| CreationCheckError {
+                    id: id.clone(),
+                    details: err.to_string(),
+                })?;
+        self.answers.borrow_mut().record(id.clone(), is_taken);
+        Ok(is_taken)
     }
 }
 
