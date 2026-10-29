@@ -111,7 +111,7 @@ struct TestIndexerState {
     /// The most UTXOs one UTXO fetch answers with.
     utxo_page_size: usize,
     /// The `after_id` of each UTXO fetch so far.
-    utxo_fetch_cursors: Vec<Option<u64>>,
+    utxo_fetch_cursors: Vec<Option<UtxoId>>,
     results: HashMap<TransactionId, GetTransactionResultResponse>,
     /// The finalization events every event stream starts with.
     hints: Vec<TransactionFinalizedEvent>,
@@ -262,7 +262,7 @@ impl TestIndexer {
     }
 
     /// The `after_id` of each UTXO fetch so far.
-    pub(crate) fn utxo_fetch_cursors(&self) -> Vec<Option<u64>> {
+    pub(crate) fn utxo_fetch_cursors(&self) -> Vec<Option<UtxoId>> {
         self.state.lock().unwrap().utxo_fetch_cursors.clone()
     }
 
@@ -395,11 +395,18 @@ async fn fetch_substates(State(state): Shared, Json(req): Json<GetSubstatesReque
     Json(GetSubstatesResponse::new(substates, proofs))
 }
 
-/// A page of the served UTXOs. Its cursor counts the UTXOs served before the next page.
+/// A page of the served UTXOs, after the UTXO its cursor names.
 async fn fetch_utxos(State(state): Shared, Json(req): Json<GetUtxosRequest>) -> Json<GetUtxosResponse> {
     let mut state = state.lock().unwrap();
     state.utxo_fetch_cursors.push(req.after_id);
-    let start = req.after_id.map_or(0, |after_id| after_id as usize);
+    let start = req.after_id.map_or(0, |after_id| {
+        state
+            .utxos
+            .iter()
+            .position(|(id, _)| *id == after_id)
+            .expect("a served cursor") +
+            1
+    });
     let end = start.saturating_add(state.utxo_page_size).min(state.utxos.len());
     let utxos = state.utxos[start..end]
         .iter()
@@ -408,7 +415,7 @@ async fn fetch_utxos(State(state): Shared, Json(req): Json<GetUtxosRequest>) -> 
     Json(GetUtxosResponse {
         utxos,
         spent: Vec::new(),
-        next_after_id: (end < state.utxos.len()).then_some(end as u64),
+        next_after_id: (end < state.utxos.len()).then(|| state.utxos[end - 1].0),
     })
 }
 

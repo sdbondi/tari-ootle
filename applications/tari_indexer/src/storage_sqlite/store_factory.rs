@@ -1088,13 +1088,13 @@ pub(crate) mod tests {
         assert_seeks(
             "first list page",
             query_plan(&store, sql_of(&first_page)).await,
-            "utxos_resource_unspent_idx (resource_address=?)",
+            "utxos_resource_commitment_unspent_idx (resource_address=?)",
         );
-        let next_page = utxos_list_query(&resource, Some(1), 10);
+        let next_page = utxos_list_query(&resource, Some(UtxoId::from_array([1; 32])), 10);
         assert_seeks(
             "next list page",
             query_plan(&store, sql_of(&next_page)).await,
-            "rowid>?",
+            "utxos_resource_commitment_unspent_idx (resource_address=? AND commitment>?)",
         );
 
         let nonce = RistrettoPublicKeyBytes::from_bytes(&[1; 32]).unwrap();
@@ -1105,8 +1105,12 @@ pub(crate) mod tests {
             "utxos_resource_public_nonce_utxo_tag_unspent_idx (resource_address=? AND public_nonce=?",
         );
         // A page sorts only the rows matching its pairs, outside any index
-        let fetch_page =
-            unspent_utxos_by_tag_and_nonce_page_query(&resource, &[(UtxoTag::from(0u32), nonce)], Some(7), 1000);
+        let fetch_page = unspent_utxos_by_tag_and_nonce_page_query(
+            &resource,
+            &[(UtxoTag::from(0u32), nonce)],
+            Some(UtxoId::from_array([7; 32])),
+            1000,
+        );
         let plan = query_plan(&store, sql_of(&fetch_page)).await;
         assert!(
             plan.lines()
@@ -1148,28 +1152,26 @@ pub(crate) mod tests {
             .with_write_tx(|tx| tx.batch_insert_utxo_updates(Epoch(1), [spent_at(2, 20)]))
             .await
             .unwrap();
-        let list = |after_row_id: Option<i64>| {
+        let list = |after_id: Option<u8>| {
             let store = store.clone();
             async move {
                 store
-                    .with_read_tx(move |tx| tx.utxos_list(&utxo_resource(), after_row_id, 2))
+                    .with_read_tx(move |tx| {
+                        tx.utxos_list(&utxo_resource(), after_id.map(|seq| UtxoId::from_array([seq; 32])), 2)
+                    })
                     .await
                     .unwrap()
                     .into_iter()
-                    .map(|(row_id, id, _)| (row_id, id))
+                    .map(|(id, _)| id)
                     .collect::<Vec<_>>()
             }
         };
 
-        let first = list(None).await;
-        assert_eq!(first.iter().map(|(_, id)| *id).collect::<Vec<_>>(), [
+        assert_eq!(list(None).await, [
             UtxoId::from_array([1; 32]),
             UtxoId::from_array([3; 32])
         ]);
-        let after = first.last().map(|(row_id, _)| *row_id);
-        assert_eq!(list(after).await.into_iter().map(|(_, id)| id).collect::<Vec<_>>(), [
-            UtxoId::from_array([4; 32])
-        ]);
+        assert_eq!(list(Some(3)).await, [UtxoId::from_array([4; 32])]);
 
         let fetch = |seq: u8| {
             let store = store.clone();

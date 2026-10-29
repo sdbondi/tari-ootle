@@ -911,19 +911,20 @@ pub struct GetUtxosRequest {
     #[cfg_attr(feature = "ts", ts(optional, as = "Option<_>"))]
     #[cfg_attr(feature = "utoipa", schema(value_type = Vec<Option<(u32, u64)>>))]
     pub unspent_at: Vec<Option<(Shard, StateVersion)>>,
-    /// Return only UTXOs this indexer stored after this cursor. Pass the previous page's `next_after_id`, which only
-    /// the indexer that returned it can resume from.
+    /// Return only UTXOs whose id orders after this one. Pass the previous page's `next_after_id`. UTXOs are paged in
+    /// id order, so any indexer can resume a page another returned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string | null"))]
-    pub after_id: Option<u64>,
+    #[cfg_attr(feature = "ts", ts(optional, as = "Option<_>"))]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<String>))]
+    pub after_id: Option<UtxoId>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "tari-indexer-client/"))]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct GetUtxosResponse {
-    /// The unspent UTXOs matching a requested tag and nonce pair, each a CBOR-encoded `Utxo`, in the order this
-    /// indexer stored them. Any number of UTXOs may share a pair.
+    /// The unspent UTXOs matching a requested tag and nonce pair, each a CBOR-encoded `Utxo`, in id order. Any number
+    /// of UTXOs may share a pair.
     #[cfg_attr(feature = "ts", ts(type = "Array<[string, string]>"))]
     #[cfg_attr(feature = "utoipa", schema(value_type = Vec<(String, String)>))]
     pub utxos: Vec<(UtxoId, Encoded<Utxo>)>,
@@ -932,10 +933,11 @@ pub struct GetUtxosResponse {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(value_type = Vec<(u32, String)>))]
     pub spent: Vec<(UtxoTag, RistrettoPublicKeyBytes)>,
-    /// The `after_id` for the next page, or `None` once `utxos` holds the last matching UTXO. A UTXO re-versioned
-    /// between pages is served again on a later page, at its new version.
+    /// The `after_id` for the next page, or `None` once `utxos` holds the last matching UTXO.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_after_id: Option<u64>,
+    #[cfg_attr(feature = "ts", ts(optional, as = "Option<_>"))]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<String>))]
+    pub next_after_id: Option<UtxoId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -945,25 +947,27 @@ pub struct ListUtxosRequest {
     #[cfg_attr(feature = "utoipa", schema(value_type = String))]
     pub resource_address: ResourceAddress,
     pub limit: u32,
-    /// Return only UTXOs this indexer stored after this cursor. Pass the previous page's `next_after_id`, which only
-    /// the indexer that returned it can resume from.
+    /// Return only UTXOs whose id orders after this one. Pass the previous page's `next_after_id`. UTXOs are paged in
+    /// id order, so any indexer can resume a page another returned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string | null"))]
-    pub after_id: Option<u64>,
+    #[cfg_attr(feature = "ts", ts(optional, as = "Option<_>"))]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<String>))]
+    pub after_id: Option<UtxoId>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "tari-indexer-client/"))]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ListUtxosResponse {
-    /// Each UTXO's id and its CBOR-encoded `Utxo`, in the order this indexer stored them.
+    /// Each UTXO's id and its CBOR-encoded `Utxo`, in id order.
     #[cfg_attr(feature = "ts", ts(type = "Array<[string, string]>"))]
     #[cfg_attr(feature = "utoipa", schema(value_type = Vec<(String, String)>))]
     pub utxos: Vec<(UtxoId, Encoded<Utxo>)>,
-    /// The `after_id` for the next page, or `None` once `utxos` holds the last unspent UTXO. A UTXO re-versioned
-    /// between pages is served again on a later page, at its new version.
+    /// The `after_id` for the next page, or `None` once `utxos` holds the last unspent UTXO.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_after_id: Option<u64>,
+    #[cfg_attr(feature = "ts", ts(optional, as = "Option<_>"))]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<String>))]
+    pub next_after_id: Option<UtxoId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

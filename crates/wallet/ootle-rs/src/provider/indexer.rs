@@ -2,7 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use std::{
-    collections::{HashMap, HashSet, hash_map::Entry},
+    collections::{HashMap, HashSet},
     sync::{Arc, OnceLock, Weak},
     time::Duration,
 };
@@ -238,7 +238,7 @@ impl<Wallet> IndexerProvider<Wallet> {
     /// it is spent, so a key whose output has since been spent is simply absent from the result.
     /// Requests are automatically chunked to the indexer's per-request limit, and every page of a chunk's outputs is
     /// read. Any number of outputs may share a tag and nonce pair. An output re-versioned while its pages are read is
-    /// returned once, at its newest version.
+    /// returned at the version its page held.
     ///
     /// The outputs are served unproven and are not verified under any [`IndexerTrust`]. Read an output with
     /// [`Self::get_substate`] to verify it.
@@ -252,8 +252,6 @@ impl<Wallet> IndexerProvider<Wallet> {
             return Ok(Vec::new());
         }
         let mut utxos = Vec::with_capacity(tag_and_nonce_pairs.len());
-        // A UTXO re-versioned between pages is served again at its new version, which replaces the one served before
-        let mut positions = HashMap::new();
         for chunk in tag_and_nonce_pairs.chunks(MAX_PAIRS_PER_REQUEST) {
             let mut after_id = None;
             loop {
@@ -270,13 +268,7 @@ impl<Wallet> IndexerProvider<Wallet> {
                     let utxo = utxo.decode().map_err(|e| IndexerRestClientError::InvalidResponse {
                         message: format!("The indexer served UTXO {id} that does not decode: {e}"),
                     })?;
-                    match positions.entry(id) {
-                        Entry::Occupied(entry) => utxos[*entry.get()] = (id, utxo),
-                        Entry::Vacant(entry) => {
-                            entry.insert(utxos.len());
-                            utxos.push((id, utxo));
-                        },
-                    }
+                    utxos.push((id, utxo));
                 }
                 after_id = resp.next_after_id;
                 if after_id.is_none() {
@@ -435,13 +427,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetching_unspent_utxos_reads_every_page_once_per_utxo() {
+    async fn fetching_unspent_utxos_reads_every_page() {
         let sets = (1..=2).map(ValidatorSetFixture::new).collect::<Vec<_>>();
         let indexer = TestIndexer::spawn(&sets, 0).await;
-        // The second UTXO is frozen after the first page served it, so the last page serves it again
-        let mut frozen = utxo(2);
-        frozen.1.freeze();
-        indexer.serve_utxos((1..=5).map(utxo).chain([frozen]).collect(), 2);
+        indexer.serve_utxos((1..=5).map(utxo).collect(), 2);
         let provider = indexer.provider(IndexerTrust::Trust);
 
         let pair = (UtxoTag::new(0), RistrettoPublicKeyBytes::from_bytes(&[1; 32]).unwrap());
@@ -454,10 +443,10 @@ mod tests {
             utxos.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             (1..=5).map(|seed| UtxoId::from_array([seed; 32])).collect::<Vec<_>>()
         );
-        assert!(
-            utxos[1].1.is_frozen(),
-            "a UTXO served again is returned at its later version"
-        );
-        assert_eq!(indexer.utxo_fetch_cursors(), [None, Some(2), Some(4)]);
+        assert_eq!(indexer.utxo_fetch_cursors(), [
+            None,
+            Some(UtxoId::from_array([2; 32])),
+            Some(UtxoId::from_array([4; 32]))
+        ]);
     }
 }

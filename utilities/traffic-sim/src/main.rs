@@ -90,8 +90,8 @@ enum Commands {
         #[arg(short = 'r', long, help = "Resource address of the resource to decrypt")]
         resource_address: ResourceAddress,
 
-        #[arg(long, help = "The indexer's next_after_id cursor from the previous run")]
-        after_id: Option<u64>,
+        #[arg(long, help = "Last UTXO ID processed")]
+        last_id: Option<String>,
 
         #[arg(long, help = "Specific UTXO ID to decrypt")]
         specific_id: Option<String>,
@@ -203,7 +203,7 @@ async fn main() -> Result<()> {
             min_value,
             max_value,
             resource_address,
-            after_id,
+            last_id,
             specific_id,
             csv_output,
             view_key,
@@ -214,7 +214,10 @@ async fn main() -> Result<()> {
                 min_value,
                 max_value,
                 resource_address,
-                after_id,
+                last_id
+                    .as_ref()
+                    .map(|id| UtxoId::from_hex(id).context("Invalid last_id"))
+                    .transpose()?,
                 specific_id
                     .as_ref()
                     .map(|id| UtxoId::from_hex(id).context("Invalid specific_id"))

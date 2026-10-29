@@ -2174,12 +2174,10 @@
         "properties": {
           "after_id": {
             "type": [
-              "integer",
+              "string",
               "null"
             ],
-            "format": "int64",
-            "description": "Return only UTXOs this indexer stored after this cursor. Pass the previous page's `next_after_id`, which only\nthe indexer that returned it can resume from.",
-            "minimum": 0
+            "description": "Return only UTXOs whose id orders after this one. Pass the previous page's `next_after_id`. UTXOs are paged in\nid order, so any indexer can resume a page another returned."
           },
           "resource_address": {
             "type": "string"
@@ -2234,12 +2232,10 @@
         "properties": {
           "next_after_id": {
             "type": [
-              "integer",
+              "string",
               "null"
             ],
-            "format": "int64",
-            "description": "The `after_id` for the next page, or `None` once `utxos` holds the last matching UTXO. A UTXO re-versioned\nbetween pages is served again on a later page, at its new version.",
-            "minimum": 0
+            "description": "The `after_id` for the next page, or `None` once `utxos` holds the last matching UTXO."
           },
           "spent": {
             "type": "array",
@@ -2273,7 +2269,7 @@
                 }
               ]
             },
-            "description": "The unspent UTXOs matching a requested tag and nonce pair, each a CBOR-encoded `Utxo`, in the order this\nindexer stored them. Any number of UTXOs may share a pair."
+            "description": "The unspent UTXOs matching a requested tag and nonce pair, each a CBOR-encoded `Utxo`, in id order. Any number\nof UTXOs may share a pair."
           }
         }
       },
@@ -2352,12 +2348,10 @@
         "properties": {
           "next_after_id": {
             "type": [
-              "integer",
+              "string",
               "null"
             ],
-            "format": "int64",
-            "description": "The `after_id` for the next page, or `None` once `utxos` holds the last unspent UTXO. A UTXO re-versioned\nbetween pages is served again on a later page, at its new version.",
-            "minimum": 0
+            "description": "The `after_id` for the next page, or `None` once `utxos` holds the last unspent UTXO."
           },
           "utxos": {
             "type": "array",
@@ -2373,7 +2367,7 @@
                 }
               ]
             },
-            "description": "Each UTXO's id and its CBOR-encoded `Utxo`, in the order this indexer stored them."
+            "description": "Each UTXO's id and its CBOR-encoded `Utxo`, in id order."
           }
         }
       },
