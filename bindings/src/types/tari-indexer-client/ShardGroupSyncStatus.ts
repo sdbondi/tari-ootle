@@ -25,6 +25,10 @@ export type ShardGroupSyncStatus = {
    */
   blames: Array<SyncBlame>;
   /**
+   * libp2p PeerIds of every peer blamed during the current epoch, each excluded from the group for the rest of it.
+   */
+  excluded_peers: Array<string>;
+  /**
    * The group's latest committed tip whose commit proof verified.
    */
   tip: SyncObservedTip | null;

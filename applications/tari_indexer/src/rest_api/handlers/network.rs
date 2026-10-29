@@ -39,7 +39,7 @@ use tari_indexer_client::{
         ValidatorStatusSnapshot,
     },
 };
-use tari_ootle_common_types::{ShardGroup, StateVersion, optional::Optional, shard::Shard};
+use tari_ootle_common_types::{Epoch, ShardGroup, StateVersion, optional::Optional, shard::Shard};
 use tari_template_lib_types::Amount;
 
 use crate::{
@@ -181,7 +181,7 @@ pub async fn get_network_sync_stats(
     let shard_group_statuses = shard_groups
         .iter()
         .enumerate()
-        .map(|(i, shard_group)| to_shard_group_sync_status(*shard_group, i == 0, &status, now))
+        .map(|(i, shard_group)| to_shard_group_sync_status(*shard_group, i == 0, network_desc.epoch(), &status, now))
         .collect();
 
     let response = GetNetworkSyncStateResponse {
@@ -210,6 +210,7 @@ pub async fn get_network_sync_stats(
 fn to_shard_group_sync_status(
     shard_group: ShardGroup,
     syncs_global_shard: bool,
+    epoch: Epoch,
     status: &SyncStatus,
     now: SystemTime,
 ) -> ShardGroupSyncStatus {
@@ -255,6 +256,10 @@ fn to_shard_group_sync_status(
                     })
                     .collect()
             })
+            .unwrap_or_default(),
+        excluded_peers: group
+            .filter(|group| group.excluded.0 == epoch)
+            .map(|group| group.excluded.1.iter().map(|peer| peer.to_string()).collect())
             .unwrap_or_default(),
         tip: group.and_then(|group| group.tip).map(|tip| SyncObservedTip {
             epoch: tip.epoch,

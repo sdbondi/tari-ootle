@@ -1205,6 +1205,16 @@ impl NetworkWideStateSync {
         } = proved.leaf;
         let peer = *session.peer_address();
         info!(target: LOG_TARGET, "🌍️ Taking a snapshot of new shard {shard} at v{state_version} from {peer}");
+        let started_at = SystemTime::now();
+        self.sync_status.set_snapshot(
+            shard,
+            Some(SnapshotProgress {
+                state_version,
+                substates: 0,
+                key_fraction: 0.0,
+                started_at,
+            }),
+        );
         // A snapshot interrupted by a restart is started again
         self.store
             .with_write_tx(move |tx| tx.snapshot_substates_delete(shard))
@@ -1218,7 +1228,6 @@ impl NetworkWideStateSync {
         let value_filters = stream_value_filters();
         let mut snapshot = ShardSnapshot::new(self.network, proved, value_filters);
         let deadline = time::Instant::now() + MAX_SNAPSHOT_DURATION;
-        let started_at = SystemTime::now();
         loop {
             let request = rpc::GetShardSnapshotRequest {
                 shard: shard.as_u32(),

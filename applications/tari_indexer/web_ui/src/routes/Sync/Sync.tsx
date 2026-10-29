@@ -222,12 +222,7 @@ function SyncBody({ data, nowSec, mode, onMode, selected, onSelect }: BodyProps)
       </Box>
 
       {selectedShard ? (
-        <ShardDetail
-          shard={selectedShard}
-          epoch={epoch}
-          nowSec={nowSec}
-          onClose={() => onSelect(selectedShard.shard)}
-        />
+        <ShardDetail shard={selectedShard} nowSec={nowSec} onClose={() => onSelect(selectedShard.shard)} />
       ) : (
         <Typography variant="body2" color="text.secondary">
           Select a shard to see how far it is verified, staged and streamed.

@@ -6,21 +6,19 @@ import Button from "@mui/material/Button";
 import LinearProgress from "@mui/material/LinearProgress";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
-import type { Epoch, ShardSyncStatus } from "@tari-project/ootle-ts-bindings";
+import type { ShardSyncStatus } from "@tari-project/ootle-ts-bindings";
 import VersionTrack from "./VersionTrack";
 import { STATE_DESCRIPTION, STATE_LABEL, formatAge, formatDuration, shardLag, stagedBacklog } from "./model";
 
 interface Props {
   shard: ShardSyncStatus;
-  epoch: Epoch;
   nowSec: number;
   onClose: () => void;
 }
 
-export default function ShardDetail({ shard, epoch, nowSec, onClose }: Props) {
+export default function ShardDetail({ shard, nowSec, onClose }: Props) {
   const lag = shardLag(shard);
   const backlog = stagedBacklog(shard);
-  const epochsBehind = shard.verified ? Math.max(0, epoch - shard.verified.epoch) : null;
   const facts: [string, string][] = [
     [
       "Verified",
@@ -40,12 +38,7 @@ export default function ShardDetail({ shard, epoch, nowSec, onClose }: Props) {
         ? `v${shard.tip_leaf.state_version.toLocaleString()}, probed ${formatAge(nowSec - shard.tip_leaf.observed_at_unix_s)}`
         : "Not probed yet",
     ],
-    [
-      "Behind the tip",
-      lag === null
-        ? "Unknown"
-        : `${lag.toLocaleString()} version${lag === 1 ? "" : "s"}${epochsBehind ? `, ${epochsBehind} epoch${epochsBehind === 1 ? "" : "s"}` : ""}`,
-    ],
+    ["Behind the tip", lag === null ? "Unknown" : `${lag.toLocaleString()} version${lag === 1 ? "" : "s"}`],
     [
       "Level with committee",
       shard.level

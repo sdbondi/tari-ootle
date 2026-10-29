@@ -2,7 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -37,8 +37,10 @@ pub struct GroupStatus {
     pub phase_since: SystemTime,
     /// The committee member the group's current or last round opened its session with.
     pub stream_peer: Option<PeerAddress>,
-    /// The most recent blames, oldest first. A blamed peer is excluded from the group for the rest of its epoch.
+    /// The most recent blames, oldest first.
     pub blamed: VecDeque<Blame>,
+    /// Every peer blamed during an epoch, which is excluded from the group for the rest of it, and that epoch.
+    pub excluded: (Epoch, BTreeSet<PeerAddress>),
     pub tip: Option<ObservedTip>,
     /// The epoch of the last checkpoint the group stored, and when it was stored.
     pub last_checkpoint: Option<(Epoch, SystemTime)>,
@@ -51,6 +53,7 @@ impl GroupStatus {
             phase_since: now,
             stream_peer: None,
             blamed: VecDeque::new(),
+            excluded: (Epoch(0), BTreeSet::new()),
             tip: None,
             last_checkpoint: None,
         }
@@ -236,6 +239,10 @@ impl SyncStatusMonitor {
         let now = SystemTime::now();
         let mut status = self.lock();
         let group = status.group(shard_group, now);
+        if group.excluded.0 != epoch {
+            group.excluded = (epoch, BTreeSet::new());
+        }
+        group.excluded.1.extend(peers.iter().copied());
         if group.blamed.len() == MAX_BLAMES {
             group.blamed.pop_front();
         }
@@ -299,7 +306,16 @@ impl SyncStatus {
 
 #[cfg(test)]
 mod tests {
+    use tari_crypto::{
+        keys::PublicKey,
+        ristretto::{RistrettoPublicKey, RistrettoSecretKey},
+    };
+
     use super::*;
+
+    fn peer(n: u64) -> PeerAddress {
+        RistrettoPublicKey::from_secret_key(&RistrettoSecretKey::from(n)).into()
+    }
 
     fn at(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
@@ -384,10 +400,27 @@ mod tests {
         let status = monitor.snapshot();
         assert_eq!(status.groups[&group].blamed.len(), MAX_BLAMES);
         assert_eq!(status.groups[&group].blamed.back().unwrap().details, "mismatch");
+        assert!(status.groups[&group].excluded.1.is_empty());
         assert_eq!(
             status.shards[&Shard::from(3u32)].last_mismatch.as_ref().unwrap().1,
             "mismatch"
         );
+    }
+
+    #[test]
+    fn every_peer_blamed_in_an_epoch_stays_excluded_past_the_blame_cap() {
+        let monitor = SyncStatusMonitor::new();
+        let group = ShardGroup::new(1, 64);
+        for n in 1..=MAX_BLAMES as u64 + 3 {
+            monitor.record_blame(group, Epoch(1), vec![peer(n)], "blame", None);
+        }
+        let excluded = monitor.snapshot().groups[&group].excluded.clone();
+        assert_eq!(excluded.0, Epoch(1));
+        assert_eq!(excluded.1.len(), MAX_BLAMES + 3);
+
+        monitor.record_blame(group, Epoch(2), vec![peer(1)], "blame", None);
+        let excluded = monitor.snapshot().groups[&group].excluded.clone();
+        assert_eq!(excluded, (Epoch(2), BTreeSet::from([peer(1)])));
     }
 
     #[test]

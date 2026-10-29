@@ -52,7 +52,7 @@ export default function GroupLane({
 }: Props) {
   const phase = group.phase;
   const blamedThisEpoch = group.blames.filter((blame) => blame.epoch === epoch);
-  const excluded = [...new Set(blamedThisEpoch.flatMap((blame) => blame.peer_ids))];
+  const excluded = group.excluded_peers;
   const txRate = recentRate(group.activity, bucketSecs, nowSec, 60, (b) => b.transactions);
   const versionRate = recentRate(group.activity, bucketSecs, nowSec, 60, (b) => b.versions);
   const global = shards.find((shard) => shard.shard === 0);

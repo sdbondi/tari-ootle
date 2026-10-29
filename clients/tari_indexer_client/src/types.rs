@@ -1051,10 +1051,13 @@ pub struct GetNetworkSyncStateResponse {
     #[serde(default)]
     pub validators: Vec<ValidatorStatus>,
     /// What each shard group's sync is doing, ascending by shard group.
+    #[serde(default)]
     pub shard_groups: Vec<ShardGroupSyncStatus>,
     /// How far each shard of the network is synced, ascending by shard, from the global shard.
+    #[serde(default)]
     pub shards: Vec<ShardSyncStatus>,
     /// The width in seconds of each bucket of `ShardGroupSyncStatus::activity`.
+    #[serde(default)]
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub activity_bucket_secs: u64,
 }
@@ -1074,6 +1077,8 @@ pub struct ShardGroupSyncStatus {
     pub stream_peer: Option<String>,
     /// The group's most recent blames, oldest first.
     pub blames: Vec<SyncBlame>,
+    /// libp2p PeerIds of every peer blamed during the current epoch, each excluded from the group for the rest of it.
+    pub excluded_peers: Vec<String>,
     /// The group's latest committed tip whose commit proof verified.
     pub tip: Option<SyncObservedTip>,
     /// The epoch of the last checkpoint the group stored, and when it was stored.
