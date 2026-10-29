@@ -253,7 +253,7 @@ impl<Wallet> IndexerProvider<Wallet> {
         }
         let mut utxos = Vec::with_capacity(tag_and_nonce_pairs.len());
         for chunk in tag_and_nonce_pairs.chunks(MAX_PAIRS_PER_REQUEST) {
-            let mut after_id = None;
+            let mut cursor = None;
             loop {
                 let resp = self
                     .client
@@ -261,7 +261,7 @@ impl<Wallet> IndexerProvider<Wallet> {
                         resource_address,
                         tag_and_nonce_pairs: chunk.to_vec(),
                         unspent_at: Vec::new(),
-                        after_id,
+                        cursor,
                     })
                     .await?;
                 for (id, utxo) in resp.utxos {
@@ -270,8 +270,8 @@ impl<Wallet> IndexerProvider<Wallet> {
                     })?;
                     utxos.push((id, utxo));
                 }
-                after_id = resp.next_after_id;
-                if after_id.is_none() {
+                cursor = resp.next_cursor;
+                if cursor.is_none() {
                     break;
                 }
             }

@@ -191,14 +191,6 @@ pub trait IndexerStoreReadTransaction {
         limit: u32,
     ) -> Result<UtxoStateUpdateSet, StorageError>;
 
-    /// Up to `limit` unspent UTXOs of `resource_address` in id order, after `after_id` when given.
-    fn utxos_list(
-        &mut self,
-        resource_address: &ResourceAddress,
-        after_id: Option<UtxoId>,
-        limit: u32,
-    ) -> Result<Vec<(UtxoId, Encoded<Utxo>)>, StorageError>;
-
     /// Up to `limit` unspent UTXOs matching `public_nonce_and_tag` in id order, after `after_id` when given. Any number
     /// of unspent UTXOs may share a nonce and tag.
     fn utxos_get_unspent_by_public_nonce_and_tag(

@@ -16,8 +16,9 @@ export type GetUtxosRequest = {
    */
   unspent_at?: Array<[Shard, StateVersion] | null>;
   /**
-   * Return only UTXOs whose id orders after this one. Pass the previous page's `next_after_id`. UTXOs are paged in
-   * id order, so any indexer can resume a page another returned.
+   * Resume after the previous page: pass its `next_cursor`. UTXOs are paged in the order of their ids, which every
+   * indexer shares, so any indexer can resume a page another returned. The order is not the order the UTXOs were
+   * created in, and a UTXO created or spent while the pages are read may or may not be returned.
    */
-  after_id?: UtxoId;
+  cursor?: UtxoId;
 };

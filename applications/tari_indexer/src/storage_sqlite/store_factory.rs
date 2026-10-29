@@ -1067,7 +1067,6 @@ pub(crate) mod tests {
                 spent_utxos_by_tag_and_nonce_query,
                 unspent_utxos_by_tag_and_nonce_page_query,
                 unspent_utxos_by_tag_and_nonce_query,
-                utxos_list_query,
             },
             schema::utxos,
         };
@@ -1083,19 +1082,6 @@ pub(crate) mod tests {
             assert!(!plan.contains("TEMP B-TREE"), "{read} sorts outside the index: {plan}");
             assert!(plan.contains(key), "{read} does not search on {key}: {plan}");
         };
-
-        let first_page = utxos_list_query(&resource, None, 10);
-        assert_seeks(
-            "first list page",
-            query_plan(&store, sql_of(&first_page)).await,
-            "utxos_resource_commitment_unspent_idx (resource_address=?)",
-        );
-        let next_page = utxos_list_query(&resource, Some(UtxoId::from_array([1; 32])), 10);
-        assert_seeks(
-            "next list page",
-            query_plan(&store, sql_of(&next_page)).await,
-            "utxos_resource_commitment_unspent_idx (resource_address=? AND commitment>?)",
-        );
 
         let nonce = RistrettoPublicKeyBytes::from_bytes(&[1; 32]).unwrap();
         let fetch = unspent_utxos_by_tag_and_nonce_query(&resource, &[(UtxoTag::from(0u32), nonce)]);
@@ -1141,38 +1127,14 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn listing_pages_through_unspent_utxos_and_fetch_finds_them_by_key() {
-        use tari_template_lib_types::{
-            UtxoId,
-            crypto::{RistrettoPublicKeyBytes, UtxoTag},
-        };
+    async fn fetch_finds_unspent_utxos_by_key() {
+        use tari_template_lib_types::crypto::{RistrettoPublicKeyBytes, UtxoTag};
 
         let (_dir, store) = store_with_utxos(&[(10, 4)]).await;
         store
             .with_write_tx(|tx| tx.batch_insert_utxo_updates(Epoch(1), [spent_at(2, 20)]))
             .await
             .unwrap();
-        let list = |after_id: Option<u8>| {
-            let store = store.clone();
-            async move {
-                store
-                    .with_read_tx(move |tx| {
-                        tx.utxos_list(&utxo_resource(), after_id.map(|seq| UtxoId::from_array([seq; 32])), 2)
-                    })
-                    .await
-                    .unwrap()
-                    .into_iter()
-                    .map(|(id, _)| id)
-                    .collect::<Vec<_>>()
-            }
-        };
-
-        assert_eq!(list(None).await, [
-            UtxoId::from_array([1; 32]),
-            UtxoId::from_array([3; 32])
-        ]);
-        assert_eq!(list(Some(3)).await, [UtxoId::from_array([4; 32])]);
-
         let fetch = |seq: u8| {
             let store = store.clone();
             async move {

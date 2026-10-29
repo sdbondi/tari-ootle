@@ -1310,47 +1310,6 @@
         }
       }
     },
-    "/utxos": {
-      "get": {
-        "tags": [
-          "handlers::utxos"
-        ],
-        "description": "List full UTXO data",
-        "operationId": "list_utxos",
-        "responses": {
-          "200": {
-            "description": "List of UTXOs",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListUtxosResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request parameters",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Failed to list UTXOs",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/utxos/fetch": {
       "post": {
         "tags": [
@@ -2172,12 +2131,12 @@
           "resource_address"
         ],
         "properties": {
-          "after_id": {
+          "cursor": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Return only UTXOs whose id orders after this one. Pass the previous page's `next_after_id`. UTXOs are paged in\nid order, so any indexer can resume a page another returned."
+            "description": "Resume after the previous page: pass its `next_cursor`. UTXOs are paged in the order of their ids, which every\nindexer shares, so any indexer can resume a page another returned. The order is not the order the UTXOs were\ncreated in, and a UTXO created or spent while the pages are read may or may not be returned."
           },
           "resource_address": {
             "type": "string"
@@ -2230,12 +2189,12 @@
           "utxos"
         ],
         "properties": {
-          "next_after_id": {
+          "next_cursor": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The `after_id` for the next page, or `None` once `utxos` holds the last matching UTXO."
+            "description": "The `cursor` for the next page, or `None` once `utxos` holds the last matching UTXO."
           },
           "spent": {
             "type": "array",
@@ -2337,37 +2296,6 @@
               ]
             },
             "description": "Each receipt's address and its CBOR-encoded `TransactionReceipt`."
-          }
-        }
-      },
-      "ListUtxosResponse": {
-        "type": "object",
-        "required": [
-          "utxos"
-        ],
-        "properties": {
-          "next_after_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The `after_id` for the next page, or `None` once `utxos` holds the last unspent UTXO."
-          },
-          "utxos": {
-            "type": "array",
-            "items": {
-              "type": "array",
-              "items": false,
-              "prefixItems": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "string"
-                }
-              ]
-            },
-            "description": "Each UTXO's id and its CBOR-encoded `Utxo`, in id order."
           }
         }
       },

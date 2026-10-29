@@ -136,10 +136,6 @@ CREATE INDEX utxos_resource_shard_state_version_epoch_idx ON utxos (resource_add
 CREATE INDEX utxos_resource_public_nonce_utxo_tag_unspent_idx ON utxos (resource_address, public_nonce, utxo_tag) WHERE is_spent = false;
 -- One row per version of a UTXO. Finds a UTXO by its commitment, as marking an output spent does.
 CREATE UNIQUE INDEX utxos_resource_commitment_version_uniq ON utxos (resource_address, commitment, version);
--- A resource's unspent UTXOs in commitment order, so that listing them pages from a cursor without a sort. The order
--- is the same on every indexer, however it synced, so a page can resume on another one. Queries must repeat this
--- condition as SQL literals for SQLite to use the index.
-CREATE INDEX utxos_resource_commitment_unspent_idx ON utxos (resource_address, commitment) WHERE is_spent = false AND is_burnt = false;
 -- Finds a resource's spent or burnt UTXOs by public nonce and tag, as fetching UTXOs by key does to report which of
 -- the requested outputs are spent. Queries must repeat this condition as SQL literals for SQLite to use the index.
 CREATE INDEX utxos_resource_public_nonce_utxo_tag_spent_idx ON utxos (resource_address, public_nonce, utxo_tag) WHERE is_spent = true OR is_burnt = true;

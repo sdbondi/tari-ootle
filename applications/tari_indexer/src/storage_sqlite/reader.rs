@@ -255,26 +255,6 @@ fn is_unspent_utxo() -> diesel::expression::SqlLiteral<sql_types::Bool> {
     dsl::sql::<sql_types::Bool>(r#""utxos"."is_spent" = false AND "utxos"."is_burnt" = false"#)
 }
 
-/// Up to `limit` unspent UTXOs of `resource_address` in id order, after `after_id` when given.
-pub(super) fn utxos_list_query<'a>(
-    resource_address: &ResourceAddress,
-    after_id: Option<UtxoId>,
-    limit: u32,
-) -> crate::storage_sqlite::schema::utxos::BoxedQuery<'a, diesel::sqlite::Sqlite> {
-    use crate::storage_sqlite::schema::utxos;
-
-    let mut query = utxos::table
-        .filter(utxos::resource_address.eq(resource_address.to_string()))
-        .filter(is_unspent_utxo())
-        .into_boxed();
-
-    if let Some(after_id) = after_id {
-        query = query.filter(utxos::commitment.gt(after_id.to_commitment_hex_string()));
-    }
-
-    query.limit(i64::from(limit)).order_by(utxos::commitment.asc())
-}
-
 /// The unspent UTXOs of `resource_address` matching any of `tag_and_nonce_pairs`.
 pub(super) fn unspent_utxos_by_tag_and_nonce_query<'a>(
     resource_address: &ResourceAddress,
@@ -915,32 +895,6 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
             max_epoch,
             has_more,
         })
-    }
-
-    fn utxos_list(
-        &mut self,
-        resource_address: &ResourceAddress,
-        after_id: Option<UtxoId>,
-        limit: u32,
-    ) -> Result<Vec<(UtxoId, Encoded<Utxo>)>, StorageError> {
-        const OPERATION: &str = "utxos_list";
-
-        let rows = utxos_list_query(resource_address, after_id, limit)
-            .load_iter::<models::UtxoRecord, _>(self.connection())
-            .map_err(|e| StorageError::QueryError {
-                reason: format!("{OPERATION}: {}", e),
-            })?;
-
-        rows.map(|res| {
-            res.map_err(|e| StorageError::QueryError {
-                reason: format!("{OPERATION}: {}", e),
-            })
-            .and_then(|row| {
-                let (address, utxo) = row.try_convert_to_utxo()?;
-                Ok((*address.id(), utxo))
-            })
-        })
-        .collect()
     }
 
     fn utxos_get_unspent_by_public_nonce_and_tag(

@@ -654,16 +654,16 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
             unspent: Vec::new(),
             spent: Vec::new(),
         };
-        let mut after_id = None;
+        let mut cursor = None;
         loop {
-            let (unspent, spent, next_after_id) = self
+            let (unspent, spent, next_cursor) = self
                 .observe_read(
                     &client,
                     client.get_utxos(GetUtxosRequest {
                         resource_address,
                         tag_and_nonce_pairs: tag_and_nonce_pairs.clone(),
                         unspent_at: unspent_at.clone(),
-                        after_id,
+                        cursor,
                     }),
                     |resp| {
                         let unspent = resp
@@ -679,19 +679,19 @@ impl WalletNetworkInterface for IndexerRestApiNetworkInterface {
                                 Ok((id, utxo))
                             })
                             .collect::<Result<Vec<_>, IndexerRestApiNetworkInterfaceError>>()?;
-                        Ok::<_, IndexerRestApiNetworkInterfaceError>((unspent, resp.spent, resp.next_after_id))
+                        Ok::<_, IndexerRestApiNetworkInterfaceError>((unspent, resp.spent, resp.next_cursor))
                     },
                 )
                 .await?;
             // Every page reports the spent pairs of the whole request
-            if after_id.is_none() {
+            if cursor.is_none() {
                 fetched.spent = spent;
             }
             fetched.unspent.extend(unspent);
-            if next_after_id.is_none() {
+            if next_cursor.is_none() {
                 return Ok(fetched);
             }
-            after_id = next_after_id;
+            cursor = next_cursor;
         }
     }
 
@@ -1532,7 +1532,7 @@ mod tests {
     }
 
     /// Answers each UTXO fetch with a page of `utxos` in id order of at most `page_size`, whose ids order after its
-    /// cursor, as the indexer pages them, and reports `pair` spent on the first page only. Records the `after_id` of
+    /// cursor, as the indexer pages them, and reports `pair` spent on the first page only. Records the `cursor` of
     /// each fetch.
     async fn spawn_utxo_pages_server(
         mut utxos: Vec<(UtxoId, Utxo)>,
@@ -1563,10 +1563,10 @@ mod tests {
                     }
                 };
                 let req: GetUtxosRequest = serde_json::from_str(&body).unwrap();
-                cursors.lock().unwrap().push(req.after_id);
+                cursors.lock().unwrap().push(req.cursor);
                 let start = req
-                    .after_id
-                    .map_or(0, |after_id| utxos.partition_point(|(id, _)| *id <= after_id));
+                    .cursor
+                    .map_or(0, |cursor| utxos.partition_point(|(id, _)| *id <= cursor));
                 let end = (start + page_size).min(utxos.len());
                 let body = serde_json::to_string(&GetUtxosResponse {
                     utxos: utxos[start..end]
@@ -1574,7 +1574,7 @@ mod tests {
                         .map(|(id, utxo)| (*id, Encoded::encode(utxo).unwrap()))
                         .collect(),
                     spent: if start == 0 { vec![pair] } else { Vec::new() },
-                    next_after_id: (end < utxos.len()).then(|| utxos[end - 1].0),
+                    next_cursor: (end < utxos.len()).then(|| utxos[end - 1].0),
                 })
                 .unwrap();
                 let response = format!(

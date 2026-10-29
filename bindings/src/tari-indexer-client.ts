@@ -48,8 +48,6 @@ export * from "./types/tari-indexer-client/ListTemplateCatalogueRequest";
 export * from "./types/tari-indexer-client/ListTemplateCatalogueResponse";
 export * from "./types/tari-indexer-client/ListTransactionReceiptsRequest";
 export * from "./types/tari-indexer-client/ListTransactionReceiptsResponse";
-export * from "./types/tari-indexer-client/ListUtxosRequest";
-export * from "./types/tari-indexer-client/ListUtxosResponse";
 export * from "./types/tari-indexer-client/ListValidatorsRequest";
 export * from "./types/tari-indexer-client/ListValidatorsResponse";
 export * from "./types/tari-indexer-client/ListWatchedSubstatesRequest";

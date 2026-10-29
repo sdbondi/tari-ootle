@@ -110,7 +110,7 @@ struct TestIndexerState {
     utxos: Vec<(UtxoId, Utxo)>,
     /// The most UTXOs one UTXO fetch answers with.
     utxo_page_size: usize,
-    /// The `after_id` of each UTXO fetch so far.
+    /// The `cursor` of each UTXO fetch so far.
     utxo_fetch_cursors: Vec<Option<UtxoId>>,
     results: HashMap<TransactionId, GetTransactionResultResponse>,
     /// The finalization events every event stream starts with.
@@ -262,7 +262,7 @@ impl TestIndexer {
         state.utxo_page_size = page_size;
     }
 
-    /// The `after_id` of each UTXO fetch so far.
+    /// The `cursor` of each UTXO fetch so far.
     pub(crate) fn utxo_fetch_cursors(&self) -> Vec<Option<UtxoId>> {
         self.state.lock().unwrap().utxo_fetch_cursors.clone()
     }
@@ -399,10 +399,10 @@ async fn fetch_substates(State(state): Shared, Json(req): Json<GetSubstatesReque
 /// A page of the served UTXOs whose ids order after the cursor, as the indexer pages them.
 async fn fetch_utxos(State(state): Shared, Json(req): Json<GetUtxosRequest>) -> Json<GetUtxosResponse> {
     let mut state = state.lock().unwrap();
-    state.utxo_fetch_cursors.push(req.after_id);
+    state.utxo_fetch_cursors.push(req.cursor);
     let start = req
-        .after_id
-        .map_or(0, |after_id| state.utxos.partition_point(|(id, _)| *id <= after_id));
+        .cursor
+        .map_or(0, |cursor| state.utxos.partition_point(|(id, _)| *id <= cursor));
     let end = start.saturating_add(state.utxo_page_size).min(state.utxos.len());
     let utxos = state.utxos[start..end]
         .iter()
@@ -411,7 +411,7 @@ async fn fetch_utxos(State(state): Shared, Json(req): Json<GetUtxosRequest>) -> 
     Json(GetUtxosResponse {
         utxos,
         spent: Vec::new(),
-        next_after_id: (end < state.utxos.len()).then(|| state.utxos[end - 1].0),
+        next_cursor: (end < state.utxos.len()).then(|| state.utxos[end - 1].0),
     })
 }
 
