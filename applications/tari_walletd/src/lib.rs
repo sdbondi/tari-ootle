@@ -340,3 +340,63 @@ fn create_secret_password() -> SafePassword {
     // It is safe to use to_hex() since the String's underlying Vec is moved directly into SafePassword
     SafePassword::from(secret.to_hex())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::Path};
+
+    use tari_ootle_wallet_sdk::storage::{WalletStoreWriter, WriteableWalletStore};
+    use tari_shutdown::Shutdown;
+    use tokio::time::{Instant, sleep};
+
+    use super::*;
+
+    fn open_store(dir: &Path) -> SqliteWalletStore {
+        let store = SqliteWalletStore::try_open(dir.join("wallet.sqlite")).unwrap();
+        store.run_migrations().unwrap();
+        store
+    }
+
+    fn wal_len(dir: &Path) -> u64 {
+        fs::metadata(dir.join("wallet.sqlite-wal")).unwrap().len()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_checkpoint_takes_in_the_last_write_of_a_service_that_is_stopping() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = open_store(temp.path());
+        let shutdown = Shutdown::new();
+        let service_signal = shutdown.to_signal();
+        let service_store = store.clone();
+        let service = tokio::spawn(async move {
+            sleep(Duration::from_secs(1)).await;
+            service_store
+                .with_write_tx(|tx| tx.config_set("last_write", &1u64, false))
+                .unwrap();
+            drop(service_signal);
+        });
+        shutdown.trigger();
+
+        let started = Instant::now();
+        close_wallet_store(&store, shutdown.to_signal()).await;
+
+        assert_eq!(started.elapsed(), Duration::from_secs(1));
+        assert_eq!(wal_len(temp.path()), 0, "the service's last write is checkpointed");
+        service.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_service_that_does_not_stop_delays_the_checkpoint_by_the_drain_timeout() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = open_store(temp.path());
+        let shutdown = Shutdown::new();
+        let _stuck_service_signal = shutdown.to_signal();
+        shutdown.trigger();
+
+        let started = Instant::now();
+        close_wallet_store(&store, shutdown.to_signal()).await;
+
+        assert_eq!(started.elapsed(), SHUTDOWN_DRAIN_TIMEOUT);
+        assert_eq!(wal_len(temp.path()), 0);
+    }
+}

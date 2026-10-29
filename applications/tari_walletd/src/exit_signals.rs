@@ -1,7 +1,8 @@
 // Copyright 2026 The Tari Project
 // SPDX-License-Identifier: BSD-3-Clause
 
-//! The OS signals that ask walletd to stop: SIGTERM, which `docker stop` sends, and Ctrl-C.
+//! The OS signals that ask walletd to stop: SIGTERM, which `docker stop` sends, Ctrl-C, and on Windows the console
+//! closing or the system shutting down.
 
 use std::io;
 
@@ -33,6 +34,7 @@ impl ExitSignals {
 #[cfg(windows)]
 pub struct ExitSignals {
     ctrl_c: tokio::signal::windows::CtrlC,
+    ctrl_close: tokio::signal::windows::CtrlClose,
     ctrl_shutdown: tokio::signal::windows::CtrlShutdown,
 }
 
@@ -41,6 +43,7 @@ impl ExitSignals {
     pub fn register() -> io::Result<Self> {
         Ok(Self {
             ctrl_c: tokio::signal::windows::ctrl_c()?,
+            ctrl_close: tokio::signal::windows::ctrl_close()?,
             ctrl_shutdown: tokio::signal::windows::ctrl_shutdown()?,
         })
     }
@@ -49,6 +52,7 @@ impl ExitSignals {
     pub async fn recv(&mut self) -> &'static str {
         tokio::select! {
             _ = self.ctrl_c.recv() => "Ctrl-C",
+            _ = self.ctrl_close.recv() => "CTRL_CLOSE",
             _ = self.ctrl_shutdown.recv() => "CTRL_SHUTDOWN",
         }
     }

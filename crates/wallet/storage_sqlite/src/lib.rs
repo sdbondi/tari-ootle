@@ -64,12 +64,25 @@ impl SqliteWalletStore {
     }
 
     /// Copies every commit in the write-ahead log into the database file and empties the log, so that the database
-    /// file alone holds the wallet.
+    /// file alone holds the wallet. Fails if another connection to the database, such as a `sqlite3` shell, keeps the
+    /// checkpoint from completing.
     pub fn checkpoint(&self) -> Result<(), WalletStorageError> {
+        #[derive(QueryableByName)]
+        struct WalCheckpoint {
+            #[diesel(sql_type = diesel::sql_types::Integer)]
+            busy: i32,
+        }
+
         let mut conn = self.connection.lock().unwrap();
-        sql_query("PRAGMA wal_checkpoint(TRUNCATE);")
-            .execute(&mut *conn)
+        let result = sql_query("PRAGMA wal_checkpoint(TRUNCATE);")
+            .get_result::<WalCheckpoint>(&mut *conn)
             .map_err(|source| WalletStorageError::general("checkpoint", source))?;
+        if result.busy != 0 {
+            return Err(WalletStorageError::general(
+                "checkpoint",
+                "another connection to the database kept the checkpoint from completing",
+            ));
+        }
         Ok(())
     }
 }
