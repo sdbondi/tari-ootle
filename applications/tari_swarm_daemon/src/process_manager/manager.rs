@@ -462,20 +462,6 @@ impl ProcessManager {
                 settings,
                 reply,
             } => {
-                let Some(instance) = self.instance_manager.instances().find(|i| i.name() == name) else {
-                    if reply
-                        .send(Err(anyhow!(
-                            "Instance with name '{name}' already exists. Please choose a different name",
-                        )))
-                        .is_err()
-                    {
-                        log::warn!("Request cancelled before response could be sent")
-                    }
-                    return Ok(());
-                };
-
-                let envs = instance.envs().to_vec();
-
                 let executable = self.executable_manager.get_executable(instance_type).ok_or_else(|| {
                     anyhow!(
                         "No configuration for instance type '{instance_type}'. Please add this to the configuration",
@@ -483,7 +469,7 @@ impl ProcessManager {
                 })?;
                 let result = self
                     .instance_manager
-                    .fork_new(executable, instance_type, name, None, envs, settings)
+                    .create_instance(executable, instance_type, name, settings)
                     .await;
 
                 if reply.send(result).is_err() {
