@@ -273,6 +273,7 @@ pub async fn spawn_services(
     ));
 
     let state_history_length = db_options.state_history_length;
+    let pinned_checkpoint_epochs = db_options.pinned_checkpoint_epochs;
     let epoch_history_length = db_options.epoch_history_length;
     let state_store = ValidatorNodeStateStore::open(&config.validator_node.state_db_path, db_options)?;
 
@@ -460,6 +461,7 @@ pub async fn spawn_services(
         tx_hotstuff_events,
         consensus_constants.clone(),
         state_history_length,
+        pinned_checkpoint_epochs,
     )
     .await;
     handles.push(consensus_join_handle);

@@ -161,6 +161,9 @@ const SNAPSHOT_PAGE_SUBSTATES: u32 = 1000;
 /// The longest a shard snapshot is paged in for before it is abandoned. Each page is checked as it arrives, so this
 /// bounds only how long a slow peer holds the shard group's round.
 const MAX_SNAPSHOT_DURATION: Duration = Duration::from_secs(30 * 60);
+/// How many of the most recent epoch checkpoints a snapshot may be taken at: as many as validators keep the trees of
+/// by default.
+const SNAPSHOT_CHECKPOINT_EPOCHS: u64 = 2;
 /// How many snapshots of a new shard may be abandoned in a row before the shard replays its history instead.
 const MAX_ABANDONED_SNAPSHOTS: usize = 3;
 
@@ -985,7 +988,7 @@ impl NetworkWideStateSync {
 
         let new_shards = self.shards_to_snapshot(shards, progress).await;
         if let Some(end) = self
-            .snapshot_new_shards(shard_group, new_shards, &mut session, progress, cancel)
+            .snapshot_new_shards(shard_group, new_shards, current_epoch, &mut session, progress, cancel)
             .await?
         {
             return Ok(end);
@@ -1098,18 +1101,37 @@ impl NetworkWideStateSync {
             .collect()
     }
 
-    /// Takes a snapshot of each of `new_shards` of `shard_group` from `session`, at a leaf probed just before it so
-    /// that each starts at a version the peer still holds the tree of, and promotes it. Returns how the round ends if
-    /// one cannot be taken. A shard whose leaf is at v0 takes no snapshot and is followed from v0.
+    /// Takes a snapshot of each of `new_shards` of `shard_group` from `session`, and promotes it. Returns how the round
+    /// ends if one cannot be taken. A shard whose leaf is at v0 takes no snapshot and is followed from v0.
+    ///
+    /// Each snapshot is taken at the shard's leaf in the latest checkpoint of `shard_group` stored, if it ends one of
+    /// the last [`SNAPSHOT_CHECKPOINT_EPOCHS`] epochs before `current_epoch`: validators keep the trees of those. Just
+    /// after an epoch change, the checkpoint of the epoch that ended may not be stored yet, and the one before it
+    /// serves. Without either, the snapshot is taken at a leaf probed just before it, whose tree the peer keeps only
+    /// for the shard's next few versions.
     async fn snapshot_new_shards(
         &self,
         shard_group: ShardGroup,
         new_shards: BTreeSet<Shard>,
+        current_epoch: Epoch,
         session: &mut ValidatorRpcSession,
         progress: &SharedSyncProgress,
         cancel: &CancellationToken,
     ) -> Result<Option<RoundEnd>, NetworkStateSyncError> {
+        let checkpoint = self.pinned_checkpoint(shard_group, current_epoch).await?;
         for shard in new_shards {
+            if let Some((proved, epoch)) = checkpoint
+                .as_ref()
+                .and_then(|checkpoint| checkpoint_leaf(checkpoint, shard))
+            {
+                if let Some(end) = self
+                    .snapshot_new_shard(shard_group, proved, epoch, session, progress, cancel)
+                    .await?
+                {
+                    return Ok(Some(end));
+                }
+                continue;
+            }
             let probe = match self
                 .validator_status
                 .probe(session, shard_group, &BTreeSet::from([shard]))
@@ -1134,37 +1156,75 @@ impl NetworkWideStateSync {
                     session.peer_address(),
                 )));
             };
-            // A shard at v0 is followed from v0, whose genesis transitions are all its history
-            if proved.leaf.state_version.as_u64() == 0 {
-                continue;
-            }
-            self.sync_status
-                .set_phase(shard_group, GroupPhase::Snapshotting { shard });
-            let end = self.snapshot_shard(proved, tip_epoch, session, progress, cancel).await;
-            self.sync_status.set_snapshot(shard, None);
-            if !matches!(end, Ok(SnapshotEnd::Promoted)) {
-                // A shard whose snapshots are abandoned too often replays its history, and takes no snapshot that
-                // would clear these rows
-                self.store
-                    .with_write_tx(move |tx| tx.snapshot_substates_delete(shard))
-                    .await?;
-            }
-            match end {
-                Ok(SnapshotEnd::Promoted) => {
-                    self.abandoned_snapshots().remove(&shard);
-                },
-                Ok(SnapshotEnd::Cancelled) => return Ok(Some(RoundEnd::Cancelled)),
-                Ok(SnapshotEnd::Abandoned(reason)) => {
-                    return Ok(Some(self.abandon_snapshot(shard, reason, session.peer_address())));
-                },
-                Err(err) if err.is_peer_fault() && !err.is_unverified_history() => {
-                    warn!(target: LOG_TARGET, "⚠️ Snapshot of shard {shard} from {} failed: {}", session.peer_address(), err);
-                    return Ok(Some(RoundEnd::Pause("the peer failed")));
-                },
-                Err(err) => return Err(err),
+            if let Some(end) = self
+                .snapshot_new_shard(shard_group, proved, tip_epoch, session, progress, cancel)
+                .await?
+            {
+                return Ok(Some(end));
             }
         }
         Ok(None)
+    }
+
+    /// The latest checkpoint of `shard_group` stored, if it ends one of the last [`SNAPSHOT_CHECKPOINT_EPOCHS`] epochs
+    /// before `current_epoch`.
+    async fn pinned_checkpoint(
+        &self,
+        shard_group: ShardGroup,
+        current_epoch: Epoch,
+    ) -> Result<Option<EpochCheckpoint>, NetworkStateSyncError> {
+        let Some(checkpoint) = self
+            .store
+            .with_read_tx(move |tx| tx.epoch_checkpoint_get_latest(Some(shard_group.start())).optional())
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(is_snapshot_checkpoint(&checkpoint, shard_group, current_epoch).then_some(checkpoint))
+    }
+
+    /// Takes a snapshot of new shard `proved.leaf.shard` from `session` at `proved`, a leaf of `epoch`, and promotes
+    /// it. Returns how the round ends if it cannot be taken. A shard whose leaf is at v0 takes no snapshot and is
+    /// followed from v0, whose genesis transitions are all its history.
+    async fn snapshot_new_shard(
+        &self,
+        shard_group: ShardGroup,
+        proved: ProvedShardLeaf,
+        epoch: Epoch,
+        session: &mut ValidatorRpcSession,
+        progress: &SharedSyncProgress,
+        cancel: &CancellationToken,
+    ) -> Result<Option<RoundEnd>, NetworkStateSyncError> {
+        let shard = proved.leaf.shard;
+        if proved.leaf.state_version.as_u64() == 0 {
+            return Ok(None);
+        }
+        self.sync_status
+            .set_phase(shard_group, GroupPhase::Snapshotting { shard });
+        let end = self.snapshot_shard(proved, epoch, session, progress, cancel).await;
+        self.sync_status.set_snapshot(shard, None);
+        if !matches!(end, Ok(SnapshotEnd::Promoted)) {
+            // A shard whose snapshots are abandoned too often replays its history, and takes no snapshot that
+            // would clear these rows
+            self.store
+                .with_write_tx(move |tx| tx.snapshot_substates_delete(shard))
+                .await?;
+        }
+        match end {
+            Ok(SnapshotEnd::Promoted) => {
+                self.abandoned_snapshots().remove(&shard);
+                Ok(None)
+            },
+            Ok(SnapshotEnd::Cancelled) => Ok(Some(RoundEnd::Cancelled)),
+            Ok(SnapshotEnd::Abandoned(reason)) => {
+                Ok(Some(self.abandon_snapshot(shard, reason, session.peer_address())))
+            },
+            Err(err) if err.is_peer_fault() && !err.is_unverified_history() => {
+                warn!(target: LOG_TARGET, "⚠️ Snapshot of shard {shard} from {} failed: {}", session.peer_address(), err);
+                Ok(Some(RoundEnd::Pause("the peer failed")))
+            },
+            Err(err) => Err(err),
+        }
     }
 
     /// Counts an abandoned snapshot of `shard` towards [`MAX_ABANDONED_SNAPSHOTS`], and pauses the round so that the
@@ -1179,7 +1239,7 @@ impl NetworkWideStateSync {
         if abandoned >= MAX_ABANDONED_SNAPSHOTS {
             warn!(target: LOG_TARGET, "⚠️ {abandoned} snapshots of new shard {shard} in a row were abandoned, the last from {peer} because {reason}. Replaying the shard's history from v0 instead");
         } else {
-            info!(target: LOG_TARGET, "🌍️ Abandoned the snapshot of new shard {shard} from {peer} because {reason}. Taking it at a fresh leaf next round");
+            info!(target: LOG_TARGET, "🌍️ Abandoned the snapshot of new shard {shard} from {peer} because {reason}. Taking it again next round");
         }
         RoundEnd::Pause("a new shard's snapshot was abandoned")
     }
@@ -2116,6 +2176,30 @@ fn new_shards(shards: &[Shard], progress: &SyncProgress) -> BTreeSet<Shard> {
         .copied()
         .filter(|&shard| progress.last_state_version(shard).is_none() && progress.verified.get(&shard).is_none())
         .collect()
+}
+
+/// Whether a snapshot of a shard of `shard_group` may be taken at `checkpoint` in `current_epoch`: it is a checkpoint
+/// of `shard_group` that ends one of the last [`SNAPSHOT_CHECKPOINT_EPOCHS`] epochs.
+fn is_snapshot_checkpoint(checkpoint: &EpochCheckpoint, shard_group: ShardGroup, current_epoch: Epoch) -> bool {
+    let oldest_pinned = current_epoch.saturating_sub(Epoch(SNAPSHOT_CHECKPOINT_EPOCHS));
+    checkpoint
+        .checked_shard_group()
+        .is_ok_and(|checkpoint_group| checkpoint_group == shard_group) &&
+        (oldest_pinned..current_epoch).contains(&checkpoint.epoch())
+}
+
+/// The leaf of `shard` that `checkpoint` proves, and the checkpoint's epoch.
+fn checkpoint_leaf(checkpoint: &EpochCheckpoint, shard: Shard) -> Option<(ProvedShardLeaf, Epoch)> {
+    let summary = checkpoint.shard_tree_summary().get(&shard)?;
+    let proved = ProvedShardLeaf {
+        leaf: VerifiedShardLeaf {
+            shard,
+            state_version: StateVersion::new(summary.state_version),
+            transition_acc: summary.transition_acc,
+        },
+        shard_root: summary.root_hash,
+    };
+    Some((proved, checkpoint.epoch()))
 }
 
 /// How a shard snapshot ended.
@@ -4315,6 +4399,16 @@ mod tests {
                 Default::default(),
                 header_metadata,
             )
+        }
+
+        #[test]
+        fn a_snapshot_is_taken_at_either_of_the_last_two_checkpoints_of_its_shard_group() {
+            assert!(is_snapshot_checkpoint(&checkpoint(9, low()), low(), Epoch(10)));
+            // The checkpoint of the epoch that just ended is not stored yet
+            assert!(is_snapshot_checkpoint(&checkpoint(8, low()), low(), Epoch(10)));
+            assert!(!is_snapshot_checkpoint(&checkpoint(7, low()), low(), Epoch(10)));
+            assert!(!is_snapshot_checkpoint(&checkpoint(10, low()), low(), Epoch(10)));
+            assert!(!is_snapshot_checkpoint(&checkpoint(9, high()), low(), Epoch(10)));
         }
 
         fn committee() -> Arc<Committee<Addr>> {
