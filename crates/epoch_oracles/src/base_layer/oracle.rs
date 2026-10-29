@@ -72,6 +72,15 @@ struct BatchScan {
     scan_epoch: Epoch,
 }
 
+/// A scan position reached in memory but not yet persisted. It is persisted once the consumer has
+/// applied every event of the batch that reached it.
+struct ScanPosition {
+    tip: FixedHash,
+    block_hash: FixedHash,
+    height: u64,
+    epoch_hash: Option<FixedHash>,
+}
+
 type TaskOutput<TStore, TClient> = (
     Result<bool, BaseLayerOracleError>,
     Box<BaseLayerOracleInner<TStore, TClient>>,
@@ -109,6 +118,10 @@ struct BaseLayerOracleInner<TStore, TClient> {
     base_node_client: TClient,
     has_attempted_scan: bool,
     pending_events: VecDeque<EpochEvent>,
+    /// The scan position `pending_events` brings the consumer to. Persisting it any earlier would
+    /// let a restart resume past events the consumer never applied, and a lost `EpochChanged` is
+    /// never emitted again.
+    unpersisted_position: Option<ScanPosition>,
     // Stores the minimal `BlockHeaderModel` (all `Copy` fields) rather than the full `BlockHeader`,
     // so the heavy parts of a header — notably `pow.pow_data` — are dropped right after hashing
     // instead of being held for the whole batch.
@@ -139,6 +152,7 @@ impl<TStore: EpochOracleStore + BaseLayerBlockHeaderStore + Clone + 'static, TCl
                 base_node_client,
                 has_attempted_scan: false,
                 pending_events: VecDeque::new(),
+                unpersisted_position: None,
                 header_buf: Vec::new(),
                 network,
                 epoch_length,
@@ -421,7 +435,7 @@ impl<TStore: EpochOracleStore + BaseLayerBlockHeaderStore, TClient: BaseNodeClie
     }
 
     /// Resets the in-memory scan position to the start of our scan range, as on a fresh start. The
-    /// persisted position is corrected by the next successful `set_last_scanned_block`. `last_epoch_hash`
+    /// persisted position is corrected by the next successful `persist_scan_position`. `last_epoch_hash`
     /// is cleared too so a reorg that orphaned the last boundary we crossed does not leave a stale hash;
     /// the re-scan re-emits every boundary above the floor and re-populates it.
     fn rewind_to_floor(&mut self) {
@@ -842,55 +856,62 @@ impl<TStore: EpochOracleStore + BaseLayerBlockHeaderStore, TClient: BaseNodeClie
             }
         }
 
-        // Persist headers and advance the scan position now the batch is complete. `last_scanned_tip`
-        // is set by set_last_scanned_block once the whole batch is persisted; it is intentionally not
-        // advanced earlier, so an interrupted sync re-scans rather than letting
-        // get_blockchain_progression short-circuit and silently skip the remaining headers.
+        // Persist headers and advance the in-memory scan position now the batch is complete. The
+        // position is persisted only once the consumer has applied the batch's events (see
+        // `persist_scan_position`). `last_scanned_tip` is not advanced before this point, so an
+        // interrupted sync re-scans rather than letting get_blockchain_progression short-circuit and
+        // silently skip the remaining headers.
         if !self.header_buf.is_empty() {
             self.store
                 .add_block_headers(self.header_buf.drain(..))
                 .map_err(BaseLayerOracleError::StoreError)?;
         }
+        let block_hash = last_scanned_hash.unwrap_or_else(FixedHash::zero);
         self.last_scanned_validator_node_mr = last_validator_node_mr;
-        self.set_last_scanned_block(
-            last_scanned_hash.unwrap_or_else(FixedHash::zero),
-            last_scanned_height,
-            tip.tip_hash,
-        )?;
-
-        if let Some(hash) = last_epoch_hash {
-            self.set_last_epoch_block(hash)?;
+        self.last_scanned_tip = Some(tip.tip_hash);
+        self.last_scanned_hash = Some(block_hash);
+        self.last_scanned_height = last_scanned_height;
+        if last_epoch_hash.is_some() {
+            self.last_epoch_hash = last_epoch_hash;
         }
+        self.unpersisted_position = Some(ScanPosition {
+            tip: tip.tip_hash,
+            block_hash,
+            height: last_scanned_height,
+            epoch_hash: last_epoch_hash,
+        });
 
         Ok(())
     }
 
-    fn set_last_scanned_block(
-        &mut self,
-        header_hash: FixedHash,
-        height: u64,
-        tip: FixedHash,
-    ) -> Result<(), BaseLayerOracleError> {
+    /// Persists the scan position the last batch reached. Called once the consumer has taken every
+    /// event of that batch: the consumer applies an event before it polls for the next. A failed
+    /// write drops the position rather than retrying it, leaving an older persisted position that a
+    /// restart re-scans from; the epoch manager tolerates the replayed events.
+    fn persist_scan_position(&mut self) -> Result<(), BaseLayerOracleError> {
+        let Some(ScanPosition {
+            tip,
+            block_hash,
+            height,
+            epoch_hash,
+        }) = self.unpersisted_position.take()
+        else {
+            return Ok(());
+        };
         self.store
             .set(StoreKey::BaseLayerLastScannedTip.as_key_bytes(), &tip)
             .map_err(BaseLayerOracleError::StoreError)?;
         self.store
-            .set(StoreKey::BaseLayerLastScannedBlockHash.as_key_bytes(), &header_hash)
+            .set(StoreKey::BaseLayerLastScannedBlockHash.as_key_bytes(), &block_hash)
             .map_err(BaseLayerOracleError::StoreError)?;
         self.store
             .set(StoreKey::BaseLayerLastScannedBlockHeight.as_key_bytes(), &height)
             .map_err(BaseLayerOracleError::StoreError)?;
-        self.last_scanned_tip = Some(tip);
-        self.last_scanned_hash = Some(header_hash);
-        self.last_scanned_height = height;
-        Ok(())
-    }
-
-    fn set_last_epoch_block(&mut self, hash: FixedHash) -> Result<(), BaseLayerOracleError> {
-        self.store
-            .set(StoreKey::BaseLayerLastEpochHash.as_key_bytes(), &hash)
-            .map_err(BaseLayerOracleError::StoreError)?;
-        self.last_epoch_hash = Some(hash);
+        if let Some(hash) = epoch_hash {
+            self.store
+                .set(StoreKey::BaseLayerLastEpochHash.as_key_bytes(), &hash)
+                .map_err(BaseLayerOracleError::StoreError)?;
+        }
         Ok(())
     }
 
@@ -936,6 +957,9 @@ impl<TStore: EpochOracleStore + BaseLayerBlockHeaderStore + Send + 'static, TCli
                     return Poll::Ready(Some(event));
                 }
                 inner_mut.shrink_events();
+                if let Err(err) = inner_mut.persist_scan_position() {
+                    return Poll::Ready(Some(EpochEvent::error(err)));
+                }
             }
 
             if let Some(mut task) = self.task.take() {
@@ -1067,6 +1091,7 @@ mod tests {
     use std::{
         collections::{HashMap, VecDeque},
         sync::{Arc, Mutex, atomic::AtomicU64},
+        task::{Context, Waker},
         time::Duration,
     };
 
@@ -1368,6 +1393,7 @@ mod tests {
             base_node_client: client,
             has_attempted_scan: false,
             pending_events: VecDeque::new(),
+            unpersisted_position: None,
             header_buf: Vec::new(),
             network: NETWORK,
             epoch_length: Arc::new(AtomicU64::new(0)),
@@ -1478,6 +1504,73 @@ mod tests {
         );
         // Epoch 4 opens at height 20, above the lagged scan position.
         assert_eq!(oracle.observed_epoch_boundary_hash(Epoch(4)).unwrap(), None);
+    }
+
+    /// Polls `oracle` until `stop` matches an event, returning every event up to and including it.
+    async fn next_events_until(
+        oracle: &mut BaseLayerOracle<InMemoryStore, MockBaseNode>,
+        stop: impl Fn(&EpochEvent) -> bool,
+    ) -> Vec<EpochEvent> {
+        let mut events = Vec::new();
+        loop {
+            let event = oracle.next_epoch_event().await.expect("oracle stopped");
+            if let EpochEvent::Error(err) = &event {
+                panic!("oracle error: {err}");
+            }
+            let done = stop(&event);
+            events.push(event);
+            if done {
+                return events;
+            }
+        }
+    }
+
+    /// The epoch manager applies an event before it polls for the next, so a node that stops between
+    /// receiving a boundary's `EpochChanged` and applying it has not applied it. The restarted oracle
+    /// must deliver it again; nothing else would ever activate that epoch.
+    #[tokio::test]
+    async fn restart_before_a_batch_is_applied_re_emits_its_epoch_changes() {
+        let store = InMemoryStore::default();
+        let chain = linear_chain(0..=20);
+        let mut oracle = BaseLayerOracle::new(store.clone(), MockBaseNode::new(chain.clone()), make_config(5), NETWORK);
+
+        // Epoch 3 opens at height 15, the last boundary at or below the lagged tip.
+        next_events_until(&mut oracle, |e| {
+            matches!(e, EpochEvent::EpochChanged { epoch: Epoch(3), .. })
+        })
+        .await;
+        drop(oracle);
+
+        let mut restarted = BaseLayerOracle::new(store, MockBaseNode::new(chain.clone()), make_config(5), NETWORK);
+        let events = next_events_until(&mut restarted, |e| matches!(e, EpochEvent::DoneForNow { .. })).await;
+        assert!(
+            epoch_changes(&events).contains(&(3, hash_header(NETWORK, &chain[15]))),
+            "the restarted oracle must re-emit the unapplied EpochChanged(3); got {events:?}"
+        );
+    }
+
+    /// Once the epoch manager polls past a batch's last event, the batch is applied and a restart
+    /// resumes after it.
+    #[tokio::test]
+    async fn restart_after_a_batch_is_applied_resumes_past_it() {
+        let store = InMemoryStore::default();
+        let chain = linear_chain(0..=20);
+        let mut oracle = BaseLayerOracle::new(store.clone(), MockBaseNode::new(chain.clone()), make_config(5), NETWORK);
+
+        next_events_until(&mut oracle, |e| matches!(e, EpochEvent::DoneForNow { .. })).await;
+        // The poll that follows the batch's last event; it finds the queue empty and parks on the
+        // scanning interval.
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(oracle.poll_next_event(&mut cx).is_pending());
+        drop(oracle);
+
+        let mut restarted = BaseLayerOracle::new(store, MockBaseNode::new(chain), make_config(5), NETWORK);
+        let events = next_events_until(&mut restarted, |e| matches!(e, EpochEvent::DoneForNow { .. })).await;
+        assert_eq!(
+            epoch_changes(&events),
+            vec![],
+            "an applied batch must not be replayed; got {events:?}"
+        );
     }
 
     #[tokio::test]
