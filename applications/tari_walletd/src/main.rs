@@ -20,6 +20,8 @@
 // WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 // USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+mod exit_signals;
+
 use std::{fs, panic, process};
 
 use anyhow::Context;
@@ -39,6 +41,8 @@ use tari_ootle_walletd::{
     run_tari_ootle_walletd,
 };
 use tari_shutdown::Shutdown;
+
+use crate::exit_signals::ExitSignals;
 
 const LOG_TARGET: &str = "tari::wallet_daemon";
 
@@ -262,6 +266,16 @@ async fn run(cli: Cli, config: ApplicationConfig) -> Result<(), anyhow::Error> {
         "📂 Base directory: {}",
         config.common.base_path().display()
     );
+
+    let mut exit_signals = ExitSignals::register().context("Failed to listen for exit signals")?;
+    tokio::spawn(async move {
+        let signal = exit_signals.recv().await;
+        info!(target: LOG_TARGET, "🛑 Received {signal}. Shutting down. Send it again to exit at once.");
+        shutdown.trigger();
+        let signal = exit_signals.recv().await;
+        warn!(target: LOG_TARGET, "🛑 Received {signal} again. Exiting without waiting for the shutdown.");
+        process::exit(1);
+    });
 
     run_tari_ootle_walletd(config, cli.wallet_restore.seed_words.as_ref(), shutdown_signal).await
 }

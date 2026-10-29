@@ -62,6 +62,16 @@ impl SqliteWalletStore {
 
         Ok(())
     }
+
+    /// Copies every commit in the write-ahead log into the database file and empties the log, so that the database
+    /// file alone holds the wallet.
+    pub fn checkpoint(&self) -> Result<(), WalletStorageError> {
+        let mut conn = self.connection.lock().unwrap();
+        sql_query("PRAGMA wal_checkpoint(TRUNCATE);")
+            .execute(&mut *conn)
+            .map_err(|source| WalletStorageError::general("checkpoint", source))?;
+        Ok(())
+    }
 }
 
 impl ReadableWalletStore for SqliteWalletStore {

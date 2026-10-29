@@ -27,7 +27,7 @@ mod server;
 mod services;
 mod webrtc;
 
-use std::{fs, panic, pin, process};
+use std::{fs, panic, pin, process, time::Duration};
 
 use log::*;
 use tari_common_types::seeds::seed_words::SeedWords;
@@ -193,7 +193,7 @@ pub async fn run_tari_ootle_walletd(
         config.ootle_wallet_daemon.clone(),
         authenticator,
         jwt_secret,
-        shutdown_signal,
+        shutdown_signal.clone(),
     )
     .with_cookie_token(cookie);
     let (_jrpc_address, listen_fut) = server::spawn_listener(jrpc_address, signaling_server_address, handlers).await?;
@@ -213,23 +213,53 @@ pub async fn run_tari_ootle_walletd(
         )
     }
     // Wait for shutdown, or for any service to error
-    tokio::select! {
-        res = listen_fut => {
-            res??;
+    let result = tokio::select! {
+        res = listen_fut => match res {
+            Ok(res) => res,
+            Err(err) => Err(err.into()),
         },
         res = services.services_fut => {
             match res {
                 Ok(_) => {
                     info!(target: LOG_TARGET, "All services have shut down");
+                    Ok(())
                 },
                 Err(err) => {
                     error!(target: LOG_TARGET, "🚨 A service has crashed: {}. Shutting down", err);
-                    return Err(err);
+                    Err(err)
                 },
             }
         },
+    };
+    close_wallet_store(&wallet_store, shutdown_signal).await;
+    result
+}
+
+/// How long a shutdown waits for the services to stop before it checkpoints the wallet database regardless.
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Folds the write-ahead log into the wallet database, so that the database file alone holds the wallet once walletd
+/// exits. On a shutdown, each service drops its shutdown signal as it stops, so the checkpoint waits for those signals
+/// to take in the services' last writes.
+async fn close_wallet_store(wallet_store: &SqliteWalletStore, shutdown_signal: ShutdownSignal) {
+    if shutdown_signal.is_triggered() &&
+        tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, shutdown_signal.drained())
+            .await
+            .is_err()
+    {
+        warn!(
+            target: LOG_TARGET,
+            "⚠️ Services did not stop within {}s. Checkpointing the wallet database without them.",
+            SHUTDOWN_DRAIN_TIMEOUT.as_secs()
+        );
     }
-    Ok(())
+    match wallet_store.checkpoint() {
+        Ok(()) => info!(target: LOG_TARGET, "💾 Wallet database checkpointed"),
+        Err(err) => warn!(
+            target: LOG_TARGET,
+            "⚠️ Failed to checkpoint the wallet database: {err}. The next start applies the write-ahead log."
+        ),
+    }
 }
 
 /// Installs the OS-native credential store that the wallet SDK uses to hold the cipher seed password.
