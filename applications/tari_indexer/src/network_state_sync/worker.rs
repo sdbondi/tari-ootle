@@ -1074,7 +1074,7 @@ impl NetworkWideStateSync {
 
     /// Takes a snapshot of each of `new_shards` of `shard_group` from `session`, at a leaf probed just before it so
     /// that each starts at a version the peer still holds the tree of, and promotes it. Returns how the round ends if
-    /// one cannot be taken.
+    /// one cannot be taken. A shard whose leaf is at v0 takes no snapshot and is followed from v0.
     async fn snapshot_new_shards(
         &self,
         shard_group: ShardGroup,
@@ -1095,21 +1095,19 @@ impl NetworkWideStateSync {
                     return Ok(Some(RoundEnd::Pause("invalid commit proof")));
                 },
             };
-            let Some((proved, tip_epoch)) = probe.and_then(|probe| {
-                let tip_epoch = probe.tip.epoch;
-                probe
-                    .leaves
-                    .into_iter()
-                    .find(|proved| proved.leaf.shard == shard)
-                    .map(|proved| (proved, tip_epoch))
-            }) else {
+            // A peer proves no tip before the network's first commit, which says nothing of the snapshot
+            let Some(probe) = probe else {
+                return Ok(Some(RoundEnd::Pause("the peer proved no committed tip")));
+            };
+            let tip_epoch = probe.tip.epoch;
+            let Some(proved) = probe.leaves.into_iter().find(|proved| proved.leaf.shard == shard) else {
                 return Ok(Some(self.abandon_snapshot(
                     shard,
                     "the peer proved no leaf of the shard",
                     session.peer_address(),
                 )));
             };
-            // A shard with no state at the leaf is followed from its first version, which is all its history
+            // A shard at v0 is followed from v0, whose genesis transitions are all its history
             if proved.leaf.state_version.as_u64() == 0 {
                 continue;
             }
@@ -1149,7 +1147,7 @@ impl NetworkWideStateSync {
             *count
         };
         if abandoned >= MAX_ABANDONED_SNAPSHOTS {
-            warn!(target: LOG_TARGET, "⚠️ {abandoned} snapshots of new shard {shard} in a row were abandoned, the last from {peer} because {reason}. Replaying the shard's history from its first version instead");
+            warn!(target: LOG_TARGET, "⚠️ {abandoned} snapshots of new shard {shard} in a row were abandoned, the last from {peer} because {reason}. Replaying the shard's history from v0 instead");
         } else {
             info!(target: LOG_TARGET, "🌍️ Abandoned the snapshot of new shard {shard} from {peer} because {reason}. Taking it at a fresh leaf next round");
         }
@@ -1186,7 +1184,7 @@ impl NetworkWideStateSync {
         let faulty = |details: String| NetworkStateSyncError::UnverifiedHistory {
             details: format!("Peer {peer} served a snapshot of shard {shard} at v{state_version} that {details}"),
             blamed: vec![peer],
-            diverged_from: Some((shard, StateVersion::new(0))),
+            diverged_from: Some((shard, None)),
         };
 
         let value_filters = stream_value_filters();
@@ -1281,10 +1279,10 @@ impl NetworkWideStateSync {
             .verified_stage()
             .restore(
                 shard,
-                AccumulatedVersion {
+                Some(AccumulatedVersion {
                     version: verified.state_version,
                     acc: verified.transition_acc,
-                },
+                }),
                 Vec::new(),
             )
             .map_err(|e| NetworkStateSyncError::InvariantError {
@@ -3638,7 +3636,7 @@ mod tests {
                     .len(),
                 1
             );
-            assert_eq!(checkpoint_leaves_above(&store, 0, 10).await, [60]);
+            assert_eq!(checkpoint_leaves_above(&store, None, 10).await, [60]);
             assert_eq!(
                 store.with_read_tx(|tx| tx.utxo_tombstone_horizon(SHARD)).await.unwrap(),
                 Some(v(50))
