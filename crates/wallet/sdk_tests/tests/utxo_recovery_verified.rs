@@ -690,3 +690,18 @@ async fn an_unproven_output_sharing_its_tag_and_nonce_with_a_proven_one_stays_qu
     assert_eq!(stored(&test, id).value, VALUE);
     assert!(!is_stored(&test, copy_id));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_output_with_a_malformed_commitment_is_skipped_and_the_others_are_recovered() {
+    let (_sets, network, test, account) = wallet(IndexerTrust::Trust).await;
+    let (id, utxo) = test.owned_utxo(&account, VALUE);
+    let (_, other) = test.owned_utxo(&account, VALUE);
+    // Not a valid compressed Ristretto point
+    let malformed = UtxoId::from_array([0xab; 32]);
+    queue(&test, &network, &account, malformed, &other);
+
+    assert_eq!(recover(&test, &network, &account, id, &utxo).await, 0);
+    assert_eq!(queued(&test), 0);
+    assert_eq!(stored(&test, id).value, VALUE);
+    assert!(!is_stored(&test, malformed));
+}
