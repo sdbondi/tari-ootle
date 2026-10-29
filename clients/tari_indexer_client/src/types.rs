@@ -896,6 +896,9 @@ pub struct GetUtxoUpdatesResponse {
     pub updates: UtxoUpdateSet,
 }
 
+/// A shard and a state version of it.
+pub type ShardStateVersion = (Shard, StateVersion);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "tari-indexer-client/"))]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
@@ -910,7 +913,7 @@ pub struct GetUtxosRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts", ts(optional, as = "Option<_>"))]
     #[cfg_attr(feature = "utoipa", schema(value_type = Vec<Option<(u32, u64)>>))]
-    pub unspent_at: Vec<Option<(Shard, StateVersion)>>,
+    pub unspent_at: Vec<Option<ShardStateVersion>>,
     /// Resume after the previous page: pass its `next_cursor`. UTXOs are paged in the order of their ids, which every
     /// indexer shares, so any indexer can resume a page another returned. A UTXO created or spent while the pages are
     /// read may or may not be returned.

@@ -1796,37 +1796,7 @@ impl<'tx, TAddr: NodeAddressable + 'tx> StateStoreWriteTransaction for RocksDbSt
                     break;
                 }
                 let nodes = stale_nodes_cf.get(&(shard, version), OPERATION)?;
-
-                // A version's nodes are gathered before any is deleted, because the subtree walk reads the nodes it
-                // descends through. A subtree is gathered node by node, since a pinned tree may hold some of them.
-                let mut stale_keys = Vec::new();
-                for node in nodes {
-                    match node {
-                        StaleTreeNode::Node(key) => stale_keys.push(key),
-                        StaleTreeNode::Subtree(parent_key) => {
-                            // A subtree already deleted along with an earlier version is skipped.
-                            let Some(parent_node) = cf.get(&(shard, parent_key.clone()), OPERATION).optional()? else {
-                                continue;
-                            };
-
-                            match parent_node {
-                                Node::Internal(node) => {
-                                    stale_keys.extend(
-                                        recurse_subtree_depth_first_post_order(
-                                            &cf,
-                                            shard,
-                                            parent_key,
-                                            node.into_children(),
-                                        )
-                                        .map(|(_, key)| key),
-                                    );
-                                },
-                                Node::Leaf(_) => stale_keys.push(parent_key),
-                                Node::Null => {},
-                            }
-                        },
-                    }
-                }
+                let stale_keys = gather_stale_node_keys(&cf, shard, nodes)?;
 
                 let mut num_deleted = 0usize;
                 let mut deferred = BTreeMap::<Version, Vec<StaleTreeNode>>::new();
@@ -2251,6 +2221,37 @@ impl<TAddr> Drop for RocksDbStateStoreWriteTransaction<'_, TAddr> {
             }
         }
     }
+}
+
+/// The keys of every node in `nodes`, a version's stale list, with each subtree expanded node by node, since a pinned
+/// tree may hold some of its nodes. They are gathered before any is deleted, because the subtree walk reads the nodes
+/// it descends through. A subtree already deleted along with an earlier version is skipped.
+fn gather_stale_node_keys(
+    cf: &CfContext<Transaction<TransactionDB>, StateTreeCf>,
+    shard: Shard,
+    nodes: Vec<StaleTreeNode>,
+) -> Result<Vec<NodeKey>, StorageError> {
+    const OPERATION: &str = "gather_stale_node_keys";
+    let mut keys = Vec::new();
+    for node in nodes {
+        match node {
+            StaleTreeNode::Node(key) => keys.push(key),
+            StaleTreeNode::Subtree(parent_key) => {
+                let Some(parent_node) = cf.get(&(shard, parent_key.clone()), OPERATION).optional()? else {
+                    continue;
+                };
+                match parent_node {
+                    Node::Internal(node) => keys.extend(
+                        recurse_subtree_depth_first_post_order(cf, shard, parent_key, node.into_children())
+                            .map(|(_, key)| key),
+                    ),
+                    Node::Leaf(_) => keys.push(parent_key),
+                    Node::Null => {},
+                }
+            },
+        }
+    }
+    Ok(keys)
 }
 
 fn recurse_subtree_depth_first_post_order<'a>(
