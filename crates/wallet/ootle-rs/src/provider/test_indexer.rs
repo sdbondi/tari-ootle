@@ -254,8 +254,9 @@ impl TestIndexer {
         self.state.lock().unwrap().fetch_sizes.clone()
     }
 
-    /// Answers every UTXO fetch with `utxos`, at most `page_size` a response.
-    pub(crate) fn serve_utxos(&self, utxos: Vec<(UtxoId, Utxo)>, page_size: usize) {
+    /// Answers every UTXO fetch with `utxos` in id order, at most `page_size` a response.
+    pub(crate) fn serve_utxos(&self, mut utxos: Vec<(UtxoId, Utxo)>, page_size: usize) {
+        utxos.sort_by_key(|(id, _)| *id);
         let mut state = self.state.lock().unwrap();
         state.utxos = utxos;
         state.utxo_page_size = page_size;
@@ -395,18 +396,13 @@ async fn fetch_substates(State(state): Shared, Json(req): Json<GetSubstatesReque
     Json(GetSubstatesResponse::new(substates, proofs))
 }
 
-/// A page of the served UTXOs, after the UTXO its cursor names.
+/// A page of the served UTXOs whose ids order after the cursor, as the indexer pages them.
 async fn fetch_utxos(State(state): Shared, Json(req): Json<GetUtxosRequest>) -> Json<GetUtxosResponse> {
     let mut state = state.lock().unwrap();
     state.utxo_fetch_cursors.push(req.after_id);
-    let start = req.after_id.map_or(0, |after_id| {
-        state
-            .utxos
-            .iter()
-            .position(|(id, _)| *id == after_id)
-            .expect("a served cursor") +
-            1
-    });
+    let start = req
+        .after_id
+        .map_or(0, |after_id| state.utxos.partition_point(|(id, _)| *id <= after_id));
     let end = start.saturating_add(state.utxo_page_size).min(state.utxos.len());
     let utxos = state.utxos[start..end]
         .iter()

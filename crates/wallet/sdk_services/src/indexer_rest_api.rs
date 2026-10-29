@@ -1531,14 +1531,16 @@ mod tests {
         assert_eq!(tari_bor::encode(&decoded).unwrap(), served.as_bytes());
     }
 
-    /// Answers each UTXO fetch with a page of `utxos` of at most `page_size`, after the UTXO its cursor names, and
-    /// reports `pair` spent on the first page only. Records the `after_id` of each fetch.
+    /// Answers each UTXO fetch with a page of `utxos` in id order of at most `page_size`, whose ids order after its
+    /// cursor, as the indexer pages them, and reports `pair` spent on the first page only. Records the `after_id` of
+    /// each fetch.
     async fn spawn_utxo_pages_server(
-        utxos: Vec<(UtxoId, Utxo)>,
+        mut utxos: Vec<(UtxoId, Utxo)>,
         page_size: usize,
         pair: (UtxoTag, RistrettoPublicKeyBytes),
         cursors: Arc<Mutex<Vec<Option<UtxoId>>>>,
     ) -> Url {
+        utxos.sort_by_key(|(id, _)| *id);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
         tokio::spawn(async move {
@@ -1562,13 +1564,9 @@ mod tests {
                 };
                 let req: GetUtxosRequest = serde_json::from_str(&body).unwrap();
                 cursors.lock().unwrap().push(req.after_id);
-                let start = req.after_id.map_or(0, |after_id| {
-                    utxos
-                        .iter()
-                        .position(|(id, _)| *id == after_id)
-                        .expect("a served cursor") +
-                        1
-                });
+                let start = req
+                    .after_id
+                    .map_or(0, |after_id| utxos.partition_point(|(id, _)| *id <= after_id));
                 let end = (start + page_size).min(utxos.len());
                 let body = serde_json::to_string(&GetUtxosResponse {
                     utxos: utxos[start..end]
