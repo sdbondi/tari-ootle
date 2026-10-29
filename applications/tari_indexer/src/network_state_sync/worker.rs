@@ -7,7 +7,7 @@ use std::{
     fmt::Display,
     pin::pin,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use futures::{StreamExt, future::Either, stream::FuturesUnordered};
@@ -71,7 +71,8 @@ use crate::{
         stats::SyncStats,
         sync_plan::SyncPlan,
         sync_progress::{SharedSyncProgress, SyncProgress, VerifiedShardVersion},
-        validator_status::{ProvedShardLeaf, ValidatorStatusMonitor},
+        sync_status::{GroupPhase, SnapshotProgress, SyncStatusMonitor, key_fraction},
+        validator_status::{ProvedShardLeaf, ValidatorStatusMonitor, VerifiedProbe},
         verified_stage::{
             AccumulatedVersion,
             MAX_ACCUMULATOR_HISTORY,
@@ -185,6 +186,7 @@ pub struct NetworkWideStateSync {
     notify: Notify<IndexerEvent>,
     transaction_event_notify: Notify<TransactionEvent>,
     validator_status: ValidatorStatusMonitor,
+    sync_status: SyncStatusMonitor,
     shard_watermarks: Arc<ShardWatermarks>,
     consensus_epoch: ConsensusEpoch,
     network: Network,
@@ -212,6 +214,7 @@ impl NetworkWideStateSync {
         notify: Notify<IndexerEvent>,
         transaction_event_notify: Notify<TransactionEvent>,
         validator_status: ValidatorStatusMonitor,
+        sync_status: SyncStatusMonitor,
         shard_watermarks: Arc<ShardWatermarks>,
         consensus_epoch: ConsensusEpoch,
         network: Network,
@@ -228,6 +231,7 @@ impl NetworkWideStateSync {
             notify,
             transaction_event_notify,
             validator_status,
+            sync_status,
             shard_watermarks,
             consensus_epoch,
             network,
@@ -663,6 +667,8 @@ impl NetworkWideStateSync {
                 )
             })
             .await?;
+        self.sync_status
+            .record_checkpoint(checkpoint_shard_group, checkpoint_epoch);
         Ok(leaves)
     }
 
@@ -793,6 +799,7 @@ impl NetworkWideStateSync {
             {
                 Ok(Some(probe)) => {
                     self.consensus_epoch.observe(probe.tip.shard_group, probe.tip.epoch);
+                    self.observe_tip(&probe);
                     // A full queue drops these leaves: the stream has yet to take the ones queued before them, and
                     // the next probe asks again.
                     let probed = probe.leaves.iter().map(|proved| proved.leaf).collect::<Vec<_>>();
@@ -865,6 +872,13 @@ impl NetworkWideStateSync {
                     diverged_from,
                 }) => {
                     warn!(target: LOG_TARGET, "⚠️ Shard group {shard_group}: {details}. Excluding {} for the rest of the epoch", display_peers(&blamed));
+                    self.sync_status.record_blame(
+                        shard_group,
+                        *epoch.borrow(),
+                        blamed.clone(),
+                        &details,
+                        diverged_from.map(|(shard, _)| shard),
+                    );
                     for peer in &blamed {
                         pool.mark_failed(*peer);
                     }
@@ -883,6 +897,8 @@ impl NetworkWideStateSync {
                         #[cfg(feature = "metrics")]
                         self.metrics.record_leaf_check("circuit_breaker");
                         breaker = MismatchBreaker::default();
+                        self.sync_status
+                            .set_phase(shard_group, GroupPhase::Halted { shard, from });
                         tokio::select! {
                             _ = cancel.cancelled() => {},
                             Ok(()) = epoch.changed() => {},
@@ -911,6 +927,7 @@ impl NetworkWideStateSync {
     ) -> Result<RoundEnd, NetworkStateSyncError> {
         let current_epoch = *epoch.borrow_and_update();
         self.restore_stage(shards, progress).await?;
+        self.sync_status.set_phase(shard_group, GroupPhase::SyncingCheckpoints);
         let checkpoints_reached_epoch = match self
             .sync_group_checkpoints(shard_group, shards, pool, current_epoch, progress, cancel)
             .await
@@ -935,6 +952,7 @@ impl NetworkWideStateSync {
                 return Ok(RoundEnd::Pause("no session"));
             },
         };
+        self.sync_status.set_stream_peer(shard_group, *session.peer_address());
         let leaf_shards = self.leaf_shards(shard_group, shards.contains(&Shard::global()));
         match self
             .validator_status
@@ -943,6 +961,7 @@ impl NetworkWideStateSync {
         {
             Ok(Some(probe)) => {
                 self.consensus_epoch.observe(probe.tip.shard_group, probe.tip.epoch);
+                self.observe_tip(&probe);
                 // Record the quorum-signed state root so the read path can skip re-validating
                 // commit proofs for this tip. A failure here must not abort the state sync.
                 if let Err(e) = self.persist_verified_tip(probe.tip).await {
@@ -970,6 +989,7 @@ impl NetworkWideStateSync {
             return Ok(end);
         }
 
+        self.sync_status.set_phase(shard_group, GroupPhase::Streaming);
         // A responder that cannot serve these shards - it left the committee, or the epoch this
         // indexer resolved its committees at has moved on - costs this shard group a retry and
         // no more.
@@ -1017,12 +1037,16 @@ impl NetworkWideStateSync {
     async fn pause(
         &self,
         shard_group: ShardGroup,
-        reason: &str,
+        reason: &'static str,
         cancel: &CancellationToken,
         epoch: &mut watch::Receiver<Epoch>,
     ) {
         let interval = self.config.work_interval;
         debug!(target: LOG_TARGET, "🌍️ Shard group {shard_group}: {reason}. Retrying in {interval:.0?}");
+        self.sync_status.set_phase(shard_group, GroupPhase::Paused {
+            reason,
+            until: SystemTime::now() + interval,
+        });
         tokio::select! {
             _ = cancel.cancelled() => {},
             Ok(()) = epoch.changed() => {},
@@ -1099,6 +1123,7 @@ impl NetworkWideStateSync {
             let Some(probe) = probe else {
                 return Ok(Some(RoundEnd::Pause("the peer proved no committed tip")));
             };
+            self.observe_tip(&probe);
             let tip_epoch = probe.tip.epoch;
             let Some(proved) = probe.leaves.into_iter().find(|proved| proved.leaf.shard == shard) else {
                 return Ok(Some(self.abandon_snapshot(
@@ -1111,7 +1136,10 @@ impl NetworkWideStateSync {
             if proved.leaf.state_version.as_u64() == 0 {
                 continue;
             }
+            self.sync_status
+                .set_phase(shard_group, GroupPhase::Snapshotting { shard });
             let end = self.snapshot_shard(proved, tip_epoch, session, progress, cancel).await;
+            self.sync_status.set_snapshot(shard, None);
             if !matches!(end, Ok(SnapshotEnd::Promoted)) {
                 // A shard whose snapshots are abandoned too often replays its history, and takes no snapshot that
                 // would clear these rows
@@ -1190,6 +1218,7 @@ impl NetworkWideStateSync {
         let value_filters = stream_value_filters();
         let mut snapshot = ShardSnapshot::new(self.network, proved, value_filters);
         let deadline = time::Instant::now() + MAX_SNAPSHOT_DURATION;
+        let started_at = SystemTime::now();
         loop {
             let request = rpc::GetShardSnapshotRequest {
                 shard: shard.as_u32(),
@@ -1230,6 +1259,19 @@ impl NetworkWideStateSync {
                     .with_write_tx(move |tx| tx.snapshot_substates_insert(shard, &staged))
                     .await?;
             }
+            self.sync_status.set_snapshot(
+                shard,
+                Some(SnapshotProgress {
+                    state_version,
+                    substates: snapshot.num_substates(),
+                    key_fraction: if page.is_last {
+                        1.0
+                    } else {
+                        snapshot.last_key().map(key_fraction).unwrap_or_default()
+                    },
+                    started_at,
+                }),
+            );
             if page.is_last {
                 break;
             }
@@ -1517,6 +1559,8 @@ impl NetworkWideStateSync {
                 .await?;
             progress.record_verified(shard, verified);
             drop(progress);
+            self.sync_status
+                .record_promoted(shard, promoted.num_versions, promoted.finalized.len() as u64);
             self.announce(shard, promoted);
         }
     }
@@ -1572,6 +1616,18 @@ impl NetworkWideStateSync {
                 encoded: inserted.encoded,
             });
         }
+    }
+
+    fn observe_tip(&self, probe: &VerifiedProbe) {
+        self.sync_status.record_tip(
+            probe.tip.shard_group,
+            probe.tip.epoch,
+            probe.tip.height,
+            probe
+                .leaves
+                .iter()
+                .map(|proved| (proved.leaf.shard, proved.leaf.state_version)),
+        );
     }
 
     fn verified_stage(&self) -> MutexGuard<'_, VerifiedStage<PeerAddress>> {
@@ -2610,6 +2666,7 @@ struct CommittedVersion {
 /// committed.
 #[derive(Default)]
 struct PromotedVersions {
+    num_versions: u64,
     retired_cache_entries: usize,
     num_receipt_events: usize,
     finalized: Vec<TransactionFinalizedEvent>,
@@ -2619,6 +2676,7 @@ struct PromotedVersions {
 
 impl PromotedVersions {
     fn add(&mut self, state_version: StateVersion, committed: CommittedVersion) {
+        self.num_versions += 1;
         self.retired_cache_entries += committed.retired_cache_entries;
         self.num_receipt_events += committed.num_receipt_events;
         self.finalized.extend(committed.finalized);
