@@ -912,8 +912,8 @@ pub struct GetUtxosRequest {
     #[cfg_attr(feature = "utoipa", schema(value_type = Vec<Option<(u32, u64)>>))]
     pub unspent_at: Vec<Option<(Shard, StateVersion)>>,
     /// Resume after the previous page: pass its `next_cursor`. UTXOs are paged in the order of their ids, which every
-    /// indexer shares, so any indexer can resume a page another returned. The order is not the order the UTXOs were
-    /// created in, and a UTXO created or spent while the pages are read may or may not be returned.
+    /// indexer shares, so any indexer can resume a page another returned. A UTXO created or spent while the pages are
+    /// read may or may not be returned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional, as = "Option<_>"))]
     #[cfg_attr(feature = "utoipa", schema(value_type = Option<String>))]
