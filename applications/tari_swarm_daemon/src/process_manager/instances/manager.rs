@@ -175,7 +175,9 @@ impl InstanceManager {
         instance_name: String,
         settings: HashMap<String, String>,
     ) -> anyhow::Result<InstanceId> {
-        if self.instances().any(|i| i.name() == instance_name) {
+        // Names that slugify alike share a process directory, so they count as the same name
+        let slug = slugify(&instance_name);
+        if self.instances().any(|i| slugify(i.name()) == slug) {
             return Err(anyhow!(
                 "Instance with name '{instance_name}' already exists. Please choose a different name"
             ));
@@ -656,8 +658,8 @@ mod tests {
 
     #[tokio::test]
     async fn create_instance_forks_a_new_name_with_the_configured_settings_and_rejects_a_taken_one() {
-        let base_path = std::env::temp_dir().join(format!("tari_swarm_create_instance_test_{}", std::process::id()));
-        fs::create_dir_all(&base_path).await.unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
         let executable = stub_executable(&base_path).await;
 
         let mut config = InstanceConfig::new(InstanceType::MinoTariNode)
@@ -708,9 +710,17 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("already exists"), "{err}");
-        assert_eq!(manager.instances().count(), 1);
 
-        drop(manager);
-        fs::remove_dir_all(&base_path).await.unwrap();
+        let err = manager
+            .create_instance(
+                &executable,
+                InstanceType::MinoTariNode,
+                "Extra Node".to_string(),
+                HashMap::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("already exists"), "{err}");
+        assert_eq!(manager.instances().count(), 1);
     }
 }
