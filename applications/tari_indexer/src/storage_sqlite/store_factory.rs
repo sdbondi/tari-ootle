@@ -997,66 +997,6 @@ pub(crate) mod tests {
         assert_eq!(unset, None);
     }
 
-    /// Freezing an output long after it was created stores its next version far from its first row. A page ending on
-    /// the output resumes after the row it served, not the first one.
-    #[tokio::test]
-    async fn listing_pages_past_a_re_versioned_output() {
-        use tari_template_lib_types::UtxoId;
-
-        use crate::storage_sqlite::models::UtxoUpdateRecord;
-
-        let (_dir, store) = store_with_utxos(&[(10, 3)]).await;
-        let UtxoUpdateRecord::Unspent(mut refrozen) = unspent_at(1, 20) else {
-            unreachable!()
-        };
-        refrozen.version = SubstateVersion::new(1);
-        store
-            .with_write_tx(move |tx| {
-                tx.batch_insert_utxo_updates(Epoch(1), [
-                    spent_at(1, 20),
-                    UtxoUpdateRecord::Unspent(refrozen),
-                    unspent_at(4, 30),
-                ])
-            })
-            .await
-            .unwrap();
-        let list = |from: Option<u8>| {
-            let store = store.clone();
-            async move {
-                store
-                    .with_read_tx(move |tx| {
-                        tx.utxos_list(&utxo_resource(), from.map(|seq| UtxoId::from_array([seq; 32])), 3)
-                    })
-                    .await
-                    .unwrap()
-                    .into_iter()
-                    .map(|(id, _)| id)
-                    .collect::<Vec<_>>()
-            }
-        };
-
-        assert_eq!(list(None).await, [
-            UtxoId::from_array([2; 32]),
-            UtxoId::from_array([3; 32]),
-            UtxoId::from_array([1; 32])
-        ]);
-        assert_eq!(list(Some(1)).await, [UtxoId::from_array([4; 32])]);
-    }
-
-    #[tokio::test]
-    async fn listing_from_a_cursor_not_stored_is_not_found() {
-        use tari_ootle_common_types::optional::IsNotFoundError;
-        use tari_template_lib_types::UtxoId;
-
-        let (_dir, store) = store_with_utxos(&[(10, 2)]).await;
-
-        let result = store
-            .with_read_tx(|tx| tx.utxos_list(&utxo_resource(), Some(UtxoId::from_array([9; 32])), 10))
-            .await;
-
-        assert!(result.as_ref().is_err_and(|e| e.is_not_found_error()), "{result:?}");
-    }
-
     /// The SQL diesel generates for `query`, with its parameters unbound. Unbound parameters do
     /// not change the plan.
     fn sql_of<Q: diesel::query_builder::QueryFragment<diesel::sqlite::Sqlite>>(query: &Q) -> String {
@@ -1127,7 +1067,6 @@ pub(crate) mod tests {
                 spent_utxos_by_tag_and_nonce_query,
                 unspent_utxos_by_tag_and_nonce_page_query,
                 unspent_utxos_by_tag_and_nonce_query,
-                utxos_list_cursor_query,
                 utxos_list_query,
             },
             schema::utxos,
@@ -1156,12 +1095,6 @@ pub(crate) mod tests {
             "next list page",
             query_plan(&store, sql_of(&next_page)).await,
             "rowid>?",
-        );
-        let cursor = utxos_list_cursor_query(&resource, UtxoId::from_array([1; 32]));
-        assert_seeks(
-            "list cursor",
-            query_plan(&store, sql_of(&cursor)).await,
-            "resource_address=? AND commitment=?",
         );
 
         let nonce = RistrettoPublicKeyBytes::from_bytes(&[1; 32]).unwrap();
@@ -1215,26 +1148,28 @@ pub(crate) mod tests {
             .with_write_tx(|tx| tx.batch_insert_utxo_updates(Epoch(1), [spent_at(2, 20)]))
             .await
             .unwrap();
-        let list = |from: Option<u8>| {
+        let list = |after_row_id: Option<i64>| {
             let store = store.clone();
             async move {
                 store
-                    .with_read_tx(move |tx| {
-                        tx.utxos_list(&utxo_resource(), from.map(|seq| UtxoId::from_array([seq; 32])), 2)
-                    })
+                    .with_read_tx(move |tx| tx.utxos_list(&utxo_resource(), after_row_id, 2))
                     .await
                     .unwrap()
                     .into_iter()
-                    .map(|(id, _)| id)
+                    .map(|(row_id, id, _)| (row_id, id))
                     .collect::<Vec<_>>()
             }
         };
 
-        assert_eq!(list(None).await, [
+        let first = list(None).await;
+        assert_eq!(first.iter().map(|(_, id)| *id).collect::<Vec<_>>(), [
             UtxoId::from_array([1; 32]),
             UtxoId::from_array([3; 32])
         ]);
-        assert_eq!(list(Some(3)).await, [UtxoId::from_array([4; 32])]);
+        let after = first.last().map(|(row_id, _)| *row_id);
+        assert_eq!(list(after).await.into_iter().map(|(_, id)| id).collect::<Vec<_>>(), [
+            UtxoId::from_array([4; 32])
+        ]);
 
         let fetch = |seq: u8| {
             let store = store.clone();

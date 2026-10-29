@@ -85,6 +85,44 @@ pub struct FetchedUtxos {
     pub next_after_id: Option<u64>,
 }
 
+/// A page of the unspent UTXOs of a resource.
+#[derive(Debug)]
+pub struct ListedUtxos {
+    pub utxos: Vec<(UtxoId, Encoded<Utxo>)>,
+    /// The row after which more unspent UTXOs follow, or `None` once `utxos` holds the last of them.
+    pub next_after_id: Option<u64>,
+}
+
+/// The row id a client's `after_id` cursor resumes after. Row ids are at most `i64::MAX`, so a larger cursor is after
+/// every row.
+fn after_row_id(after_id: Option<u64>) -> Option<i64> {
+    after_id.map(|after_id| i64::try_from(after_id).unwrap_or(i64::MAX))
+}
+
+/// The first `limit` of `rows`, read with a limit of `limit + 1`, and the cursor for the next page when there are more.
+fn into_page(mut rows: Vec<(i64, UtxoId, Encoded<Utxo>)>, limit: u32) -> (Vec<(UtxoId, Encoded<Utxo>)>, Option<u64>) {
+    let next_after_id = if rows.len() > limit as usize {
+        rows.truncate(limit as usize);
+        rows.last().map(|(row_id, _, _)| *row_id as u64)
+    } else {
+        None
+    };
+    let utxos = rows.into_iter().map(|(_, id, utxo)| (id, utxo)).collect();
+    (utxos, next_after_id)
+}
+
+/// Up to `limit` unspent UTXOs of `resource_address`, stored after the row `after_id` when given.
+fn list_utxos<TTx: IndexerStoreReadTransaction>(
+    tx: &mut TTx,
+    resource_address: &ResourceAddress,
+    after_id: Option<u64>,
+    limit: u32,
+) -> Result<ListedUtxos, StorageError> {
+    let rows = tx.utxos_list(resource_address, after_row_id(after_id), limit + 1)?;
+    let (utxos, next_after_id) = into_page(rows, limit);
+    Ok(ListedUtxos { utxos, next_after_id })
+}
+
 /// Up to `limit` of the unspent UTXOs matching `public_nonce_and_tag`, stored after the row `after_id` when given,
 /// and the pairs of `public_nonce_and_tag` that are spent or burnt.
 ///
@@ -100,17 +138,13 @@ fn read_utxos<TTx: IndexerStoreReadTransaction>(
     after_id: Option<u64>,
     limit: u32,
 ) -> Result<FetchedUtxos, StorageError> {
-    // Row ids are at most `i64::MAX`, so a larger cursor is after every row
-    let after_row_id = after_id.map(|after_id| i64::try_from(after_id).unwrap_or(i64::MAX));
-    let mut rows =
-        tx.utxos_get_unspent_by_public_nonce_and_tag(resource_address, public_nonce_and_tag, after_row_id, limit + 1)?;
-    let next_after_id = if rows.len() > limit as usize {
-        rows.truncate(limit as usize);
-        rows.last().map(|(row_id, _, _)| *row_id as u64)
-    } else {
-        None
-    };
-    let utxos = rows.into_iter().map(|(_, id, utxo)| (id, utxo)).collect();
+    let rows = tx.utxos_get_unspent_by_public_nonce_and_tag(
+        resource_address,
+        public_nonce_and_tag,
+        after_row_id(after_id),
+        limit + 1,
+    )?;
+    let (utxos, next_after_id) = into_page(rows, limit);
     let mut spent = tx.utxos_get_spent_public_nonce_and_tag(resource_address, public_nonce_and_tag)?;
     if unspent_at.iter().all(Option::is_none) {
         return Ok(FetchedUtxos {
@@ -333,16 +367,17 @@ impl SubstateManager {
         Ok(utxos)
     }
 
+    /// A page of the unspent UTXOs of `resource_address`. See [`list_utxos`].
     pub async fn list_utxos(
         &self,
         resource_address: &ResourceAddress,
-        from_id: Option<UtxoId>,
+        after_id: Option<u64>,
         limit: u32,
-    ) -> Result<Vec<(UtxoId, Encoded<Utxo>)>, SubstateManagerError> {
+    ) -> Result<ListedUtxos, SubstateManagerError> {
         let resource_address = *resource_address;
         let utxos = self
             .substate_store
-            .with_read_tx(move |tx| tx.utxos_list(&resource_address, from_id, limit))
+            .with_read_tx(move |tx| list_utxos(tx, &resource_address, after_id, limit))
             .await?;
         Ok(utxos)
     }
@@ -791,6 +826,50 @@ mod tests {
         assert_eq!(second.next_after_id, None);
         let ids = second.utxos.iter().map(|(id, _)| *id).collect::<Vec<_>>();
         assert_eq!(ids, [UtxoId::from_array([3; 32]), UtxoId::from_array([2; 32])]);
+    }
+
+    /// Freezing an output stores its next version after every output indexed since it was created. A page ending on
+    /// the output resumes after the row it served, so the outputs in between are still listed.
+    #[tokio::test]
+    async fn listing_pages_past_an_output_re_versioned_between_pages() {
+        use tari_template_lib_types::UtxoId;
+
+        use crate::storage_sqlite::models::UtxoUpdateRecord;
+
+        let (_dir, store) = crate::storage_sqlite::store_with_utxos(&[(10, 3)]).await;
+        let page = |after_id: Option<u64>| {
+            let store = store.clone();
+            async move {
+                store
+                    .with_read_tx(move |tx| list_utxos(tx, &crate::storage_sqlite::utxo_resource(), after_id, 2))
+                    .await
+                    .unwrap()
+            }
+        };
+        let ids = |listed: &ListedUtxos| listed.utxos.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+
+        let first = page(None).await;
+        assert_eq!(ids(&first), [UtxoId::from_array([1; 32]), UtxoId::from_array([2; 32])]);
+        assert!(first.next_after_id.is_some());
+
+        store
+            .with_write_tx(move |tx| {
+                let UtxoUpdateRecord::Unspent(mut refrozen) = crate::storage_sqlite::unspent_at(2, 20) else {
+                    unreachable!()
+                };
+                refrozen.version = SubstateVersion::new(1);
+                refrozen.is_frozen = true;
+                tx.batch_insert_utxo_updates(Epoch(1), [
+                    crate::storage_sqlite::spent_at(2, 20),
+                    UtxoUpdateRecord::Unspent(refrozen),
+                ])
+            })
+            .await
+            .unwrap();
+
+        let second = page(first.next_after_id).await;
+        assert_eq!(ids(&second), [UtxoId::from_array([3; 32]), UtxoId::from_array([2; 32])]);
+        assert_eq!(second.next_after_id, None);
     }
 
     #[test]

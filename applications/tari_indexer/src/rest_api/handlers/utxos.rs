@@ -21,7 +21,7 @@ use tari_indexer_client::types::{
     ListUtxosRequest,
     ListUtxosResponse,
 };
-use tari_ootle_common_types::{NumPreshards, optional::Optional};
+use tari_ootle_common_types::NumPreshards;
 
 use crate::rest_api::{
     context::HandlerContext,
@@ -166,7 +166,6 @@ pub async fn fetch_utxos(
 responses(
     (status = 200, description = "List of UTXOs", body = ListUtxosResponse),
     (status = BAD_REQUEST, description = "Invalid request parameters", body = ErrorResponse),
-    (status = NOT_FOUND, description = "The from_id UTXO is not stored on this indexer", body = ErrorResponse),
     (status = INTERNAL_SERVER_ERROR, description = "Failed to list UTXOs", body = ErrorResponse),
 ))]
 pub async fn list_utxos(
@@ -179,18 +178,14 @@ pub async fn list_utxos(
     if req.limit > 1000 {
         return Err(ErrorResponse::bad_request("cannot query more than 1000 UTXOs"));
     }
-    let utxos = context
+    let listed = context
         .substate_manager()
-        .list_utxos(&req.resource_address, req.from_id, req.limit)
+        .list_utxos(&req.resource_address, req.after_id, req.limit)
         .await
-        .optional()
-        .map_err(ErrorResponse::anyhow)?
-        .ok_or_else(|| {
-            ErrorResponse::not_found(
-                "The from_id UTXO is not stored on this indexer: it may have been pruned once spent. Restart the \
-                 listing without from_id.",
-            )
-        })?;
+        .map_err(ErrorResponse::anyhow)?;
 
-    Ok(Json(ListUtxosResponse { utxos }))
+    Ok(Json(ListUtxosResponse {
+        utxos: listed.utxos,
+        next_after_id: listed.next_after_id,
+    }))
 }

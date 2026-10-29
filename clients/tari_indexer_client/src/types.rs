@@ -945,18 +945,25 @@ pub struct ListUtxosRequest {
     #[cfg_attr(feature = "utoipa", schema(value_type = String))]
     pub resource_address: ResourceAddress,
     pub limit: u32,
-    #[cfg_attr(feature = "utoipa", schema(value_type = Option<String>))]
-    pub from_id: Option<UtxoId>,
+    /// Return only UTXOs this indexer stored after this cursor. Pass the previous page's `next_after_id`, which only
+    /// the indexer that returned it can resume from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(type = "number | bigint | string | null"))]
+    pub after_id: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, export_to = "tari-indexer-client/"))]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ListUtxosResponse {
-    /// Each UTXO's id and its CBOR-encoded `Utxo`.
+    /// Each UTXO's id and its CBOR-encoded `Utxo`, in the order this indexer stored them.
     #[cfg_attr(feature = "ts", ts(type = "Array<[string, string]>"))]
     #[cfg_attr(feature = "utoipa", schema(value_type = Vec<(String, String)>))]
     pub utxos: Vec<(UtxoId, Encoded<Utxo>)>,
+    /// The `after_id` for the next page, or `None` once `utxos` holds the last unspent UTXO. A UTXO re-versioned
+    /// between pages is served again on a later page, at its new version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_after_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

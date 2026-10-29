@@ -2,7 +2,12 @@
 
 export type ListUtxosResponse = {
   /**
-   * Each UTXO's id and its CBOR-encoded `Utxo`.
+   * Each UTXO's id and its CBOR-encoded `Utxo`, in the order this indexer stored them.
    */
   utxos: Array<[string, string]>;
+  /**
+   * The `after_id` for the next page, or `None` once `utxos` holds the last unspent UTXO. A UTXO re-versioned
+   * between pages is served again on a later page, at its new version.
+   */
+  next_after_id?: bigint | null;
 };

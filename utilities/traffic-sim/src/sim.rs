@@ -639,7 +639,7 @@ impl TrafficSim {
         min_value: u64,
         max_value: u64,
         resource_address: ResourceAddress,
-        last_id: Option<UtxoId>,
+        after_id: Option<u64>,
         specific_id: Option<UtxoId>,
         csv_out: Option<P>,
         view_key: Option<RistrettoSecretKey>,
@@ -703,13 +703,14 @@ impl TrafficSim {
             .list_utxos(ListUtxosRequest {
                 resource_address,
                 limit: 1000,
-                from_id: last_id,
+                after_id,
             })
             .await?;
 
         log::info!(
-            "Attempting to decrypt {} UTXOs within range {min_value}-{max_value}",
-            resp.utxos.len()
+            "Attempting to decrypt {} UTXOs within range {min_value}-{max_value} (next --after-id: {})",
+            resp.utxos.len(),
+            resp.next_after_id.display()
         );
         if resp.utxos.is_empty() {
             return Ok(());

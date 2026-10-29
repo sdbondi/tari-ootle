@@ -1338,16 +1338,6 @@
               }
             }
           },
-          "404": {
-            "description": "The from_id UTXO is not stored on this indexer",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
           "500": {
             "description": "Failed to list UTXOs",
             "content": {
@@ -2360,6 +2350,15 @@
           "utxos"
         ],
         "properties": {
+          "next_after_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The `after_id` for the next page, or `None` once `utxos` holds the last unspent UTXO. A UTXO re-versioned\nbetween pages is served again on a later page, at its new version.",
+            "minimum": 0
+          },
           "utxos": {
             "type": "array",
             "items": {
@@ -2374,7 +2373,7 @@
                 }
               ]
             },
-            "description": "Each UTXO's id and its CBOR-encoded `Utxo`."
+            "description": "Each UTXO's id and its CBOR-encoded `Utxo`, in the order this indexer stored them."
           }
         }
       },
