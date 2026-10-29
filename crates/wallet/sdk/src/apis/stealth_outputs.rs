@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use log::*;
-use ootle_byte_type::{FromByteType, ToByteType};
+use ootle_byte_type::{ConvertFromByteType, FromByteType, ToByteType};
 use ootle_network::Network;
 use tari_crypto::{
     keys::PublicKey,
@@ -994,15 +994,17 @@ impl<'a, TSpec: WalletSdkSpec> StealthOutputsApi<'a, TSpec> {
     ) -> Result<Option<StealthOutputModel>, StealthOutputsApiError> {
         // The commitment and nonce come from the indexer, so a malformed one makes this output unreadable, and leaves
         // the other outputs of a batch to be read.
-        let output_commitment: Result<PedersenCommitment, _> = commitment.try_from_byte_type();
-        if let Err(e) = output_commitment {
-            warn!(
-                target: LOG_TARGET,
-                "⚠️ Output commitment {} is not a valid commitment ({}). Assuming it is not owned.",
-                commitment,
-                e
-            );
-            return Ok(None);
+        match PedersenCommitment::convert_from_byte_type(&commitment) {
+            Ok(_) => {},
+            Err(e) => {
+                warn!(
+                    target: LOG_TARGET,
+                    "⚠️ Output commitment {} is not a valid commitment ({}). Assuming it is not owned.",
+                    commitment,
+                    e
+                );
+                return Ok(None);
+            },
         }
         let output_stealth_public_nonce = match output.output.public_nonce.try_from_byte_type() {
             Ok(nonce) => nonce,
