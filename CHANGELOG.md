@@ -21,6 +21,16 @@ snapshot at a checkpoint, with every streamed version checked against a verified
 - **Transactions are signed with standard sr25519** and name their main signer explicitly. Wallets,
   SDKs, ootle-go, ootle-py, ootle.ts and the Ledger app must all upgrade; the FFI C ABI tag is now
   `ootle-sdk-ffi-c/19`. (#3019, #3069)
+- **Clients send every field**: decoders drop their defaults for missing fields. `MainSigner` JSON
+  accepts only `"None"`, `"SealSigner"` or `{"Authorizer": …}` (no boolean, no
+  `is_seal_signer_authorized`); `UnsignedTransactionV1.blobs` / `nonce`, `StealthInput.witness` and
+  `FunctionDef.is_migration` are required; and `FinalizeResult` CBOR fields from `result` on move
+  down one index. (#3077)
+- **Deprecated aliases are removed**: manifests and templates use `TARI` / `TARI_TOKEN` (`XTR` no
+  longer resolves), walletd drops `transactions.get_all` (use `transactions.list`), and a swarm
+  instance takes `settings` in place of `extra_args`. (#3076)
+- **Substate requirements and `--input` declarations parse their suffixes from the right** and
+  reject trailing segments such as `component_<hex>:3:junk`. (#3111)
 - **Stealth spend keys derive from the view key** (`c = H(v·R)`), so a view key can confirm
   ownership. (#3080)
 - **Validator and indexer logging moves from log4rs to `[validator_node.logging]` and
@@ -38,7 +48,8 @@ snapshot at a checkpoint, with every streamed version checked against a verified
   substates against the validator set handover. (#3161)
 - **Indexer REST serves values as CBOR**: substate values, receipts, events, resources, dry-run
   results and UTXOs are base64 CBOR blobs, decoded with `tari_engine_types` or `ootle-wasm-bor`.
-  `GET /utxos` is removed and `/utxos/fetch` is paged by UTXO id. (#3101, #3110, #3174, #3180)
+  Substate proofs carry the committed `value` encoding. `GET /utxos` is removed and `/utxos/fetch`
+  is paged by UTXO id. (#3100, #3101, #3110, #3174, #3180)
 - **Fees change**: a created substate costs 250 µT on every network, declared inputs are charged
   for loading and pledging, and every charge is multiplied by a release-scheduled fee scale (10 000
   bps today). (#3012, #3060, #3078)
@@ -75,6 +86,7 @@ snapshot at a checkpoint, with every streamed version checked against a verified
 - **ootle-wasm attaches signatures from external signers.** (#3103)
 - **Validator backups**: snapshot a running validator over JSON-RPC. (#3086)
 - **MainNet genesis seats a single-member council.** (#3026)
+- **Esmeralda defaults point at the esme-indexer hosts.** (#3027)
 - **`tari_sidechain` and `tari_jellyfish` live in this repo.** (#3008, #3067)
 
 ### Performance
@@ -122,6 +134,9 @@ snapshot at a checkpoint, with every streamed version checked against a verified
 - **wallet:** stealth outputs are proven to exist, to be frozen and to have gone down before the
   wallet acts on them, and malformed recovered outputs are skipped. (#3057, #3059, #3092, #3175,
   #3022)
+- **wallet:** verified reads hash the committed value encoding, so a substate holding a NaN or
+  infinite float, or non-canonical metadata CBOR, verifies, and one failing account no longer stops
+  the others refreshing. (#3100)
 - **wallet:** stealth scan cursors are bounded by verified checkpoints and committed once per
   stream. (#3037, #3047, #3051, #3162)
 - **wallet:** a transaction with no outcome expires once it can no longer finalize, one submitted
@@ -131,6 +146,8 @@ snapshot at a checkpoint, with every streamed version checked against a verified
 - **ootle-rs:** batch reads and account balances bind to the requested substates. (#3038)
 - **walletd:** stealth transfer statements record wallet outputs, and the WebAuthn sign counter
   persists. (#3155, #3066)
+- **walletd:** a transaction request's approval card counts as change only key-spendable outputs
+  locked under the request. (#3158)
 - **wallet_cli:** transfer commands honour `--dry-run` and the wait timeout. (#3135)
 
 ## [0.47.0](https://github.com/tari-project/tari-ootle/compare/v0.46.1...v0.47.0) (2026-10-19)
