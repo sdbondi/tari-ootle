@@ -29,9 +29,10 @@ pub enum NetworkStateSyncError {
     UnverifiedHistory {
         details: String,
         blamed: Vec<PeerAddress>,
-        /// The shard whose history after this verified version mismatched a verified leaf or could not be accumulated,
-        /// which counts towards halting the shard group once every member's has.
-        diverged_from: Option<(Shard, StateVersion)>,
+        /// The shard whose history after this verified version, or from its v0 when nothing is verified, mismatched a
+        /// verified leaf or could not be accumulated, which counts towards halting the shard group once every
+        /// member's has.
+        diverged_from: Option<(Shard, Option<StateVersion>)>,
     },
     #[error("Request failed: {0}")]
     RequestFailed(#[from] RpcStatus),

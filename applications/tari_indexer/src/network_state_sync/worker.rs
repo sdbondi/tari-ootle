@@ -77,6 +77,7 @@ use crate::{
             Verdict,
             VerifiedShardLeaf,
             VerifiedStage,
+            follows,
             streamed_tree_change,
         },
     },
@@ -859,7 +860,7 @@ impl NetworkWideStateSync {
                         },
                     };
                     if breaker.record(shard, from, &blamed, committee_size) {
-                        error!(target: LOG_TARGET, "⚠️ Every one of the {committee_size} members of shard group {shard_group} streamed history of shard {shard} after v{from} that mismatches a verified leaf or cannot be accumulated. This indexer's own accumulator recomputation is suspect, so it stops following the shard group until the epoch moves. Report this with the errors above");
+                        error!(target: LOG_TARGET, "⚠️ Every one of the {committee_size} members of shard group {shard_group} streamed history of shard {shard} {} that mismatches a verified leaf or cannot be accumulated. This indexer's own accumulator recomputation is suspect, so it stops following the shard group until the epoch moves. Report this with the errors above", after(from));
                         #[cfg(feature = "metrics")]
                         self.metrics.record_leaf_check("circuit_breaker");
                         breaker = MismatchBreaker::default();
@@ -1070,12 +1071,16 @@ impl NetworkWideStateSync {
             })
             .await?;
         for ((shard, verified, cursor), tail) in recorded.into_iter().zip(tails) {
-            let head = tail.last().map_or(verified.version, |staged| staged.state_version);
-            if cursor.unwrap_or(StateVersion::new(0)) != head {
+            let head = tail
+                .last()
+                .map(|staged| staged.state_version)
+                .or(verified.map(|verified| verified.version));
+            if cursor != head {
                 return Err(NetworkStateSyncError::InvariantError {
                     details: format!(
-                        "shard {shard}'s stream resumes after v{}, but its last verified or staged version is v{head}",
-                        cursor.unwrap_or(StateVersion::new(0))
+                        "shard {shard}'s stream resumes {}, but it continues {} of its last verified or staged version",
+                        after(cursor),
+                        after(head)
                     ),
                 });
             }
@@ -1164,7 +1169,8 @@ impl NetworkWideStateSync {
                         details: format!(
                             "Transition accumulator mismatch: shard {shard} v{version} at {epoch} streamed by \
                              {streamed_by} computes {computed}, but the verified leaf has {verified} (checked on \
-                             {checked_on}). Discarded every version staged above v{rewound_to}"
+                             {checked_on}). Discarded every version staged {}",
+                            after(rewound_to)
                         ),
                         blamed,
                         diverged_from: Some((shard, rewound_to)),
@@ -1192,7 +1198,7 @@ impl NetworkWideStateSync {
         shard: Shard,
         progress: &SharedSyncProgress,
     ) -> Result<Option<Verdict<PeerAddress>>, NetworkStateSyncError> {
-        let verified = progress.lock().await.verified(shard).version;
+        let verified = progress.lock().await.verified_version(shard);
         let leaves = self
             .store
             .with_read_tx(move |tx| tx.checkpoint_shard_leaves_above(shard, verified, CHECKPOINT_LEAVES_AHEAD))
@@ -1232,8 +1238,8 @@ impl NetworkWideStateSync {
         loop {
             // The progress lock is held until the snapshot is written, as `SharedSyncProgress` requires.
             let mut progress = progress.lock().await;
-            let from = progress.verified(shard).version;
-            if from >= through {
+            let from = progress.verified_version(shard);
+            if from >= Some(through) {
                 return Ok(());
             }
             let snapshot = progress.clone();
@@ -1252,15 +1258,15 @@ impl NetworkWideStateSync {
     }
 
     /// Discards every version of `shard` staged above its last verified one, moving its stream cursor back to it.
-    /// Returns the verified version and the peers that streamed what was discarded.
+    /// Returns the verified version, `None` when nothing is, and the peers that streamed what was discarded.
     async fn discard_staged(
         &self,
         shard: Shard,
         progress: &SharedSyncProgress,
-    ) -> Result<(StateVersion, Vec<PeerAddress>), NetworkStateSyncError> {
+    ) -> Result<(Option<StateVersion>, Vec<PeerAddress>), NetworkStateSyncError> {
         // The progress lock is held until the snapshot is written, as `SharedSyncProgress` requires.
         let mut progress = progress.lock().await;
-        let verified = progress.verified(shard).version;
+        let verified = progress.verified_version(shard);
         progress.rewind_to_verified(shard);
         let snapshot = progress.clone();
         let peers = self
@@ -1444,7 +1450,7 @@ impl NetworkWideStateSync {
                         Ok(()) => {
                             let stage = self.verified_stage();
                             for (shard, level_at) in &level {
-                                if stage.verified_version(*shard) >= *level_at {
+                                if stage.verified_version(*shard) >= Some(*level_at) {
                                     self.shard_watermarks.refresh(*shard);
                                 }
                             }
@@ -1639,7 +1645,7 @@ impl NetworkWideStateSync {
     /// The substate cache retires an entry only when the version that supersedes it is promoted, and serves on a
     /// confirmation's freshness alone, so a shard with versions still staged below its level is left to age.
     fn confirm_level(&self, shard: Shard, level_at: StateVersion) {
-        if self.verified_stage().verified_version(shard) >= level_at {
+        if self.verified_stage().verified_version(shard) >= Some(level_at) {
             self.shard_watermarks.confirm(shard, level_at);
         }
     }
@@ -1683,7 +1689,8 @@ impl NetworkWideStateSync {
             return Err(NetworkStateSyncError::UnverifiedHistory {
                 details: format!(
                     "Peer {peer} staged v{version} of shard {shard}, which no verified leaf has reached in \
-                     {VERIFICATION_GRACE:?}. Discarded every version staged above v{rewound_to}"
+                     {VERIFICATION_GRACE:?}. Discarded every version staged {}",
+                    after(rewound_to)
                 ),
                 blamed: vec![*peer],
                 diverged_from: None,
@@ -1757,7 +1764,7 @@ fn cursors_for(shards: &[Shard], progress: &SyncProgress) -> Vec<rpc::ShardCurso
                     };
                     next
                 },
-                None => 1,
+                None => 0,
             };
             Some(rpc::ShardCursor {
                 shard: shard.as_u32(),
@@ -1773,9 +1780,10 @@ fn cursors_for(shards: &[Shard], progress: &SyncProgress) -> Vec<rpc::ShardCurso
 ///
 /// The consumer relies on both. Its buffers hold one `(shard, state version)` at a time, so a shard
 /// interleaved mid-version would mix two shards' updates into one staged version; and each staged
-/// version extends the accumulator of the one before it. Every committed state version of a shard
-/// holds at least one transition, and the stream carries every transition as a value or a hash, so
-/// a marker claims no version beyond the last one delivered. A completion marker closes off what
+/// version extends the accumulator of the one before it. A shard's history starts at v0, which holds its
+/// genesis state and is streamed empty for a shard with none; every later committed state version holds
+/// at least one transition. The stream carries every transition as a value or a hash, so a marker
+/// claims no version beyond the last one delivered. A completion marker closes off what
 /// was streamed so far for a shard and a followed stream carries more for it after, so a marker
 /// does not end a shard.
 ///
@@ -1783,8 +1791,8 @@ fn cursors_for(shards: &[Shard], progress: &SyncProgress) -> Vec<rpc::ShardCurso
 /// buffered whole until the chunk that flushes it.
 struct StreamOrder {
     /// Highest version delivered per requested shard, seeded from the cursor so a responder cannot
-    /// replay versions the caller already holds.
-    delivered_versions: HashMap<Shard, StateVersion>,
+    /// replay versions the caller already holds. `None` until v0 of a shard streamed from it is.
+    delivered_versions: HashMap<Shard, Option<StateVersion>>,
     /// Set while a version is split across chunks, with the encoded bytes buffered for it, until the
     /// chunk that flushes it.
     pending_chunk: Option<(Shard, StateVersion, usize)>,
@@ -1800,7 +1808,7 @@ impl StreamOrder {
                 .map(|c| {
                     (
                         Shard::from(c.shard),
-                        StateVersion::new(c.start_state_version.saturating_sub(1)),
+                        c.start_state_version.checked_sub(1).map(StateVersion::new),
                     )
                 })
                 .collect(),
@@ -1820,11 +1828,14 @@ impl StreamOrder {
         let Some(delivered_version) = self.delivered_versions.get(&shard).copied() else {
             return Err(format!("Received batch for unrequested shard {shard}"));
         };
-        // A responder splits a version into chunks of its updates, so every chunk carries one.
-        if num_updates == 0 {
+        // A responder splits a version into chunks of its updates, so every chunk carries one, but the empty v0 of a
+        // shard with no genesis state.
+        if num_updates == 0 && state_version.as_u64() != 0 {
             return Err(format!("Received v{state_version} for shard {shard} with no updates"));
         }
-        if state_version <= delivered_version {
+        if let Some(delivered_version) = delivered_version &&
+            state_version <= delivered_version
+        {
             return Err(format!(
                 "Received v{state_version} for shard {shard}, which is not ahead of the delivered v{delivered_version}"
             ));
@@ -1842,10 +1853,10 @@ impl StreamOrder {
                 ));
             },
             None => {
-                if delivered_version.as_u64().checked_add(1) != Some(state_version.as_u64()) {
+                if !follows(delivered_version, state_version) {
                     return Err(format!(
-                        "Received v{state_version} for shard {shard}, skipping the versions after the delivered \
-                         v{delivered_version}"
+                        "Received v{state_version} for shard {shard}, skipping the versions {} delivered",
+                        after(delivered_version)
                     ));
                 }
                 0
@@ -1863,7 +1874,7 @@ impl StreamOrder {
             self.pending_chunk = Some((shard, state_version, buffered_bytes));
         } else {
             self.pending_chunk = None;
-            self.delivered_versions.insert(shard, state_version);
+            self.delivered_versions.insert(shard, Some(state_version));
             self.bursting.insert(shard);
         }
         Ok(())
@@ -1881,6 +1892,11 @@ impl StreamOrder {
                  still incomplete"
             ));
         }
+        let Some(delivered_version) = delivered_version else {
+            return Err(format!(
+                "Received completion marker for shard {shard} at v{synced_to} before its v0"
+            ));
+        };
         if synced_to > delivered_version {
             return Err(format!(
                 "Received completion marker for shard {shard} at v{synced_to}, past the last version streamed, \
@@ -1984,13 +2000,19 @@ impl StreamChecks {
 /// the fault is this indexer's own: its recomputation of the accumulator disagrees with the committee's.
 #[derive(Debug, Default)]
 struct MismatchBreaker {
-    mismatched: HashMap<(Shard, StateVersion), HashSet<PeerAddress>>,
+    mismatched: HashMap<(Shard, Option<StateVersion>), HashSet<PeerAddress>>,
 }
 
 impl MismatchBreaker {
-    /// Records that `peers` diverged after `from` of `shard`, returning whether every one of the committee's
-    /// `committee_size` members has.
-    fn record(&mut self, shard: Shard, from: StateVersion, peers: &[PeerAddress], committee_size: usize) -> bool {
+    /// Records that `peers` diverged after `from` of `shard`, or from its v0 when `from` is `None`, returning whether
+    /// every one of the committee's `committee_size` members has.
+    fn record(
+        &mut self,
+        shard: Shard,
+        from: Option<StateVersion>,
+        peers: &[PeerAddress],
+        committee_size: usize,
+    ) -> bool {
         let mismatched = self.mismatched.entry((shard, from)).or_default();
         mismatched.extend(peers.iter().copied());
         mismatched.len() >= committee_size
@@ -2019,6 +2041,15 @@ fn decode_peer(bytes: &[u8]) -> Result<PeerAddress, NetworkStateSyncError> {
         .map_err(|e| NetworkStateSyncError::InvariantError {
             details: format!("a staged version records an invalid peer id: {e}"),
         })
+}
+
+/// Where a shard's history continues past `version`, its last verified or staged version, or `None` for a shard with
+/// none: "after v{n}", or "from v0".
+fn after(version: Option<StateVersion>) -> String {
+    match version {
+        Some(version) => format!("after v{version}"),
+        None => "from v0".to_string(),
+    }
 }
 
 fn display_peers(peers: &[PeerAddress]) -> String {
@@ -2323,7 +2354,7 @@ impl PromotedVersions {
 fn promote_staged(
     tx: &mut SqliteStoreWriteTransaction<'_>,
     shard: Shard,
-    from: StateVersion,
+    from: Option<StateVersion>,
     through: StateVersion,
     mut progress: SyncProgress,
     event_filters: &[EventFilter],
@@ -2333,9 +2364,10 @@ fn promote_staged(
     let mut last = None;
     let mut num_versions = 0;
     let mut num_bytes = 0usize;
-    let mut version = from;
-    while version < through && num_versions < MAX_PROMOTED_VERSIONS && num_bytes < MAX_PROMOTED_BYTES {
-        version = StateVersion::new(version.as_u64() + 1);
+    let mut next = from.map_or(0, |from| from.as_u64() + 1);
+    while next <= through.as_u64() && num_versions < MAX_PROMOTED_VERSIONS && num_bytes < MAX_PROMOTED_BYTES {
+        let version = StateVersion::new(next);
+        next += 1;
         let staged = tx
             .staged_version_get(shard, version)?
             .ok_or_else(|| StorageError::DataInconsistency {
@@ -2358,7 +2390,10 @@ fn promote_staged(
         last = Some(staged.accumulator);
     }
     let last = last.ok_or_else(|| StorageError::DataInconsistency {
-        details: format!("promoting shard {shard} from v{from} through v{through} promotes nothing"),
+        details: format!(
+            "promoting shard {shard} {} through v{through} promotes nothing",
+            after(from)
+        ),
     })?;
     tx.staged_versions_delete_through(shard, last.state_version)?;
     tx.checkpoint_shard_leaves_delete_through(shard, last.state_version)?;
@@ -2934,8 +2969,14 @@ mod tests {
 
         /// Stages v1..=`num_versions` of [`SHARD`], each creating the receipt of transaction `n` with `n` in fees, as a
         /// stream would, and records the cursor at the last.
+        /// Stages v1 to `num_versions` of a shard whose empty v0 is verified.
         async fn stage(store: &SqliteIndexerStore, num_versions: u64) -> SyncProgress {
             let mut progress = SyncProgress::default();
+            progress.record_verified(SHARD, VerifiedShardVersion {
+                state_version: v(0),
+                epoch: Epoch(0),
+                transition_acc: TransitionAccumulator::zero(),
+            });
             progress.record_state_version(SHARD, v(num_versions), Epoch(1));
             let snapshot = progress.clone();
             store
@@ -2966,7 +3007,7 @@ mod tests {
             let progress = progress.clone();
             store
                 .with_write_tx(move |tx| {
-                    let from = progress.verified(SHARD).version;
+                    let from = progress.verified_version(SHARD);
                     promote_staged(tx, SHARD, from, v(through), progress, &[], &HashSet::new())
                 })
                 .await
@@ -3061,7 +3102,7 @@ mod tests {
             let snapshot = progress.clone();
             let peers = store
                 .with_write_tx(move |tx| {
-                    let peers = tx.staged_versions_discard_above(SHARD, v(1))?;
+                    let peers = tx.staged_versions_discard_above(SHARD, Some(v(1)))?;
                     tx.key_value_set(Key::SyncProgress, snapshot)?;
                     Ok::<_, StorageError>(peers)
                 })
@@ -3093,9 +3134,9 @@ mod tests {
             }
         }
 
-        async fn checkpoint_leaves_above(store: &SqliteIndexerStore, n: u64, limit: usize) -> Vec<u64> {
+        async fn checkpoint_leaves_above(store: &SqliteIndexerStore, n: Option<u64>, limit: usize) -> Vec<u64> {
             store
-                .with_read_tx(move |tx| tx.checkpoint_shard_leaves_above(SHARD, v(n), limit))
+                .with_read_tx(move |tx| tx.checkpoint_shard_leaves_above(SHARD, n.map(v), limit))
                 .await
                 .unwrap()
                 .into_iter()
@@ -3111,25 +3152,64 @@ mod tests {
             let progress = stage(&store, 6).await;
             store
                 .with_write_tx(|tx| {
-                    tx.checkpoint_shard_leaves_insert(&[2, 4, 6, 9].map(checkpoint_leaf))?;
+                    tx.checkpoint_shard_leaves_insert(&[0, 2, 4, 6, 9].map(checkpoint_leaf))?;
                     tx.checkpoint_shard_leaves_insert(&[checkpoint_leaf(4)])
                 })
                 .await
                 .unwrap();
 
-            assert_eq!(checkpoint_leaves_above(&store, 0, 3).await, [2, 4, 6]);
-            assert_eq!(checkpoint_leaves_above(&store, 4, 3).await, [6, 9]);
+            assert_eq!(checkpoint_leaves_above(&store, None, 3).await, [0, 2, 4]);
+            assert_eq!(checkpoint_leaves_above(&store, Some(0), 3).await, [2, 4, 6]);
+            assert_eq!(checkpoint_leaves_above(&store, Some(4), 3).await, [6, 9]);
 
             promote(&store, &progress, 4).await.unwrap();
-            assert_eq!(checkpoint_leaves_above(&store, 0, 10).await, [6, 9]);
+            assert_eq!(checkpoint_leaves_above(&store, None, 10).await, [6, 9]);
         }
 
         #[test]
-        fn rewinding_a_shard_nothing_is_verified_of_restarts_it_from_its_first_version() {
+        fn rewinding_a_shard_nothing_is_verified_of_restarts_it_from_its_genesis_version() {
             let mut progress = SyncProgress::default();
             progress.record_state_version(SHARD, v(7), Epoch(1));
             progress.rewind_to_verified(SHARD);
-            assert_eq!(cursors_for(&[SHARD], &progress)[0].start_state_version, 1);
+            assert_eq!(cursors_for(&[SHARD], &progress)[0].start_state_version, 0);
+        }
+
+        #[tokio::test]
+        async fn promotion_of_a_shard_nothing_is_verified_of_starts_at_its_genesis_version() {
+            let (_dir, store) = store().await;
+            let mut progress = SyncProgress::default();
+            progress.record_state_version(SHARD, v(1), Epoch(1));
+            store
+                .with_write_tx(|tx| {
+                    tx.staged_version_insert(SHARD, &StagedVersion {
+                        accumulator: StagedAccumulator {
+                            state_version: v(0),
+                            epoch: Epoch(0),
+                            transition_acc: TransitionAccumulator::zero(),
+                            streamed_by: vec![0],
+                        },
+                        batch: Vec::new(),
+                    })?;
+                    tx.staged_version_insert(SHARD, &StagedVersion {
+                        accumulator: StagedAccumulator {
+                            state_version: v(1),
+                            epoch: Epoch(1),
+                            transition_acc: acc(1),
+                            streamed_by: vec![0],
+                        },
+                        batch: encoded_receipt_version(1, 1, 1),
+                    })
+                })
+                .await
+                .unwrap();
+
+            let (verified, _) = promote(&store, &progress, 0).await.unwrap();
+            assert_eq!(verified.state_version, v(0));
+            assert_eq!(staged_versions(&store).await, [1]);
+            progress.record_verified(SHARD, verified);
+            let (verified, _) = promote(&store, &progress, 1).await.unwrap();
+            assert_eq!(verified.state_version, v(1));
+            assert_eq!(total_fees(&store).await, Amount::from(1u64));
         }
 
         #[test]
@@ -3335,6 +3415,21 @@ mod tests {
 
         fn v(n: u64) -> StateVersion {
             StateVersion::new(n)
+        }
+
+        #[test]
+        fn a_shard_streamed_from_v0_starts_at_v0_which_alone_may_be_empty() {
+            let mut o = order(&[(1, 0), (2, 0)]);
+            assert!(o.accept_marker(S1, v(0)).is_err());
+            assert!(o.accept_batch(S1, v(1), false, 1, 0).is_err());
+            o.accept_batch(S1, v(0), false, 0, 0).unwrap();
+            assert!(o.accept_batch(S1, v(1), false, 0, 0).is_err());
+            o.accept_batch(S1, v(1), false, 1, 0).unwrap();
+            assert_eq!(o.accept_marker(S1, v(1)).unwrap(), (v(1), true));
+
+            o.accept_batch(S2, v(0), false, 2, 0).unwrap();
+            assert_eq!(o.accept_marker(S2, v(0)).unwrap(), (v(0), true));
+            assert!(o.accept_batch(S2, v(0), false, 0, 0).is_err());
         }
 
         #[test]
@@ -3575,11 +3670,11 @@ mod tests {
         #[test]
         fn it_trips_once_every_member_mismatched_from_the_same_version() {
             let mut breaker = MismatchBreaker::default();
-            assert!(!breaker.record(SHARD, StateVersion::new(4), &[peer(1)], 3));
-            assert!(!breaker.record(SHARD, StateVersion::new(4), &[peer(1)], 3));
-            assert!(!breaker.record(SHARD, StateVersion::new(5), &[peer(2)], 3));
-            assert!(!breaker.record(Shard::from_u32(2), StateVersion::new(4), &[peer(2)], 3));
-            assert!(breaker.record(SHARD, StateVersion::new(4), &[peer(2), peer(3)], 3));
+            assert!(!breaker.record(SHARD, Some(StateVersion::new(4)), &[peer(1)], 3));
+            assert!(!breaker.record(SHARD, Some(StateVersion::new(4)), &[peer(1)], 3));
+            assert!(!breaker.record(SHARD, Some(StateVersion::new(5)), &[peer(2)], 3));
+            assert!(!breaker.record(Shard::from_u32(2), Some(StateVersion::new(4)), &[peer(2)], 3));
+            assert!(breaker.record(SHARD, Some(StateVersion::new(4)), &[peer(2), peer(3)], 3));
         }
     }
 
@@ -3595,9 +3690,9 @@ mod tests {
         }
 
         #[test]
-        fn it_resumes_after_the_recorded_version() {
+        fn it_resumes_after_the_recorded_version_and_starts_a_new_shard_at_its_genesis_version() {
             assert_eq!(cursors_for(&[S1], &progress_at(12_345))[0].start_state_version, 12_346);
-            assert_eq!(cursors_for(&[S1], &SyncProgress::default())[0].start_state_version, 1);
+            assert_eq!(cursors_for(&[S1], &SyncProgress::default())[0].start_state_version, 0);
         }
 
         #[test]

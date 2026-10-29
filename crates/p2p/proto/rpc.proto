@@ -205,7 +205,8 @@ message TreeRootSummary {
 // changes, so a shard range cannot share a single start version - each shard carries its own.
 message ShardCursor {
   uint32 shard = 1;
-  // Must be greater than zero. Genesis is committed at version 0 and is never synced.
+  // The first version to stream. A shard's history starts at v0, which holds its genesis state; a stream from v0
+  // sends a v0 for every shard, with no updates for a shard that has no genesis state.
   uint64 start_state_version = 2;
 }
 
@@ -276,7 +277,8 @@ message StateVersionProof {
 
 // A batch of substate updates at a single state version of a single shard. A state version whose
 // updates exceed the batch's update count or encoded size limit is split into multiple batches, all
-// but the last carrying has_more = true.
+// but the last carrying has_more = true. The v0 of a shard with no genesis state is one batch with no
+// updates.
 message SubstateBatch {
   uint64 state_version = 1;
   repeated SubstateUpdate updates = 2;

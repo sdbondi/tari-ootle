@@ -230,11 +230,12 @@ pub trait IndexerStoreReadTransaction {
     /// The accumulators of the last `limit` versions of `shard` staged, ascending by version.
     fn staged_accumulators_tail(&mut self, shard: Shard, limit: usize) -> Result<Vec<StagedAccumulator>, StorageError>;
 
-    /// The first `limit` stored checkpoint leaves of `shard` above `state_version`, ascending.
+    /// The first `limit` stored checkpoint leaves of `shard` above `state_version`, ascending. A `state_version` of
+    /// `None` is below v0, so every leaf is above it.
     fn checkpoint_shard_leaves_above(
         &mut self,
         shard: Shard,
-        state_version: StateVersion,
+        state_version: Option<StateVersion>,
         limit: usize,
     ) -> Result<Vec<CheckpointShardLeaf>, StorageError>;
 
@@ -341,11 +342,12 @@ pub trait IndexerStoreWriteTransaction {
     /// Deletes the versions of `shard` staged at or below `state_version`.
     fn staged_versions_delete_through(&mut self, shard: Shard, state_version: StateVersion)
     -> Result<(), StorageError>;
-    /// Deletes the versions of `shard` staged above `state_version`, returning the distinct peers that streamed them.
+    /// Deletes the versions of `shard` staged above `state_version`, returning the distinct peers that streamed them. A
+    /// `state_version` of `None` is below v0, so every staged version is above it.
     fn staged_versions_discard_above(
         &mut self,
         shard: Shard,
-        state_version: StateVersion,
+        state_version: Option<StateVersion>,
     ) -> Result<Vec<Vec<u8>>, StorageError>;
     fn upsert_substate(&mut self, substate: &SubstateData) -> Result<(), StorageError>;
     /// Inserts each receipt with its events, skipping any whose address already holds a receipt.

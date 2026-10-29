@@ -70,6 +70,7 @@ use crate::{
             WatchedSubstateEntry,
             WatchedSubstateRow,
             decode_staged_accumulator,
+            first_above,
         },
         serialization::{decode_committed, deserialize_hex_try_from, deserialize_json, serialize_hex},
     },
@@ -1054,21 +1055,19 @@ impl IndexerStoreReadTransaction for SqliteStoreReadTransaction<'_> {
     fn checkpoint_shard_leaves_above(
         &mut self,
         shard: Shard,
-        state_version: StateVersion,
+        state_version: Option<StateVersion>,
         limit: usize,
     ) -> Result<Vec<CheckpointShardLeaf>, StorageError> {
         const OPERATION: &str = "checkpoint_shard_leaves_above";
         use crate::storage_sqlite::schema::checkpoint_shard_leaves;
 
-        // Leaves above a verified version are of versions staged contiguously from a shard's first, so they stay far
-        // below 2^63 and compare correctly as `i64`.
         let rows = checkpoint_shard_leaves::table
             .select((
                 checkpoint_shard_leaves::state_version,
                 checkpoint_shard_leaves::transition_acc,
             ))
             .filter(checkpoint_shard_leaves::shard.eq(shard.as_u32() as i32))
-            .filter(checkpoint_shard_leaves::state_version.gt(state_version.as_u64() as i64))
+            .filter(checkpoint_shard_leaves::state_version.ge(first_above(state_version)))
             .order_by(checkpoint_shard_leaves::state_version.asc())
             .limit(i64::try_from(limit).unwrap_or(i64::MAX))
             .get_results::<(i64, Vec<u8>)>(self.connection())

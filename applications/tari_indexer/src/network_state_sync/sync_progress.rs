@@ -54,14 +54,17 @@ impl SyncProgress {
         self.last_state_versions.insert(shard, (state_version, epoch));
     }
 
-    /// `shard`'s last verified version and the accumulator after it, or the origin for a shard nothing is verified of.
-    pub fn verified(&self, shard: Shard) -> AccumulatedVersion {
-        self.verified
-            .get(&shard)
-            .map_or(AccumulatedVersion::ORIGIN, |verified| AccumulatedVersion {
-                version: verified.state_version,
-                acc: verified.transition_acc,
-            })
+    /// `shard`'s last verified version and the accumulator after it, or `None` for a shard nothing is verified of.
+    pub fn verified(&self, shard: Shard) -> Option<AccumulatedVersion> {
+        self.verified.get(&shard).map(|verified| AccumulatedVersion {
+            version: verified.state_version,
+            acc: verified.transition_acc,
+        })
+    }
+
+    /// `shard`'s last verified version, or `None` for a shard nothing is verified of.
+    pub fn verified_version(&self, shard: Shard) -> Option<StateVersion> {
+        self.verified.get(&shard).map(|verified| verified.state_version)
     }
 
     pub fn record_verified(&mut self, shard: Shard, verified: VerifiedShardVersion) {

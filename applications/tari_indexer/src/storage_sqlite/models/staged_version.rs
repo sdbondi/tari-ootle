@@ -5,6 +5,13 @@ use tari_ootle_common_types::{Epoch, StateVersion, shard::Shard};
 use tari_ootle_storage::StorageError;
 use tari_state_tree::TransitionAccumulator;
 
+/// The lowest state version above `state_version`, as a column value: v0 when `state_version` is `None`, which is below
+/// it. Versions above a verified one are staged contiguously from a shard's first, so they stay far below 2^63 and
+/// compare correctly as `i64`.
+pub(crate) fn first_above(state_version: Option<StateVersion>) -> i64 {
+    state_version.map_or(0, |state_version| state_version.as_u64().saturating_add(1) as i64)
+}
+
 /// A staged state version's transition accumulator, and who streamed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StagedAccumulator {

@@ -66,7 +66,7 @@ impl UtxoUpdateStream {
                         state_version,
                         request.unspent_only,
                         request.per_shard_limit,
-                        sync_progress.as_ref().map(|progress| progress.verified(shard).version),
+                        sync_progress.as_ref().and_then(|progress| progress.verified_version(shard)),
                     )
                     .await
                     .map_err(anyhow::Error::from)?;

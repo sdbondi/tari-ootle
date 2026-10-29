@@ -52,6 +52,7 @@ use crate::{
             UtxoUpdateRecord,
             VerifiedStateRoot,
             encode_retention_epoch,
+            first_above,
         },
         reader::SqliteStoreReadTransaction,
         serialization::{encode_committed, serialize_hex, serialize_json},
@@ -334,14 +335,14 @@ impl IndexerStoreWriteTransaction for SqliteStoreWriteTransaction<'_> {
     fn staged_versions_discard_above(
         &mut self,
         shard: Shard,
-        state_version: StateVersion,
+        state_version: Option<StateVersion>,
     ) -> Result<Vec<Vec<u8>>, StorageError> {
         const OPERATION: &str = "staged_versions_discard_above";
         use crate::storage_sqlite::schema::staged_versions;
 
         let above = staged_versions::table
             .filter(staged_versions::shard.eq(shard.as_u32() as i32))
-            .filter(staged_versions::state_version.gt(state_version.as_u64() as i64));
+            .filter(staged_versions::state_version.ge(first_above(state_version)));
         let peers = above
             .select(staged_versions::streamed_by)
             .distinct()
