@@ -138,6 +138,10 @@ const VERIFICATION_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 /// versions. A burst's versions are promoted on the next leaf, so this bounds how far promotion trails the stream at
 /// one probe per group a second.
 const BURST_PROBE_MIN_INTERVAL: Duration = Duration::from_secs(1);
+/// The soonest a shard group syncs a missing checkpoint again once its stream shows the committee has entered the
+/// epoch after it. Committee members commit the checkpoint within moments of each other, and one that has not yet costs
+/// a reopen, so this bounds the reopens to one a period.
+const CHECKPOINT_RETRY_MIN_INTERVAL: Duration = Duration::from_secs(2);
 /// The most probes' leaves queued for a shard group's stream.
 const PROBED_LEAVES_CAPACITY: usize = 4;
 /// The most encoded bytes a stream stages above every verified leaf of its shards before it stops reading until a leaf
@@ -945,8 +949,9 @@ impl NetworkWideStateSync {
             return Ok(RoundEnd::Cancelled);
         }
         // Wallets verify the validator set of an epoch through the checkpoint that ends the epoch
-        // before it, so a missing checkpoint is fetched again after the work interval.
-        let checkpoints_due_at = (!checkpoints_reached_epoch).then(|| time::Instant::now() + self.config.work_interval);
+        // before it, so a missing checkpoint is fetched again as soon as the stream shows it exists.
+        let checkpoints_due = (!checkpoints_reached_epoch)
+            .then(|| CheckpointsDue::new(current_epoch, time::Instant::now(), self.config.work_interval));
         let mut session = match pool.new_stream_session().await {
             Ok(s) => s,
             Err(e) => {
@@ -1003,7 +1008,7 @@ impl NetworkWideStateSync {
                 &mut session,
                 cancel,
                 epoch,
-                checkpoints_due_at,
+                checkpoints_due,
                 leaves,
             )
             .await
@@ -1067,7 +1072,7 @@ impl NetworkWideStateSync {
         session: &mut ValidatorRpcSession,
         cancel: &CancellationToken,
         epoch: &mut watch::Receiver<Epoch>,
-        checkpoints_due_at: Option<time::Instant>,
+        checkpoints_due: Option<CheckpointsDue>,
         leaves: &mut GroupLeaves,
     ) -> Result<StreamEnd, NetworkStateSyncError> {
         let cursors = cursors_for(shards, &*progress.lock().await);
@@ -1082,7 +1087,7 @@ impl NetworkWideStateSync {
             session,
             cancel,
             epoch,
-            checkpoints_due_at,
+            checkpoints_due,
             leaves,
         )
         .await
@@ -1705,7 +1710,7 @@ impl NetworkWideStateSync {
         session: &mut ValidatorRpcSession,
         cancel: &CancellationToken,
         epoch: &mut watch::Receiver<Epoch>,
-        checkpoints_due_at: Option<time::Instant>,
+        mut checkpoints_due: Option<CheckpointsDue>,
         leaves: &mut GroupLeaves,
     ) -> Result<StreamEnd, NetworkStateSyncError> {
         let value_filters = stream_value_filters();
@@ -1758,7 +1763,7 @@ impl NetworkWideStateSync {
                 biased;
                 _ = cancel.cancelled() => return Ok(StreamEnd::Cancelled),
                 Ok(()) = epoch.changed() => return Ok(StreamEnd::EpochAdvanced),
-                () = time::sleep_until(checkpoints_due_at.unwrap_or_else(time::Instant::now)), if checkpoints_due_at.is_some() => {
+                () = time::sleep_until(checkpoints_due.map_or_else(time::Instant::now, |due| due.at())), if checkpoints_due.is_some() => {
                     return Ok(StreamEnd::CheckpointsDue);
                 },
                 Some(probed) = leaves.probed.recv() => {
@@ -1839,6 +1844,9 @@ impl NetworkWideStateSync {
                         leaves.burst.notify_one();
                     }
                     debug!(target: LOG_TARGET, "🌍️ Completed state sync for shard {shard} in shard group {shard_group} at epoch {msg_epoch} (peer synced to v{synced_to})");
+                    if let Some(due) = &mut checkpoints_due {
+                        due.observe(msg_epoch);
+                    }
                     if complete.is_final {
                         return Ok(StreamEnd::Final);
                     }
@@ -1859,6 +1867,9 @@ impl NetworkWideStateSync {
                 .ok_or_else(|| NetworkStateSyncError::InvalidStateUpdate {
                     details: "Received state update without epoch".to_string(),
                 })?;
+            if let Some(due) = &mut checkpoints_due {
+                due.observe(msg_epoch);
+            }
             let encoded_len = batch.encoded_len();
             order
                 .accept_batch(shard, state_version, batch.has_more, batch.updates.len(), encoded_len)
@@ -2059,10 +2070,44 @@ enum StreamEnd {
     /// from a committee member at the new epoch.
     EpochAdvanced,
     /// The group's checkpoint for the epoch before the current one was missing when the stream
-    /// opened, and the work interval has passed. The group syncs checkpoints again and reopens.
+    /// opened, and is now due (see [`CheckpointsDue`]). The group syncs checkpoints again and reopens.
     CheckpointsDue,
     /// The plan is being wound down.
     Cancelled,
+}
+
+/// When a shard group whose checkpoint for the epoch before `epoch` was missing syncs its checkpoints again.
+///
+/// Consensus enters an epoch only once it has committed the checkpoint that ends the one before, so a streamed version
+/// committed in `epoch` or later, or a completion marker its responder makes as of `epoch` or later, shows the
+/// checkpoint exists. The sync is due [`CHECKPOINT_RETRY_MIN_INTERVAL`] after the round started then, and otherwise
+/// after the work interval.
+#[derive(Debug, Clone, Copy)]
+struct CheckpointsDue {
+    epoch: Epoch,
+    at: time::Instant,
+    soonest: time::Instant,
+}
+
+impl CheckpointsDue {
+    fn new(epoch: Epoch, now: time::Instant, work_interval: Duration) -> Self {
+        Self {
+            epoch,
+            at: now + work_interval,
+            soonest: now + CHECKPOINT_RETRY_MIN_INTERVAL.min(work_interval),
+        }
+    }
+
+    fn at(&self) -> time::Instant {
+        self.at
+    }
+
+    /// Brings the sync forward when a message stamped `msg_epoch` shows the committee has entered `self.epoch`.
+    fn observe(&mut self, msg_epoch: Epoch) {
+        if msg_epoch >= self.epoch {
+            self.at = self.at.min(self.soonest);
+        }
+    }
 }
 
 /// How a round of following a shard group ended without failing.
@@ -3049,6 +3094,41 @@ impl VersionBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod checkpoints_due {
+        use super::*;
+
+        const WORK_INTERVAL: Duration = Duration::from_secs(60);
+
+        #[test]
+        fn it_waits_the_work_interval_until_the_stream_shows_the_epoch() {
+            let now = time::Instant::now();
+            let mut due = CheckpointsDue::new(Epoch(5), now, WORK_INTERVAL);
+            due.observe(Epoch(4));
+            assert_eq!(due.at(), now + WORK_INTERVAL);
+        }
+
+        #[test]
+        fn it_is_due_soon_once_the_stream_shows_the_epoch_or_later() {
+            for msg_epoch in [Epoch(5), Epoch(6)] {
+                let now = time::Instant::now();
+                let mut due = CheckpointsDue::new(Epoch(5), now, WORK_INTERVAL);
+                due.observe(msg_epoch);
+                assert_eq!(due.at(), now + CHECKPOINT_RETRY_MIN_INTERVAL);
+                due.observe(Epoch(4));
+                assert_eq!(due.at(), now + CHECKPOINT_RETRY_MIN_INTERVAL);
+            }
+        }
+
+        #[test]
+        fn it_is_never_later_than_the_work_interval() {
+            let now = time::Instant::now();
+            let work_interval = Duration::from_secs(1);
+            let mut due = CheckpointsDue::new(Epoch(5), now, work_interval);
+            due.observe(Epoch(5));
+            assert_eq!(due.at(), now + work_interval);
+        }
+    }
 
     mod running_totals {
         use super::*;
