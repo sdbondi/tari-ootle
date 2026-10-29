@@ -2080,9 +2080,10 @@ enum StreamEnd {
 
 /// When a shard group whose checkpoint for the epoch before `epoch` was missing syncs its checkpoints again.
 ///
-/// Consensus enters an epoch only once it has committed the checkpoint that ends the one before, so a streamed version
-/// committed in `epoch` or later, or a completion marker its responder makes as of `epoch` or later, shows the
-/// checkpoint exists. The sync is due `soonest_after` the round started then, and otherwise after the work interval.
+/// Consensus that moves into an epoch from the one before does so only once it has committed the checkpoint that ends
+/// it, so a streamed version committed in `epoch` or later, or a completion marker its responder makes as of `epoch` or
+/// later, shows the checkpoint exists unless consensus started in `epoch` (see [`CheckpointRetryBackoff`]). The sync is
+/// due `soonest_after` the round started then, and otherwise after the work interval.
 #[derive(Debug, Clone, Copy)]
 struct CheckpointsDue {
     epoch: Epoch,
