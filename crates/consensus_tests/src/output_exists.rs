@@ -8,7 +8,7 @@ use std::{collections::HashSet, iter};
 
 use tari_common_types::types::PrivateKey;
 use tari_consensus_types::Decision;
-use tari_engine_types::substate::SubstateId;
+use tari_engine_types::{commit_result::AbortReason, substate::SubstateId};
 use tari_ootle_common_types::{
     Epoch,
     InputDeclaration,
@@ -38,6 +38,17 @@ const FEE_INTENT_FEE: u64 = 19;
 
 /// A local-only transaction that writes `vault` and creates `outputs`, settling a fee-intent fallback.
 fn creating(test: &Test, signer: u8, vault: &VersionedSubstateId, outputs: &[SubstateId]) -> TransactionRecord {
+    creating_with_fee_intent(test, signer, vault, outputs, Some(FEE_INTENT_FEE))
+}
+
+/// A transaction that writes `vault` and creates `outputs`, settling a fee-intent fallback of `fee_intent_fee`.
+fn creating_with_fee_intent(
+    test: &Test,
+    signer: u8,
+    vault: &VersionedSubstateId,
+    outputs: &[SubstateId],
+    fee_intent_fee: Option<u64>,
+) -> TransactionRecord {
     let transaction = Transaction::builder_localnet(Epoch(1))
         .add_input(InputDeclaration::write_versioned(
             vault.substate_id().clone(),
@@ -52,7 +63,7 @@ fn creating(test: &Test, signer: u8, vault: &VersionedSubstateId, outputs: &[Sub
         new_outputs: outputs.to_vec(),
         validator_fee_withdrawals: vec![],
         calls_template: None,
-        fee_intent_fallback_fee: Some(FEE_INTENT_FEE),
+        fee_intent_fallback_fee: fee_intent_fee,
     });
     TransactionRecord::new(transaction)
 }
@@ -267,4 +278,36 @@ async fn an_output_only_shard_group_creating_an_output_that_exists_commits_the_f
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_input_shard_group_creating_an_output_that_exists_commits_the_fee_intent_everywhere() {
     assert_a_multishard_collision_commits_the_fee_intent_everywhere(0).await;
+}
+
+/// The input shard group finds at LocalAccept that the output it creates exists, and with no fee intent to commit it
+/// aborts. Its LocalAccept carries no outputs for the output-only shard group, which still applies the abort.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_input_shard_group_aborting_at_local_accept_aborts_the_output_only_shard_group() {
+    setup_logger();
+    let mut test = Test::builder()
+        .add_committee(0, vec!["1", "2"])
+        .add_committee(1, vec!["3", "4"])
+        .start()
+        .await;
+    let vaults = test.create_substates_on_vns(TestVnDestination::Committee(0), 2);
+    let output = test.build_outputs_for_committee(0, 1).remove(0);
+    let foreign_output = test.build_outputs_for_committee(1, 1).remove(0);
+    let creator = creating(&test, 1, &vaults[0], std::slice::from_ref(&output));
+    let duplicate = creating_with_fee_intent(&test, 2, &vaults[1], &[output, foreign_output], None);
+
+    test.send_transaction_to_destination(TestVnDestination::All, creator.clone())
+        .await;
+    test.start_epoch(Epoch(1)).await;
+    wait_for_finalized_at(&mut test, TestVnDestination::Committee(0), &[&creator]).await;
+    test.send_transaction_to_destination(TestVnDestination::All, duplicate.clone())
+        .await;
+    wait_for_finalized(&mut test, &[&duplicate]).await;
+    test.stop();
+
+    test.assert_all_validators_have_decision(duplicate.id(), Decision::Abort(AbortReason::LockOutputsFailed))
+        .await;
+    test.assert_all_validators_did_not_commit(duplicate.id());
+
+    test.assert_clean_shutdown().await;
 }

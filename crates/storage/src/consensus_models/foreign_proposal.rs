@@ -506,6 +506,8 @@ impl ForeignProposal {
             .into()
     }
 
+    /// The transactions whose evidence names the committee's shard group. An aborting transaction's evidence clears
+    /// the outputs of every shard group, so an output-only shard group is named with no substates.
     pub fn all_transaction_ids_in_committee<'a>(
         &'a self,
         committee_info: &'a CommitteeInfo,
@@ -517,7 +519,7 @@ impl ForeignProposal {
             .filter_map(|cmd| cmd.transaction())
             .filter(|t| {
                 t.evidence()
-                    .is_some_and(|evidence| evidence.has_and_not_empty(&committee_info.shard_group()))
+                    .is_some_and(|evidence| evidence.has(&committee_info.shard_group()))
             })
             .map(|t| t.id())
     }

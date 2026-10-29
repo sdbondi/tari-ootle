@@ -288,7 +288,7 @@ impl Block {
             .filter(|t| {
                 t.evidence()
                     .map_or(self.shard_group() == committee_info.shard_group(), |evidence| {
-                        evidence.has_and_not_empty(&committee_info.shard_group())
+                        evidence.has(&committee_info.shard_group())
                     })
             })
             .map(|t| t.id())
