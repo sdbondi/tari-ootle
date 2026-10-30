@@ -107,6 +107,22 @@ fn with_authorized_proof_wraps_the_closure_in_a_window() {
     assert_eq!(transaction.instructions().len(), 4);
 }
 
+#[test]
+fn with_authorized_proof_closes_the_window_it_opened_when_the_closure_rebinds_the_label() {
+    let transaction = Transaction::builder_localnet(Epoch(1))
+        .put_last_instruction_output_on_workspace("proof")
+        .with_authorized_proof("proof", |builder| {
+            builder.put_last_instruction_output_on_workspace("proof")
+        })
+        .build_unsigned();
+
+    let proof = WorkspaceOffsetId::new(0);
+    assert_eq!(transaction.instructions()[1], Instruction::AuthorizeProof { proof });
+    assert_eq!(transaction.instructions()[3], Instruction::DropProofAuthorization {
+        proof
+    });
+}
+
 /// Merge must remap blob indices and append blobs from `other` so references stay valid.
 #[test]
 fn merge_remaps_blob_ids_and_appends_blobs() {
