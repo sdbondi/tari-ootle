@@ -93,6 +93,11 @@ impl AuthorizationScope {
         self.badges().any(|badge| badge.resource_address() == resource_address)
     }
 
+    /// The scope a restricted top-level frame starts with: the signer badges and nothing on loan.
+    pub(super) fn badges_only(&self) -> Self {
+        Self::new(self.virtual_proofs.clone())
+    }
+
     /// The proofs this frame has authorized itself.
     pub fn proofs(&self) -> &IndexSet<ProofId> {
         &self.proofs

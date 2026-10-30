@@ -11,10 +11,8 @@ See [standard-version](https://github.com/conventional-changelog/standard-versio
   `Proof` argument, and callers of the account's `*_with_auth` methods, must open the window on the caller's
   side instead (see the authorization guide); the faucet's `take_with_proof` is gone, and `take` deposits only
   into a component with an open deposit rule. (#3199, #3206)
-- **Component migrations run confined, like a resource auth hook, and carry no signer badges.** A migration function
-  may only rewrite its component's own state: one that calls out, creates a vault, moves funds, holds a proof or
-  allocates an address is rejected, so do that in an ordinary method call after the upgrade. A hook frame carries no
-  signer badge either, however the action reached it. (#3206)
+- **Component migrations run confined, like a resource auth hook, and neither carries signer badges.** A migration
+  may only rewrite its component's own state; anything else happens in a method call after the upgrade. (#3206)
 
 ## [0.48.0](https://github.com/tari-project/tari-ootle/compare/v0.47.0...v0.48.0) (2026-10-29)
 

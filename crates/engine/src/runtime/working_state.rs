@@ -1579,8 +1579,6 @@ impl<TStore: StateReader> WorkingState<TStore> {
             .unwrap_or(FrameWriteMode::Full)
     }
 
-    /// Restricts the current (most recently pushed) call frame to `mode` and disables its cross-template calls.
-    /// Must be called immediately after the frame is pushed and before its code executes.
     /// The kind of confined frame currently executing, for naming it in a refusal. `AuthHook` when no frame is
     /// active, which cannot occur in `OwnComponent` mode.
     pub fn current_restricted_frame(&self) -> RestrictedFrame {
@@ -1670,19 +1668,25 @@ impl<TStore: StateReader> WorkingState<TStore> {
             });
         }
 
-        // A confined frame — a resource auth hook, a spend-script predicate or a component migration — is pushed
-        // with neither the signer badges nor a loan of the authorized proofs: whatever authorized the action that
-        // reached it (for a migration, the upgrade rule evaluated in the pushing scope before this point) does not
-        // extend to the code that runs in it.
+        // A restricted frame — a resource auth hook, a spend-script predicate or a component migration — is lent
+        // nothing: whatever authorized the action that reached it (for a migration, the upgrade rule evaluated in
+        // the pushing scope before this point) does not extend to the code that runs in it. A hook or migration
+        // frame carries no signer badges either, since the signer chose neither the hook nor the migration code. A
+        // predicate is the output owner's own spend condition and keeps them.
         let is_restricted = new_frame.is_restricted();
+        let is_confined = new_frame.restricted_frame().is_some();
         match self.call_frames.last() {
             // A top-level instruction has no caller frame, so there is no caller identity to stamp: the signer is
             // the caller. The frame starts with the signer badges and a loan of the proofs the transaction has
             // authorized so far.
             None => {
-                if !is_restricted {
-                    *new_frame.scope_mut().auth_scope_mut() =
-                        self.initial_call_scope.auth_scope().for_top_level_frame();
+                if !is_confined {
+                    let base = self.initial_call_scope.auth_scope();
+                    *new_frame.scope_mut().auth_scope_mut() = if is_restricted {
+                        base.badges_only()
+                    } else {
+                        base.for_top_level_frame()
+                    };
                 }
             },
             // Otherwise stamp the pushing frame's identity into the callee's scope as virtual badges, and lend it the

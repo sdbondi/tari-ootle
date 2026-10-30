@@ -738,12 +738,12 @@ impl<TStore: StateReader> StateTracker<TStore> {
         self.read_with(|state| state.fee_state().is_dry_run())
     }
 
-    /// The write mode of the current call frame. Used by the engine's core sandbox enforcement to deny the few
-    /// effectful host ops that bypass the lock layer.
     pub fn current_restricted_frame(&self) -> RestrictedFrame {
         self.read_with(|state| state.current_restricted_frame())
     }
 
+    /// The write mode of the current call frame. Used by the engine's core sandbox enforcement to deny the few
+    /// effectful host ops that bypass the lock layer.
     pub fn current_frame_write_mode(&self) -> FrameWriteMode {
         self.working_state
             .borrow()

@@ -538,9 +538,9 @@ impl CallFrame {
         self.write_mode
     }
 
-    /// Whether this frame is confined to less than a full frame's authority. A confined frame is pushed with neither
-    /// the signer badges nor a loan of its caller's authorized proofs: its code was not chosen by whoever holds that
-    /// authority (a resource auth hook, a spend-script predicate) or needs none of it (a migration).
+    /// Whether this frame runs with less than a full frame's write authority. A restricted frame is pushed without a
+    /// loan of its caller's authorized proofs; one that is also confined to its own component
+    /// ([`Self::restricted_frame`]) is pushed without signer badges as well.
     pub fn is_restricted(&self) -> bool {
         self.write_mode != FrameWriteMode::Full
     }
