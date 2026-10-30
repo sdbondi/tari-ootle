@@ -403,6 +403,25 @@ impl Display for CallScope {
     }
 }
 
+/// Why a frame runs in [`FrameWriteMode::OwnComponent`]. Named in the errors a confined frame produces, so a refusal
+/// says which kind of code was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestrictedFrame {
+    /// A resource auth hook: code the acting frame did not choose.
+    AuthHook,
+    /// A component migration: reformats the component's own state and nothing else.
+    Migration,
+}
+
+impl Display for RestrictedFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AuthHook => write!(f, "a resource auth hook"),
+            Self::Migration => write!(f, "a component migration"),
+        }
+    }
+}
+
 /// How much of the ledger a call frame may mutate. Ordered from least to most restrictive so that a child frame
 /// can never be less restricted than its parent (`FrameWriteMode::max`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -460,6 +479,8 @@ impl CallFrame {
         }
     }
 
+    /// A migration frame reformats its component's own state and nothing else, so it is confined like a resource
+    /// auth hook: it may write only the component it was pushed for and cannot call out.
     pub fn migration_context(
         current_template: TemplateAddress,
         current_module: String,
@@ -473,7 +494,7 @@ impl CallFrame {
             entity_id,
             allow_cross_template_calls: false,
             allow_migration_calls: true,
-            write_mode: FrameWriteMode::Full,
+            write_mode: FrameWriteMode::OwnComponent,
         }
     }
 
@@ -517,15 +538,30 @@ impl CallFrame {
         self.write_mode
     }
 
-    /// Restricts this frame to `mode` (never loosening an existing restriction), disables cross-template calls and
-    /// takes back the proofs its caller lent it. The restrictions are load-bearing in tandem: the write mode blocks
-    /// state writes at the lock layer, disabling cross-template calls prevents the frame from re-entering other
-    /// templates, which would otherwise run with the identity of this frame as their caller, and a frame whose code
-    /// the acting frame did not choose — a resource auth hook — must not act with the acting frame's authority.
+    /// Whether this frame is confined to less than a full frame's authority. A confined frame is pushed with neither
+    /// the signer badges nor a loan of its caller's authorized proofs: its code was not chosen by whoever holds that
+    /// authority (a resource auth hook, a spend-script predicate) or needs none of it (a migration).
+    pub fn is_restricted(&self) -> bool {
+        self.write_mode != FrameWriteMode::Full
+    }
+
+    /// Which kind of confined frame this is, when it runs in `OwnComponent` mode.
+    pub fn restricted_frame(&self) -> Option<RestrictedFrame> {
+        match self.write_mode {
+            FrameWriteMode::OwnComponent if self.allow_migration_calls => Some(RestrictedFrame::Migration),
+            FrameWriteMode::OwnComponent => Some(RestrictedFrame::AuthHook),
+            FrameWriteMode::Full | FrameWriteMode::ReadOnly => None,
+        }
+    }
+
+    /// Restricts this frame to `mode` (never loosening an existing restriction) and disables cross-template calls.
+    /// Applied before the frame is pushed, so the push installs the authority a confined frame gets. The two
+    /// restrictions are load-bearing in tandem: the write mode blocks state writes at the lock layer, while disabling
+    /// cross-template calls prevents the frame from re-entering other templates, which would otherwise run with the
+    /// identity of this frame as their caller.
     pub fn restrict(&mut self, mode: FrameWriteMode) {
         self.write_mode = self.write_mode.max(mode);
         self.allow_cross_template_calls = false;
-        self.scope.auth_scope_mut().clear_granted();
     }
 
     /// A frame is never less restricted than the frame that pushed it: a sandboxed frame must not be able to

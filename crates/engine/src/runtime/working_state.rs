@@ -79,7 +79,7 @@ use crate::{
         address_allocation::AllocatedAddress,
         fee_state::FeeState,
         locking::LockedSubstate,
-        scope::{CallFrame, CallScope, FrameWriteMode},
+        scope::{CallFrame, CallScope, FrameWriteMode, RestrictedFrame},
         state_store::WorkingStateStore,
         tracker_auth::Authorization,
         validation::{
@@ -318,7 +318,10 @@ impl<TStore: StateReader> WorkingState<TStore> {
     fn check_write_allowed(&self, addr: &SubstateId) -> Result<(), RuntimeError> {
         match self.current_frame_write_mode() {
             FrameWriteMode::Full => Ok(()),
-            FrameWriteMode::OwnComponent => Err(RuntimeError::WriteOutsideOwnComponent { id: addr.clone() }),
+            FrameWriteMode::OwnComponent => Err(RuntimeError::WriteOutsideOwnComponent {
+                id: addr.clone(),
+                frame: self.current_restricted_frame(),
+            }),
             FrameWriteMode::ReadOnly => Err(RuntimeError::WriteInReadOnlyContext),
         }
     }
@@ -1240,7 +1243,10 @@ impl<TStore: StateReader> WorkingState<TStore> {
     fn check_create_allowed(&self, operation: &'static str) -> Result<(), RuntimeError> {
         match self.current_frame_write_mode() {
             FrameWriteMode::Full => Ok(()),
-            FrameWriteMode::OwnComponent => Err(RuntimeError::ForbiddenInAuthHookContext { operation }),
+            FrameWriteMode::OwnComponent => Err(RuntimeError::ForbiddenInRestrictedFrame {
+                operation,
+                frame: self.current_restricted_frame(),
+            }),
             FrameWriteMode::ReadOnly => Err(RuntimeError::ForbiddenInReadOnlyContext { operation }),
         }
     }
@@ -1575,12 +1581,13 @@ impl<TStore: StateReader> WorkingState<TStore> {
 
     /// Restricts the current (most recently pushed) call frame to `mode` and disables its cross-template calls.
     /// Must be called immediately after the frame is pushed and before its code executes.
-    pub fn restrict_current_frame(&mut self, mode: FrameWriteMode) -> Result<(), RuntimeError> {
+    /// The kind of confined frame currently executing, for naming it in a refusal. `AuthHook` when no frame is
+    /// active, which cannot occur in `OwnComponent` mode.
+    pub fn current_restricted_frame(&self) -> RestrictedFrame {
         self.call_frames
-            .last_mut()
-            .ok_or(RuntimeError::NoActiveCallFrame)?
-            .restrict(mode);
-        Ok(())
+            .last()
+            .and_then(CallFrame::restricted_frame)
+            .unwrap_or(RestrictedFrame::AuthHook)
     }
 
     pub fn current_call_scope(&self) -> Result<&CallScope, RuntimeError> {
@@ -1663,16 +1670,17 @@ impl<TStore: StateReader> WorkingState<TStore> {
             });
         }
 
-        // The upgrade a migration frame performs was authorized in the pushing scope, before this point. The frame
-        // itself runs the target template's migration code with no authority beyond the component's own state:
-        // neither the signer badges nor a loan of the authorized proofs.
-        let is_migration = new_frame.are_migration_calls_allowed();
+        // A confined frame — a resource auth hook, a spend-script predicate or a component migration — is pushed
+        // with neither the signer badges nor a loan of the authorized proofs: whatever authorized the action that
+        // reached it (for a migration, the upgrade rule evaluated in the pushing scope before this point) does not
+        // extend to the code that runs in it.
+        let is_restricted = new_frame.is_restricted();
         match self.call_frames.last() {
             // A top-level instruction has no caller frame, so there is no caller identity to stamp: the signer is
             // the caller. The frame starts with the signer badges and a loan of the proofs the transaction has
             // authorized so far.
             None => {
-                if !is_migration {
+                if !is_restricted {
                     *new_frame.scope_mut().auth_scope_mut() =
                         self.initial_call_scope.auth_scope().for_top_level_frame();
                 }
@@ -1688,7 +1696,7 @@ impl<TStore: StateReader> WorkingState<TStore> {
                 let template = *caller.current_template();
                 let callee_scope = new_frame.scope_mut().auth_scope_mut();
                 callee_scope.set_caller(component, template);
-                if !is_migration {
+                if !is_restricted {
                     caller.scope().auth_scope().lend_to_callee(callee_scope);
                 }
                 new_frame.inherit_restrictions(caller);

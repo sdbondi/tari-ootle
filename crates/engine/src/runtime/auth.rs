@@ -69,10 +69,6 @@ impl AuthorizationScope {
         callee.granted = self.proofs.clone();
     }
 
-    pub(super) fn clear_granted(&mut self) {
-        self.granted.clear();
-    }
-
     /// Stamps the identity of the frame that is pushing the frame this scope belongs to. The component badge is
     /// omitted for a static function frame, which has no component identity.
     pub(super) fn set_caller(&mut self, component: Option<ComponentAddress>, template: TemplateAddress) {

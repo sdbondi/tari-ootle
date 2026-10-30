@@ -2,7 +2,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 use std::collections::{BTreeMap, HashMap};
 
-use tari_engine::runtime::{ActionIdent, RuntimeError};
+use tari_engine::runtime::{ActionIdent, RuntimeError, scope::RestrictedFrame};
 use tari_engine_types::resource_container::ResourceError;
 use tari_ootle_transaction::{Epoch, Transaction, args};
 use tari_template_lib::{
@@ -2103,8 +2103,9 @@ mod resource_access_rules {
             vec![user_proof.clone()],
         );
 
-        assert_reject_reason(result, RuntimeError::ForbiddenInAuthHookContext {
+        assert_reject_reason(result, RuntimeError::ForbiddenInRestrictedFrame {
             operation: "call_invoke",
+            frame: RestrictedFrame::AuthHook,
         });
     }
 
@@ -2206,8 +2207,9 @@ mod resource_access_rules {
             vec![user_proof.clone()],
         );
 
-        assert_reject_reason(result, RuntimeError::ForbiddenInAuthHookContext {
+        assert_reject_reason(result, RuntimeError::ForbiddenInRestrictedFrame {
             operation: "allocate_address_invoke",
+            frame: RestrictedFrame::AuthHook,
         });
     }
 
@@ -2240,8 +2242,9 @@ mod resource_access_rules {
             vec![user_proof.clone()],
         );
 
-        assert_reject_reason(result, RuntimeError::ForbiddenInAuthHookContext {
+        assert_reject_reason(result, RuntimeError::ForbiddenInRestrictedFrame {
             operation: "new_bucket",
+            frame: RestrictedFrame::AuthHook,
         });
     }
 
@@ -2336,8 +2339,9 @@ mod resource_access_rules {
             action_ident: ResourceAuthAction::Deposit.into(),
             details: String::new(),
         });
-        assert_reject_reason(&result, RuntimeError::ForbiddenInAuthHookContext {
+        assert_reject_reason(&result, RuntimeError::ForbiddenInRestrictedFrame {
             operation: "call_invoke",
+            frame: RestrictedFrame::AuthHook,
         });
     }
 

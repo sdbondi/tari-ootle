@@ -61,7 +61,7 @@ use tari_template_lib::{
     },
 };
 
-use super::workspace::WorkspaceError;
+use super::{scope::RestrictedFrame, workspace::WorkspaceError};
 use crate::{
     runtime::{ActionIdent, RuntimeModuleError, locking::LockError},
     state_store::StateStoreError,
@@ -276,12 +276,15 @@ pub enum RuntimeError {
     WriteInReadOnlyContext,
     #[error("Host operation '{operation}' is forbidden inside a read-only (spend-script) context")]
     ForbiddenInReadOnlyContext { operation: &'static str },
-    #[error("Write to {id} attempted in a resource auth hook, which may only modify its own component state")]
-    WriteOutsideOwnComponent { id: SubstateId },
+    #[error("Write to {id} attempted in {frame}, which may only modify its own component state")]
+    WriteOutsideOwnComponent { id: SubstateId, frame: RestrictedFrame },
     #[error("Write to {id} attempted, but the transaction declared it as a read-only input")]
     WriteToReadDeclaredInput { id: SubstateId },
-    #[error("Host operation '{operation}' is forbidden inside a resource auth hook")]
-    ForbiddenInAuthHookContext { operation: &'static str },
+    #[error("Host operation '{operation}' is forbidden inside {frame}")]
+    ForbiddenInRestrictedFrame {
+        operation: &'static str,
+        frame: RestrictedFrame,
+    },
     #[error("Freeze on resource {resource_address} targeted vault {vault_id}, which holds resource {vault_resource}")]
     FreezeResourceMismatch {
         vault_id: VaultId,
@@ -593,7 +596,7 @@ impl RuntimeError {
             Self::WriteInReadOnlyContext |
             Self::ForbiddenInReadOnlyContext { .. } |
             Self::WriteOutsideOwnComponent { .. } |
-            Self::ForbiddenInAuthHookContext { .. } |
+            Self::ForbiddenInRestrictedFrame { .. } |
             Self::BadgeNotInScope { .. } |
             Self::CrossTemplateCallNotAllowed { .. } => C::AccessDenied,
 

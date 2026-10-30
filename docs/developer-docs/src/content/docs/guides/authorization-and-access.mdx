@@ -222,9 +222,12 @@ instructions, so no window crosses the fee boundary. The built-in account follow
 `deposit`, `withdraw_approved` and the `create_proof_*` methods are reached inside a window when the resource or
 approval names a badge the account does not carry on its own.
 
-Hook and migration frames are lent nothing: a resource auth hook runs with the acting frame's identity but none of
-its windows, and a component's upgrade rule is evaluated in the scope of the `UpdateComponentTemplate` instruction
-before the migration frame is pushed, which then carries neither signer badges nor a loan.
+Hook and migration frames are lent nothing and carry no signer badges, however the action reached them: a resource
+auth hook runs with the acting frame's identity but none of its windows, and a component's upgrade rule is evaluated
+in the scope of the `UpdateComponentTemplate` instruction before the migration frame is pushed. A migration frame is
+confined exactly as a hook frame is: it may rewrite its component's own state and nothing else, so a migration that
+needs a vault, funds, a proof, an address allocation or a call into another component does that work in an ordinary
+method call after the upgrade.
 
 Signer badges are not proofs: they are stamped into every frame a top-level instruction pushes, so a rule naming
 the transaction's signer needs no window. A signer badge authorizes only the frame it is stamped into, and no
