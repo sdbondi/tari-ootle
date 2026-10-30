@@ -674,10 +674,10 @@ impl<TStore: StateReader> WorkingState<TStore> {
             .ok_or(RuntimeError::ProofNotFound { proof_id })
     }
 
-    /// Reads a proof the current frame holds. Proof ids come from a counter shared by the whole transaction, so the
-    /// scope check is what keeps one frame from reading the contents of another frame's proof.
+    /// Reads a proof the current frame holds or was shown. Proof ids come from a counter shared by the whole
+    /// transaction, so the scope check is what keeps one frame from reading the contents of another frame's proof.
     pub fn get_proof_in_scope(&self, proof_id: ProofId) -> Result<&Proof, RuntimeError> {
-        if !self.current_call_scope()?.is_proof_in_scope(&proof_id) {
+        if !self.current_call_scope()?.can_read_proof(&proof_id) {
             return Err(RuntimeError::ProofNotInScope { proof_id });
         }
         self.get_proof(proof_id)
@@ -924,9 +924,7 @@ impl<TStore: StateReader> WorkingState<TStore> {
 
     pub fn drop_proof(&mut self, proof_id: ProofId) -> Result<(), RuntimeError> {
         let call_frame_mut = self.current_call_scope_mut()?;
-        if !call_frame_mut.is_proof_in_scope(&proof_id) {
-            return Err(RuntimeError::ProofNotInScope { proof_id });
-        }
+        call_frame_mut.require_held_proof(&proof_id)?;
         call_frame_mut.remove_proof_from_scope(&proof_id);
 
         // Fetch the proof
@@ -1585,17 +1583,6 @@ impl<TStore: StateReader> WorkingState<TStore> {
         Ok(())
     }
 
-    /// Takes the boundary proofs away from the current (most recently pushed) call frame. Must be called once the
-    /// frame's access rule has been evaluated and before anything acts in the frame.
-    pub fn revoke_boundary_proofs(&mut self) -> Result<(), RuntimeError> {
-        self.call_frames
-            .last_mut()
-            .ok_or(RuntimeError::NoActiveCallFrame)?
-            .scope_mut()
-            .revoke_boundary_proofs();
-        Ok(())
-    }
-
     pub fn current_call_scope(&self) -> Result<&CallScope, RuntimeError> {
         Ok(self
             .call_frames
@@ -1676,25 +1663,34 @@ impl<TStore: StateReader> WorkingState<TStore> {
             });
         }
 
+        // The upgrade a migration frame performs was authorized in the pushing scope, before this point. The frame
+        // itself runs the target template's migration code with no authority beyond the component's own state:
+        // neither the signer badges nor a loan of the authorized proofs.
+        let is_migration = new_frame.are_migration_calls_allowed();
         match self.call_frames.last() {
-            // If this is the first call frame, then we use the base auth scope (virtual proofs are carried from the
-            // base to the first call scope). A top-level instruction has no caller frame, so there is no caller
-            // identity to stamp: the signer is the caller.
+            // A top-level instruction has no caller frame, so there is no caller identity to stamp: the signer is
+            // the caller. The frame starts with the signer badges and a loan of the proofs the transaction has
+            // authorized so far.
             None => {
-                new_frame
-                    .scope_mut()
-                    .set_auth_scope(self.initial_call_scope.auth_scope().clone());
+                if !is_migration {
+                    *new_frame.scope_mut().auth_scope_mut() =
+                        self.initial_call_scope.auth_scope().for_top_level_frame();
+                }
             },
-            // Otherwise stamp the pushing frame's identity into the callee's scope as virtual badges. This is the
-            // callee's only view of who called it, and it is not inherited: the frame the callee pushes in turn gets
-            // the callee's identity, not this one.
+            // Otherwise stamp the pushing frame's identity into the callee's scope as virtual badges, and lend it the
+            // caller's authorized proofs. Neither is inherited further: the frame the callee pushes in turn gets
+            // the callee's identity and the callee's own windows, not these.
             Some(caller) => {
                 let component = caller
                     .scope()
                     .get_current_component_lock()
                     .and_then(|lock| lock.substate_id().as_component_address());
                 let template = *caller.current_template();
-                new_frame.scope_mut().auth_scope_mut().set_caller(component, template);
+                let callee_scope = new_frame.scope_mut().auth_scope_mut();
+                callee_scope.set_caller(component, template);
+                if !is_migration {
+                    caller.scope().auth_scope().lend_to_callee(callee_scope);
+                }
                 new_frame.inherit_restrictions(caller);
             },
         }
@@ -2001,9 +1997,7 @@ impl<TStore: StateReader> WorkingState<TStore> {
             }
         }
         for proof_id in value.proof_ids() {
-            if !scope.is_proof_in_scope(proof_id) {
-                return Err(RuntimeError::ProofNotInScope { proof_id: *proof_id });
-            }
+            scope.require_held_proof(proof_id)?;
         }
         for allocation in value.component_address_allocations() {
             if !scope.is_address_allocation_in_scope(allocation.id()) {

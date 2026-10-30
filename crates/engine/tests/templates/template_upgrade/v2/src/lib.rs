@@ -98,6 +98,14 @@ mod template {
             }
         }
 
+        /// Migrates only if the migration frame carries `badge`. The frame carries neither the signer badges nor
+        /// the proofs the transaction authorized, so this fails for both.
+        #[migration]
+        pub fn migrate_asserting_badge(previous_state: TemplateV1, badge: NonFungibleAddress) -> Self {
+            CallerContext::assert_badge_in_scope(&badge);
+            Self::migrate_v1_to_v2(previous_state)
+        }
+
         #[migration]
         pub fn faulty_migrate_panic(_previous_state: TemplateV1) -> Self {
             panic!("Intentional panic during migration");

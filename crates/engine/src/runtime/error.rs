@@ -113,6 +113,11 @@ pub enum RuntimeError {
     BucketNotInScope { bucket_id: BucketId },
     #[error("Encountered unknown or out of scope proof {proof_id}")]
     ProofNotInScope { proof_id: ProofId },
+    #[error(
+        "Proof {proof_id} was shown to this call and remains the caller's: it can be read here but not authorized, \
+         passed on, returned, stored or dropped"
+    )]
+    ProofNotHeld { proof_id: ProofId },
     #[error("Encountered unknown or out of scope address allocation {id}")]
     AddressAllocationNotInScope { id: AddressAllocationId },
     #[error("Encountered unknown or out of scope signer badge with public key {public_key}")]
@@ -233,6 +238,8 @@ pub enum RuntimeError {
     WorkspaceItemNotAProof { key: WorkspaceOffsetId },
     #[error("Proof {proof_id} is not authorized, so there is no authorization to drop")]
     ProofNotAuthorized { proof_id: ProofId },
+    #[error("Proof {proof_id} is already authorized")]
+    ProofAlreadyAuthorized { proof_id: ProofId },
     #[error("Attempted to take the last output but there was no previous instruction output")]
     NoLastInstructionOutput,
     #[error(transparent)]
@@ -529,6 +536,7 @@ impl RuntimeError {
             Self::WorkspaceError(_) |
             Self::SubstateAlreadySpent { .. } |
             Self::ProofNotInScope { .. } |
+            Self::ProofNotHeld { .. } |
             Self::AddressAllocationNotInScope { .. } |
             Self::SignerBadgeNotInScope { .. } |
             Self::NoMainSigner { .. } |
@@ -546,6 +554,7 @@ impl RuntimeError {
             Self::ItemNotOnWorkspace { .. } |
             Self::WorkspaceItemNotAProof { .. } |
             Self::ProofNotAuthorized { .. } |
+            Self::ProofAlreadyAuthorized { .. } |
             Self::NoLastInstructionOutput |
             Self::SpendContextUnavailable |
             Self::NoFeesPaid { .. } |
