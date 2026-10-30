@@ -181,6 +181,22 @@ A proof handed in remains the caller's — the callee may hold and forward it bu
 authorizing when the caller drops it. Signer badges are not proofs: they are stamped into every frame a
 top-level instruction pushes, so a rule naming the transaction's signer needs no `Proof` argument.
 
+A signer badge authorizes only the frame it is stamped into, and no template can turn it into a `Proof`: the
+engine issues public-key badges from the transaction's signatures and nowhere else. A component the signer
+calls directly acts with the signer's authority in its own frame, but every call it makes carries the
+component's caller badges instead. Template code that needs to know whether a call carries a particular badge —
+a signer's key on a top-level call, or the direct caller's component or template — asks the engine without
+minting anything:
+
+```rust
+CallerContext::assert_badge_in_scope(&badge);
+```
+
+The built-in account's allowances work this way. `approve(spender_badge, resource, amount)` names the badge,
+and `withdraw_approved(spender_badge, resource, amount)` pays out only when the call carries it: a
+public-key approval is spendable by that key's own top-level call to the account, and an approval naming
+`NonFungibleAddress::caller_component_badge(dex)` is spendable by the `dex` component calling the account.
+
 #### Resource Access Rules
 
 Resources can also have access rules, typically governing who can mint, burn, recall, freeze, or update metadata.

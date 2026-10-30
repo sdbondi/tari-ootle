@@ -545,9 +545,9 @@ let signer: RistrettoPublicKeyBytes = CallerContext::transaction_signer_public_k
 // Get current component address (only in CallMethod context)
 let addr: ComponentAddress = CallerContext::current_component_address();
 
-// Get signer proof (for passing as authorization)
-let proof: Proof = CallerContext::get_main_signer_proof();
-let proof: Proof = CallerContext::get_signer_proof_for_public_key(pk);
+// Fail unless this call carries a badge: a signer's key badge when the transaction calls this directly,
+// or the direct caller's component/template badge. Templates cannot mint proofs of a public key.
+CallerContext::assert_badge_in_scope(&badge);
 
 // Address allocation (for creating components/resources with deterministic addresses)
 let alloc: ComponentAddressAllocation = CallerContext::allocate_component_address(None);

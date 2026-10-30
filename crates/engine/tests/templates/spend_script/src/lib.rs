@@ -89,18 +89,6 @@ mod spend_scripts {
             let _allocation = CallerContext::allocate_component_address(None);
         }
 
-        /// Attempts to create a proof of the transaction signer. The read-only sandbox refuses the new proof, so this
-        /// always aborts the spend.
-        pub fn try_get_signer_proof(_ctx: SpendContext) {
-            let _proof = CallerContext::get_main_signer_proof();
-        }
-
-        /// Attempts to create a proof of `component`'s owner. The read-only sandbox refuses the new proof, so this
-        /// always aborts the spend.
-        pub fn try_get_owner_proof(component: ComponentAddress, _ctx: SpendContext) {
-            let _proof = ComponentManager::get(component).get_owner_proof();
-        }
-
         /// Attempts to mint `resource`. For a resource that does not track supply the mint writes nothing, and the
         /// read-only sandbox refuses the new bucket, so this always aborts the spend.
         pub fn try_mint(resource: ResourceAddress, _ctx: SpendContext) {

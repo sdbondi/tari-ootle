@@ -7,11 +7,7 @@ use indexmap::IndexSet;
 use tari_engine_types::{indexed_value::IndexedWellKnownTypes, lock::LockId, substate::SubstateId};
 use tari_template_lib::{
     models::{AddressAllocationId, BucketId, ProofId},
-    types::{
-        EntityId,
-        TemplateAddress,
-        constants::{PUBLIC_IDENTITY_RESOURCE_ADDRESS, TARI_TOKEN},
-    },
+    types::{EntityId, TemplateAddress, constants::TARI_TOKEN},
 };
 
 use crate::runtime::{AuthorizationScope, RuntimeError, locking::LockedSubstate};
@@ -121,12 +117,8 @@ impl CallScope {
             return true;
         }
 
-        // All Identity resource tokens are in scope
-        if address
-            .as_non_fungible_address()
-            .filter(|addr| *addr.resource_address() == PUBLIC_IDENTITY_RESOURCE_ADDRESS)
-            .is_some()
-        {
+        // Engine-issued badges are identifiers only: naming one confers nothing, so every frame may name any of them
+        if address.is_virtual_badge() {
             return true;
         }
 

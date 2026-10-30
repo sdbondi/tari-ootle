@@ -395,31 +395,23 @@ fn test_get_template_address() {
     assert_eq!(addr, template_test.get_template_address("Account"));
 }
 
-/// `GetOwnerProof` reads the owner rule without a lock, so it must read what the transaction has written, not what
-/// the store had, or a component created in this same transaction has no proof.
+/// A component's owner rule may name any key without that key's consent, so owning a component is no evidence of
+/// the key holder's intent and must not yield a proof of the key.
 #[test]
-fn test_get_owner_proof_for_a_component_created_in_the_same_transaction() {
+fn test_a_template_cannot_mint_an_owner_proof() {
     let mut template_test = TemplateTest::new(CRATE_PATH, vec!["tests/templates/component_manager"]);
+    let template = template_test.get_template_address("ComponentManagerTest");
 
-    let _: ComponentAddress = template_test.call_function(
-        "ComponentManagerTest",
-        "owner_proof_for_a_component_created_here",
-        args![],
-        vec![],
+    let reason = template_test.execute_expect_failure(
+        template_test
+            .transaction()
+            .call_function(template, "owner_proof_of_a_signer_owned_component", args![])
+            .build_and_seal(template_test.secret_key()),
+        vec![template_test.owner_proof()],
     );
-}
-
-#[test]
-fn test_get_owner_proof_is_none_for_a_component_owned_by_an_access_rule() {
-    let mut template_test = TemplateTest::new(CRATE_PATH, vec!["tests/templates/component_manager"]);
-
-    let has_proof: bool = template_test.call_function(
-        "ComponentManagerTest",
-        "has_owner_proof_when_owned_by_an_access_rule",
-        args![],
-        vec![],
-    );
-    assert!(!has_proof);
+    assert_reject_reason(reason, RuntimeError::PublicKeyProofNotMintable {
+        action: "ComponentAction::GetOwnerProof",
+    });
 }
 
 #[test]

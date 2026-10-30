@@ -20,7 +20,11 @@
 //  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use tari_template_lib::prelude::*;
+use tari_template_abi::{EngineOp, call_engine};
+use tari_template_lib::{
+    args::{ComponentAction, ComponentInvokeArg, ComponentRef, InvokeResult},
+    prelude::*,
+};
 
 #[template]
 mod template {
@@ -33,28 +37,18 @@ mod template {
             ComponentManager::get(component_address).get_template_address()
         }
 
-        /// Creates a component and immediately asks for its owner proof. The component is not in the state store
-        /// yet, so the proof must come from what this transaction has written.
-        pub fn owner_proof_for_a_component_created_here() -> ComponentAddress {
+        /// Creates a component owned by the transaction signer and asks the engine for a proof of its owner through
+        /// the raw `GetOwnerProof` call.
+        pub fn owner_proof_of_a_signer_owned_component() {
             let component = Component::new(Self)
                 .with_owner_rule(OwnerRule::OwnedBySigner)
                 .with_access_rules(AccessRules::allow_all())
                 .create();
-            let address = *component.address();
-            let proof = ComponentManager::get(address)
-                .get_owner_proof()
-                .expect("a component owned by the signer has an owner proof");
-            proof.drop();
-            address
-        }
-
-        /// Returns whether a component owned by an access rule has an owner proof.
-        pub fn has_owner_proof_when_owned_by_an_access_rule() -> bool {
-            let component = Component::new(Self)
-                .with_owner_rule(OwnerRule::ByAccessRule(AccessRule::AllowAll))
-                .with_access_rules(AccessRules::allow_all())
-                .create();
-            ComponentManager::get(*component.address()).get_owner_proof().is_some()
+            let _result: InvokeResult = call_engine(EngineOp::ComponentInvoke, &ComponentInvokeArg {
+                component_ref: ComponentRef::Ref(*component.address()),
+                action: ComponentAction::GetOwnerProof,
+                args: args![],
+            });
         }
     }
 }
