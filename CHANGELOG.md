@@ -8,8 +8,8 @@ See [standard-version](https://github.com/conventional-changelog/standard-versio
 ### ⚠️ Upgrade notes
 
 - **A proof authorizes only inside an explicit window, and a window lends one hop.** Templates that authorize a
-  `Proof` argument, and callers of the account's `*_with_auth` methods, must open the window on the caller's side
-  instead; see the authorization guide. (#3199, #3206)
+  `Proof` argument, and callers of the account's `*_with_auth` methods or the faucet's `take_with_proof`, must
+  open the window on the caller's side instead; see the authorization guide. (#3199, #3206)
 
 ## [0.48.0](https://github.com/tari-project/tari-ootle/compare/v0.47.0...v0.48.0) (2026-10-29)
 
