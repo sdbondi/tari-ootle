@@ -95,6 +95,9 @@ struct ScriptedNetwork {
     notifications: Arc<Mutex<Option<mpsc::UnboundedReceiver<TransactionFinalizedNotification>>>>,
     /// Transactions whose result query fails.
     failing: Arc<Mutex<HashSet<TransactionId>>>,
+    /// How many of the coming submissions fail.
+    failing_submits: Arc<AtomicUsize>,
+    submit_count: Arc<AtomicUsize>,
 }
 
 impl ScriptedNetwork {
@@ -108,6 +111,8 @@ impl ScriptedNetwork {
             subscribe_count: Arc::new(AtomicUsize::new(0)),
             notifications: Arc::new(Mutex::new(Some(rx))),
             failing: Arc::new(Mutex::new(HashSet::new())),
+            failing_submits: Arc::new(AtomicUsize::new(0)),
+            submit_count: Arc::new(AtomicUsize::new(0)),
         };
         (network, tx)
     }
@@ -125,6 +130,15 @@ impl ScriptedNetwork {
     /// Makes every result query for `transaction_id` fail from now on.
     fn fail_queries_for(&self, transaction_id: TransactionId) {
         self.failing.lock().unwrap().insert(transaction_id);
+    }
+
+    /// Makes the next `count` submissions fail.
+    fn fail_submits(&self, count: usize) {
+        self.failing_submits.store(count, Ordering::SeqCst);
+    }
+
+    fn submit_count(&self) -> usize {
+        self.submit_count.load(Ordering::SeqCst)
     }
 
     /// Makes `result` the answer to every query from now on.
@@ -153,6 +167,14 @@ impl WalletNetworkInterface for ScriptedNetwork {
     }
 
     async fn submit_transaction(&self, transaction: Transaction) -> Result<TransactionId, Self::Error> {
+        self.submit_count.fetch_add(1, Ordering::SeqCst);
+        if self
+            .failing_submits
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return Err(ScriptedError("the submission failed"));
+        }
         Ok(transaction.calculate_id())
     }
 
@@ -509,4 +531,21 @@ async fn a_transaction_that_fails_to_check_does_not_hold_up_the_others() {
 
     let status = wait_for_finalized(&mut running.events, transaction_id).await;
     assert_eq!(status, Some(TransactionStatus::Accepted));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_transaction_whose_submission_fails_is_queued_and_submitted_by_the_poll() {
+    let transaction = build_transaction();
+    let transaction_id = transaction.calculate_id();
+    let (network, _notifications) = ScriptedNetwork::new(vec![committed(transaction_id)]);
+    network.fail_submits(1);
+    let mut running = start(fast_config(), network.clone()).await;
+
+    // The wallet holds the transaction and submits it again, so the caller gets its id rather than an error.
+    let submitted = running.handle.submit_transaction(transaction).await.unwrap();
+    assert_eq!(submitted, transaction_id);
+
+    let status = wait_for_finalized(&mut running.events, transaction_id).await;
+    assert_eq!(status, Some(TransactionStatus::Accepted));
+    assert_eq!(network.submit_count(), 2);
 }

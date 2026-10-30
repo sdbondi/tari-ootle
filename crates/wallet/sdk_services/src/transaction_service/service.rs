@@ -340,24 +340,33 @@ where
             lock_deferred(&self.deferred_contexts).insert(transaction_id, context.clone());
         }
         let submission = transaction_api.submit_transaction(transaction_id).await;
-        if !matches!(submission, Ok(Submission::Deferred)) {
+        if matches!(submission, Ok(Submission::Submitted | Submission::Rejected)) {
             lock_deferred(&self.deferred_contexts).remove(&transaction_id);
         }
-        match submission? {
-            Submission::Submitted => self.notify.notify(TransactionSubmittedEvent {
+        match submission {
+            Ok(Submission::Submitted) => self.notify.notify(TransactionSubmittedEvent {
                 transaction_id,
                 context,
             }),
-            Submission::Rejected => self.notify.notify(TransactionInvalidEvent {
+            Ok(Submission::Rejected) => self.notify.notify(TransactionInvalidEvent {
                 transaction_id,
                 status: TransactionStatus::InvalidTransaction,
                 finalize: None,
                 final_fee: None,
             }),
-            Submission::Deferred => {
+            Ok(Submission::Deferred) => {
                 info!(
                     target: LOG_TARGET,
                     "Transaction {transaction_id} waits to be submitted until the wallet trusts a validator set"
+                );
+            },
+            // The transaction is stored as `New`, so the poll submits it again: the wallet is committed to it and the
+            // caller gets its id to follow. A failed call is also ambiguous, since the network may have received the
+            // transaction before the error.
+            Err(err) => {
+                warn!(
+                    target: LOG_TARGET,
+                    "Submitting transaction {transaction_id} failed, it is queued to be submitted again: {err}"
                 );
             },
         }

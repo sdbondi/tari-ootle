@@ -306,10 +306,10 @@ pub async fn handle_submit(
     let response = match submit_inner_for_request(context, submit).await {
         Ok(response) => response,
         Err(e) => {
-            // Release the claim so the approval survives a failed submit and
-            // another holder can retry. Best-effort: if this also fails the
-            // claim expires with the request and the stale sweep reclaims the
-            // (still unlinked) locks.
+            // A failed submit never stored a transaction, so nothing will
+            // submit one for this request. Release the claim so the approval
+            // survives and another holder can retry. Best-effort: if this also
+            // fails the claim expires with the request.
             if let Err(release_err) = sdk.store().with_write_tx(|tx| {
                 tx.transaction_request_transition(
                     req.request_id,
@@ -582,7 +582,7 @@ mod tests {
     use tari_ootle_address::Network;
     use tari_ootle_common_types::{Epoch, crypto::create_key_pair, optional::IsNotFoundError};
     use tari_ootle_transaction::TransactionSignature;
-    use tari_ootle_wallet_sdk::models::{KeyBranch, KeyId, KeyType, LockOwner, WalletLock};
+    use tari_ootle_wallet_sdk::models::{KeyBranch, KeyId, KeyType, LockOwner, TransactionStatus, WalletLock};
 
     use super::*;
     use crate::handlers::test_support::TestDaemon;
@@ -856,6 +856,68 @@ mod tests {
         assert!(
             extended - deadline >= time::Duration::minutes(55),
             "{deadline} -> {extended}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_stored_for_submission_is_submitted_when_the_indexer_is_unreachable() {
+        let daemon = TestDaemon::start_with_transaction_service().await;
+        let tool = daemon.api_key("htlc-swap-tool", "transaction_requests:create");
+        let lock_id = lock_for(&daemon, owner_of(&daemon, &tool));
+        let request_id = handle_create(&daemon.context, Some(&tool), create_request(vec![lock_id], 60 * 60))
+            .await
+            .unwrap()
+            .request_id;
+        handle_approve(
+            &daemon.context,
+            Some(&daemon.session),
+            TransactionRequestDecisionRequest { request_id },
+        )
+        .await
+        .unwrap();
+        let submit = || {
+            handle_submit(&daemon.context, Some(&tool), TransactionRequestSubmitRequest {
+                request_id,
+            })
+        };
+
+        // The wallet stores the sealed transaction and submits it again on its poll, so the request is linked to it.
+        let transaction_id = submit().await.unwrap().transaction_id;
+        let model = daemon
+            .context
+            .wallet_sdk()
+            .store()
+            .with_read_tx(|tx| tx.transaction_request_get(request_id))
+            .unwrap();
+        assert_eq!(model.status, TransactionRequestStatus::Submitted);
+        assert_eq!(model.transaction_id, Some(transaction_id));
+        let transaction = daemon
+            .context
+            .wallet_sdk()
+            .transaction_api()
+            .get(transaction_id)
+            .unwrap();
+        assert_eq!(transaction.status, TransactionStatus::New);
+
+        // Neither a second seal nor a rejection can follow a transaction the wallet is going to submit.
+        submit().await.unwrap_err();
+        handle_reject(
+            &daemon.context,
+            Some(&daemon.session),
+            TransactionRequestDecisionRequest { request_id },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(get_lock(&daemon, lock_id).transaction_id, Some(transaction_id));
+        assert_eq!(
+            daemon
+                .context
+                .wallet_sdk()
+                .transaction_api()
+                .fetch_all(Some(TransactionStatus::New), None)
+                .unwrap()
+                .len(),
+            1
         );
     }
 
