@@ -327,12 +327,13 @@ where
             .as_ref()
             .map(|c| c.linked_accounts.as_slice())
             .unwrap_or_default();
+        // The poll submits a stored transaction, so the lock is linked first: an error returned from here on means
+        // the wallet holds no transaction for the caller's inputs.
+        if let Some(lock_id) = lock_id {
+            transaction_api.locks_set_transaction_id(lock_id, transaction.calculate_id())?;
+        }
         let transaction_id =
             transaction_api.insert_new_transaction(transaction, new_account_info, linked_accounts, false)?;
-
-        if let Some(lock_id) = lock_id {
-            transaction_api.locks_set_transaction_id(lock_id, transaction_id)?;
-        }
 
         // A poll can submit the transaction while this call waits on the validator set, so the context is in place
         // before the submission starts.
@@ -364,10 +365,20 @@ where
             // caller gets its id to follow. A failed call is also ambiguous, since the network may have received the
             // transaction before the error.
             Err(err) => {
-                warn!(
-                    target: LOG_TARGET,
-                    "Submitting transaction {transaction_id} failed, it is queued to be submitted again: {err}"
-                );
+                let left_new = transaction_api
+                    .get(transaction_id)
+                    .is_ok_and(|transaction| transaction.status != TransactionStatus::New);
+                if left_new {
+                    // A poll that fetched the transaction before its context was in place submitted it, so nothing
+                    // else removes the context.
+                    lock_deferred(&self.deferred_contexts).remove(&transaction_id);
+                    debug!(target: LOG_TARGET, "Transaction {transaction_id} was submitted by a poll: {err}");
+                } else {
+                    warn!(
+                        target: LOG_TARGET,
+                        "Submitting transaction {transaction_id} failed, it is queued to be submitted again: {err}"
+                    );
+                }
             },
         }
         Ok(transaction_id)
@@ -497,7 +508,15 @@ where
                 Level::Info
             };
             log!(target: LOG_TARGET, level, "Resubmitting transaction {transaction_id}");
-            match transaction_api.submit_transaction(transaction_id).await? {
+            let submission = match transaction_api.submit_transaction(transaction_id).await {
+                Ok(submission) => submission,
+                // The transaction stays `New` for the next poll, and the ones after it are submitted now.
+                Err(err) => {
+                    warn!(target: LOG_TARGET, "Resubmitting transaction {transaction_id} failed: {err}");
+                    continue;
+                },
+            };
+            match submission {
                 // The store keeps only a transaction's new-account data, so that is all the context a transaction
                 // inserted before a restart carries.
                 Submission::Submitted => {

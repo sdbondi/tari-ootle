@@ -97,6 +97,8 @@ struct ScriptedNetwork {
     failing: Arc<Mutex<HashSet<TransactionId>>>,
     /// How many of the coming submissions fail.
     failing_submits: Arc<AtomicUsize>,
+    /// Transactions whose every submission fails.
+    always_failing_submits: Arc<Mutex<HashSet<TransactionId>>>,
     submit_count: Arc<AtomicUsize>,
 }
 
@@ -112,6 +114,7 @@ impl ScriptedNetwork {
             notifications: Arc::new(Mutex::new(Some(rx))),
             failing: Arc::new(Mutex::new(HashSet::new())),
             failing_submits: Arc::new(AtomicUsize::new(0)),
+            always_failing_submits: Arc::new(Mutex::new(HashSet::new())),
             submit_count: Arc::new(AtomicUsize::new(0)),
         };
         (network, tx)
@@ -135,6 +138,15 @@ impl ScriptedNetwork {
     /// Makes the next `count` submissions fail.
     fn fail_submits(&self, count: usize) {
         self.failing_submits.store(count, Ordering::SeqCst);
+    }
+
+    /// Makes every submission of `transaction_id` fail from now on.
+    fn fail_every_submit_of(&self, transaction_id: TransactionId) {
+        self.always_failing_submits.lock().unwrap().insert(transaction_id);
+    }
+
+    fn stop_failing_submits_of(&self, transaction_id: TransactionId) {
+        self.always_failing_submits.lock().unwrap().remove(&transaction_id);
     }
 
     fn submit_count(&self) -> usize {
@@ -168,6 +180,14 @@ impl WalletNetworkInterface for ScriptedNetwork {
 
     async fn submit_transaction(&self, transaction: Transaction) -> Result<TransactionId, Self::Error> {
         self.submit_count.fetch_add(1, Ordering::SeqCst);
+        if self
+            .always_failing_submits
+            .lock()
+            .unwrap()
+            .contains(&transaction.calculate_id())
+        {
+            return Err(ScriptedError("the submission always fails"));
+        }
         if self
             .failing_submits
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
@@ -336,7 +356,7 @@ struct Running {
     handle: TransactionServiceHandle,
     events: broadcast::Receiver<WalletEvent>,
     _shutdown: Shutdown,
-    _test: TestWithNetwork<ScriptedNetwork>,
+    test: TestWithNetwork<ScriptedNetwork>,
 }
 
 /// Starts the service and waits for it to subscribe to the finalization stream, so that a test that pushes a
@@ -358,7 +378,7 @@ async fn start(config: TransactionServiceConfig, network: ScriptedNetwork) -> Ru
         handle,
         events,
         _shutdown: shutdown,
-        _test: test,
+        test,
     }
 }
 
@@ -548,4 +568,53 @@ async fn a_transaction_whose_submission_fails_is_queued_and_submitted_by_the_pol
     let status = wait_for_finalized(&mut running.events, transaction_id).await;
     assert_eq!(status, Some(TransactionStatus::Accepted));
     assert_eq!(network.submit_count(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_transaction_that_fails_to_submit_does_not_hold_up_the_others() {
+    let transaction = build_transaction();
+    let transaction_id = transaction.calculate_id();
+    let failing = build_transaction_valid_to(Epoch(101));
+    let (network, _notifications) = ScriptedNetwork::new(vec![committed(transaction_id)]);
+    network.fail_every_submit_of(transaction_id);
+    network.fail_every_submit_of(failing.calculate_id());
+    let mut running = start(fast_config(), network.clone()).await;
+
+    running.handle.submit_transaction(transaction).await.unwrap();
+    // The poll submits the newest transaction first, so the failing one goes ahead of the other.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    running.handle.submit_transaction(failing).await.unwrap();
+    network.stop_failing_submits_of(transaction_id);
+
+    let status = wait_for_finalized(&mut running.events, transaction_id).await;
+    assert_eq!(status, Some(TransactionStatus::Accepted));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_transaction_is_not_stored_when_its_lock_cannot_be_linked() {
+    let (network, _notifications) = ScriptedNetwork::new(vec![TransactionFinalizedResult::Pending]);
+    let running = start(fast_config(), network.clone()).await;
+    let transaction = build_transaction();
+    let transaction_id = transaction.calculate_id();
+    let sdk = running.test.sdk();
+    // A transaction id is linked to at most one lock, so linking a second lock to it fails.
+    let held = running.test.new_lock().keep_locked();
+    sdk.transaction_api()
+        .locks_set_transaction_id(held, transaction_id)
+        .unwrap();
+    let lock_id = running.test.new_lock().keep_locked();
+
+    running
+        .handle
+        .submit_transaction_with_opts(transaction, None, Some(lock_id))
+        .await
+        .unwrap_err();
+
+    assert!(
+        sdk.transaction_api()
+            .get(transaction_id)
+            .unwrap_err()
+            .is_not_found_error()
+    );
+    assert_eq!(network.submit_count(), 0);
 }
