@@ -613,6 +613,13 @@ impl<D> TransactionBuilder<D> {
         self.add_instruction(Instruction::DropProofAuthorization { proof })
     }
 
+    /// Adds the instructions built by `f` inside an authorization window over the workspace proof `label`, so the
+    /// window covers exactly those instructions.
+    pub fn with_authorized_proof<T: Into<BuilderWorkspaceKey>, F: FnOnce(Self) -> Self>(self, label: T, f: F) -> Self {
+        let label = label.into();
+        f(self.authorize_proof(label.clone())).drop_proof_authorization(label)
+    }
+
     pub fn put_last_instruction_output_on_workspace<T: Into<BuilderWorkspaceKey>>(mut self, label: T) -> Self {
         let key = self.workspace_ids.insert(label.into());
         self.add_instruction(Instruction::PutLastInstructionOutputOnWorkspace { key })
