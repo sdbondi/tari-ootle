@@ -31,8 +31,7 @@ fn it_opens_and_closes_an_authorization_window() {
         Transaction::builder_localnet(Epoch(1))
             .call_method(account, "create_proof_for_resource", args![TARI_TOKEN])
             .put_last_instruction_output_on_workspace("proof")
-            .authorize_proof("proof")
-            .drop_proof_authorization("proof")
+            .with_authorized_proof("proof", |builder| builder)
             .drop_all_proofs_in_workspace()
             .build_and_seal(&owner_key),
         vec![owner_proof],
@@ -48,8 +47,7 @@ fn it_rejects_dropping_an_authorization_that_is_not_open() {
         Transaction::builder_localnet(Epoch(1))
             .call_method(account, "create_proof_for_resource", args![TARI_TOKEN])
             .put_last_instruction_output_on_workspace("proof")
-            .authorize_proof("proof")
-            .drop_proof_authorization("proof")
+            .with_authorized_proof("proof", |builder| builder)
             .drop_proof_authorization("proof")
             .drop_all_proofs_in_workspace()
             .build_and_seal(&owner_key),
@@ -163,8 +161,9 @@ fn it_revokes_method_access_when_the_authorization_is_dropped() {
         Transaction::builder_localnet(Epoch(1))
             .call_method(account, "create_proof_for_resource", args![TARI_TOKEN])
             .put_last_instruction_output_on_workspace("proof")
-            .authorize_proof("proof")
-            .call_method(component_address, "set_value", args![1u32])
+            .with_authorized_proof("proof", |builder| {
+                builder.call_method(component_address, "set_value", args![1u32])
+            })
             .drop_all_proofs_in_workspace()
             .build_and_seal(&owner_key),
         vec![owner_proof.clone()],
@@ -174,8 +173,7 @@ fn it_revokes_method_access_when_the_authorization_is_dropped() {
         Transaction::builder_localnet(Epoch(1))
             .call_method(account, "create_proof_for_resource", args![TARI_TOKEN])
             .put_last_instruction_output_on_workspace("proof")
-            .authorize_proof("proof")
-            .drop_proof_authorization("proof")
+            .with_authorized_proof("proof", |builder| builder)
             .call_method(component_address, "set_value", args![2u32])
             .drop_all_proofs_in_workspace()
             .build_and_seal(&owner_key),
