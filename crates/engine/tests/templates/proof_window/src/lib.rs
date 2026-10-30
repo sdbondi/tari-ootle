@@ -122,6 +122,12 @@ mod template {
             )
         }
 
+        /// Whether a second window can be opened over a proof whose window is already open.
+        pub fn try_nested_window(&self) -> bool {
+            let auth = self.badges.authorize();
+            auth.proof().try_authorize().is_ok()
+        }
+
         /// Whether a shown proof can be authorized here.
         pub fn try_authorize_shown(&self, proof: Proof) -> bool {
             proof.try_authorize().is_ok()

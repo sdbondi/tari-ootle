@@ -135,8 +135,8 @@ impl Proof {
         f()
     }
 
-    /// Tries to open an authorization window over this proof. Fails when this frame does not hold the proof: it was
-    /// shown as an argument, or it belongs to another frame.
+    /// Tries to open an authorization window over this proof. Fails when this frame does not hold the proof — it was
+    /// shown as an argument, or it belongs to another frame — or when a window over it is already open.
     pub fn try_authorize(&self) -> Result<ProofAccess, NotAuthorized> {
         let resp: InvokeResult = call_engine(EngineOp::ProofInvoke, &ProofInvokeArg {
             proof_ref: ProofRef::Ref(self.id),

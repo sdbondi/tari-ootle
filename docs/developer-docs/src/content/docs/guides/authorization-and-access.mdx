@@ -187,7 +187,8 @@ p.drop();
 ```
 
 Prefer `authorize_with` over a long-lived guard: a guard held across several calls lends to all of them, and a
-`ProofAuth` from `vault.authorize()` lends until it is dropped.
+`ProofAuth` from `vault.authorize()` lends until it is dropped. A proof has one window at a time: authorizing it
+again while a window is open fails.
 
 A **shown** proof is read-only. The callee may inspect its resource, amount and ids, and call `assert_resource`;
 it proves that the *immediate* caller holds the proof. Authorizing, forwarding, returning, storing or dropping a

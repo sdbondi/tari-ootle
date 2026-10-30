@@ -123,6 +123,20 @@ fn it_rejects_authorizing_a_proof_whose_window_is_already_open() {
 }
 
 #[test]
+fn a_template_cannot_open_a_second_window_over_the_same_proof() {
+    let mut test = TemplateTest::new(CRATE_PATH, ["tests/templates/proof_window"]);
+    let (component, _) = proof_window_component(&mut test);
+
+    test.execute_expect_success(
+        test.transaction()
+            .call_method(component, "try_nested_window", args![])
+            .build_and_seal(test.secret_key()),
+        vec![],
+    );
+    assert!(!test.return_values()[0].decoded::<bool>().unwrap());
+}
+
+#[test]
 fn it_rejects_authorizing_a_workspace_item_that_is_not_a_proof() {
     let mut test = TemplateTest::new(CRATE_PATH, Vec::<&str>::new());
     let (account, owner_proof, owner_key) = test.create_funded_account();

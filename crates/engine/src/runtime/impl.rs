@@ -3636,10 +3636,14 @@ where
                     // from a proof the frame holds: one it created or a callee handed back. A proof shown as an
                     // argument is the caller's to authorize, and every other live proof belongs to someone else.
                     // The answer is the same for all of them, so it reveals nothing about ids the frame cannot see.
-                    if !state.proof_exists(proof_id) || !state.current_call_scope()?.is_proof_in_scope(&proof_id) {
+                    // A window that is already open is refused too: the auth scope holds one entry per proof, so a
+                    // second window would alias the first and close it when either guard drops.
+                    let is_live = state.proof_exists(proof_id);
+                    let scope = state.current_call_scope_mut()?;
+                    if !is_live || !scope.is_proof_in_scope(&proof_id) || scope.auth_scope().contains_proof(&proof_id) {
                         return Ok(InvokeResult::encode(&Err::<(), _>(NotAuthorized))?);
                     }
-                    state.current_call_scope_mut()?.auth_scope_mut().add_proof(proof_id);
+                    scope.auth_scope_mut().add_proof(proof_id);
                     Ok(InvokeResult::encode(&Ok::<_, NotAuthorized>(()))?)
                 })
             },

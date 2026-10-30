@@ -7,11 +7,9 @@ See [standard-version](https://github.com/conventional-changelog/standard-versio
 
 ### ⚠️ Upgrade notes
 
-- **A proof authorizes only inside an explicit window, and a window lends one hop.** Templates open one with
-  `proof.authorize_with` / `vault.authorize_with`; transactions with `authorize!` / `drop_authorize!`. A `Proof`
-  argument is read-only for the callee, so templates that authorized an argument proof must be rewritten, and
-  the account's `*_with_auth` methods and the faucet's `take_with_proof` are gone: call the plain method inside
-  a window. (#3199, #3206)
+- **A proof authorizes only inside an explicit window, and a window lends one hop.** Templates that authorize a
+  `Proof` argument, and callers of the account's `*_with_auth` methods, must open the window on the caller's side
+  instead; see the authorization guide. (#3199, #3206)
 
 ## [0.48.0](https://github.com/tari-project/tari-ootle/compare/v0.47.0...v0.48.0) (2026-10-29)
 
