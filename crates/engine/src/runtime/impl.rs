@@ -1701,9 +1701,6 @@ where
                     Ok(InvokeResult::encode(&template_address)?)
                 })
             },
-            ComponentAction::GetOwnerProof => Err(RuntimeError::PublicKeyProofNotMintable {
-                action: "ComponentAction::GetOwnerProof",
-            }),
         }
     }
 
@@ -3975,9 +3972,6 @@ where
                     .get_current_component_lock()
                     .map(|l| l.substate_id().as_component_address().unwrap());
                 Ok(InvokeResult::encode(&maybe_address)?)
-            }),
-            CallerContextAction::GetSignerProof => Err(RuntimeError::PublicKeyProofNotMintable {
-                action: "CallerContextAction::GetSignerProof",
             }),
             CallerContextAction::AssertBadgeInScope => {
                 let badge: NonFungibleAddress = args.assert_one_arg()?;

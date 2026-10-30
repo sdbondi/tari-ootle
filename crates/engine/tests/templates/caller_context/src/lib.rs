@@ -20,11 +20,7 @@
 //   WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //   USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use tari_template_abi::{EngineOp, call_engine};
-use tari_template_lib::{
-    args::{CallerContextAction, CallerContextInvokeArg, InvokeResult},
-    prelude::*,
-};
+use tari_template_lib::prelude::*;
 
 #[template]
 mod caller_context_template {
@@ -38,14 +34,6 @@ mod caller_context_template {
         pub fn log_caller_pk() {
             let caller_pub_key = CallerContext::transaction_signer_public_key();
             info!("{}", caller_pub_key);
-        }
-
-        /// Asks the engine for a proof of a transaction signer through the raw `GetSignerProof` call.
-        pub fn raw_signer_proof(public_key: Option<RistrettoPublicKeyBytes>) {
-            let _result: InvokeResult = call_engine(EngineOp::CallerContextInvoke, &CallerContextInvokeArg {
-                action: CallerContextAction::GetSignerProof,
-                args: public_key.map(|pk| args![pk]).unwrap_or_default(),
-            });
         }
 
         pub fn assert_badge_in_scope(badge: NonFungibleAddress) {

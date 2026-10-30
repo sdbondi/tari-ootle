@@ -395,25 +395,6 @@ fn test_get_template_address() {
     assert_eq!(addr, template_test.get_template_address("Account"));
 }
 
-/// A component's owner rule may name any key without that key's consent, so owning a component is no evidence of
-/// the key holder's intent and must not yield a proof of the key.
-#[test]
-fn test_a_template_cannot_mint_an_owner_proof() {
-    let mut template_test = TemplateTest::new(CRATE_PATH, vec!["tests/templates/component_manager"]);
-    let template = template_test.get_template_address("ComponentManagerTest");
-
-    let reason = template_test.execute_expect_failure(
-        template_test
-            .transaction()
-            .call_function(template, "owner_proof_of_a_signer_owned_component", args![])
-            .build_and_seal(template_test.secret_key()),
-        vec![template_test.owner_proof()],
-    );
-    assert_reject_reason(reason, RuntimeError::PublicKeyProofNotMintable {
-        action: "ComponentAction::GetOwnerProof",
-    });
-}
-
 #[test]
 fn test_random() {
     let mut template_test = TemplateTest::new(CRATE_PATH, vec!["tests/templates/random"]);

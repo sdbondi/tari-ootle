@@ -256,7 +256,7 @@ fn a_called_component_cannot_spend_an_approval_with_a_minted_signer_proof() {
         vec![spender_badge],
     );
 
-    assert_reject_reason(reason, "Templates cannot mint a public-key proof");
+    assert_reject_reason(reason, "Failed to decode argument for engine call");
     assert_eq!(balance(&mut test, granter), granter_before);
 }
 
@@ -284,7 +284,7 @@ fn a_called_component_cannot_spend_an_approval_with_a_minted_owner_proof() {
         vec![spender_badge],
     );
 
-    assert_reject_reason(reason, "Templates cannot mint a public-key proof");
+    assert_reject_reason(reason, "Failed to decode argument for engine call");
     assert_eq!(balance(&mut test, granter), granter_before);
 }
 

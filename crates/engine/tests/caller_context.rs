@@ -30,25 +30,6 @@ fn it_returns_the_tx_signer() {
 }
 
 #[test]
-fn it_refuses_to_mint_signer_proofs() {
-    let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
-    let template = test.get_template_address(TEMPLATE_NAME);
-    let seal_pk = test.to_public_key_bytes();
-
-    for public_key in [None, Some(seal_pk)] {
-        let reason = test.execute_expect_failure(
-            test.transaction()
-                .call_function(template, "raw_signer_proof", args![public_key])
-                .build_and_seal(test.secret_key()),
-            vec![],
-        );
-        assert_reject_reason(reason, RuntimeError::PublicKeyProofNotMintable {
-            action: "CallerContextAction::GetSignerProof",
-        });
-    }
-}
-
-#[test]
 fn it_finds_every_signer_badge_in_a_directly_called_frame() {
     let mut test = TemplateTest::new(CRATE_PATH, TEMPLATE_PATHS);
     let template = test.get_template_address(TEMPLATE_NAME);

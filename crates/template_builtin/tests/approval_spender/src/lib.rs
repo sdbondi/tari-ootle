@@ -3,16 +3,43 @@
 
 use tari_template_abi::{EngineOp, call_engine};
 use tari_template_lib::{
-    args::{
-        CallerContextAction,
-        CallerContextInvokeArg,
-        ComponentAction,
-        ComponentInvokeArg,
-        ComponentRef,
-        InvokeResult,
-    },
+    args::{ComponentRef, InvokeResult},
     prelude::*,
+    template_macro_deps::minicbor::{self, CborLen, Encode},
 };
+
+/// The wire form of `CallerContextInvokeArg` naming the signer-proof action, as an older `tari_template_lib`
+/// encoded it.
+#[derive(Encode, CborLen)]
+struct SignerProofInvokeArg {
+    #[n(0)]
+    action: SignerProofAction,
+    #[n(1)]
+    args: Vec<Bytes>,
+}
+
+#[derive(Encode, CborLen)]
+enum SignerProofAction {
+    #[n(2)]
+    GetSignerProof,
+}
+
+/// The wire form of `ComponentInvokeArg` naming the owner-proof action, as an older `tari_template_lib` encoded it.
+#[derive(Encode, CborLen)]
+struct OwnerProofInvokeArg {
+    #[n(0)]
+    component_ref: ComponentRef,
+    #[n(1)]
+    action: OwnerProofAction,
+    #[n(2)]
+    args: Vec<Bytes>,
+}
+
+#[derive(Encode, CborLen)]
+enum OwnerProofAction {
+    #[n(5)]
+    GetOwnerProof,
+}
 
 /// Spends account approvals from inside a component, standing in for a dApp that a spender calls.
 #[template]
@@ -30,8 +57,8 @@ mod approval_spender_template {
                 .create()
         }
 
-        /// Spends `granter`'s approval with a proof of the transaction signer obtained through the raw
-        /// `GetSignerProof` engine call.
+        /// Spends `granter`'s approval with a proof of the transaction signer requested through the signer-proof
+        /// engine call.
         pub fn spend_with_signer_proof(
             &self,
             granter: ComponentAddress,
@@ -39,16 +66,16 @@ mod approval_spender_template {
             amount: Amount,
             dest: ComponentAddress,
         ) {
-            let result: InvokeResult = call_engine(EngineOp::CallerContextInvoke, &CallerContextInvokeArg {
-                action: CallerContextAction::GetSignerProof,
-                args: args![],
+            let result: InvokeResult = call_engine(EngineOp::CallerContextInvoke, &SignerProofInvokeArg {
+                action: SignerProofAction::GetSignerProof,
+                args: vec![],
             });
             let proof: Proof = result.decode().unwrap();
             Self::spend_with_proof(granter, proof, resource, amount, dest);
         }
 
-        /// Spends `granter`'s approval with a proof of the owner of `signer_account` obtained through the raw
-        /// `GetOwnerProof` engine call.
+        /// Spends `granter`'s approval with a proof of the owner of `signer_account` requested through the
+        /// owner-proof engine call.
         pub fn spend_with_owner_proof(
             &self,
             signer_account: ComponentAddress,
@@ -57,10 +84,10 @@ mod approval_spender_template {
             amount: Amount,
             dest: ComponentAddress,
         ) {
-            let result: InvokeResult = call_engine(EngineOp::ComponentInvoke, &ComponentInvokeArg {
+            let result: InvokeResult = call_engine(EngineOp::ComponentInvoke, &OwnerProofInvokeArg {
                 component_ref: ComponentRef::Ref(signer_account),
-                action: ComponentAction::GetOwnerProof,
-                args: args![],
+                action: OwnerProofAction::GetOwnerProof,
+                args: vec![],
             });
             let proof: Option<Proof> = result.decode().unwrap();
             Self::spend_with_proof(granter, proof.unwrap(), resource, amount, dest);

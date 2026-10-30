@@ -95,10 +95,8 @@ pub enum ComponentAction {
     SetAccessRules,
     #[n(4)]
     GetTemplateAddress,
-    /// Refused by the engine: templates cannot mint public-key proofs. Kept so that templates built against it
-    /// still decode and fail with a named error.
-    #[n(5)]
-    GetOwnerProof,
+    // Tag 5 is retired and must not be reused: a template built against it must fail to decode rather than run
+    // another action.
     #[n(6)]
     SetOwnerRule,
 }
@@ -740,10 +738,8 @@ pub enum CallerContextAction {
     GetCallerPublicKey,
     #[n(1)]
     GetComponentAddress,
-    /// Refused by the engine: templates cannot mint public-key proofs. Kept so that templates built against it
-    /// still decode and fail with a named error.
-    #[n(2)]
-    GetSignerProof,
+    // Tag 2 is retired and must not be reused: a template built against it must fail to decode rather than run
+    // another action.
     /// Fails unless the badge given as the single argument is in the current frame's authorization scope: a
     /// signer badge stamped into it, or the badge of its direct caller.
     #[n(3)]
