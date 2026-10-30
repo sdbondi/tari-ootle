@@ -229,6 +229,10 @@ pub enum RuntimeError {
         id: WorkspaceOffsetId,
         existing_ids: Vec<WorkspaceId>,
     },
+    #[error("Workspace item {key} is not a proof")]
+    WorkspaceItemNotAProof { key: WorkspaceOffsetId },
+    #[error("Proof {proof_id} is not authorized, so there is no authorization to drop")]
+    ProofNotAuthorized { proof_id: ProofId },
     #[error("Attempted to take the last output but there was no previous instruction output")]
     NoLastInstructionOutput,
     #[error(transparent)]
@@ -540,6 +544,8 @@ impl RuntimeError {
             Self::BucketNotInScope { .. } |
             Self::ProofNotFound { .. } |
             Self::ItemNotOnWorkspace { .. } |
+            Self::WorkspaceItemNotAProof { .. } |
+            Self::ProofNotAuthorized { .. } |
             Self::NoLastInstructionOutput |
             Self::SpendContextUnavailable |
             Self::NoFeesPaid { .. } |

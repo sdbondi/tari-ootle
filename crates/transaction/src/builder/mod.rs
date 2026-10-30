@@ -601,6 +601,18 @@ impl<D> TransactionBuilder<D> {
         self.add_instruction(Instruction::DropAllProofsInWorkspace)
     }
 
+    /// Opens an authorization window over the workspace proof `label` for the instructions that follow.
+    pub fn authorize_proof<T: Into<BuilderWorkspaceKey>>(self, label: T) -> Self {
+        let proof = self.get_workspace_offset_id_from_named_arg(label.into());
+        self.add_instruction(Instruction::AuthorizeProof { proof })
+    }
+
+    /// Closes the authorization window over the workspace proof `label`.
+    pub fn drop_proof_authorization<T: Into<BuilderWorkspaceKey>>(self, label: T) -> Self {
+        let proof = self.get_workspace_offset_id_from_named_arg(label.into());
+        self.add_instruction(Instruction::DropProofAuthorization { proof })
+    }
+
     pub fn put_last_instruction_output_on_workspace<T: Into<BuilderWorkspaceKey>>(mut self, label: T) -> Self {
         let key = self.workspace_ids.insert(label.into());
         self.add_instruction(Instruction::PutLastInstructionOutputOnWorkspace { key })
@@ -1048,7 +1060,9 @@ impl<D> TransactionBuilder<D> {
             Instruction::PutIntoBucket { .. } |
             Instruction::PublishTemplate { .. } |
             Instruction::AllocateAddress { .. } |
-            Instruction::PayFeeFromBucket { .. } => {},
+            Instruction::PayFeeFromBucket { .. } |
+            Instruction::AuthorizeProof { .. } |
+            Instruction::DropProofAuthorization { .. } => {},
         }
     }
 

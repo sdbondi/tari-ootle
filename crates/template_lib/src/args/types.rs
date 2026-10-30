@@ -663,6 +663,8 @@ pub enum WorkspaceAction {
     DropAllProofs,
     Assert,
     DropAll,
+    AuthorizeProof,
+    DropProofAuthorization,
 }
 
 // -------------------------------- NonFungible -------------------------------- //

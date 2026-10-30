@@ -1772,6 +1772,19 @@ impl<TStore: StateReader> WorkingState<TStore> {
         &mut self.workspace
     }
 
+    /// The proof held by the workspace item at `key`. The item must be a single proof, so an authorization
+    /// instruction covers exactly the proof it names.
+    pub fn workspace_proof(&self, key: WorkspaceOffsetId) -> Result<ProofId, RuntimeError> {
+        let value = self
+            .workspace()
+            .get(key)?
+            .ok_or_else(|| RuntimeError::ItemNotOnWorkspace {
+                id: key,
+                existing_ids: self.workspace().all_ids_iter().collect(),
+            })?;
+        tari_bor::from_value::<ProofId>(value).map_err(|_| RuntimeError::WorkspaceItemNotAProof { key })
+    }
+
     pub fn workspace_assert(&self, key: WorkspaceOffsetId, assertion: Assertion) -> Result<(), RuntimeError> {
         let value = self
             .workspace()

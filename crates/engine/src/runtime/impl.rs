@@ -3750,6 +3750,27 @@ where
                     Ok(InvokeResult::unit())
                 })
             },
+            WorkspaceAction::AuthorizeProof => {
+                let key: WorkspaceOffsetId = args.assert_one_arg()?;
+                self.tracker.write_with(|state| {
+                    let proof_id = state.workspace_proof(key)?;
+                    if !state.current_call_scope()?.is_proof_in_scope(&proof_id) {
+                        return Err(RuntimeError::ProofNotInScope { proof_id });
+                    }
+                    state.current_call_scope_mut()?.auth_scope_mut().add_proof(proof_id);
+                    Ok(InvokeResult::unit())
+                })
+            },
+            WorkspaceAction::DropProofAuthorization => {
+                let key: WorkspaceOffsetId = args.assert_one_arg()?;
+                self.tracker.write_with(|state| {
+                    let proof_id = state.workspace_proof(key)?;
+                    if !state.current_call_scope_mut()?.auth_scope_mut().remove_proof(&proof_id) {
+                        return Err(RuntimeError::ProofNotAuthorized { proof_id });
+                    }
+                    Ok(InvokeResult::unit())
+                })
+            },
         }
     }
 

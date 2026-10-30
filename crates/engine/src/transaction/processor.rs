@@ -540,6 +540,18 @@ where
                 revealed_input_bucket,
             } => Self::stealth_transfer(runtime, resource_address, statement, revealed_input_bucket),
             Instruction::PayFeeFromBucket { bucket } => Self::pay_fee_from_bucket(runtime, bucket),
+            Instruction::AuthorizeProof { proof } => {
+                runtime
+                    .interface()
+                    .workspace_invoke(WorkspaceAction::AuthorizeProof, invoke_args![proof].into())?;
+                Ok(None)
+            },
+            Instruction::DropProofAuthorization { proof } => {
+                runtime
+                    .interface()
+                    .workspace_invoke(WorkspaceAction::DropProofAuthorization, invoke_args![proof].into())?;
+                Ok(None)
+            },
             Instruction::UpdateComponentTemplate {
                 component,
                 migrate,
