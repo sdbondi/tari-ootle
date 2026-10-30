@@ -40,8 +40,8 @@ pub struct TransactionExecution {
     #[cfg_attr(feature = "ts", ts(skip))]
     pub is_fee_intent_commit: bool,
     /// The outputs of the full execution that a fee-intent commit does not create. The transaction still involves
-    /// their shard groups, which every shard group must count alike, so they are part of its evidence but are never
-    /// locked or written. Set by [`Self::take_fee_intent_commit`] and node-internal.
+    /// their shard groups, which every shard group must count alike, so they are part of a multishard transaction's
+    /// evidence but are never locked or written. Set by [`Self::take_fee_intent_commit`] and node-internal.
     #[n(5)]
     #[cbor(default)]
     #[serde(skip)]
@@ -182,8 +182,14 @@ impl TransactionExecution {
         self.result.execution_time
     }
 
+    /// The evidence of a local-only execution, listing the outputs it creates. A local-only execution's rejected
+    /// outputs are local, so they involve no shard group beyond those listed.
     pub fn to_evidence(&self, num_preshards: NumPreshards, num_committees: u32) -> Evidence {
-        let mut evidence = Evidence::from_lock_intents(num_preshards, num_committees, self.involved_locks());
+        let mut evidence = Evidence::from_lock_intents(
+            num_preshards,
+            num_committees,
+            self.resolved_inputs().iter().chain(self.resulting_outputs()),
+        );
         if self.decision().is_abort() {
             evidence.abort();
         }

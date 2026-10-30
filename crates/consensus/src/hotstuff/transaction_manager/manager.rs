@@ -1760,6 +1760,13 @@ mod tests {
                 .up_iter()
                 .any(|(id, _)| [component_id(2), component_id(3)].contains(id))
         );
+        let evidence = prepared[0].execution.to_evidence(NumPreshards::P256, 1);
+        assert_eq!(evidence.num_shard_groups(), 1);
+        assert!(
+            !evidence
+                .all_outputs_iter()
+                .any(|(_, id, _)| [component_id(2), component_id(3)].contains(id))
+        );
         // The failed attempt's locks are released, so nothing only the main intent creates stays locked
         for id in [component_id(2), component_id(3)] {
             assert!(!locks.iter().any(|(_, locked, _)| *locked == id), "{id} in {locks:?}");
