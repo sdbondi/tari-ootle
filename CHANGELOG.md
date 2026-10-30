@@ -11,8 +11,7 @@ See [standard-version](https://github.com/conventional-changelog/standard-versio
   `proof.authorize_with` / `vault.authorize_with`; transactions with `authorize!` / `drop_authorize!`. A `Proof`
   argument is read-only for the callee, so templates that authorized an argument proof must be rewritten, and
   the account's `*_with_auth` methods and the faucet's `take_with_proof` are gone: call the plain method inside
-  a window. Deployed templates that wrap a call in `authorize_with` now lend to it, so this ships with a testnet
-  reset. (#3199, #3206)
+  a window. (#3199, #3206)
 
 ## [0.48.0](https://github.com/tari-project/tari-ootle/compare/v0.47.0...v0.48.0) (2026-10-29)
 
