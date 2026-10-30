@@ -477,6 +477,15 @@ impl<TStore: EpochOracleStore + BaseLayerBlockHeaderStore, TClient: BaseNodeClie
             return Ok(false);
         }
 
+        // A pruned base node fills the blocks below its pruned height by horizon sync, which carries no
+        // burned outputs, so scanning them would silently skip the headers those burns are claimed against.
+        if self.config.features.sync_headers && start_scan_height < tip.pruned_height {
+            return Err(BaseLayerOracleError::BaseNodePrunedAboveScanHeight {
+                pruned_height: tip.pruned_height,
+                scan_height: start_scan_height,
+            });
+        }
+
         let num_blocks = lag_tip_height - (start_scan_height - 1);
 
         // Recover the last scanned validator node MR if it is not set yet, i.e the node has scanned BL blocks
@@ -1178,6 +1187,12 @@ pub enum BaseLayerOracleError {
     InvalidBaseNodeResponse(String),
     #[error("Epoch {epoch} overflows the base layer height space at epoch length {epoch_length}")]
     EpochHeightOverflow { epoch: Epoch, epoch_length: u64 },
+    #[error(
+        "The base node is pruned to height {pruned_height}, above the next scan height {scan_height}. It holds no \
+         burned outputs below its pruned height, so burn claims made against those blocks could not be verified. \
+         Point the validator node at an archival base node (pruning_horizon = 0)."
+    )]
+    BaseNodePrunedAboveScanHeight { pruned_height: u64, scan_height: u64 },
 }
 
 enum BlockchainProgression {
@@ -1224,7 +1239,7 @@ mod tests {
     };
     use tari_utilities::ByteArray;
 
-    use super::{BaseLayerOracle, BaseLayerOracleInner, hash_header, lookup_epoch_boundary_hash};
+    use super::{BaseLayerOracle, BaseLayerOracleError, BaseLayerOracleInner, hash_header, lookup_epoch_boundary_hash};
     use crate::{
         base_layer::{
             BaseLayerBlockHeaderStore,
@@ -1349,6 +1364,8 @@ mod tests {
         vn_calls: Arc<Mutex<Vec<u64>>>,
         /// When true, `get_validator_node_changes` returns an error instead of data.
         vn_fail: Arc<Mutex<bool>>,
+        /// The pruned height reported by `get_tip_info`. Zero (archival) by default.
+        pruned_height: Arc<Mutex<u64>>,
     }
 
     impl MockBaseNode {
@@ -1360,6 +1377,7 @@ mod tests {
                 vn_changes: Arc::new(Mutex::new(HashMap::new())),
                 vn_calls: Arc::new(Mutex::new(Vec::new())),
                 vn_fail: Arc::new(Mutex::new(false)),
+                pruned_height: Arc::new(Mutex::new(0)),
             };
             client.set_chain(chain);
             client
@@ -1413,6 +1431,7 @@ mod tests {
             Ok(BaseLayerMetadata {
                 height_of_longest_chain: tip.height,
                 tip_hash: hash_header(NETWORK, tip),
+                pruned_height: *self.pruned_height.lock().unwrap(),
             })
         }
 
@@ -1862,6 +1881,38 @@ mod tests {
         sync_to_tip(&mut inner).await;
 
         assert_eq!(store.heights(), vec![1, 5, 7, 10, 15]);
+    }
+
+    #[tokio::test]
+    async fn retained_scan_refuses_heights_below_the_base_node_pruned_height() {
+        let chain = linear_chain(0..=20);
+        let client = MockBaseNode::new(chain.clone());
+        // A base node pruned to height 10 holds no burned outputs below it, so it would not report this one.
+        client.add_output(&chain[3], burn_output(None));
+        *client.pruned_height.lock().unwrap() = 10;
+        let store = InMemoryStore::default();
+        let mut inner = make_inner(store.clone(), client.clone(), 5);
+
+        let err = inner.scan_blockchain(false).await.unwrap_err();
+        assert!(
+            matches!(err, BaseLayerOracleError::BaseNodePrunedAboveScanHeight {
+                pruned_height: 10,
+                scan_height: 1
+            }),
+            "{err}"
+        );
+        assert!(store.heights().is_empty());
+        assert_eq!(inner.last_scanned_height, 0);
+
+        // The indexer's boundary path stores no burn headers, so a pruned base node serves it.
+        let mut boundary = make_inner_boundary_mode(InMemoryStore::default(), client.clone(), 5);
+        sync_to_tip(&mut boundary).await;
+        assert_eq!(boundary.last_scanned_height, 15);
+
+        // A scan that starts at or above the pruned height proceeds.
+        *client.pruned_height.lock().unwrap() = 1;
+        sync_to_tip(&mut inner).await;
+        assert_eq!(store.heights(), vec![1, 3, 5, 10, 15]);
     }
 
     /// Chain A with burns at 11 and 13, scanned to height 15, and chain B, which diverges from it at

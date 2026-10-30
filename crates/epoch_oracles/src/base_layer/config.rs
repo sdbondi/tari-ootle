@@ -23,7 +23,7 @@ pub struct BaseLayerEpochOracleConfig {
 #[derive(Debug, Clone, Copy)]
 pub struct BaseLayerEpochOracleFeatures {
     /// Whether to store the base layer headers burn claims are verified against: every block with an output for
-    /// this sidechain, plus every epoch boundary. Requires the base node to allow `get_side_chain_utxos`.
+    /// this sidechain, plus every epoch boundary. Requires an archival base node that allows `get_side_chain_utxos`.
     pub sync_headers: bool,
     /// Whether to sync validator node changes when scanning the base layer.
     pub sync_validator_node_changes: bool,
