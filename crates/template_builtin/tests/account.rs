@@ -362,6 +362,32 @@ fn a_component_spends_an_approval_naming_its_caller_badge() {
     assert_reject_reason(reason, "Amount exceeds approval (max: 40, attempted: 41)");
 }
 
+#[test]
+fn an_approval_must_name_a_badge_a_call_can_carry() {
+    let ApprovalFixture {
+        mut test,
+        granter,
+        granter_badge,
+        granter_secret,
+        spender,
+        ..
+    } = approval_fixture();
+    let stored_badge: NonFungibleAddress =
+        test.call_function("ApprovalSpender", "mint_badge_into", args![spender], vec![]);
+
+    let reason = test.execute_expect_failure(
+        test.transaction()
+            .call_method(granter, "approve", args![stored_badge, TARI_TOKEN, 100])
+            .finish()
+            .seal(&granter_secret),
+        vec![granter_badge],
+    );
+    assert_reject_reason(
+        reason,
+        format!("Spender badge {stored_badge} is not a public-key or caller badge"),
+    );
+}
+
 /// Has a third party deposit `count` newly created resources into `account`, one vault each.
 fn deposit_new_resources(test: &mut TemplateTest, account: ComponentAddress, count: u32) {
     let depositor = test.get_template_address("NewResourceDepositor");

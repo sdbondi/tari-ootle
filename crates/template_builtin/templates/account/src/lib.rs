@@ -40,7 +40,8 @@ mod account_template {
         #[cbor(with = "indexmap_codec")]
         /// Approvals for others to withdraw from this account. The key is a tuple of (approved resource,
         /// required spender_badge), and the value is the approved amount. A spender badge is a badge the engine
-        /// stamps on the call: a public-key badge for a signer calling directly, or a caller-component badge.
+        /// stamps on the call: a public-key badge for a signer calling directly, a caller-component badge for one
+        /// component, or a caller-template badge for every component and function of one template.
         approvals: ApprovalMap,
     }
 
@@ -285,7 +286,8 @@ mod account_template {
         }
 
         // Approval methods
-        /// Called by account owner — sets or updates approval
+        /// Called by account owner — sets or updates approval. `spender_badge` must be a badge the engine stamps on
+        /// a call (see [`Self::withdraw_approved`]); a zero `amount` revokes the approval for any badge.
         pub fn approve(&mut self, spender_badge: NonFungibleAddress, resource: ResourceAddress, amount: Amount) {
             if amount.is_zero() {
                 let key = (resource, spender_badge);
@@ -297,6 +299,13 @@ mod account_template {
                 }
                 // Else no-op
             } else {
+                let badge_resource = spender_badge.resource_address();
+                assert!(
+                    badge_resource.is_public_key_resource() || badge_resource.is_caller_badge(),
+                    "Spender badge {} is not a public-key or caller badge, so no call can carry it to spend an \
+                     approval",
+                    spender_badge
+                );
                 emit_event(
                     "approve",
                     metadata!(
@@ -316,8 +325,10 @@ mod account_template {
         }
 
         /// Withdraws `amount` under the approval for `spender_badge`, which this call must carry: a public-key badge
-        /// when that key's transaction calls this method directly, or the caller-component badge of the component
-        /// making the call.
+        /// when that key's transaction calls this method directly, or, when template code makes the call, the
+        /// caller-component badge of the calling component or the caller-template badge of its template. An
+        /// approval keyed on a template badge is therefore spendable by every component and function of that
+        /// template.
         pub fn withdraw_approved(
             &mut self,
             spender_badge: NonFungibleAddress,

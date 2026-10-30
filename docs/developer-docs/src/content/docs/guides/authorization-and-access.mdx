@@ -194,8 +194,11 @@ CallerContext::assert_badge_in_scope(&badge);
 
 The built-in account's allowances work this way. `approve(spender_badge, resource, amount)` names the badge,
 and `withdraw_approved(spender_badge, resource, amount)` pays out only when the call carries it: a
-public-key approval is spendable by that key's own top-level call to the account, and an approval naming
-`NonFungibleAddress::caller_component_badge(dex)` is spendable by the `dex` component calling the account.
+public-key approval is spendable by that key's own top-level call to the account, an approval naming
+`NonFungibleAddress::caller_component_badge(dex)` is spendable by the `dex` component calling the account, and
+one naming `NonFungibleAddress::direct_caller_template_badge(t)` by every component and function of template
+`t`. `approve` accepts only these engine-issued badges, since an approval keyed on a stored NFT could never be
+spent.
 
 #### Resource Access Rules
 

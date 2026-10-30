@@ -97,6 +97,15 @@ mod approval_spender_template {
             ComponentManager::get(dest).invoke("deposit", args![bucket]);
         }
 
+        /// Mints a single non-fungible badge into `account` and returns its address.
+        pub fn mint_badge_into(account: ComponentAddress) -> NonFungibleAddress {
+            let id = NonFungibleId::from_u32(1);
+            let bucket = ResourceBuilder::non_fungible().initial_supply([id.clone()]);
+            let badge = NonFungibleAddress::new(bucket.resource_address(), id);
+            ComponentManager::get(account).invoke("deposit", args![bucket]);
+            badge
+        }
+
         /// Pulls `amount` from `granter` under an approval naming this component, and keeps it.
         pub fn pull(&mut self, granter: ComponentAddress, resource: ResourceAddress, amount: Amount) {
             let badge = NonFungibleAddress::caller_component_badge(CallerContext::current_component_address());
