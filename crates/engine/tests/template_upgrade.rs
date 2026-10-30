@@ -17,6 +17,7 @@ use tari_template_lib::{
     types::{
         AccessRule,
         ComponentAddress,
+        NonFungibleAddress,
         OwnerRule,
         TemplateAddress,
         VaultId,
@@ -428,28 +429,46 @@ fn it_authorizes_an_access_rule_upgrade_rule_independently_of_the_owner() {
 }
 
 #[test]
-fn it_rejects_a_component_scoped_upgrade_rule_at_creation() {
+fn it_rejects_invalid_upgrade_rules_at_creation() {
     let mut test = TemplateTest::new(CRATE_PATH, vec![
         "tests/templates/template_upgrade/v1",
         "tests/templates/template_upgrade/v2",
     ]);
     let some_component = create_component(&mut test);
     let v1_template = test.get_template_address("TemplateV1");
+    let v2_template = test.get_template_address("TemplateV2");
+    let signer_badge = NonFungibleAddress::from_public_key(test.to_public_key_bytes());
 
-    let reason = test.execute_expect_failure(
-        Transaction::builder_localnet(Epoch(1))
-            .call_function(v1_template, "new", args![
-                OwnerRule::OwnedBySigner,
-                UpdateRule::AccessRule(rule!(component(some_component))),
-                signers()
-            ])
-            .finish()
-            .seal(test.secret_key()),
-        vec![],
-    );
-
-    assert_reject_reason(reason, RuntimeError::InvalidArgument {
+    let scoped_reason = || RuntimeError::InvalidArgument {
         argument: "upgrade_rule",
         reason: "component(..)/template(..) cannot be used in a component upgrade rule".to_string(),
-    });
+    };
+    let cases = [
+        (rule!(component(some_component)), scoped_reason()),
+        (rule!(template(v2_template)), scoped_reason()),
+        (
+            rule!(m_of_n(2, non_fungible(signer_badge))),
+            RuntimeError::InvalidMOfNThreshold {
+                argument: "upgrade_rule",
+                threshold: 2,
+                num_requirements: 1,
+            },
+        ),
+    ];
+
+    for (upgrade_rule, expected) in cases {
+        let reason = test.execute_expect_failure(
+            Transaction::builder_localnet(Epoch(1))
+                .call_function(v1_template, "new", args![
+                    OwnerRule::OwnedBySigner,
+                    UpdateRule::AccessRule(upgrade_rule),
+                    signers()
+                ])
+                .finish()
+                .seal(test.secret_key()),
+            vec![],
+        );
+
+        assert_reject_reason(reason, expected);
+    }
 }

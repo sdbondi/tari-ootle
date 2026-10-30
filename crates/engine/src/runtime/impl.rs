@@ -1488,8 +1488,9 @@ where
                         reason: "component(..)/template(..) cannot be used in a component owner rule".to_string(),
                     });
                 }
-                // An upgrade rule is evaluated with the migration frame on top, whose component is the one being
-                // upgraded, so `component(..)`/`template(..)` would be constant there too.
+                // An upgrade rule is evaluated with the migration frame on top. There `component(..)` is constant (the
+                // component being upgraded) and `template(..)` matches the upgrade target, which the upgrader picks, so
+                // neither expresses who may upgrade.
                 if let UpdateRule::AccessRule(rule) = &upgrade_rule {
                     if rule.contains_scoped_to_component_or_template() {
                         return Err(RuntimeError::InvalidArgument {
