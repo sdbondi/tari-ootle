@@ -125,7 +125,7 @@ pub enum RuntimeError {
     #[error(
         "This call does not carry the badge {badge}. A call carries the transaction signers' badges when the \
          transaction makes it directly, its direct caller's badges when a template makes it, and the badges of the \
-         proofs it holds"
+         proofs authorized in this frame or around the call"
     )]
     BadgeNotInScope { badge: NonFungibleAddress },
     #[error(
