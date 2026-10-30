@@ -232,8 +232,8 @@ pub trait RuntimeInterface {
 
     /// Checks whether the current execution context has access to the given component method.
     fn check_component_access_rules(&self, method: &str) -> Result<(), RuntimeError>;
-    /// Checks whether the current execution context has owner permission of the given component.
-    fn check_component_ownership(&self, action: ActionIdent) -> Result<(), RuntimeError>;
+    /// Checks whether the current execution context satisfies the current component's upgrade rule.
+    fn check_component_upgrade_rule(&self) -> Result<(), RuntimeError>;
 
     /// Ends the current frame's call boundary by revoking the proofs that were in scope only for the boundary
     /// check. Must run after the frame's access rule has been evaluated and before anything acts in the frame.

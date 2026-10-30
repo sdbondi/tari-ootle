@@ -252,6 +252,8 @@ pub enum RuntimeError {
     },
     #[error("Access Denied: You must be the owner to perform this action: {action}")]
     AccessDeniedOwnerRequired { action: ActionIdent },
+    #[error("Component {component} cannot be upgraded: its upgrade rule is Locked")]
+    ComponentUpgradesLocked { component: ComponentAddress },
     #[error("Write attempted in a read-only execution context")]
     WriteInReadOnlyContext,
     #[error("Host operation '{operation}' is forbidden inside a read-only (spend-script) context")]
@@ -565,6 +567,7 @@ impl RuntimeError {
             Self::AccessDeniedSetComponentState { .. } |
             Self::AccessDeniedAuthHook { .. } |
             Self::AccessDeniedOwnerRequired { .. } |
+            Self::ComponentUpgradesLocked { .. } |
             Self::WriteInReadOnlyContext |
             Self::ForbiddenInReadOnlyContext { .. } |
             Self::WriteOutsideOwnComponent { .. } |

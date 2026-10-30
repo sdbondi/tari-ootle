@@ -75,7 +75,13 @@ mod spend_scripts {
         /// Attempts to mutate ledger state by creating a component. The read-only spend-script sandbox refuses the
         /// underlying `new_substate`/write-lock, so this always aborts the spend.
         pub fn try_write(_ctx: SpendContext) {
-            engine().create_component(0u32, OwnerRule::default(), AccessRules::allow_all(), None);
+            engine().create_component(
+                0u32,
+                OwnerRule::default(),
+                AccessRules::allow_all(),
+                None,
+                UpdateRule::Locked,
+            );
         }
 
         /// Emits an event, which the sandbox permits.

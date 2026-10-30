@@ -38,7 +38,7 @@ use tari_template_lib_types::{
     ResourceType,
     UtxoId,
     VaultId,
-    access_rules::{AccessRule, ComponentAccessRules, ResourceAccessRules, ResourceAuthAction},
+    access_rules::{AccessRule, ComponentAccessRules, ResourceAccessRules, ResourceAuthAction, UpdateRule},
     bytes::Bytes,
     confidential::{ConfidentialOutputStatement, ConfidentialWithdrawProof},
     crypto::CommitmentValueProof,
@@ -141,6 +141,8 @@ pub struct CreateComponentArg {
     pub access_rules: ComponentAccessRules,
     #[n(3)]
     pub address_allocation: Option<ComponentAddressAllocation>,
+    #[n(4)]
+    pub upgrade_rule: UpdateRule,
 }
 
 // -------------------------------- Events -------------------------------- //

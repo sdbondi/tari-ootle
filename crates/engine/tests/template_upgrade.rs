@@ -11,10 +11,19 @@ use tari_engine_types::{
     indexed_value::IndexedValue,
 };
 use tari_ootle_common_types::crypto::create_key_pair_from_seed;
-use tari_ootle_transaction::{Epoch, Transaction, args};
+use tari_ootle_transaction::{Epoch, Transaction, args, builder::named_args::NamedArg};
 use tari_template_lib::{
     args::CallAction,
-    types::{ComponentAddress, OwnerRule, VaultId},
+    types::{
+        AccessRule,
+        ComponentAddress,
+        OwnerRule,
+        TemplateAddress,
+        VaultId,
+        access_rules::UpdateRule,
+        crypto::RistrettoPublicKeyBytes,
+        rule,
+    },
 };
 use tari_template_test_tooling::{TemplateTest, support::assert_error::assert_reject_reason};
 
@@ -31,28 +40,40 @@ fn setup() -> (TemplateTest, ComponentAddress) {
 }
 
 fn create_component(test_mut: &mut TemplateTest) -> ComponentAddress {
-    let v1_template = test_mut.get_template_address("TemplateV1");
+    create_component_with(test_mut, "new", args![
+        OwnerRule::OwnedBySigner,
+        UpdateRule::Owner,
+        signers()
+    ])
+}
 
-    let signers = (0..5)
+fn signers() -> Vec<RistrettoPublicKeyBytes> {
+    (0..5)
         .map(create_key_pair_from_seed)
         .map(|(_, pk)| pk.to_byte_type())
-        .collect::<Vec<_>>();
+        .collect()
+}
+
+fn create_component_with(test_mut: &mut TemplateTest, function: &str, args: Vec<NamedArg>) -> ComponentAddress {
+    let v1_template = test_mut.get_template_address("TemplateV1");
 
     test_mut.execute_expect_success(
         Transaction::builder_localnet(Epoch(1))
-            .call_function(v1_template, "new", args![OwnerRule::OwnedBySigner, signers])
+            .call_function(v1_template, function, args)
             .finish()
             .seal(test_mut.secret_key()),
         vec![],
     );
 
-    let (component, _) = test_mut
-        .read_only_state_store()
-        .get_components_by_template_address(v1_template)
-        .unwrap()
-        .remove(0);
+    test_mut.return_values()[0].decoded::<ComponentAddress>().unwrap()
+}
 
-    component
+fn template_address_of(test: &TemplateTest, component: ComponentAddress) -> TemplateAddress {
+    *test
+        .read_only_state_store()
+        .get_component(component)
+        .unwrap()
+        .template_address()
 }
 
 #[test]
@@ -288,5 +309,147 @@ fn it_disallows_calling_the_migration_function_directly() {
 
     assert_reject_reason(reason, TransactionErrorKind::CannotCallMigrationFunctionDirectly {
         name: "migrate_v1_to_v2".to_string(),
+    });
+}
+
+#[test]
+fn it_refuses_to_upgrade_a_component_created_with_the_default_upgrade_rule() {
+    let mut test = TemplateTest::new(CRATE_PATH, vec![
+        "tests/templates/template_upgrade/v1",
+        "tests/templates/template_upgrade/v2",
+    ]);
+    let component = create_component_with(&mut test, "new_with_default_upgrade_rule", args![
+        OwnerRule::OwnedBySigner,
+        signers()
+    ]);
+    let v1_template = test.get_template_address("TemplateV1");
+    let v2_template = test.get_template_address("TemplateV2");
+
+    let reason = test.execute_expect_failure(
+        Transaction::builder_localnet(Epoch(1))
+            .update_component_template_address_with_migrate(component, v2_template, "migrate_v1_to_v2", args![])
+            .finish()
+            .seal(test.secret_key()),
+        vec![],
+    );
+
+    assert_reject_reason(reason, RuntimeError::ComponentUpgradesLocked { component });
+    assert_eq!(template_address_of(&test, component), v1_template);
+}
+
+#[test]
+fn it_refuses_to_upgrade_a_locked_component_even_for_its_owner() {
+    let mut test = TemplateTest::new(CRATE_PATH, vec![
+        "tests/templates/template_upgrade/v1",
+        "tests/templates/template_upgrade/v2",
+    ]);
+    let component = create_component_with(&mut test, "new", args![
+        OwnerRule::OwnedBySigner,
+        UpdateRule::Locked,
+        signers()
+    ]);
+    let v2_template = test.get_template_address("TemplateV2");
+
+    let reason = test.execute_expect_failure(
+        Transaction::builder_localnet(Epoch(1))
+            .update_component_template_address_with_migrate(component, v2_template, "migrate_v1_to_v2", args![])
+            .finish()
+            .seal(test.secret_key()),
+        vec![],
+    );
+
+    assert_reject_reason(reason, RuntimeError::ComponentUpgradesLocked { component });
+}
+
+#[test]
+fn it_refuses_an_owner_upgrade_rule_on_an_ownerless_component() {
+    let mut test = TemplateTest::new(CRATE_PATH, vec![
+        "tests/templates/template_upgrade/v1",
+        "tests/templates/template_upgrade/v2",
+    ]);
+    let component = create_component_with(&mut test, "new", args![OwnerRule::None, UpdateRule::Owner, signers()]);
+    let v2_template = test.get_template_address("TemplateV2");
+
+    let reason = test.execute_expect_failure(
+        Transaction::builder_localnet(Epoch(1))
+            .update_component_template_address_with_migrate(component, v2_template, "migrate_v1_to_v2", args![])
+            .finish()
+            .seal(test.secret_key()),
+        vec![],
+    );
+
+    assert_reject_reason(reason, RuntimeError::AccessDeniedOwnerRequired {
+        action: NativeAction::UpdateComponentTemplate.into(),
+    });
+}
+
+#[test]
+fn it_authorizes_an_access_rule_upgrade_rule_independently_of_the_owner() {
+    let mut test = TemplateTest::new(CRATE_PATH, vec![
+        "tests/templates/template_upgrade/v1",
+        "tests/templates/template_upgrade/v2",
+    ]);
+    let v2_template = test.get_template_address("TemplateV2");
+    let (upgrader_secret, upgrader_pk) = create_key_pair_from_seed(12);
+    let upgrader_pk = upgrader_pk.to_byte_type();
+
+    // A signer rule lets its key upgrade an ownerless component.
+    let open_component = create_component_with(&mut test, "new", args![
+        OwnerRule::None,
+        UpdateRule::AccessRule(rule!(public_key(upgrader_pk))),
+        signers()
+    ]);
+    test.execute_expect_success(
+        Transaction::builder_localnet(Epoch(1))
+            .update_component_template_address_with_migrate(open_component, v2_template, "migrate_v1_to_v2", args![])
+            .call_method(open_component, "assert_correct", args![])
+            .finish()
+            .seal(&upgrader_secret),
+        vec![],
+    );
+    assert_eq!(template_address_of(&test, open_component), v2_template);
+
+    // DenyAll refuses the owner.
+    let closed_component = create_component_with(&mut test, "new", args![
+        OwnerRule::OwnedBySigner,
+        UpdateRule::AccessRule(AccessRule::DenyAll),
+        signers()
+    ]);
+    let reason = test.execute_expect_failure(
+        Transaction::builder_localnet(Epoch(1))
+            .update_component_template_address_with_migrate(closed_component, v2_template, "migrate_v1_to_v2", args![])
+            .finish()
+            .seal(test.secret_key()),
+        vec![],
+    );
+    assert_reject_reason(reason, RuntimeError::AccessDenied {
+        action_ident: NativeAction::UpdateComponentTemplate.into(),
+    });
+}
+
+#[test]
+fn it_rejects_a_component_scoped_upgrade_rule_at_creation() {
+    let mut test = TemplateTest::new(CRATE_PATH, vec![
+        "tests/templates/template_upgrade/v1",
+        "tests/templates/template_upgrade/v2",
+    ]);
+    let some_component = create_component(&mut test);
+    let v1_template = test.get_template_address("TemplateV1");
+
+    let reason = test.execute_expect_failure(
+        Transaction::builder_localnet(Epoch(1))
+            .call_function(v1_template, "new", args![
+                OwnerRule::OwnedBySigner,
+                UpdateRule::AccessRule(rule!(component(some_component))),
+                signers()
+            ])
+            .finish()
+            .seal(test.secret_key()),
+        vec![],
+    );
+
+    assert_reject_reason(reason, RuntimeError::InvalidArgument {
+        argument: "upgrade_rule",
+        reason: "component(..)/template(..) cannot be used in a component upgrade rule".to_string(),
     });
 }

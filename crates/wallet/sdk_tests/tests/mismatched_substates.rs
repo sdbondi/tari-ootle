@@ -83,6 +83,7 @@ fn account_component_value() -> SubstateValue {
             owner_rule: SubstateOwnerRule::None,
             access_rules: ComponentAccessRules::new(),
             entity_id: Default::default(),
+            upgrade_rule: Default::default(),
         },
         body: ComponentBody::empty(),
     }

@@ -1462,6 +1462,7 @@ where
                     owner_rule,
                     access_rules,
                     address_allocation,
+                    upgrade_rule,
                 } = args.assert_one_arg()?;
 
                 let template_addr = self.tracker.get_template_address()?;
@@ -1487,6 +1488,17 @@ where
                         reason: "component(..)/template(..) cannot be used in a component owner rule".to_string(),
                     });
                 }
+                // An upgrade rule is evaluated with the migration frame on top, whose component is the one being
+                // upgraded, so `component(..)`/`template(..)` would be constant there too.
+                if let UpdateRule::AccessRule(rule) = &upgrade_rule {
+                    if rule.contains_scoped_to_component_or_template() {
+                        return Err(RuntimeError::InvalidArgument {
+                            argument: "upgrade_rule",
+                            reason: "component(..)/template(..) cannot be used in a component upgrade rule".to_string(),
+                        });
+                    }
+                    reject_invalid_m_of_n("upgrade_rule", rule.find_invalid_m_of_n())?;
+                }
 
                 let owner_rule = match owner_rule {
                     OwnerRule::OwnedBySigner => {
@@ -1497,9 +1509,13 @@ where
                     OwnerRule::ByPublicKey(key) => SubstateOwnerRule::ByPublicKey(key),
                 };
 
-                let component_address =
-                    self.tracker
-                        .new_component(encoded_state, owner_rule, access_rules, address_allocation)?;
+                let component_address = self.tracker.new_component(
+                    encoded_state,
+                    owner_rule,
+                    access_rules,
+                    address_allocation,
+                    upgrade_rule,
+                )?;
                 Ok(InvokeResult::encode(&component_address)?)
             },
             ComponentAction::GetState => {
@@ -4179,20 +4195,40 @@ where
         self.tracker.write_with(|state| state.revoke_boundary_proofs())
     }
 
-    fn check_component_ownership(&self, action: ActionIdent) -> Result<(), RuntimeError> {
+    fn check_component_upgrade_rule(&self) -> Result<(), RuntimeError> {
         self.tracker.read_with(|state| {
             let locked = state
                 .current_call_scope()?
                 .get_current_component_lock()
                 .ok_or_else(|| RuntimeError::InvariantError {
-                    function: "check_component_ownership",
+                    function: "check_component_upgrade_rule",
                     details: "No current component lock in call scope".to_string(),
                 })?;
 
             let component = state.get_component(locked)?;
-            state
-                .authorization()
-                .require_ownership(action, component.as_ownership())
+            let action = NativeAction::UpdateComponentTemplate;
+            match component.upgrade_rule() {
+                UpdateRule::Locked => Err(RuntimeError::ComponentUpgradesLocked {
+                    component: locked.substate_id().as_component_address().ok_or_else(|| {
+                        RuntimeError::InvariantError {
+                            function: "check_component_upgrade_rule",
+                            details: "Current component lock is not a component".to_string(),
+                        }
+                    })?,
+                }),
+                UpdateRule::Owner => state
+                    .authorization()
+                    .require_ownership(action, component.as_ownership()),
+                UpdateRule::AccessRule(rule) => {
+                    if state.authorization().check_access_rule(rule)? {
+                        Ok(())
+                    } else {
+                        Err(RuntimeError::AccessDenied {
+                            action_ident: action.into(),
+                        })
+                    }
+                },
+            }
         })
     }
 

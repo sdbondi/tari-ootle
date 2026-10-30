@@ -1002,6 +1002,7 @@ mod tests {
                 owner_rule: SubstateOwnerRule::None,
                 access_rules: ComponentAccessRules::new(),
                 entity_id: EntityId::from_array([0u8; EntityId::LENGTH]),
+                upgrade_rule: Default::default(),
             },
             body: ComponentBody::from_cbor_value(state),
         };
