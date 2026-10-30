@@ -39,9 +39,8 @@ mod account_template {
         vaults: VaultMap,
         #[cbor(with = "indexmap_codec")]
         /// Approvals for others to withdraw from this account. The key is a tuple of (approved resource,
-        /// required spender_badge), and the value is the approved amount. A spender badge is a badge the engine
-        /// stamps on the call: a public-key badge for a signer calling directly, a caller-component badge for one
-        /// component, or a caller-template badge for every component and function of one template.
+        /// required spender_badge), and the value is the approved amount. See [`Self::withdraw_approved`] for how a
+        /// spender shows that it holds the badge.
         approvals: ApprovalMap,
     }
 
@@ -69,6 +68,7 @@ mod account_template {
                     .add_method_rule("deposit", rule!(allow_all))
                     .add_method_rule("deposit_with_auth", rule!(allow_all))
                     .add_method_rule("withdraw_approved", rule!(allow_all))
+                    .add_method_rule("withdraw_approved_with_auth", rule!(allow_all))
                     // By default, only the owner of the token will be able to withdraw funds from the account
                     .default(rule!(deny_all)),
             );
@@ -286,8 +286,7 @@ mod account_template {
         }
 
         // Approval methods
-        /// Called by account owner — sets or updates approval. `spender_badge` must be a badge the engine stamps on
-        /// a call (see [`Self::withdraw_approved`]); a zero `amount` revokes the approval for any badge.
+        /// Called by account owner — sets or updates approval. A zero `amount` revokes it.
         pub fn approve(&mut self, spender_badge: NonFungibleAddress, resource: ResourceAddress, amount: Amount) {
             if amount.is_zero() {
                 let key = (resource, spender_badge);
@@ -299,13 +298,6 @@ mod account_template {
                 }
                 // Else no-op
             } else {
-                let badge_resource = spender_badge.resource_address();
-                assert!(
-                    badge_resource.is_public_key_resource() || badge_resource.is_caller_badge(),
-                    "Spender badge {} is not a public-key or caller badge, so no call can carry it to spend an \
-                     approval",
-                    spender_badge
-                );
                 emit_event(
                     "approve",
                     metadata!(
@@ -328,7 +320,7 @@ mod account_template {
         /// when that key's transaction calls this method directly, or, when template code makes the call, the
         /// caller-component badge of the calling component or the caller-template badge of its template. An
         /// approval keyed on a template badge is therefore spendable by every component and function of that
-        /// template.
+        /// template. A badge held in a vault is shown with [`Self::withdraw_approved_with_auth`].
         pub fn withdraw_approved(
             &mut self,
             spender_badge: NonFungibleAddress,
@@ -359,6 +351,17 @@ mod account_template {
             }
 
             self.get_vault(resource).withdraw(amount)
+        }
+
+        /// [`Self::withdraw_approved`] with `auth` proving that the caller holds `spender_badge`.
+        pub fn withdraw_approved_with_auth(
+            &mut self,
+            spender_badge: NonFungibleAddress,
+            resource: ResourceAddress,
+            amount: Amount,
+            auth: Proof,
+        ) -> Bucket {
+            auth.authorize_with(|| self.withdraw_approved(spender_badge, resource, amount))
         }
     }
 }

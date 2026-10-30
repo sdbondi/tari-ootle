@@ -130,7 +130,16 @@ use tari_template_lib::{
         TemplateMetadataHash,
         UtxoAddress,
         ValidatorFeePoolAddress,
-        access_rules::{ComponentAccessRules, InvalidMOfN, ResourceAuthAction, UpdateRule},
+        access_rules::{
+            AccessRule,
+            ComponentAccessRules,
+            InvalidMOfN,
+            RequireRule,
+            ResourceAuthAction,
+            RestrictedAccessRule,
+            RuleRequirement,
+            UpdateRule,
+        },
         bytes::Bytes,
         constants::{TARI_TOKEN, TOKEN_SYMBOL},
         crypto::{PedersenCommitmentBytes, RistrettoPublicKeyBytes, UtxoTag},
@@ -3975,8 +3984,11 @@ where
             }),
             CallerContextAction::AssertBadgeInScope => {
                 let badge: NonFungibleAddress = args.assert_one_arg()?;
+                let rule = AccessRule::Restricted(RestrictedAccessRule::Require(RequireRule::Require(
+                    RuleRequirement::NonFungibleAddress(badge.clone()),
+                )));
                 self.tracker.read_with(|state| {
-                    if !state.current_call_scope()?.auth_scope().contains_badge(&badge) {
+                    if !state.authorization().check_access_rule(&rule)? {
                         return Err(RuntimeError::BadgeNotInScope { badge });
                     }
                     Ok(InvokeResult::unit())

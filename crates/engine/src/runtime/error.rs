@@ -119,7 +119,8 @@ pub enum RuntimeError {
     SignerBadgeNotInScope { public_key: RistrettoPublicKeyBytes },
     #[error(
         "This call does not carry the badge {badge}. A call carries the transaction signers' badges when the \
-         transaction makes it directly, and its direct caller's badges when a template makes it"
+         transaction makes it directly, its direct caller's badges when a template makes it, and the badges of the \
+         proofs it holds"
     )]
     BadgeNotInScope { badge: NonFungibleAddress },
     #[error(

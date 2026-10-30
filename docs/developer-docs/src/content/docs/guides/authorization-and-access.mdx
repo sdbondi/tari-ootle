@@ -185,8 +185,9 @@ A signer badge authorizes only the frame it is stamped into, and no template can
 engine issues public-key badges from the transaction's signatures and nowhere else. A component the signer
 calls directly acts with the signer's authority in its own frame, but every call it makes carries the
 component's caller badges instead. Template code that needs to know whether a call carries a particular badge —
-a signer's key on a top-level call, or the direct caller's component or template — asks the engine without
-minting anything:
+a signer's key on a top-level call, the direct caller's component or template, or a badge it holds a proof of —
+asks the engine without minting anything. The check is `rule!(non_fungible(badge))` evaluated against the
+current frame:
 
 ```rust
 CallerContext::assert_badge_in_scope(&badge);
@@ -197,8 +198,8 @@ and `withdraw_approved(spender_badge, resource, amount)` pays out only when the 
 public-key approval is spendable by that key's own top-level call to the account, an approval naming
 `NonFungibleAddress::caller_component_badge(dex)` is spendable by the `dex` component calling the account, and
 one naming `NonFungibleAddress::direct_caller_template_badge(t)` by every component and function of template
-`t`. `approve` accepts only these engine-issued badges, since an approval keyed on a stored NFT could never be
-spent.
+`t`. An approval naming a badge held in a vault is spent with
+`withdraw_approved_with_auth(spender_badge, resource, amount, auth)`, where `auth` is a proof of that badge.
 
 #### Resource Access Rules
 

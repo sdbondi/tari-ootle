@@ -27,11 +27,11 @@ impl CallerContext {
         resp.decode().expect(ERR_ENGINE_DECODE_FAIL)
     }
 
-    /// Fails the transaction unless the current call carries `badge`. A call carries the badges the engine stamps
-    /// into its frame: the transaction signers' public-key badges when the transaction calls this component or
-    /// function directly, and otherwise the badges naming its direct caller
-    /// ([`NonFungibleAddress::caller_component_badge`] and [`NonFungibleAddress::direct_caller_template_badge`]).
-    /// The check reads only these engine-stamped badges, so a `Proof` the frame holds has no bearing on it.
+    /// Fails the transaction unless the current call carries `badge`, evaluated as `rule!(non_fungible(badge))`
+    /// against this frame. A call carries the badges the engine stamps into its frame (the transaction signers'
+    /// public-key badges when the transaction calls this component or function directly, and otherwise the badges
+    /// naming its direct caller: [`NonFungibleAddress::caller_component_badge`] and
+    /// [`NonFungibleAddress::direct_caller_template_badge`]), and the badges of the proofs the frame holds.
     pub fn assert_badge_in_scope(badge: &NonFungibleAddress) {
         let _resp: InvokeResult = call_engine(EngineOp::CallerContextInvoke, &CallerContextInvokeArg {
             action: CallerContextAction::AssertBadgeInScope,

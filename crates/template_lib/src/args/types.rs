@@ -740,8 +740,8 @@ pub enum CallerContextAction {
     GetComponentAddress,
     // Tag 2 is retired and must not be reused: a template built against it must fail to decode rather than run
     // another action.
-    /// Fails unless the badge given as the single argument is in the current frame's authorization scope: a
-    /// signer badge stamped into it, or the badge of its direct caller.
+    /// Fails unless the current frame satisfies `rule!(non_fungible(badge))` for the badge given as the single
+    /// argument: a signer badge stamped into it, the badge of its direct caller, or a proof it holds.
     #[n(3)]
     AssertBadgeInScope,
 }
