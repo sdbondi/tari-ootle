@@ -158,6 +158,10 @@ The first charges land as soon as the runtime initialises, before any instructio
   transaction — one that declares a global substate or publishes a template — executes in every
   shard group, so its input fanout is the number of shard groups less one.
 
+Both input charges price one holder per input: one load, and one pledge to each further group. A
+global substate has a holder in every shard group, and each of them loads it and pledges it to the
+others, so with `n` groups the network does `n` times the work these charges price for it.
+
 Both input charges land before the fee intent runs, so they stand whatever the main intent does.
 
 ---
