@@ -13084,7 +13084,7 @@ dependencies = [
 
 [[package]]
 name = "tari_template_lib_types"
-version = "0.39.5"
+version = "0.39.4"
 dependencies = [
  "bnum",
  "borsh",

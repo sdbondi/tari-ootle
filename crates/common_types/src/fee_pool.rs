@@ -5,7 +5,9 @@ use tari_template_lib_types::{ValidatorFeePoolAddress, crypto::RistrettoPublicKe
 
 use crate::{NumPreshards, shard::Shard};
 
-const SHARD_PREFIX_LEN: usize = ValidatorFeePoolAddress::SHARD_PREFIX_LENGTH;
+/// The leading bytes of a fee pool address that encode its shard. The rest are the claim key's bytes at the same
+/// offsets.
+const SHARD_PREFIX_LEN: usize = 2;
 
 /// Derives a deterministic [`ValidatorFeePoolAddress`] that lives in `shard` when partitioned into `num_preshards`.
 ///
@@ -44,7 +46,7 @@ pub fn is_fee_pool_address_of_claim_key(
     address: &ValidatorFeePoolAddress,
     public_key_bytes: &RistrettoPublicKeyBytes,
 ) -> bool {
-    address.public_key_bytes() == &public_key_bytes[SHARD_PREFIX_LEN..]
+    address.as_slice()[SHARD_PREFIX_LEN..] == public_key_bytes[SHARD_PREFIX_LEN..]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
