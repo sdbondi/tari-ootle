@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use ootle_network::Network;
 use tari_engine::{
-    executables::Executable,
     fees::{FeeModule, FeeTable, WasmMeteringRate},
     runtime::{AuthParams, RuntimeModule},
     state_store::{StateReader, StateStoreError},
