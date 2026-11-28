@@ -6,7 +6,7 @@ use tari_networking::NetworkingError;
 use tari_ootle_common_types::Epoch;
 use tari_ootle_storage::{StorageError, consensus_models::TransactionPoolError};
 use tari_ootle_transaction::{BlobValidationError, InstructionLimitError, Network, TransactionId};
-use tari_template_lib::types::{TemplateAddress, crypto::RistrettoPublicKeyBytes};
+use tari_template_lib::types::{TemplateAddress, ValidatorFeePoolAddress, crypto::RistrettoPublicKeyBytes};
 
 #[derive(thiserror::Error, Debug)]
 pub enum TransactionValidationError {
@@ -103,6 +103,14 @@ pub enum TransactionValidationError {
     OutputOnlySubstateInput {
         transaction_id: TransactionId,
         substate_id: SubstateId,
+    },
+    #[error(
+        "Transaction {transaction_id} declares validator fee pool {address} as an input but the pool's claim key did \
+         not sign it. Only the claim key can withdraw from a fee pool, so sign the transaction with that key."
+    )]
+    FeePoolInputNotSignedByClaimKey {
+        transaction_id: TransactionId,
+        address: ValidatorFeePoolAddress,
     },
     #[error("Dry run transactions are not allowed")]
     DryRunNotAllowed,
@@ -236,6 +244,7 @@ impl TransactionValidationError {
             Self::ComponentTemplateUpdateNotSupported { .. } |
             Self::ReservedSubstateInput { .. } |
             Self::OutputOnlySubstateInput { .. } |
+            Self::FeePoolInputNotSignedByClaimKey { .. } |
             Self::DryRunNotAllowed |
             Self::TransactionExceedsMaxWeight { .. } |
             Self::TransactionExceedsMaxSize { .. } |
@@ -350,6 +359,10 @@ mod tests {
             TransactionValidationError::ComponentTemplateUpdateNotSupported {
                 transaction_id: tx_id(),
                 index: 0,
+            },
+            TransactionValidationError::FeePoolInputNotSignedByClaimKey {
+                transaction_id: tx_id(),
+                address: ValidatorFeePoolAddress::from_array([1; 32]),
             },
             TransactionValidationError::DryRunNotAllowed,
             TransactionValidationError::TransactionExceedsMaxWeight {

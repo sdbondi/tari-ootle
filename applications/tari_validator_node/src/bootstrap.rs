@@ -83,6 +83,7 @@ use tari_ootle_transaction_validation::{
     BasicValidations,
     BlobReferenceValidator,
     EpochRangeValidator,
+    FeePoolInputSignerValidator,
     InputLimitValidator,
     InputsAreDeclarableValidator,
     InstructionLimitValidator,
@@ -652,13 +653,14 @@ pub fn create_node_transaction_validator<TProvider: TemplateProvider>(
 }
 
 /// Builds the validations applied when a transaction is admitted to this node's mempool: the node-local chain
-/// plus the two epoch-window rules and the ingress-only input check.
+/// plus the two epoch-window rules and the ingress-only input checks.
 ///
-/// [`InputsAreDeclarableValidator`] is deliberately here rather than in [`create_node_transaction_validator`], which
-/// also backs `TariBlockTransactionValidator`. A rejection rule in block validation is a consensus rule: an
-/// upgraded validator would refuse a block that a non-upgraded one accepts. Refusing at ingress costs the
-/// sender and nothing else, and a block carrying such a transaction is still sound to execute: a virtual input
-/// aborts at input resolution, and an output-only one is locked and pledged without changing.
+/// [`InputsAreDeclarableValidator`] and [`FeePoolInputSignerValidator`] are deliberately here rather than in
+/// [`create_node_transaction_validator`], which also backs `TariBlockTransactionValidator`. A rejection rule in block
+/// validation is a consensus rule: an upgraded validator would refuse a block that a non-upgraded one accepts.
+/// Refusing at ingress costs the sender and nothing else, and a block carrying such a transaction is still sound to
+/// execute: a virtual input aborts at input resolution, an output-only one is locked and pledged without changing,
+/// and a fee pool whose claim key did not sign is locked until the claim fails its ownership check.
 pub fn create_mempool_transaction_validator<TProvider: TemplateProvider>(
     network: Network,
     template_manager: TProvider,
@@ -668,7 +670,8 @@ pub fn create_mempool_transaction_validator<TProvider: TemplateProvider>(
         .map_context(
             |_| (),
             create_node_transaction_validator(network, template_manager, constants)
-                .and_then(InputsAreDeclarableValidator::new()),
+                .and_then(InputsAreDeclarableValidator::new())
+                .and_then(FeePoolInputSignerValidator::new()),
         )
         .and_then(TransactionValidityWindowValidator::new(
             constants.max_transaction_validity_epochs,

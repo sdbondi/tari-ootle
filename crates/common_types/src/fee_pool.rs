@@ -5,6 +5,8 @@ use tari_template_lib_types::{ValidatorFeePoolAddress, crypto::RistrettoPublicKe
 
 use crate::{NumPreshards, shard::Shard};
 
+const SHARD_PREFIX_LEN: usize = ValidatorFeePoolAddress::SHARD_PREFIX_LENGTH;
+
 /// Derives a deterministic [`ValidatorFeePoolAddress`] that lives in `shard` when partitioned into `num_preshards`.
 ///
 /// Layout: two shard-prefix bytes followed by 30 bytes of the public key. The top `log2(num_preshards)` bits of the
@@ -31,9 +33,18 @@ pub fn derive_fee_pool_address(
     let prefix = (shard_index << shift) as u16;
 
     let mut address = [0u8; 32];
-    address[..2].copy_from_slice(&prefix.to_be_bytes());
-    address[2..].copy_from_slice(&public_key_bytes[2..]);
+    address[..SHARD_PREFIX_LEN].copy_from_slice(&prefix.to_be_bytes());
+    address[SHARD_PREFIX_LEN..].copy_from_slice(&public_key_bytes[SHARD_PREFIX_LEN..]);
     Ok(ValidatorFeePoolAddress::from_array(address))
+}
+
+/// Whether `address` is a fee pool of the claim key `public_key_bytes` in some shard: the key bytes the address carries
+/// are those of the key. The address alone decides this, whichever shard the pool is in and whether or not it exists.
+pub fn is_fee_pool_address_of_claim_key(
+    address: &ValidatorFeePoolAddress,
+    public_key_bytes: &RistrettoPublicKeyBytes,
+) -> bool {
+    address.public_key_bytes() == &public_key_bytes[SHARD_PREFIX_LEN..]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -91,6 +102,19 @@ mod tests {
         assert_ne!(addr_a, addr_b);
         assert_pool_lands_in_shard(&pk_a, NumPreshards::P256, Shard::from(42));
         assert_pool_lands_in_shard(&pk_b, NumPreshards::P256, Shard::from(42));
+    }
+
+    #[test]
+    fn it_recognises_the_pools_of_a_claim_key_in_every_shard() {
+        let (_, pk) = RistrettoPublicKey::random_keypair(&mut rand::rng());
+        let pk = pk.to_byte_type();
+        let (_, other) = RistrettoPublicKey::random_keypair(&mut rand::rng());
+        let other = other.to_byte_type();
+        for shard in [1u32, 42, 256] {
+            let address = derive_fee_pool_address(&pk, NumPreshards::P256, Shard::from(shard)).unwrap();
+            assert!(is_fee_pool_address_of_claim_key(&address, &pk), "shard {shard}");
+            assert!(!is_fee_pool_address_of_claim_key(&address, &other), "shard {shard}");
+        }
     }
 
     #[test]

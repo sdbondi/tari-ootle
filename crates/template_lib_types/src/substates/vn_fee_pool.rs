@@ -17,6 +17,9 @@ const TAG: u64 = BinaryTag::ValidatorNodeFeePool.as_u64();
 pub struct ValidatorFeePoolAddress(#[cfg_attr(feature = "ts", ts(type = "string"))] BorTag<ObjectKey, TAG>);
 
 impl ValidatorFeePoolAddress {
+    /// The leading bytes of the address that encode the shard the pool is in.
+    pub const SHARD_PREFIX_LENGTH: usize = 2;
+
     pub const fn from_array(arr: [u8; ObjectKey::LENGTH]) -> Self {
         let key = ObjectKey::from_array(arr);
         Self(BorTag::new(key))
@@ -28,6 +31,12 @@ impl ValidatorFeePoolAddress {
 
     pub const fn as_slice(&self) -> &[u8] {
         self.0.inner().array()
+    }
+
+    /// The bytes of the claim public key the address carries: every byte of the key after its first
+    /// [`Self::SHARD_PREFIX_LENGTH`], which the address replaces with its shard prefix.
+    pub fn public_key_bytes(&self) -> &[u8] {
+        &self.as_slice()[Self::SHARD_PREFIX_LENGTH..]
     }
 
     pub fn from_hex(hex: &str) -> Result<Self, KeyParseError> {

@@ -8,6 +8,7 @@ use crate::{
     BasicValidations,
     BlobReferenceValidator,
     EpochRangeValidator,
+    FeePoolInputSignerValidator,
     InputLimitValidator,
     InputsAreDeclarableValidator,
     InstructionLimitValidator,
@@ -27,7 +28,8 @@ use crate::{
 
 /// Builds the structural (context-free) mempool validations suitable for any transaction entry
 /// point: refusal of dry-run transactions, network match, basic well-formedness, the per-transaction byte
-/// and weight caps, blob references, input addressability, and signature verification.
+/// and weight caps, blob references, input addressability, the claim key signer of any fee pool input, and signature
+/// verification.
 ///
 /// These never depend on lagging runtime state (epoch, template existence), so they cannot
 /// false-reject and are safe to run at the indexer before forwarding to validator committees.
@@ -48,6 +50,7 @@ pub fn create_structural_transaction_validator(
             max_transaction_weight,
             max_transaction_size_bytes,
         ))
+        .and_then(FeePoolInputSignerValidator::new())
         .and_then(TransactionSignatureValidator)
 }
 

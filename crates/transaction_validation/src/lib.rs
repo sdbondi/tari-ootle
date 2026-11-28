@@ -21,6 +21,8 @@ mod dry_run;
 pub use dry_run::*;
 mod epoch_range;
 pub use epoch_range::*;
+mod fee_pool_input_signer;
+pub use fee_pool_input_signer::*;
 mod input_limits;
 pub use input_limits::*;
 mod instruction_limits;
