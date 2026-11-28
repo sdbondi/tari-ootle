@@ -209,6 +209,15 @@ impl Transaction {
         self.is_seal_signer_authorized() || !self.signatures().is_empty()
     }
 
+    /// The public keys the transaction carries authority from: the seal signer when the transaction authorizes it,
+    /// then every authorization signer in list order. The engine issues an ownership badge for each.
+    pub fn signers_iter(&self) -> impl Iterator<Item = &RistrettoPublicKeyBytes> {
+        self.is_seal_signer_authorized()
+            .then_some(self.seal_signature().public_key())
+            .into_iter()
+            .chain(self.signatures().iter().map(|signature| signature.public_key()))
+    }
+
     pub fn inputs(&self) -> &IndexSet<InputDeclaration> {
         match self {
             Self::V1(tx) | Self::V2(tx) => tx.inputs(),

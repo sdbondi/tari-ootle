@@ -18,8 +18,8 @@ const LOG_TARGET: &str = "tari::ootle::mempool::validators::fee_pool_input_signe
 /// claim fails its ownership check.
 ///
 /// A fee pool's address carries its claim key, so the address and the signers decide this with no reference to any
-/// node's view of state: refusing it at ingress cannot false-reject. The signers counted are those the engine
-/// authorizes with, the seal signer when the transaction authorizes it and every authorization signer.
+/// node's view of state: refusing it at ingress cannot false-reject. The signers counted are
+/// [`Transaction::signers_iter`], the keys the engine issues ownership badges for.
 #[derive(Debug, Clone, Default)]
 pub struct FeePoolInputSignerValidator;
 
@@ -34,16 +34,12 @@ impl Validator<Transaction> for FeePoolInputSignerValidator {
     type Error = TransactionValidationError;
 
     fn validate(&self, _context: &(), transaction: &Transaction) -> Result<(), Self::Error> {
-        let seal_signer = transaction
-            .is_seal_signer_authorized()
-            .then_some(transaction.seal_signature().public_key());
         let unsigned_pool = transaction
             .all_inputs_iter()
             .filter_map(|input| input.substate_id().as_validator_fee_pool_address())
             .find(|address| {
-                !seal_signer
-                    .into_iter()
-                    .chain(transaction.signatures().iter().map(|signature| signature.public_key()))
+                !transaction
+                    .signers_iter()
                     .any(|signer| is_fee_pool_address_of_claim_key(address, signer))
             });
 

@@ -29,10 +29,7 @@ impl Executable for Transaction {
     }
 
     fn signers_iter(&self) -> impl Iterator<Item = &RistrettoPublicKeyBytes> {
-        self.is_seal_signer_authorized()
-            .then_some(self.seal_signature().public_key())
-            .into_iter()
-            .chain(self.signatures().iter().map(|s| s.public_key()))
+        Transaction::signers_iter(self)
     }
 
     fn into_instructions(self) -> Instructions {
